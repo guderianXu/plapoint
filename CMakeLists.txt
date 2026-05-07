@@ -10,6 +10,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(BUILD_TESTS "Build unit tests" OFF)
 
+# Detect CUDA (plamatrix may require it)
+find_package(CUDAToolkit QUIET)
+
+# OpenMP (required by plamatrix)
+find_package(OpenMP REQUIRED)
+
 # Find plamatrix
 find_package(plamatrix REQUIRED)
 
