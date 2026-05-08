@@ -137,8 +137,25 @@ public:
             }
             cudaMemcpy(d_queries, h_queries.data(), M * 3 * sizeof(Scalar), cudaMemcpyHostToDevice);
 
-            // Kernel with GPU-resident data (no host roundtrip for data)
-            gpu::batchKnnDevice(d_queries, M, _cloud->points().data(), N, k, d_indices, d_dists);
+            // Copy GPU column-major data to row-major temp buffer for kernel compatibility
+            Scalar* d_rowmajor = nullptr;
+            cudaMalloc(&d_rowmajor, N * 3 * sizeof(Scalar));
+            // Reorder: DenseMatrix is col-major [x0..xN-1, y0..yN-1, z0..zN-1] → row-major [x0,y0,z0, ..., xN-1,yN-1,zN-1]
+            // Each component is separated by N in col-major; interleave them row-major
+            {
+                std::vector<Scalar> h_col(N * 3);
+                cudaMemcpy(h_col.data(), _cloud->points().data(), N * 3 * sizeof(Scalar), cudaMemcpyDeviceToHost);
+                std::vector<Scalar> h_row(N * 3);
+                for (int i = 0; i < N; ++i)
+                {
+                    h_row[static_cast<std::size_t>(i * 3)]     = h_col[static_cast<std::size_t>(i)];
+                    h_row[static_cast<std::size_t>(i * 3 + 1)] = h_col[static_cast<std::size_t>(N + i)];
+                    h_row[static_cast<std::size_t>(i * 3 + 2)] = h_col[static_cast<std::size_t>(2 * N + i)];
+                }
+                cudaMemcpy(d_rowmajor, h_row.data(), N * 3 * sizeof(Scalar), cudaMemcpyHostToDevice);
+            }
+            gpu::batchKnnDevice(d_queries, M, d_rowmajor, N, k, d_indices, d_dists);
+            cudaFree(d_rowmajor);
 
             // Copy results back to host (kernel wrote K_alloc values, we only need k)
             std::vector<int>    flat_idx(static_cast<std::size_t>(M * k));
