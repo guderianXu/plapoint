@@ -107,6 +107,7 @@ private:
         int point_count = 0;
         Scalar div_x = 0, div_y = 0, div_z = 0;
         Scalar weight = 0;
+        Scalar divergence = 0;
         Scalar solution = 0;
 
         OctreeNode(Scalar x, Scalar y, Scalar z, Scalar s, int d)
@@ -217,7 +218,6 @@ private:
 
         if (is_leaf)
         {
-            // Trilinear weight: distance from node center
             Scalar cx = node.ox + node.size * Scalar(0.5);
             Scalar cy = node.oy + node.size * Scalar(0.5);
             Scalar cz = node.oz + node.size * Scalar(0.5);
@@ -226,6 +226,7 @@ private:
             Scalar wz = Scalar(1) - std::abs(pz - cz) / (node.size * Scalar(0.5));
             Scalar w = std::max(Scalar(0), wx * wy * wz);
 
+            // Store normal components (weighted)
             node.div_x += w * nx;
             node.div_y += w * ny;
             node.div_z += w * nz;
@@ -240,13 +241,70 @@ private:
 
     void solvePoisson(std::vector<OctreeNode>& nodes) const
     {
-        // Extract leaf nodes for solving
         std::vector<int> leaf_indices;
         collectLeaves(nodes, 0, leaf_indices);
 
         int n_leaves = static_cast<int>(leaf_indices.size());
 
-        // Gauss-Seidel iteration on the leaf nodes
+        // Compute divergence at each leaf using finite-difference on the octree
+        // div(n) = dnx/dx + dny/dy + dnz/dz
+        for (int li = 0; li < n_leaves; ++li)
+        {
+            int idx = leaf_indices[static_cast<std::size_t>(li)];
+            auto& node = nodes[static_cast<std::size_t>(idx)];
+
+            Scalar h = node.size;
+            Scalar w = std::max(node.weight, Scalar(1e-10));
+            // Normal field at this leaf
+            Scalar vx = node.div_x / w;
+            Scalar vy = node.div_y / w;
+            Scalar vz = node.div_z / w;
+
+            // Finite-difference divergence using face neighbors
+            Scalar div = 0;
+            Scalar off = h;  // neighbor at distance h
+            Scalar nbs[6][3] = {
+                {node.ox-off, node.oy, node.oz}, {node.ox+off, node.oy, node.oz},
+                {node.ox, node.oy-off, node.oz}, {node.ox, node.oy+off, node.oz},
+                {node.ox, node.oy, node.oz-off}, {node.ox, node.oy, node.oz+off}
+            };
+
+            for (int d = 0; d < 3; ++d)
+            {
+                // Forward difference: look at neighbor +h in direction d
+                // For d=0 (x): find neighbor at (ox+h, oy, oz)
+                // For d=1 (y): (ox, oy+h, oz)
+                // For d=2 (z): (ox, oy, oz+h)
+                int nb_p = findLeafAt(nodes, 0, nbs[2*d+1][0], nbs[2*d+1][1], nbs[2*d+1][2]);
+                int nb_m = findLeafAt(nodes, 0, nbs[2*d][0], nbs[2*d][1], nbs[2*d][2]);
+
+                if (nb_p >= 0 && nb_m >= 0)
+                {
+                    auto& np = nodes[static_cast<std::size_t>(nb_p)];
+                    auto& nm = nodes[static_cast<std::size_t>(nb_m)];
+                    Scalar vp = (d==0 ? np.div_x : (d==1 ? np.div_y : np.div_z)) / std::max(np.weight, Scalar(1e-10));
+                    Scalar vm = (d==0 ? nm.div_x : (d==1 ? nm.div_y : nm.div_z)) / std::max(nm.weight, Scalar(1e-10));
+                    div += (vp - vm) / (np.size + node.size);  // central difference
+                }
+                else if (nb_p >= 0)
+                {
+                    auto& np = nodes[static_cast<std::size_t>(nb_p)];
+                    Scalar vp = (d==0 ? np.div_x : (d==1 ? np.div_y : np.div_z)) / std::max(np.weight, Scalar(1e-10));
+                    div += (vp - (d==0 ? vx : (d==1 ? vy : vz))) / (np.size + node.size);
+                }
+                else if (nb_m >= 0)
+                {
+                    auto& nm = nodes[static_cast<std::size_t>(nb_m)];
+                    Scalar vm = (d==0 ? nm.div_x : (d==1 ? nm.div_y : nm.div_z)) / std::max(nm.weight, Scalar(1e-10));
+                    div += ((d==0 ? vx : (d==1 ? vy : vz)) - vm) / (nm.size + node.size);
+                }
+                // else: both neighbors missing, no contribution
+            }
+
+            node.divergence = div;
+        }
+
+        // Gauss-Seidel solver
         for (int iter = 0; iter < _solver_iters; ++iter)
         {
             for (int li = 0; li < n_leaves; ++li)
@@ -254,22 +312,18 @@ private:
                 int idx = leaf_indices[static_cast<std::size_t>(li)];
                 auto& node = nodes[static_cast<std::size_t>(idx)];
 
-                // Compute Laplacian from neighboring leaves
                 Scalar lap_sum = 0;
-                Scalar div = (node.div_x + node.div_y + node.div_z) / std::max(node.weight, Scalar(1e-10));
                 int nb_count = 0;
-
-                // Find neighboring leaves at same or adjacent depth
-                Scalar offset = node.size;
-                Scalar neighbors[6][3] = {
-                    {node.ox-offset, node.oy, node.oz}, {node.ox+offset, node.oy, node.oz},
-                    {node.ox, node.oy-offset, node.oz}, {node.ox, node.oy+offset, node.oz},
-                    {node.ox, node.oy, node.oz-offset}, {node.ox, node.oy, node.oz+offset}
+                Scalar off = node.size;
+                Scalar nbs[6][3] = {
+                    {node.ox-off, node.oy, node.oz}, {node.ox+off, node.oy, node.oz},
+                    {node.ox, node.oy-off, node.oz}, {node.ox, node.oy+off, node.oz},
+                    {node.ox, node.oy, node.oz-off}, {node.ox, node.oy, node.oz+off}
                 };
 
                 for (int nb = 0; nb < 6; ++nb)
                 {
-                    int nb_idx = findLeafAt(nodes, 0, neighbors[nb][0], neighbors[nb][1], neighbors[nb][2]);
+                    int nb_idx = findLeafAt(nodes, 0, nbs[nb][0], nbs[nb][1], nbs[nb][2]);
                     if (nb_idx >= 0)
                     {
                         lap_sum += nodes[static_cast<std::size_t>(nb_idx)].solution;
@@ -280,7 +334,7 @@ private:
                 if (nb_count > 0)
                 {
                     Scalar h2 = node.size * node.size;
-                    node.solution = (lap_sum - h2 * div) / Scalar(nb_count);
+                    node.solution = (lap_sum - h2 * node.divergence) / Scalar(nb_count);
                 }
             }
         }

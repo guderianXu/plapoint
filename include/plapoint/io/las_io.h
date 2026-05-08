@@ -100,5 +100,68 @@ readLas(const std::string& path)
     return std::make_shared<PointCloud<Scalar, plamatrix::Device::CPU>>(std::move(pts));
 }
 
+template <typename Scalar>
+void writeLas(const std::string& path,
+              const PointCloud<Scalar, plamatrix::Device::CPU>& cloud,
+              double scale = 0.001)
+{
+    int n = static_cast<int>(cloud.size());
+
+    // Compute bounds
+    double min_x = 1e100, max_x = -1e100, min_y = 1e100, max_y = -1e100, min_z = 1e100, max_z = -1e100;
+    for (int i = 0; i < n; ++i)
+    {
+        double x = cloud.points().getValue(i, 0);
+        double y = cloud.points().getValue(i, 1);
+        double z = cloud.points().getValue(i, 2);
+        if (x < min_x) min_x = x; if (x > max_x) max_x = x;
+        if (y < min_y) min_y = y; if (y > max_y) max_y = y;
+        if (z < min_z) min_z = z; if (z > max_z) max_z = z;
+    }
+
+    double offset_x = min_x, offset_y = min_y, offset_z = min_z;
+
+    LasHeader hdr{};
+    std::memcpy(hdr.file_signature, "LASF", 4);
+    hdr.version_major = 1;
+    hdr.version_minor = 2;
+    std::strncpy(hdr.system_identifier, "PlaPoint", 31);
+    std::strncpy(hdr.generating_software, "PlaPoint", 31);
+    hdr.header_size = sizeof(LasHeader);
+    hdr.point_data_offset = sizeof(LasHeader);
+    hdr.point_data_format = 1;  // format 1: xyz + intensity + return + classification
+    hdr.point_data_record_length = sizeof(LasPoint);
+    hdr.num_point_records = static_cast<uint32_t>(n);
+
+    hdr.x_scale_factor = scale;
+    hdr.y_scale_factor = scale;
+    hdr.z_scale_factor = scale;
+    hdr.x_offset = offset_x;
+    hdr.y_offset = offset_y;
+    hdr.z_offset = offset_z;
+    hdr.max_x = max_x; hdr.min_x = min_x;
+    hdr.max_y = max_y; hdr.min_y = min_y;
+    hdr.max_z = max_z; hdr.min_z = min_z;
+
+    std::ofstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("Cannot write LAS file: " + path);
+
+    f.write(reinterpret_cast<const char*>(&hdr), sizeof(LasHeader));
+
+    for (int i = 0; i < n; ++i)
+    {
+        LasPoint pt{};
+        double x = cloud.points().getValue(i, 0);
+        double y = cloud.points().getValue(i, 1);
+        double z = cloud.points().getValue(i, 2);
+        pt.x = static_cast<int32_t>(std::round((x - offset_x) / scale));
+        pt.y = static_cast<int32_t>(std::round((y - offset_y) / scale));
+        pt.z = static_cast<int32_t>(std::round((z - offset_z) / scale));
+        pt.intensity = 255;
+        pt.classification = 1;  // unclassified
+        f.write(reinterpret_cast<const char*>(&pt), sizeof(LasPoint));
+    }
+}
+
 } // namespace io
 } // namespace plapoint

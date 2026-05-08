@@ -32,6 +32,12 @@ protected:
             ++out_idx;
         }
         output = PointCloudType(std::move(pts));
+        // Build index list for normal copying
+        std::vector<int> kept_indices;
+        kept_indices.reserve(out_n);
+        for (std::size_t i = 0; i < n; i += static_cast<std::size_t>(_step))
+            kept_indices.push_back(static_cast<int>(i));
+        this->copyNormalsForIndices(kept_indices, output);
     }
 
 private:

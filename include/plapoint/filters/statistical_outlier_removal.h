@@ -87,6 +87,7 @@ protected:
             pts(static_cast<plamatrix::Index>(i), 2) = pointCoord(src, 2);
         }
         output = PointCloudType(std::move(pts));
+        this->copyNormalsForIndices(inliers, output);
     }
 
 private:

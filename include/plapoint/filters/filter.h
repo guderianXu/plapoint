@@ -40,6 +40,28 @@ public:
 protected:
     virtual void applyFilter(PointCloudType& output) = 0;
 
+    /// Copy normals for selected indices from input to output cloud.
+    void copyNormalsForIndices(const std::vector<int>& indices, PointCloudType& output) const
+    {
+        if (!_input || !_input->hasNormals()) return;
+        int n = static_cast<int>(indices.size());
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> nrm(n, 3);
+        for (int i = 0; i < n; ++i)
+        {
+            int src = indices[static_cast<std::size_t>(i)];
+            nrm(i, 0) = normalCoord(src, 0);
+            nrm(i, 1) = normalCoord(src, 1);
+            nrm(i, 2) = normalCoord(src, 2);
+        }
+        output.setNormals(std::move(nrm));
+    }
+
+    Scalar normalCoord(int idx, int dim) const
+    {
+        auto* n = _input->normals();
+        return n->getValue(idx, dim);
+    }
+
     PointCloudConstPtr _input;
 };
 
