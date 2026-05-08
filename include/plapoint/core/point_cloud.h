@@ -18,6 +18,33 @@ class PointCloud
 public:
     using MatrixType = plamatrix::DenseMatrix<Scalar, Dev>;
 
+    class PointView
+    {
+    public:
+        Scalar x() const { return _cloud.points().getValue(static_cast<plamatrix::Index>(_idx), 0); }
+        Scalar y() const { return _cloud.points().getValue(static_cast<plamatrix::Index>(_idx), 1); }
+        Scalar z() const { return _cloud.points().getValue(static_cast<plamatrix::Index>(_idx), 2); }
+
+        uint8_t r() const { return _cloud.colors()->getValue(static_cast<plamatrix::Index>(_idx), 0); }
+        uint8_t g() const { return _cloud.colors()->getValue(static_cast<plamatrix::Index>(_idx), 1); }
+        uint8_t b() const { return _cloud.colors()->getValue(static_cast<plamatrix::Index>(_idx), 2); }
+
+        Scalar nx() const { return _cloud.normals()->getValue(static_cast<plamatrix::Index>(_idx), 0); }
+        Scalar ny() const { return _cloud.normals()->getValue(static_cast<plamatrix::Index>(_idx), 1); }
+        Scalar nz() const { return _cloud.normals()->getValue(static_cast<plamatrix::Index>(_idx), 2); }
+
+        Scalar u() const { return _cloud.textureCoords()->getValue(static_cast<plamatrix::Index>(_idx), 0); }
+        Scalar v() const { return _cloud.textureCoords()->getValue(static_cast<plamatrix::Index>(_idx), 1); }
+
+    private:
+        friend class PointCloud;
+        PointView(const PointCloud& cloud, size_t idx) : _cloud(cloud), _idx(idx) {}
+        const PointCloud& _cloud;
+        size_t _idx;
+    };
+
+    PointView operator[](size_t idx) const { return PointView(*this, idx); }
+
     PointCloud() : _points(0, 3) {}
 
     explicit PointCloud(size_t num_points) : _points(num_points, 3) {}
