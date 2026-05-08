@@ -2,6 +2,20 @@
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
 
+#ifdef PLAPOINT_WITH_CUDA
+#include <cuda_runtime.h>
+#endif
+
+static bool hasCudaDevice()
+{
+    int count = 0;
+#ifdef PLAPOINT_WITH_CUDA
+    return (cudaGetDeviceCount(&count) == cudaSuccess && count > 0);
+#else
+    return false;
+#endif
+}
+
 TEST(PointCloudTest, OptionalNormals)
 {
     using Scalar = float;

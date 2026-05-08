@@ -2,6 +2,20 @@
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
 
+#ifdef PLAPOINT_WITH_CUDA
+#include <cuda_runtime.h>
+#endif
+
+static bool hasCudaDevice()
+{
+    int count = 0;
+#ifdef PLAPOINT_WITH_CUDA
+    return (cudaGetDeviceCount(&count) == cudaSuccess && count > 0);
+#else
+    return false;
+#endif
+}
+
 TEST(PointCloudTest, CpuCreation)
 {
     plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(100);
@@ -12,6 +26,7 @@ TEST(PointCloudTest, CpuCreation)
 
 TEST(PointCloudTest, GpuTransfer)
 {
+    if (!hasCudaDevice()) { GTEST_SKIP() << "No CUDA device, skipping GPU transfer test"; }
     plapoint::PointCloud<float, plamatrix::Device::CPU> cpu_cloud(10);
     cpu_cloud.points().fill(1.0f);
 
