@@ -2,6 +2,7 @@
 
 #include <plamatrix/dense/dense_matrix.h>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <type_traits>
@@ -74,8 +75,34 @@ public:
 
     MatrixType* normals() { return _normals.get(); }
 
+    /// Set optional RGB colors by copy (Nx3 uint8 matrix)
+    void setColors(const plamatrix::DenseMatrix<uint8_t, Dev>& c)
+    {
+        if (c.rows() != _points.rows() || c.cols() != 3)
+            throw std::runtime_error("Colors must match point count and be Nx3");
+        _colors = std::make_unique<plamatrix::DenseMatrix<uint8_t, Dev>>(c.rows(), c.cols());
+        for (plamatrix::Index r = 0; r < c.rows(); ++r)
+            for (int col = 0; col < 3; ++col)
+                _colors->setValue(r, col, pointGet(c, r, col));
+    }
+
+    /// Set optional RGB colors by move
+    void setColors(plamatrix::DenseMatrix<uint8_t, Dev>&& c)
+    {
+        if (c.rows() != _points.rows() || c.cols() != 3)
+            throw std::runtime_error("Colors must match point count and be Nx3");
+        _colors = std::make_unique<plamatrix::DenseMatrix<uint8_t, Dev>>(std::move(c));
+    }
+
+    bool hasColors() const { return _colors != nullptr; }
+
+    const plamatrix::DenseMatrix<uint8_t, Dev>* colors() const { return _colors.get(); }
+
+    plamatrix::DenseMatrix<uint8_t, Dev>* colors() { return _colors.get(); }
+
 private:
-    static Scalar pointGet(const MatrixType& m, plamatrix::Index r, int c)
+    template <typename T>
+    static T pointGet(const plamatrix::DenseMatrix<T, Dev>& m, plamatrix::Index r, int c)
     {
         if constexpr (Dev == plamatrix::Device::CPU)
             return m(r, c);
@@ -85,6 +112,7 @@ private:
 
     MatrixType _points;
     std::unique_ptr<MatrixType> _normals;
+    std::unique_ptr<plamatrix::DenseMatrix<uint8_t, Dev>> _colors;
 };
 
 } // namespace plapoint
