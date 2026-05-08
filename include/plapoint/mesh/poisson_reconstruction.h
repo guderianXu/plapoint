@@ -46,6 +46,8 @@ public:
         int res = 1 << _depth;
         int vr = res + 1;
         Scalar dx = (max_x - min_x) / Scalar(res);
+        Scalar dy = (max_y - min_y) / Scalar(res);
+        Scalar dz = (max_z - min_z) / Scalar(res);
 
         // Splat normals to compute divergence on grid vertices
         std::vector<Scalar> div(static_cast<std::size_t>(vr*vr*vr), 0);
@@ -59,8 +61,8 @@ public:
             Scalar nz = _cloud->normals()->getValue(pi, 2);
 
             int ix = std::clamp(static_cast<int>(std::round((px - min_x) / dx)), 0, vr-1);
-            int iy = std::clamp(static_cast<int>(std::round((py - min_x) / dx)), 0, vr-1);
-            int iz = std::clamp(static_cast<int>(std::round((pz - min_x) / dx)), 0, vr-1);
+            int iy = std::clamp(static_cast<int>(std::round((py - min_y) / dy)), 0, vr-1);
+            int iz = std::clamp(static_cast<int>(std::round((pz - min_z) / dz)), 0, vr-1);
 
             for (int sx = -1; sx <= 1; ++sx)
                 for (int sy = -1; sy <= 1; ++sy)
@@ -99,13 +101,13 @@ public:
         // Extract isosurface
         auto chi_fn = [&](Scalar x, Scalar y, Scalar z) -> Scalar {
             int ix = std::clamp(static_cast<int>((x - min_x) / dx), 0, vr-1);
-            int iy = std::clamp(static_cast<int>((y - min_x) / dx), 0, vr-1);
-            int iz = std::clamp(static_cast<int>((z - min_x) / dx), 0, vr-1);
+            int iy = std::clamp(static_cast<int>((y - min_y) / dy), 0, vr-1);
+            int iz = std::clamp(static_cast<int>((z - min_z) / dz), 0, vr-1);
             return chi[static_cast<std::size_t>(iz*vr*vr + iy*vr + ix)];
         };
 
         MarchingCubes<Scalar> mc;
-        mc.setBounds({min_x, min_x, min_x}, {max_x, max_x, max_x});
+        mc.setBounds({min_x, min_y, min_z}, {max_x, max_y, max_z});
         mc.setResolution(res, res, res);
         mc.setIsoLevel(Scalar(0));
         return mc.extract(chi_fn);

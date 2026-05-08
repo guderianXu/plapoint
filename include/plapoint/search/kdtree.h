@@ -114,24 +114,48 @@ public:
         }
         else
         {
-            // GPU path: single cudaMemcpy for data (not per-point getValue)
             int N = static_cast<int>(_cloud->size());
-            std::vector<Scalar> h_queries(static_cast<std::size_t>(M * 3));
-            std::vector<Scalar> h_data(static_cast<std::size_t>(N * 3));
 
+            // Kernel uses internal K (1,4,8,16,32); allocate for rounded-up size
+            const int K_alloc = (k <= 1) ? 1 : (k <= 4) ? 4 : (k <= 8) ? 8 : (k <= 16) ? 16 : 32;
+
+            Scalar* d_queries = nullptr;
+            int*    d_indices = nullptr;
+            Scalar* d_dists   = nullptr;
+
+            cudaMalloc(&d_queries, M * 3 * sizeof(Scalar));
+            cudaMalloc(&d_indices, M * K_alloc * sizeof(int));
+            cudaMalloc(&d_dists,   M * K_alloc * sizeof(Scalar));
+
+            // Copy host queries to GPU
+            std::vector<Scalar> h_queries(static_cast<std::size_t>(M * 3));
             for (int i = 0; i < M; ++i)
             {
                 h_queries[static_cast<std::size_t>(i * 3)]     = queries(i, 0);
                 h_queries[static_cast<std::size_t>(i * 3 + 1)] = queries(i, 1);
                 h_queries[static_cast<std::size_t>(i * 3 + 2)] = queries(i, 2);
             }
-            // Single bulk copy: GPU device pointer -> host
-            cudaMemcpy(h_data.data(), _cloud->points().data(),
-                       N * 3 * sizeof(Scalar), cudaMemcpyDeviceToHost);
+            cudaMemcpy(d_queries, h_queries.data(), M * 3 * sizeof(Scalar), cudaMemcpyHostToDevice);
 
-            std::vector<int>    flat_idx;
-            std::vector<Scalar> flat_dst;
-            gpu::batchKnn(h_queries.data(), M, h_data.data(), N, k, flat_idx, flat_dst);
+            // Kernel with GPU-resident data (no host roundtrip for data)
+            gpu::batchKnnDevice(d_queries, M, _cloud->points().data(), N, k, d_indices, d_dists);
+
+            // Copy results back to host (kernel wrote K_alloc values, we only need k)
+            std::vector<int>    flat_idx(static_cast<std::size_t>(M * k));
+            std::vector<Scalar> flat_dst(static_cast<std::size_t>(M * k));
+            std::vector<int>    tmp_idx(static_cast<std::size_t>(M * K_alloc));
+            std::vector<Scalar> tmp_dst(static_cast<std::size_t>(M * K_alloc));
+            cudaMemcpy(tmp_idx.data(), d_indices, M * K_alloc * sizeof(int),    cudaMemcpyDeviceToHost);
+            cudaMemcpy(tmp_dst.data(),  d_dists,   M * K_alloc * sizeof(Scalar), cudaMemcpyDeviceToHost);
+
+            for (int i = 0; i < M; ++i)
+                for (int j = 0; j < k; ++j)
+                {
+                    flat_idx[static_cast<std::size_t>(i * k + j)] = tmp_idx[static_cast<std::size_t>(i * K_alloc + j)];
+                    flat_dst[static_cast<std::size_t>(i * k + j)] = tmp_dst[static_cast<std::size_t>(i * K_alloc + j)];
+                }
+
+            cudaFree(d_queries); cudaFree(d_indices); cudaFree(d_dists);
 
             for (int i = 0; i < M; ++i)
             {

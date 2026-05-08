@@ -94,30 +94,24 @@ cudaError_t launchBruteForceKnn(
 {
     const int BLOCK_SIZE = 256;
 
-    // Use specialized kernel for common K values
-    size_t smem = BLOCK_SIZE * K * (sizeof(Scalar) + sizeof(int));
+    // Determine the kernel template K (must match K_alloc in callers)
+    // Round K up to the nearest supported value
+    int K_template = K;
+    if (K <= 1)      K_template = 1;
+    else if (K <= 4)  K_template = 4;
+    else if (K <= 8)  K_template = 8;
+    else if (K <= 16) K_template = 16;
+    else              K_template = 32;
 
-    #define LAUNCH_K(K_VAL) \
-        bruteForceKnnKernel<Scalar, BLOCK_SIZE, K_VAL><<<M, BLOCK_SIZE, smem, stream>>>( \
-            d_queries, d_data, M, N, d_out_indices, d_out_dists)
+    size_t smem = BLOCK_SIZE * K_template * (sizeof(Scalar) + sizeof(int));
 
-    switch (K)
+    switch (K_template)
     {
-        case 1:  LAUNCH_K(1);  break;
-        case 4:  LAUNCH_K(4);  break;
-        case 8:  LAUNCH_K(8);  break;
-        case 16: LAUNCH_K(16); break;
-        case 32: LAUNCH_K(32); break;
-        default:
-        {
-            // Generic kernel for arbitrary K
-            int threads_per_block = 256;
-            int blocks = M;
-            size_t sm = threads_per_block * K * (sizeof(Scalar) + sizeof(int));
-            bruteForceKnnKernel<Scalar, 256, 32><<<blocks, threads_per_block, sm, stream>>>(
-                d_queries, d_data, M, N, d_out_indices, d_out_dists);
-            break;
-        }
+        case 1:  bruteForceKnnKernel<Scalar, BLOCK_SIZE, 1><<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, d_out_indices, d_out_dists); break;
+        case 4:  bruteForceKnnKernel<Scalar, BLOCK_SIZE, 4><<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, d_out_indices, d_out_dists); break;
+        case 8:  bruteForceKnnKernel<Scalar, BLOCK_SIZE, 8><<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, d_out_indices, d_out_dists); break;
+        case 16: bruteForceKnnKernel<Scalar, BLOCK_SIZE, 16><<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, d_out_indices, d_out_dists); break;
+        default: bruteForceKnnKernel<Scalar, BLOCK_SIZE, 32><<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, d_out_indices, d_out_dists); break;
     }
     #undef LAUNCH_K
 

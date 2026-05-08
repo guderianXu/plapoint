@@ -32,6 +32,10 @@ void batchKnnImpl(const Scalar* h_queries, int M,
         return;
     }
 
+    // Kernel internally uses template K values (1,4,8,16,32).
+    // Allocate enough space for the kernel's internal K (round up).
+    const int K_alloc = (K <= 1) ? 1 : (K <= 4) ? 4 : (K <= 8) ? 8 : (K <= 16) ? 16 : 32;
+
     Scalar* d_queries = nullptr;
     Scalar* d_data    = nullptr;
     int*    d_indices = nullptr;
@@ -39,8 +43,8 @@ void batchKnnImpl(const Scalar* h_queries, int M,
 
     cudaMalloc(&d_queries, M * 3 * sizeof(Scalar));
     cudaMalloc(&d_data,    N * 3 * sizeof(Scalar));
-    cudaMalloc(&d_indices, M * K * sizeof(int));
-    cudaMalloc(&d_dists,   M * K * sizeof(Scalar));
+    cudaMalloc(&d_indices, M * K_alloc * sizeof(int));
+    cudaMalloc(&d_dists,   M * K_alloc * sizeof(Scalar));
 
     cudaMemcpy(d_queries, h_queries, M * 3 * sizeof(Scalar), cudaMemcpyHostToDevice);
     cudaMemcpy(d_data,    h_data,    N * 3 * sizeof(Scalar), cudaMemcpyHostToDevice);
@@ -54,11 +58,21 @@ void batchKnnImpl(const Scalar* h_queries, int M,
         throw std::runtime_error(std::string("GPU KNN failed: ") + cudaGetErrorString(err));
     }
 
+    // Only copy the first K results per query (kernel may have written up to K_alloc)
     out_indices.resize(static_cast<std::size_t>(M * K));
     out_dists.resize(static_cast<std::size_t>(M * K));
 
-    cudaMemcpy(out_indices.data(), d_indices, M * K * sizeof(int), cudaMemcpyDeviceToHost);
-    cudaMemcpy(out_dists.data(),   d_dists,   M * K * sizeof(Scalar), cudaMemcpyDeviceToHost);
+    std::vector<int>    tmp_idx(static_cast<std::size_t>(M * K_alloc));
+    std::vector<Scalar> tmp_dst(static_cast<std::size_t>(M * K_alloc));
+    cudaMemcpy(tmp_idx.data(), d_indices, M * K_alloc * sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(tmp_dst.data(),  d_dists,   M * K_alloc * sizeof(Scalar), cudaMemcpyDeviceToHost);
+
+    for (int i = 0; i < M; ++i)
+        for (int j = 0; j < K; ++j)
+        {
+            out_indices[static_cast<std::size_t>(i * K + j)] = tmp_idx[static_cast<std::size_t>(i * K_alloc + j)];
+            out_dists[static_cast<std::size_t>(i * K + j)]   = tmp_dst[static_cast<std::size_t>(i * K_alloc + j)];
+        }
 
     cudaFree(d_queries); cudaFree(d_data); cudaFree(d_indices); cudaFree(d_dists);
 }
@@ -83,6 +97,29 @@ void batchKnn(const double* h_queries, int M,
               std::vector<double>& out_dists)
 {
     batchKnnImpl<double>(h_queries, M, h_data, N, K, out_indices, out_dists);
+}
+
+// Device-pointer version: no host roundtrip
+template <typename Scalar>
+void batchKnnDeviceImpl(const Scalar* d_queries, int M,
+                        const Scalar* d_data, int N, int K,
+                        int* d_indices, Scalar* d_dists)
+{
+    launchBruteForceKnn<Scalar>(d_queries, d_data, M, N, K, d_indices, d_dists, 0);
+}
+
+void batchKnnDevice(const float* d_queries, int M,
+                    const float* d_data, int N, int K,
+                    int* d_indices, float* d_dists)
+{
+    batchKnnDeviceImpl<float>(d_queries, M, d_data, N, K, d_indices, d_dists);
+}
+
+void batchKnnDevice(const double* d_queries, int M,
+                    const double* d_data, int N, int K,
+                    int* d_indices, double* d_dists)
+{
+    batchKnnDeviceImpl<double>(d_queries, M, d_data, N, K, d_indices, d_dists);
 }
 
 } // namespace gpu
