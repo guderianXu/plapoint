@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <utility>
 
@@ -175,6 +176,12 @@ public:
 
     plamatrix::DenseMatrix<int, Dev>* faceTextureIndices() { return _faceTextureIndices.get(); }
 
+    const std::string& materialLibraryFile() const { return _materialLibraryFile; }
+    void setMaterialLibraryFile(const std::string& f) { _materialLibraryFile = f; }
+
+    const std::string& textureImageFile() const { return _textureImageFile; }
+    void setTextureImageFile(const std::string& f) { _textureImageFile = f; }
+
 private:
     template <typename T>
     static T pointGet(const plamatrix::DenseMatrix<T, Dev>& m, plamatrix::Index r, int c)
@@ -191,6 +198,8 @@ private:
     std::unique_ptr<MatrixType> _textureCoords;
     std::unique_ptr<plamatrix::DenseMatrix<int, Dev>> _faces;
     std::unique_ptr<plamatrix::DenseMatrix<int, Dev>> _faceTextureIndices;
+    std::string _materialLibraryFile;
+    std::string _textureImageFile;
 };
 
 } // namespace plapoint

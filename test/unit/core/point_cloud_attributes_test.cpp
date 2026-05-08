@@ -114,3 +114,29 @@ TEST(PointCloudAttributesTest, SetFacesRejectsNonNx3)
     plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(2, 2);
     EXPECT_THROW(cloud.setFaces(faces), std::runtime_error);
 }
+
+TEST(PointCloudAttributesTest, MaterialLibraryFileEmptyByDefault)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
+    EXPECT_TRUE(cloud.materialLibraryFile().empty());
+}
+
+TEST(PointCloudAttributesTest, SetMaterialLibraryFile)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
+    cloud.setMaterialLibraryFile("materials.mtl");
+    EXPECT_EQ(cloud.materialLibraryFile(), "materials.mtl");
+}
+
+TEST(PointCloudAttributesTest, TextureImageFileEmptyByDefault)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
+    EXPECT_TRUE(cloud.textureImageFile().empty());
+}
+
+TEST(PointCloudAttributesTest, SetTextureImageFile)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
+    cloud.setTextureImageFile("diffuse.png");
+    EXPECT_EQ(cloud.textureImageFile(), "diffuse.png");
+}
