@@ -41,3 +41,31 @@ TEST(PointCloudAttributesTest, SetColorsRejectsWrongSize)
     plamatrix::DenseMatrix<uint8_t, plamatrix::Device::CPU> colors(5, 3);
     EXPECT_THROW(cloud.setColors(colors), std::runtime_error);
 }
+
+TEST(PointCloudAttributesTest, NoTextureCoordsByDefault)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
+    EXPECT_FALSE(cloud.hasTextureCoords());
+    EXPECT_EQ(cloud.textureCoords(), nullptr);
+}
+
+TEST(PointCloudAttributesTest, SetTextureCoords)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> tex(10, 2);
+    tex.setValue(0, 0, 0.5f);
+    tex.setValue(0, 1, 0.75f);
+
+    cloud.setTextureCoords(std::move(tex));
+
+    ASSERT_TRUE(cloud.hasTextureCoords());
+    EXPECT_FLOAT_EQ(cloud.textureCoords()->getValue(0, 0), 0.5f);
+    EXPECT_FLOAT_EQ(cloud.textureCoords()->getValue(0, 1), 0.75f);
+}
+
+TEST(PointCloudAttributesTest, SetTextureCoordsRejectsWrongSize)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> tex(5, 2);
+    EXPECT_THROW(cloud.setTextureCoords(tex), std::runtime_error);
+}

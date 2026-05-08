@@ -100,6 +100,31 @@ public:
 
     plamatrix::DenseMatrix<uint8_t, Dev>* colors() { return _colors.get(); }
 
+    /// Set optional texture coordinates by copy (Nx2 matrix, must match point count)
+    void setTextureCoords(const MatrixType& t)
+    {
+        if (t.rows() != _points.rows() || t.cols() != 2)
+            throw std::runtime_error("Texture coords must match point count and be Nx2");
+        _textureCoords = std::make_unique<MatrixType>(t.rows(), t.cols());
+        for (plamatrix::Index r = 0; r < t.rows(); ++r)
+            for (int col = 0; col < 2; ++col)
+                _textureCoords->setValue(r, col, pointGet(t, r, col));
+    }
+
+    /// Set optional texture coordinates by move
+    void setTextureCoords(MatrixType&& t)
+    {
+        if (t.rows() != _points.rows() || t.cols() != 2)
+            throw std::runtime_error("Texture coords must match point count and be Nx2");
+        _textureCoords = std::make_unique<MatrixType>(std::move(t));
+    }
+
+    bool hasTextureCoords() const { return _textureCoords != nullptr; }
+
+    const MatrixType* textureCoords() const { return _textureCoords.get(); }
+
+    MatrixType* textureCoords() { return _textureCoords.get(); }
+
 private:
     template <typename T>
     static T pointGet(const plamatrix::DenseMatrix<T, Dev>& m, plamatrix::Index r, int c)
@@ -113,6 +138,7 @@ private:
     MatrixType _points;
     std::unique_ptr<MatrixType> _normals;
     std::unique_ptr<plamatrix::DenseMatrix<uint8_t, Dev>> _colors;
+    std::unique_ptr<MatrixType> _textureCoords;
 };
 
 } // namespace plapoint
