@@ -31,12 +31,20 @@ GPU-accelerated point cloud processing library built on [PlaMatrix](https://gith
 ### I/O
 - **PLY** — ASCII read/write with positions and optional normals
 
+## GPU Acceleration
+
+When `PLAPOINT_WITH_CUDA=ON` and CUDA Toolkit is available:
+
+- **Brute-force KNN** (`src/knn_gpu.cu`) — batched K-nearest neighbor search with one CUDA block per query point, shared memory top-K reduction
+- **Voxel Grid** (`src/voxel_grid_gpu.cu`) — GPU voxel hashing with atomic centroid accumulation
+- Explicit template instantiations in `src/plapoint.cpp` reduce downstream compile times
+
 ## Requirements
 
 - C++17
 - CMake ≥ 3.18
 - [PlaMatrix](https://github.com/guderianXu/plamatrix) (math backend)
-- CUDA Toolkit (optional, for GPU support via plamatrix)
+- CUDA Toolkit (optional, for GPU kernels)
 - Google Test (for tests)
 
 ## Build
