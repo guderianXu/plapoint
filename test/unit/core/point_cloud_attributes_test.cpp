@@ -69,3 +69,48 @@ TEST(PointCloudAttributesTest, SetTextureCoordsRejectsWrongSize)
     plamatrix::DenseMatrix<float, plamatrix::Device::CPU> tex(5, 2);
     EXPECT_THROW(cloud.setTextureCoords(tex), std::runtime_error);
 }
+
+TEST(PointCloudAttributesTest, NoFacesByDefault)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
+    EXPECT_FALSE(cloud.hasFaces());
+    EXPECT_EQ(cloud.faces(), nullptr);
+}
+
+TEST(PointCloudAttributesTest, SetFaces)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(2, 3);
+    faces.setValue(0, 0, 0); faces.setValue(0, 1, 1); faces.setValue(0, 2, 2);
+    faces.setValue(1, 0, 3); faces.setValue(1, 1, 4); faces.setValue(1, 2, 5);
+
+    cloud.setFaces(std::move(faces));
+
+    ASSERT_TRUE(cloud.hasFaces());
+    EXPECT_EQ(cloud.faces()->rows(), 2);
+    EXPECT_EQ(cloud.faces()->cols(), 3);
+    EXPECT_EQ(cloud.faces()->getValue(0, 0), 0);
+    EXPECT_EQ(cloud.faces()->getValue(1, 2), 5);
+}
+
+TEST(PointCloudAttributesTest, SetFacesWithTextureIndices)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
+    faces.setValue(0, 0, 0); faces.setValue(0, 1, 1); faces.setValue(0, 2, 2);
+    cloud.setFaces(faces);
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> texFaces(1, 3);
+    texFaces.setValue(0, 0, 5); texFaces.setValue(0, 1, 6); texFaces.setValue(0, 2, 7);
+    cloud.setFaceTextureIndices(std::move(texFaces));
+
+    ASSERT_TRUE(cloud.hasFaceTextureIndices());
+    EXPECT_EQ(cloud.faceTextureIndices()->getValue(0, 0), 5);
+}
+
+TEST(PointCloudAttributesTest, SetFacesRejectsNonNx3)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(2, 2);
+    EXPECT_THROW(cloud.setFaces(faces), std::runtime_error);
+}

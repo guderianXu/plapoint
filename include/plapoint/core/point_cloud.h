@@ -125,6 +125,56 @@ public:
 
     MatrixType* textureCoords() { return _textureCoords.get(); }
 
+    /// Set optional faces by copy (Fx3 int matrix)
+    void setFaces(const plamatrix::DenseMatrix<int, Dev>& f)
+    {
+        if (f.cols() != 3)
+            throw std::runtime_error("Faces must be Fx3");
+        _faces = std::make_unique<plamatrix::DenseMatrix<int, Dev>>(f.rows(), f.cols());
+        for (plamatrix::Index r = 0; r < f.rows(); ++r)
+            for (int col = 0; col < 3; ++col)
+                _faces->setValue(r, col, pointGet(f, r, col));
+    }
+
+    /// Set optional faces by move
+    void setFaces(plamatrix::DenseMatrix<int, Dev>&& f)
+    {
+        if (f.cols() != 3)
+            throw std::runtime_error("Faces must be Fx3");
+        _faces = std::make_unique<plamatrix::DenseMatrix<int, Dev>>(std::move(f));
+    }
+
+    bool hasFaces() const { return _faces != nullptr; }
+
+    const plamatrix::DenseMatrix<int, Dev>* faces() const { return _faces.get(); }
+
+    plamatrix::DenseMatrix<int, Dev>* faces() { return _faces.get(); }
+
+    /// Set optional face texture indices by copy (Fx3 int matrix)
+    void setFaceTextureIndices(const plamatrix::DenseMatrix<int, Dev>& ft)
+    {
+        if (ft.cols() != 3)
+            throw std::runtime_error("Face texture indices must be Fx3");
+        _faceTextureIndices = std::make_unique<plamatrix::DenseMatrix<int, Dev>>(ft.rows(), ft.cols());
+        for (plamatrix::Index r = 0; r < ft.rows(); ++r)
+            for (int col = 0; col < 3; ++col)
+                _faceTextureIndices->setValue(r, col, pointGet(ft, r, col));
+    }
+
+    /// Set optional face texture indices by move
+    void setFaceTextureIndices(plamatrix::DenseMatrix<int, Dev>&& ft)
+    {
+        if (ft.cols() != 3)
+            throw std::runtime_error("Face texture indices must be Fx3");
+        _faceTextureIndices = std::make_unique<plamatrix::DenseMatrix<int, Dev>>(std::move(ft));
+    }
+
+    bool hasFaceTextureIndices() const { return _faceTextureIndices != nullptr; }
+
+    const plamatrix::DenseMatrix<int, Dev>* faceTextureIndices() const { return _faceTextureIndices.get(); }
+
+    plamatrix::DenseMatrix<int, Dev>* faceTextureIndices() { return _faceTextureIndices.get(); }
+
 private:
     template <typename T>
     static T pointGet(const plamatrix::DenseMatrix<T, Dev>& m, plamatrix::Index r, int c)
@@ -139,6 +189,8 @@ private:
     std::unique_ptr<MatrixType> _normals;
     std::unique_ptr<plamatrix::DenseMatrix<uint8_t, Dev>> _colors;
     std::unique_ptr<MatrixType> _textureCoords;
+    std::unique_ptr<plamatrix::DenseMatrix<int, Dev>> _faces;
+    std::unique_ptr<plamatrix::DenseMatrix<int, Dev>> _faceTextureIndices;
 };
 
 } // namespace plapoint
