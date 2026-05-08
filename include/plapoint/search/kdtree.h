@@ -1,7 +1,13 @@
 #pragma once
 
 #include <plapoint/core/point_cloud.h>
+#include <plapoint/gpu/knn.h>
 #include <plamatrix/ops/point_cloud.h>
+
+#ifdef PLAPOINT_WITH_CUDA
+#include <cuda_runtime.h>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -84,6 +90,59 @@ public:
         if (_nodes.empty()) return result;
         radiusSearchRecursive(query, radius * radius, 0, result);
         return result;
+    }
+
+    /// Batch K-nearest neighbor search for multiple query points.
+    /// On GPU: uses brute-force CUDA kernel (fast for up to ~100K points).
+    /// On CPU: loops over queries using the kd-tree.
+    /// @param queries   M x 3 matrix of query points
+    /// @param k         number of neighbors per query
+    /// @return          vector of M vectors, each with K indices
+    std::vector<std::vector<int>> batchNearestKSearch(
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& queries, int k) const
+    {
+        int M = static_cast<int>(queries.rows());
+        std::vector<std::vector<int>> results(static_cast<std::size_t>(M));
+
+        if constexpr (Dev == plamatrix::Device::CPU)
+        {
+            for (int i = 0; i < M; ++i)
+            {
+                plamatrix::Vec3<Scalar> q{queries(i, 0), queries(i, 1), queries(i, 2)};
+                results[static_cast<std::size_t>(i)] = nearestKSearch(q, k);
+            }
+        }
+        else
+        {
+            // GPU path: single cudaMemcpy for data (not per-point getValue)
+            int N = static_cast<int>(_cloud->size());
+            std::vector<Scalar> h_queries(static_cast<std::size_t>(M * 3));
+            std::vector<Scalar> h_data(static_cast<std::size_t>(N * 3));
+
+            for (int i = 0; i < M; ++i)
+            {
+                h_queries[static_cast<std::size_t>(i * 3)]     = queries(i, 0);
+                h_queries[static_cast<std::size_t>(i * 3 + 1)] = queries(i, 1);
+                h_queries[static_cast<std::size_t>(i * 3 + 2)] = queries(i, 2);
+            }
+            // Single bulk copy: GPU device pointer -> host
+            cudaMemcpy(h_data.data(), _cloud->points().data(),
+                       N * 3 * sizeof(Scalar), cudaMemcpyDeviceToHost);
+
+            std::vector<int>    flat_idx;
+            std::vector<Scalar> flat_dst;
+            gpu::batchKnn(h_queries.data(), M, h_data.data(), N, k, flat_idx, flat_dst);
+
+            for (int i = 0; i < M; ++i)
+            {
+                results[static_cast<std::size_t>(i)].resize(static_cast<std::size_t>(k));
+                for (int j = 0; j < k; ++j)
+                    results[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] =
+                        flat_idx[static_cast<std::size_t>(i * k + j)];
+            }
+        }
+
+        return results;
     }
 
 private:

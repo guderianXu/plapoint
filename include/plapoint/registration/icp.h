@@ -51,13 +51,18 @@ public:
 
         for (int iter = 0; iter < _max_iter; ++iter)
         {
-            // Find correspondences: for each source point, nearest target
+            // Find correspondences: batch KNN (GPU-accelerated when Dev == GPU)
             std::vector<int> corr(static_cast<std::size_t>(n));
-            for (int i = 0; i < n; ++i)
             {
-                plamatrix::Vec3<Scalar> pt{cur(i, 0), cur(i, 1), cur(i, 2)};
-                auto nn = tree->nearestKSearch(pt, 1);
-                corr[static_cast<std::size_t>(i)] = nn.empty() ? 0 : nn[0];
+                plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(n, 3);
+                for (int i = 0; i < n; ++i)
+                    for (int c = 0; c < 3; ++c)
+                        queries(i, c) = cur(i, c);
+
+                auto all_nn = tree->batchNearestKSearch(queries, 1);
+                for (int i = 0; i < n; ++i)
+                    corr[static_cast<std::size_t>(i)] = all_nn[static_cast<std::size_t>(i)].empty()
+                        ? 0 : all_nn[static_cast<std::size_t>(i)][0];
             }
 
             // Compute centroids
