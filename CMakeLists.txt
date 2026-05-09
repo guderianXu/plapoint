@@ -26,8 +26,10 @@ endif()
 # OpenMP (required by plamatrix)
 find_package(OpenMP REQUIRED)
 
-# Find plamatrix
-find_package(plamatrix REQUIRED)
+# Find plamatrix (or reuse target when included as submodule)
+if(NOT TARGET plamatrix::plamatrix)
+    find_package(plamatrix REQUIRED)
+endif()
 
 # plapoint library (compiled, not header-only)
 add_library(plapoint)
