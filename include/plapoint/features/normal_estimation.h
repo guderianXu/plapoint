@@ -1,6 +1,7 @@
 #pragma once
 
 #include <plapoint/core/point_cloud.h>
+#include <plapoint/gpu/cuda_check.h>
 #include <plapoint/search/kdtree.h>
 #include <plamatrix/dense/dense_matrix.h>
 #include <plamatrix/ops/point_cloud.h>
@@ -9,10 +10,6 @@
 #include <memory>
 #include <stdexcept>
 #include <vector>
-
-#ifdef PLAPOINT_WITH_CUDA
-#include <cuda_runtime.h>
-#endif
 
 namespace plapoint {
 
@@ -94,10 +91,12 @@ private:
         }
         else
         {
-#ifdef PLAPOINT_WITH_CUDA
-            cudaMemcpy(host.data(), _cloud->points().data(),
-                       static_cast<std::size_t>(_cloud->size() * 3) * sizeof(Scalar),
-                       cudaMemcpyDeviceToHost);
+#ifndef PLAPOINT_WITH_CUDA
+            throw std::runtime_error("PlaPoint was built without CUDA support");
+#else
+            PLAPOINT_CHECK_CUDA(cudaMemcpy(host.data(), _cloud->points().data(),
+                                           static_cast<std::size_t>(_cloud->size() * 3) * sizeof(Scalar),
+                                           cudaMemcpyDeviceToHost));
 #endif
         }
     }

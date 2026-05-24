@@ -32,23 +32,11 @@ __device__ void localTopKInsert(Scalar* d, int* idx, Scalar dist, int data_idx)
     idx[pos] = data_idx;
 }
 
-// Warp reduction: merge local top-K from all threads in a warp into shared memory
-template <typename Scalar, int K>
-__device__ void warpReduceTopK(
-    volatile Scalar* s_dists, volatile int* s_inds, int tid,
-    Scalar* local_d, int* local_idx)
-{
-    // Thread 0 of each warp writes its local best into shared
-    // Then thread 0 of block merges all warp results
-    // For simplicity: each thread's result is already in local arrays
-    // We use a single-threaded merge at the end
-}
-
 template <typename Scalar, int BLOCK_SIZE, int K>
 __global__ void bruteForceKnnKernel(
     const Scalar* __restrict__ queries,
     const Scalar* __restrict__ data,
-    int M, int N,
+    int M, int N, int outputK,
     int* __restrict__ out_indices,
     Scalar* __restrict__ out_dists)
 {
@@ -59,8 +47,6 @@ __global__ void bruteForceKnnKernel(
     int*    s_inds  = reinterpret_cast<int*>(s_dists + BLOCK_SIZE * K);
 
     int tid = threadIdx.x;
-    int warp_id = tid / 32;
-    int lane_id = tid % 32;
     int query_idx = blockIdx.x;
 
     if (query_idx >= M) return;
@@ -118,11 +104,11 @@ __global__ void bruteForceKnnKernel(
             }
         }
 
-        for (int k = 0; k < K; ++k)
+        for (int k = 0; k < outputK; ++k)
         {
-            out_indices[query_idx * K + k] = final_idx[k];
+            out_indices[query_idx * outputK + k] = final_idx[k];
             if (out_dists)
-                out_dists[query_idx * K + k] = final_d[k];
+                out_dists[query_idx * outputK + k] = final_d[k];
         }
     }
 }
@@ -135,7 +121,6 @@ cudaError_t launchBruteForceKnn(
     cudaStream_t stream)
 {
     const int BLOCK_SIZE = 256;
-    const int NUM_WARPS = BLOCK_SIZE / 32;
 
     int K_template = K;
     if (K <= 1)      K_template = 1;
@@ -151,23 +136,23 @@ cudaError_t launchBruteForceKnn(
     {
         case 1:
             bruteForceKnnKernel<Scalar, BLOCK_SIZE, 1>
-                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, d_out_indices, d_out_dists);
+                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, d_out_indices, d_out_dists);
             break;
         case 4:
             bruteForceKnnKernel<Scalar, BLOCK_SIZE, 4>
-                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, d_out_indices, d_out_dists);
+                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, d_out_indices, d_out_dists);
             break;
         case 8:
             bruteForceKnnKernel<Scalar, BLOCK_SIZE, 8>
-                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, d_out_indices, d_out_dists);
+                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, d_out_indices, d_out_dists);
             break;
         case 16:
             bruteForceKnnKernel<Scalar, BLOCK_SIZE, 16>
-                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, d_out_indices, d_out_dists);
+                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, d_out_indices, d_out_dists);
             break;
         default:
             bruteForceKnnKernel<Scalar, BLOCK_SIZE, 32>
-                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, d_out_indices, d_out_dists);
+                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, d_out_indices, d_out_dists);
             break;
     }
 

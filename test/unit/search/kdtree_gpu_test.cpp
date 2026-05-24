@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <plapoint/search/kdtree.h>
 #include <plapoint/core/point_cloud.h>
+#include <plapoint/gpu/cuda_check.h>
 #include <plapoint/gpu/knn.h>
 #include <plapoint/features/normal_estimation.h>
 #include <plapoint/registration/icp.h>
@@ -11,9 +12,7 @@
 
 static bool hasCudaDevice()
 {
-    int count = 0;
-    cudaError_t err = cudaGetDeviceCount(&count);
-    return (err == cudaSuccess && count > 0);
+    return plapoint::gpu::hasUsableCudaDevice();
 }
 
 #define SKIP_IF_NO_GPU() \
@@ -72,16 +71,10 @@ TEST(KdTreeGpuTest, BatchKnnDevice)
     using Scalar = float;
     int M = 10, N = 50, K = 3;
 
-    // Allocate device memory
-    Scalar* d_queries = nullptr;
-    Scalar* d_data    = nullptr;
-    int*    d_indices = nullptr;
-    Scalar* d_dists   = nullptr;
-
-    ASSERT_EQ(cudaMalloc(&d_queries, M * 3 * sizeof(Scalar)), cudaSuccess);
-    ASSERT_EQ(cudaMalloc(&d_data,    N * 3 * sizeof(Scalar)), cudaSuccess);
-    ASSERT_EQ(cudaMalloc(&d_indices, M * K * sizeof(int)),    cudaSuccess);
-    ASSERT_EQ(cudaMalloc(&d_dists,   M * K * sizeof(Scalar)), cudaSuccess);
+    plapoint::gpu::DeviceBuffer<Scalar> d_queries(static_cast<std::size_t>(M * 3));
+    plapoint::gpu::DeviceBuffer<Scalar> d_data(static_cast<std::size_t>(N * 3));
+    plapoint::gpu::DeviceBuffer<int> d_indices(static_cast<std::size_t>(M * K));
+    plapoint::gpu::DeviceBuffer<Scalar> d_dists(static_cast<std::size_t>(M * K));
 
     // Fill with known data
     std::vector<Scalar> h_queries(static_cast<std::size_t>(M * 3));
@@ -99,25 +92,20 @@ TEST(KdTreeGpuTest, BatchKnnDevice)
         h_data[static_cast<std::size_t>(i * 3 + 2)] = 0;
     }
 
-    cudaMemcpy(d_queries, h_queries.data(), M * 3 * sizeof(Scalar), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_data,    h_data.data(),    N * 3 * sizeof(Scalar), cudaMemcpyHostToDevice);
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(d_queries.get(), h_queries.data(), M * 3 * sizeof(Scalar), cudaMemcpyHostToDevice));
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(d_data.get(),    h_data.data(),    N * 3 * sizeof(Scalar), cudaMemcpyHostToDevice));
 
     EXPECT_NO_THROW(plapoint::gpu::batchKnnDevice(
-        d_queries, M, d_data, N, K, d_indices, d_dists));
+        d_queries.get(), M, d_data.get(), N, K, d_indices.get(), d_dists.get()));
 
     // Copy results back
     std::vector<int>    h_indices(static_cast<std::size_t>(M * K));
     std::vector<Scalar> h_dists(static_cast<std::size_t>(M * K));
-    cudaMemcpy(h_indices.data(), d_indices, M * K * sizeof(int),    cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_dists.data(),   d_dists,   M * K * sizeof(Scalar), cudaMemcpyDeviceToHost);
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(h_indices.data(), d_indices.get(), M * K * sizeof(int),    cudaMemcpyDeviceToHost));
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(h_dists.data(),   d_dists.get(),   M * K * sizeof(Scalar), cudaMemcpyDeviceToHost));
 
     // First query at 0 should find data[0] = 0
     EXPECT_EQ(h_indices[0], 0);
-
-    cudaFree(d_queries);
-    cudaFree(d_data);
-    cudaFree(d_indices);
-    cudaFree(d_dists);
 }
 
 // ---- KdTree batchNearestKSearch with GPU-resident data ----
@@ -259,6 +247,24 @@ TEST(KdTreeGpuTest, BatchKnnMultipleKValues)
         EXPECT_EQ(indices.size(), static_cast<std::size_t>(M * K));
         EXPECT_EQ(dists.size(), static_cast<std::size_t>(M * K));
     }
+}
+
+TEST(KdTreeGpuTest, RejectsUnsupportedK)
+{
+    using Scalar = float;
+    const int M = 1;
+    const int N = 4;
+    std::vector<Scalar> queries(static_cast<std::size_t>(M * 3), 0);
+    std::vector<Scalar> data(static_cast<std::size_t>(N * 3), 0);
+    std::vector<int> indices;
+    std::vector<Scalar> dists;
+
+    EXPECT_THROW(
+        plapoint::gpu::batchKnn(queries.data(), M, data.data(), N, 33, indices, dists),
+        std::invalid_argument);
+    EXPECT_THROW(
+        plapoint::gpu::batchKnn(queries.data(), M, data.data(), N, 5, indices, dists),
+        std::invalid_argument);
 }
 
 // ---- Verification: closest point to itself is distance 0 ----

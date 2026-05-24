@@ -1,4 +1,10 @@
 @PACKAGE_INIT@
 
+include(CMakeFindDependencyMacro)
+find_dependency(plamatrix CONFIG)
+if(@PLAPOINT_WITH_CUDA@)
+    find_dependency(CUDAToolkit)
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/plapointTargets.cmake")
 check_required_components(plapoint)

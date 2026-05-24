@@ -8,7 +8,16 @@ project(plapoint
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-option(BUILD_TESTS "Build unit tests" OFF)
+set(_PLAPOINT_BUILD_TESTS_USER_DEFINED OFF)
+if(DEFINED PLAPOINT_BUILD_TESTS)
+    set(_PLAPOINT_BUILD_TESTS_USER_DEFINED ON)
+endif()
+option(PLAPOINT_BUILD_TESTS "Build PlaPoint unit tests" OFF)
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR
+        AND DEFINED BUILD_TESTS
+        AND NOT _PLAPOINT_BUILD_TESTS_USER_DEFINED)
+    set(PLAPOINT_BUILD_TESTS ${BUILD_TESTS} CACHE BOOL "Build PlaPoint unit tests" FORCE)
+endif()
 option(PLAPOINT_WITH_CUDA "Build with CUDA GPU acceleration" ON)
 
 # Detect CUDA
@@ -17,8 +26,15 @@ if(PLAPOINT_WITH_CUDA AND CUDAToolkit_FOUND)
     enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-    set(PLAPOINT_CUDA_ARCH "native" CACHE STRING "CUDA architecture target")
-    set(CMAKE_CUDA_ARCHITECTURES ${PLAPOINT_CUDA_ARCH})
+    if(NOT DEFINED PLAPOINT_CUDA_ARCHITECTURES)
+        if(DEFINED CMAKE_CUDA_ARCHITECTURES AND CMAKE_CUDA_ARCHITECTURES)
+            set(PLAPOINT_CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}"
+                CACHE STRING "CUDA architectures for PlaPoint")
+        else()
+            set(PLAPOINT_CUDA_ARCHITECTURES "75;86;89"
+                CACHE STRING "CUDA architectures for PlaPoint")
+        endif()
+    endif()
 else()
     set(PLAPOINT_WITH_CUDA OFF)
 endif()
@@ -34,6 +50,12 @@ endif()
 # plapoint library (compiled, not header-only)
 add_library(plapoint)
 add_library(plapoint::plapoint ALIAS plapoint)
+
+if(PLAPOINT_WITH_CUDA)
+    set_target_properties(plapoint PROPERTIES
+        CUDA_ARCHITECTURES "${PLAPOINT_CUDA_ARCHITECTURES}"
+    )
+endif()
 
 target_include_directories(plapoint
     PUBLIC
@@ -54,7 +76,7 @@ endif()
 add_subdirectory(src)
 
 # Tests
-if(BUILD_TESTS)
+if(PLAPOINT_BUILD_TESTS)
     enable_testing()
     find_package(GTest REQUIRED)
     add_subdirectory(test)
@@ -80,10 +102,20 @@ configure_package_config_file(
     ${CMAKE_CURRENT_BINARY_DIR}/plapointConfig.cmake
     INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/plapoint
 )
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/plapointConfig.cmake
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/plapointConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/plapointConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/plapointConfigVersion.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/plapoint
 )
 
 message(STATUS "PlaPoint Configuration:")
 message(STATUS "  CUDA support: ${PLAPOINT_WITH_CUDA}")
-message(STATUS "  Build tests:  ${BUILD_TESTS}")
+if(PLAPOINT_WITH_CUDA)
+    message(STATUS "  CUDA arch:    ${PLAPOINT_CUDA_ARCHITECTURES}")
+endif()
+message(STATUS "  Build tests:  ${PLAPOINT_BUILD_TESTS}")

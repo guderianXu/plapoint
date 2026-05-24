@@ -66,11 +66,15 @@ struct BinData
 
 static std::string refPath(const std::string& name)
 {
+#ifdef PLAPOINT_TEST_REFERENCE_DIR
+    return std::string(PLAPOINT_TEST_REFERENCE_DIR) + "/" + name;
+#else
     // Try relative from repo root first, then from build directory
     std::string path = "test/validation/reference_data/" + name;
     std::ifstream test(path);
     if (test.good()) return path;
     return "../" + path;
+#endif
 }
 
 // ---- KdTree KNN Cross-Validation ----

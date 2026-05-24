@@ -1,6 +1,7 @@
 #pragma once
 
 #include <plapoint/core/point_cloud.h>
+#include <plapoint/gpu/cuda_check.h>
 #include <plapoint/gpu/knn.h>
 #include <plamatrix/ops/point_cloud.h>
 
@@ -103,6 +104,10 @@ public:
     {
         int M = static_cast<int>(queries.rows());
         std::vector<std::vector<int>> results(static_cast<std::size_t>(M));
+        if (M <= 0 || k <= 0)
+        {
+            return results;
+        }
 
         if constexpr (Dev == plamatrix::Device::CPU)
         {
@@ -114,18 +119,27 @@ public:
         }
         else
         {
+#ifndef PLAPOINT_WITH_CUDA
+            throw std::runtime_error("PlaPoint was built without CUDA support");
+#else
             int N = static_cast<int>(_cloud->size());
+            if (N <= 0)
+            {
+                return results;
+            }
+            if (k > 32)
+            {
+                throw std::invalid_argument("GPU KNN supports k in [1, 32]");
+            }
+            if (k > N)
+            {
+                throw std::invalid_argument("GPU KNN requires k <= point count");
+            }
+            const int K_use = k;
 
-            // Kernel uses internal K (1,4,8,16,32); allocate for rounded-up size
-            const int K_alloc = (k <= 1) ? 1 : (k <= 4) ? 4 : (k <= 8) ? 8 : (k <= 16) ? 16 : 32;
-
-            Scalar* d_queries = nullptr;
-            int*    d_indices = nullptr;
-            Scalar* d_dists   = nullptr;
-
-            cudaMalloc(&d_queries, M * 3 * sizeof(Scalar));
-            cudaMalloc(&d_indices, M * K_alloc * sizeof(int));
-            cudaMalloc(&d_dists,   M * K_alloc * sizeof(Scalar));
+            gpu::DeviceBuffer<Scalar> d_queries(static_cast<std::size_t>(M * 3));
+            gpu::DeviceBuffer<int> d_indices(static_cast<std::size_t>(M * K_use));
+            gpu::DeviceBuffer<Scalar> d_dists(static_cast<std::size_t>(M * K_use));
 
             // Copy host queries to GPU
             std::vector<Scalar> h_queries(static_cast<std::size_t>(M * 3));
@@ -135,16 +149,15 @@ public:
                 h_queries[static_cast<std::size_t>(i * 3 + 1)] = queries(i, 1);
                 h_queries[static_cast<std::size_t>(i * 3 + 2)] = queries(i, 2);
             }
-            cudaMemcpy(d_queries, h_queries.data(), M * 3 * sizeof(Scalar), cudaMemcpyHostToDevice);
+            PLAPOINT_CHECK_CUDA(cudaMemcpy(d_queries.get(), h_queries.data(), M * 3 * sizeof(Scalar), cudaMemcpyHostToDevice));
 
             // Copy GPU column-major data to row-major temp buffer for kernel compatibility
-            Scalar* d_rowmajor = nullptr;
-            cudaMalloc(&d_rowmajor, N * 3 * sizeof(Scalar));
+            gpu::DeviceBuffer<Scalar> d_rowmajor(static_cast<std::size_t>(N * 3));
             // Reorder: DenseMatrix is col-major [x0..xN-1, y0..yN-1, z0..zN-1] → row-major [x0,y0,z0, ..., xN-1,yN-1,zN-1]
             // Each component is separated by N in col-major; interleave them row-major
             {
                 std::vector<Scalar> h_col(N * 3);
-                cudaMemcpy(h_col.data(), _cloud->points().data(), N * 3 * sizeof(Scalar), cudaMemcpyDeviceToHost);
+                PLAPOINT_CHECK_CUDA(cudaMemcpy(h_col.data(), _cloud->points().data(), N * 3 * sizeof(Scalar), cudaMemcpyDeviceToHost));
                 std::vector<Scalar> h_row(N * 3);
                 for (int i = 0; i < N; ++i)
                 {
@@ -152,35 +165,23 @@ public:
                     h_row[static_cast<std::size_t>(i * 3 + 1)] = h_col[static_cast<std::size_t>(N + i)];
                     h_row[static_cast<std::size_t>(i * 3 + 2)] = h_col[static_cast<std::size_t>(2 * N + i)];
                 }
-                cudaMemcpy(d_rowmajor, h_row.data(), N * 3 * sizeof(Scalar), cudaMemcpyHostToDevice);
+                PLAPOINT_CHECK_CUDA(cudaMemcpy(d_rowmajor.get(), h_row.data(), N * 3 * sizeof(Scalar), cudaMemcpyHostToDevice));
             }
-            gpu::batchKnnDevice(d_queries, M, d_rowmajor, N, k, d_indices, d_dists);
-            cudaFree(d_rowmajor);
+            gpu::batchKnnDevice(d_queries.get(), M, d_rowmajor.get(), N, K_use, d_indices.get(), d_dists.get());
 
-            // Copy results back to host (kernel wrote K_alloc values, we only need k)
-            std::vector<int>    flat_idx(static_cast<std::size_t>(M * k));
-            std::vector<Scalar> flat_dst(static_cast<std::size_t>(M * k));
-            std::vector<int>    tmp_idx(static_cast<std::size_t>(M * K_alloc));
-            std::vector<Scalar> tmp_dst(static_cast<std::size_t>(M * K_alloc));
-            cudaMemcpy(tmp_idx.data(), d_indices, M * K_alloc * sizeof(int),    cudaMemcpyDeviceToHost);
-            cudaMemcpy(tmp_dst.data(),  d_dists,   M * K_alloc * sizeof(Scalar), cudaMemcpyDeviceToHost);
-
-            for (int i = 0; i < M; ++i)
-                for (int j = 0; j < k; ++j)
-                {
-                    flat_idx[static_cast<std::size_t>(i * k + j)] = tmp_idx[static_cast<std::size_t>(i * K_alloc + j)];
-                    flat_dst[static_cast<std::size_t>(i * k + j)] = tmp_dst[static_cast<std::size_t>(i * K_alloc + j)];
-                }
-
-            cudaFree(d_queries); cudaFree(d_indices); cudaFree(d_dists);
+            std::vector<int>    flat_idx(static_cast<std::size_t>(M * K_use));
+            std::vector<Scalar> flat_dst(static_cast<std::size_t>(M * K_use));
+            PLAPOINT_CHECK_CUDA(cudaMemcpy(flat_idx.data(), d_indices.get(), M * K_use * sizeof(int),    cudaMemcpyDeviceToHost));
+            PLAPOINT_CHECK_CUDA(cudaMemcpy(flat_dst.data(),  d_dists.get(),   M * K_use * sizeof(Scalar), cudaMemcpyDeviceToHost));
 
             for (int i = 0; i < M; ++i)
             {
-                results[static_cast<std::size_t>(i)].resize(static_cast<std::size_t>(k));
-                for (int j = 0; j < k; ++j)
+                results[static_cast<std::size_t>(i)].resize(static_cast<std::size_t>(K_use));
+                for (int j = 0; j < K_use; ++j)
                     results[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] =
-                        flat_idx[static_cast<std::size_t>(i * k + j)];
+                        flat_idx[static_cast<std::size_t>(i * K_use + j)];
             }
+#endif
         }
 
         return results;
