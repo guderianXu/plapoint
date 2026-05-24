@@ -63,3 +63,37 @@ TEST_F(KdTreeTest, RadiusSearch)
     // Should find points 0,1,2 within radius 2 of origin
     ASSERT_EQ(results.size(), 3u);
 }
+
+TEST_F(KdTreeTest, RadiusSearchRejectsNegativeRadius)
+{
+    KdTree tree;
+    tree.setInputCloud(cloud);
+    tree.build();
+
+    plamatrix::Vec3<Scalar> query{0, 0, 0};
+    EXPECT_THROW(tree.radiusSearch(query, Scalar(-1)), std::invalid_argument);
+}
+
+TEST_F(KdTreeTest, BatchNearestKSearchRejectsNon3ColumnQueries)
+{
+    KdTree tree;
+    tree.setInputCloud(cloud);
+    tree.build();
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(1, 2);
+    queries(0, 0) = Scalar(0);
+    queries(0, 1) = Scalar(0);
+
+    EXPECT_THROW(tree.batchNearestKSearch(queries, 1), std::invalid_argument);
+}
+
+TEST_F(KdTreeTest, BatchNearestKSearchWithoutInputReturnsEmptyRows)
+{
+    KdTree tree;
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(2, 3);
+
+    auto results = tree.batchNearestKSearch(queries, 2);
+    ASSERT_EQ(results.size(), 2u);
+    EXPECT_TRUE(results[0].empty());
+    EXPECT_TRUE(results[1].empty());
+}

@@ -88,6 +88,10 @@ public:
     std::vector<int> radiusSearch(const plamatrix::Vec3<Scalar>& query, Scalar radius) const
     {
         std::vector<int> result;
+        if (radius < Scalar(0))
+        {
+            throw std::invalid_argument("KdTree: radius must be non-negative");
+        }
         if (_nodes.empty()) return result;
         radiusSearchRecursive(query, radius * radius, 0, result);
         return result;
@@ -102,9 +106,17 @@ public:
     std::vector<std::vector<int>> batchNearestKSearch(
         const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& queries, int k) const
     {
+        if (queries.cols() != 3)
+        {
+            throw std::invalid_argument("KdTree: queries must be an Mx3 matrix");
+        }
         int M = static_cast<int>(queries.rows());
         std::vector<std::vector<int>> results(static_cast<std::size_t>(M));
         if (M <= 0 || k <= 0)
+        {
+            return results;
+        }
+        if (!_cloud || _cloud->size() == 0)
         {
             return results;
         }
