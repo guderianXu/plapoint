@@ -3,6 +3,7 @@
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/dense/dense_matrix.h>
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <memory>
@@ -37,6 +38,63 @@ enum class PlyFormat { ASCII, BinaryLE, BinaryBE };
 
 namespace detail {
 
+struct PlyScalarProperty
+{
+    std::string type;
+    std::string name;
+};
+
+template <typename T>
+T readBinaryValue(std::istream& stream, bool swapBytes)
+{
+    T value{};
+    stream.read(reinterpret_cast<char*>(&value), sizeof(T));
+    if (swapBytes && sizeof(T) > 1)
+    {
+        swapEndian(value);
+    }
+    return value;
+}
+
+inline double readBinaryScalar(std::istream& stream,
+                               const std::string& type,
+                               bool swapBytes)
+{
+    if (type == "char" || type == "int8")
+    {
+        return static_cast<double>(readBinaryValue<std::int8_t>(stream, false));
+    }
+    if (type == "uchar" || type == "uint8" || type == "unsigned_char")
+    {
+        return static_cast<double>(readBinaryValue<std::uint8_t>(stream, false));
+    }
+    if (type == "short" || type == "int16")
+    {
+        return static_cast<double>(readBinaryValue<std::int16_t>(stream, swapBytes));
+    }
+    if (type == "ushort" || type == "uint16" || type == "unsigned_short")
+    {
+        return static_cast<double>(readBinaryValue<std::uint16_t>(stream, swapBytes));
+    }
+    if (type == "int" || type == "int32")
+    {
+        return static_cast<double>(readBinaryValue<std::int32_t>(stream, swapBytes));
+    }
+    if (type == "uint" || type == "uint32" || type == "unsigned_int")
+    {
+        return static_cast<double>(readBinaryValue<std::uint32_t>(stream, swapBytes));
+    }
+    if (type == "float" || type == "float32")
+    {
+        return static_cast<double>(readBinaryValue<float>(stream, swapBytes));
+    }
+    if (type == "double" || type == "float64")
+    {
+        return readBinaryValue<double>(stream, swapBytes);
+    }
+    throw std::runtime_error("Unsupported PLY vertex property type: " + type);
+}
+
 template <typename Scalar>
 std::shared_ptr<PointCloud<Scalar, plamatrix::Device::CPU>>
 readPlyImpl(const std::string& path,
@@ -57,7 +115,8 @@ readPlyImpl(const std::string& path,
     else if (line.find("binary_big_endian") != std::string::npos) fmt = PlyFormat::BinaryBE;
 
     int n_verts = 0;
-    std::vector<std::string> props;
+    std::string currentElement;
+    std::vector<PlyScalarProperty> props;
     bool has_nx = false, has_ny = false, has_nz = false;
     std::array<double, 3> pointOffset = {0.0, 0.0, 0.0};
     bool hasPointOffset = false;
@@ -73,7 +132,13 @@ readPlyImpl(const std::string& path,
         if (token == "element")
         {
             std::string elem;
-            iss >> elem >> n_verts;
+            int count = 0;
+            iss >> elem >> count;
+            currentElement = elem;
+            if (elem == "vertex")
+            {
+                n_verts = count;
+            }
         }
         else if (token == "comment")
         {
@@ -91,7 +156,15 @@ readPlyImpl(const std::string& path,
         {
             std::string type, name;
             iss >> type >> name;
-            props.push_back(name);
+            if (currentElement != "vertex")
+            {
+                continue;
+            }
+            if (type == "list")
+            {
+                throw std::runtime_error("Unsupported PLY list property on vertex element: " + line);
+            }
+            props.push_back({type, name});
             if (name == "nx") has_nx = true;
             if (name == "ny") has_ny = true;
             if (name == "nz") has_nz = true;
@@ -117,10 +190,11 @@ readPlyImpl(const std::string& path,
             std::getline(f, line);
             if (!line.empty() && line.back() == '\r') line.pop_back();
             std::istringstream iss(line);
-            for (const auto& p : props)
+            for (const auto& prop : props)
             {
                 double val = 0.0;
                 iss >> val;
+                const auto& p = prop.name;
                 if (p == "x")      pts(i, 0) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[0] : 0.0));
                 else if (p == "y") pts(i, 1) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[1] : 0.0));
                 else if (p == "z") pts(i, 2) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[2] : 0.0));
@@ -135,12 +209,10 @@ readPlyImpl(const std::string& path,
         bool swap_bytes = (fmt == PlyFormat::BinaryBE) == detail::isLittleEndian();
         for (int i = 0; i < n_verts; ++i)
         {
-            for (const auto& p : props)
+            for (const auto& prop : props)
             {
-                float v = 0; // PLY binary properties are always float32
-                f.read(reinterpret_cast<char*>(&v), sizeof(float));
-                if (swap_bytes) detail::swapEndian(v);
-                const double val = static_cast<double>(v);
+                const double val = readBinaryScalar(f, prop.type, swap_bytes);
+                const auto& p = prop.name;
                 if (p == "x")      pts(i, 0) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[0] : 0.0));
                 else if (p == "y") pts(i, 1) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[1] : 0.0));
                 else if (p == "z") pts(i, 2) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[2] : 0.0));

@@ -250,3 +250,79 @@ TEST(PlyIOTest, ReadsBinaryPointOffsetAsLocalCoordinatesWhenRequested)
     writeAndRead("/tmp/plapoint_test_local_binary_le_point_offset.ply", false);
     writeAndRead("/tmp/plapoint_test_local_binary_be_point_offset.ply", true);
 }
+
+TEST(PlyIOTest, FaceElementDoesNotOverrideVertexCount)
+{
+    using Scalar = float;
+
+    std::string path = "/tmp/plapoint_test_face_element_vertex_count.ply";
+    {
+        std::ofstream f(path);
+        f << "ply\n"
+          << "format ascii 1.0\n"
+          << "element vertex 3\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "element face 1\n"
+          << "property list uchar int vertex_indices\n"
+          << "end_header\n"
+          << "1.0 2.0 3.0\n"
+          << "4.0 5.0 6.0\n"
+          << "7.0 8.0 9.0\n"
+          << "3 0 1 2\n";
+    }
+
+    auto cloud = plapoint::io::readPly<Scalar>(path);
+    ASSERT_EQ(cloud->size(), 3u);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(2, 2), 9.0f);
+
+    std::remove(path.c_str());
+}
+
+TEST(PlyIOTest, ReadsBinaryVertexPropertiesWithUcharColors)
+{
+    using Scalar = float;
+
+    std::string path = "/tmp/plapoint_test_binary_uchar_colors.ply";
+    {
+        std::ofstream f(path, std::ios::binary);
+        f << "ply\n"
+          << "format binary_little_endian 1.0\n"
+          << "comment POINT_OFFSET 1000.0 -2000.0 3000.0\n"
+          << "element vertex 2\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "property uchar red\n"
+          << "property uchar green\n"
+          << "property uchar blue\n"
+          << "element face 1\n"
+          << "property list uchar int vertex_indices\n"
+          << "end_header\n";
+        const float p0[3] = {1.0f, 2.0f, 3.0f};
+        const unsigned char c0[3] = {10, 20, 30};
+        const float p1[3] = {4.0f, 5.0f, 6.0f};
+        const unsigned char c1[3] = {40, 50, 60};
+        f.write(reinterpret_cast<const char*>(p0), sizeof(p0));
+        f.write(reinterpret_cast<const char*>(c0), sizeof(c0));
+        f.write(reinterpret_cast<const char*>(p1), sizeof(p1));
+        f.write(reinterpret_cast<const char*>(c1), sizeof(c1));
+        const unsigned char faceCount = 3;
+        const int indices[3] = {0, 1, 2};
+        f.write(reinterpret_cast<const char*>(&faceCount), sizeof(faceCount));
+        f.write(reinterpret_cast<const char*>(indices), sizeof(indices));
+    }
+
+    auto cloud = plapoint::io::readPly<Scalar>(path);
+    ASSERT_EQ(cloud->size(), 2u);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1001.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), -1998.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 2), 3003.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 0), 1004.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 1), -1995.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 3006.0f);
+
+    std::remove(path.c_str());
+}
