@@ -24,6 +24,27 @@ void writeBigEndianFloat(std::ofstream& f, float value)
     f.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
 }
 
+void writeBigEndianUint16(std::ofstream& f, std::uint16_t value)
+{
+    const unsigned char bytes[2] = {
+        static_cast<unsigned char>((value >> 8) & 0xff),
+        static_cast<unsigned char>(value & 0xff),
+    };
+    f.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+}
+
+void writeBigEndianInt32(std::ofstream& f, std::int32_t value)
+{
+    const auto bits = static_cast<std::uint32_t>(value);
+    const unsigned char bytes[4] = {
+        static_cast<unsigned char>((bits >> 24) & 0xff),
+        static_cast<unsigned char>((bits >> 16) & 0xff),
+        static_cast<unsigned char>((bits >> 8) & 0xff),
+        static_cast<unsigned char>(bits & 0xff),
+    };
+    f.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+}
+
 } // namespace
 
 TEST(PlyIOTest, RoundtripASCII)
@@ -323,6 +344,108 @@ TEST(PlyIOTest, ReadsBinaryVertexPropertiesWithUcharColors)
     EXPECT_FLOAT_EQ(cloud->points().getValue(1, 0), 1004.0f);
     EXPECT_FLOAT_EQ(cloud->points().getValue(1, 1), -1995.0f);
     EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 3006.0f);
+
+    std::remove(path.c_str());
+}
+
+TEST(PlyIOTest, ReadsAsciiWhenFaceElementPrecedesVertexElement)
+{
+    using Scalar = float;
+
+    std::string path = "/tmp/plapoint_test_face_before_vertex_ascii.ply";
+    {
+        std::ofstream f(path);
+        f << "ply\n"
+          << "format ascii 1.0\n"
+          << "element face 1\n"
+          << "property list uchar int vertex_indices\n"
+          << "element vertex 2\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "end_header\n"
+          << "3 0 1 0\n"
+          << "1.0 2.0 3.0\n"
+          << "4.0 5.0 6.0\n";
+    }
+
+    auto cloud = plapoint::io::readPly<Scalar>(path);
+    ASSERT_EQ(cloud->size(), 2u);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), 2.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 6.0f);
+
+    std::remove(path.c_str());
+}
+
+TEST(PlyIOTest, ReadsBinaryWhenFaceElementPrecedesVertexElement)
+{
+    using Scalar = float;
+
+    std::string path = "/tmp/plapoint_test_face_before_vertex_binary.ply";
+    {
+        std::ofstream f(path, std::ios::binary);
+        f << "ply\n"
+          << "format binary_little_endian 1.0\n"
+          << "comment POINT_OFFSET 100.0 -200.0 300.0\n"
+          << "element face 1\n"
+          << "property list uchar int vertex_indices\n"
+          << "element vertex 2\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "end_header\n";
+        const unsigned char faceCount = 3;
+        const int indices[3] = {0, 1, 0};
+        const float p0[3] = {1.0f, 2.0f, 3.0f};
+        const float p1[3] = {4.0f, 5.0f, 6.0f};
+        f.write(reinterpret_cast<const char*>(&faceCount), sizeof(faceCount));
+        f.write(reinterpret_cast<const char*>(indices), sizeof(indices));
+        f.write(reinterpret_cast<const char*>(p0), sizeof(p0));
+        f.write(reinterpret_cast<const char*>(p1), sizeof(p1));
+    }
+
+    auto cloud = plapoint::io::readPly<Scalar>(path);
+    ASSERT_EQ(cloud->size(), 2u);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 101.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), -198.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 306.0f);
+
+    std::remove(path.c_str());
+}
+
+TEST(PlyIOTest, ReadsBigEndianBinaryWhenFaceElementPrecedesVertexElement)
+{
+    using Scalar = float;
+
+    std::string path = "/tmp/plapoint_test_face_before_vertex_binary_be.ply";
+    {
+        std::ofstream f(path, std::ios::binary);
+        f << "ply\n"
+          << "format binary_big_endian 1.0\n"
+          << "comment POINT_OFFSET 100.0 -200.0 300.0\n"
+          << "element face 1\n"
+          << "property list ushort int vertex_indices\n"
+          << "element vertex 2\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "end_header\n";
+        writeBigEndianUint16(f, 3);
+        writeBigEndianInt32(f, 0);
+        writeBigEndianInt32(f, 1);
+        writeBigEndianInt32(f, 0);
+        for (float value : {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f})
+        {
+            writeBigEndianFloat(f, value);
+        }
+    }
+
+    auto cloud = plapoint::io::readPly<Scalar>(path);
+    ASSERT_EQ(cloud->size(), 2u);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 101.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), -198.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 306.0f);
 
     std::remove(path.c_str());
 }

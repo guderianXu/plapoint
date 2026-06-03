@@ -40,8 +40,17 @@ namespace detail {
 
 struct PlyScalarProperty
 {
+    bool isList = false;
+    std::string countType;
     std::string type;
     std::string name;
+};
+
+struct PlyElement
+{
+    std::string name;
+    int count = 0;
+    std::vector<PlyScalarProperty> properties;
 };
 
 template <typename T>
@@ -95,6 +104,40 @@ inline double readBinaryScalar(std::istream& stream,
     throw std::runtime_error("Unsupported PLY vertex property type: " + type);
 }
 
+inline std::size_t readBinaryListCount(std::istream& stream,
+                                       const std::string& type,
+                                       bool swapBytes)
+{
+    const double count = readBinaryScalar(stream, type, swapBytes);
+    if (count < 0.0)
+    {
+        throw std::runtime_error("PLY list property has a negative item count");
+    }
+    return static_cast<std::size_t>(count);
+}
+
+inline void skipAsciiList(std::istream& stream)
+{
+    int count = 0;
+    stream >> count;
+    for (int i = 0; i < count; ++i)
+    {
+        std::string ignored;
+        stream >> ignored;
+    }
+}
+
+inline void skipBinaryList(std::istream& stream,
+                           const PlyScalarProperty& prop,
+                           bool swapBytes)
+{
+    const std::size_t count = readBinaryListCount(stream, prop.countType, swapBytes);
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        (void)readBinaryScalar(stream, prop.type, swapBytes);
+    }
+}
+
 template <typename Scalar>
 std::shared_ptr<PointCloud<Scalar, plamatrix::Device::CPU>>
 readPlyImpl(const std::string& path,
@@ -115,8 +158,8 @@ readPlyImpl(const std::string& path,
     else if (line.find("binary_big_endian") != std::string::npos) fmt = PlyFormat::BinaryBE;
 
     int n_verts = 0;
-    std::string currentElement;
-    std::vector<PlyScalarProperty> props;
+    std::vector<PlyElement> elements;
+    PlyElement* currentElement = nullptr;
     bool has_nx = false, has_ny = false, has_nz = false;
     std::array<double, 3> pointOffset = {0.0, 0.0, 0.0};
     bool hasPointOffset = false;
@@ -134,7 +177,8 @@ readPlyImpl(const std::string& path,
             std::string elem;
             int count = 0;
             iss >> elem >> count;
-            currentElement = elem;
+            elements.push_back({elem, count, {}});
+            currentElement = &elements.back();
             if (elem == "vertex")
             {
                 n_verts = count;
@@ -154,20 +198,27 @@ readPlyImpl(const std::string& path,
         }
         else if (token == "property")
         {
-            std::string type, name;
-            iss >> type >> name;
-            if (currentElement != "vertex")
+            if (!currentElement)
             {
                 continue;
             }
+            std::string type, name;
+            iss >> type >> name;
             if (type == "list")
             {
-                throw std::runtime_error("Unsupported PLY list property on vertex element: " + line);
+                std::string itemType, listName;
+                iss >> itemType >> listName;
+                const std::string countType = name;
+                currentElement->properties.push_back({true, countType, itemType, listName});
+                continue;
             }
-            props.push_back({type, name});
-            if (name == "nx") has_nx = true;
-            if (name == "ny") has_ny = true;
-            if (name == "nz") has_nz = true;
+            currentElement->properties.push_back({false, {}, type, name});
+            if (currentElement->name == "vertex")
+            {
+                if (name == "nx") has_nx = true;
+                if (name == "ny") has_ny = true;
+                if (name == "nz") has_nz = true;
+            }
         }
     }
     if (pointOffsetOut)
@@ -185,40 +236,71 @@ readPlyImpl(const std::string& path,
 
     if (fmt == PlyFormat::ASCII)
     {
-        for (int i = 0; i < n_verts; ++i)
+        int vertexIndex = 0;
+        for (const PlyElement& element : elements)
         {
-            std::getline(f, line);
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            std::istringstream iss(line);
-            for (const auto& prop : props)
+            for (int i = 0; i < element.count; ++i)
             {
-                double val = 0.0;
-                iss >> val;
-                const auto& p = prop.name;
-                if (p == "x")      pts(i, 0) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[0] : 0.0));
-                else if (p == "y") pts(i, 1) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[1] : 0.0));
-                else if (p == "z") pts(i, 2) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[2] : 0.0));
-                else if (p == "nx") nrm(i, 0) = static_cast<Scalar>(val);
-                else if (p == "ny") nrm(i, 1) = static_cast<Scalar>(val);
-                else if (p == "nz") nrm(i, 2) = static_cast<Scalar>(val);
+                std::getline(f, line);
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (element.name != "vertex")
+                {
+                    continue;
+                }
+                std::istringstream iss(line);
+                for (const auto& prop : element.properties)
+                {
+                    if (prop.isList)
+                    {
+                        skipAsciiList(iss);
+                        continue;
+                    }
+                    double val = 0.0;
+                    iss >> val;
+                    const auto& p = prop.name;
+                    if (p == "x")      pts(vertexIndex, 0) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[0] : 0.0));
+                    else if (p == "y") pts(vertexIndex, 1) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[1] : 0.0));
+                    else if (p == "z") pts(vertexIndex, 2) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[2] : 0.0));
+                    else if (p == "nx") nrm(vertexIndex, 0) = static_cast<Scalar>(val);
+                    else if (p == "ny") nrm(vertexIndex, 1) = static_cast<Scalar>(val);
+                    else if (p == "nz") nrm(vertexIndex, 2) = static_cast<Scalar>(val);
+                }
+                ++vertexIndex;
             }
         }
     }
     else
     {
         bool swap_bytes = (fmt == PlyFormat::BinaryBE) == detail::isLittleEndian();
-        for (int i = 0; i < n_verts; ++i)
+        int vertexIndex = 0;
+        for (const PlyElement& element : elements)
         {
-            for (const auto& prop : props)
+            for (int i = 0; i < element.count; ++i)
             {
-                const double val = readBinaryScalar(f, prop.type, swap_bytes);
-                const auto& p = prop.name;
-                if (p == "x")      pts(i, 0) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[0] : 0.0));
-                else if (p == "y") pts(i, 1) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[1] : 0.0));
-                else if (p == "z") pts(i, 2) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[2] : 0.0));
-                else if (p == "nx") nrm(i, 0) = static_cast<Scalar>(val);
-                else if (p == "ny") nrm(i, 1) = static_cast<Scalar>(val);
-                else if (p == "nz") nrm(i, 2) = static_cast<Scalar>(val);
+                for (const auto& prop : element.properties)
+                {
+                    if (prop.isList)
+                    {
+                        skipBinaryList(f, prop, swap_bytes);
+                        continue;
+                    }
+                    const double val = readBinaryScalar(f, prop.type, swap_bytes);
+                    if (element.name != "vertex")
+                    {
+                        continue;
+                    }
+                    const auto& p = prop.name;
+                    if (p == "x")      pts(vertexIndex, 0) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[0] : 0.0));
+                    else if (p == "y") pts(vertexIndex, 1) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[1] : 0.0));
+                    else if (p == "z") pts(vertexIndex, 2) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[2] : 0.0));
+                    else if (p == "nx") nrm(vertexIndex, 0) = static_cast<Scalar>(val);
+                    else if (p == "ny") nrm(vertexIndex, 1) = static_cast<Scalar>(val);
+                    else if (p == "nz") nrm(vertexIndex, 2) = static_cast<Scalar>(val);
+                }
+                if (element.name == "vertex")
+                {
+                    ++vertexIndex;
+                }
             }
         }
     }
