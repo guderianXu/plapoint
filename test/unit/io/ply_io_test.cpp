@@ -162,3 +162,91 @@ TEST(PlyIOTest, ReadsBinaryBigEndianPointOffsetComment)
 
     std::remove(path.c_str());
 }
+
+TEST(PlyIOTest, ReadsPointOffsetAsLocalCoordinatesWhenRequested)
+{
+    using Scalar = float;
+
+    std::string path = "/tmp/plapoint_test_local_point_offset.ply";
+    {
+        std::ofstream f(path);
+        f << "ply\n"
+          << "format ascii 1.0\n"
+          << "comment POINT_OFFSET 100000000.0 -200000000.0 300000000.0\n"
+          << "element vertex 2\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "end_header\n";
+        f << "0.03125 0.0625 0.09375\n"
+          << "0.125 0.15625 0.1875\n";
+    }
+
+    std::array<double, 3> offset = {0.0, 0.0, 0.0};
+    bool hasOffset = false;
+    auto cloud = plapoint::io::readPlyLocal<Scalar>(path, &offset, &hasOffset);
+    EXPECT_EQ(cloud->size(), 2u);
+    EXPECT_TRUE(hasOffset);
+    EXPECT_DOUBLE_EQ(offset[0], 100000000.0);
+    EXPECT_DOUBLE_EQ(offset[1], -200000000.0);
+    EXPECT_DOUBLE_EQ(offset[2], 300000000.0);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 0.03125f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), 0.0625f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 2), 0.09375f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 0), 0.125f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 1), 0.15625f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 0.1875f);
+
+    std::remove(path.c_str());
+}
+
+TEST(PlyIOTest, ReadsBinaryPointOffsetAsLocalCoordinatesWhenRequested)
+{
+    using Scalar = float;
+
+    const auto writeAndRead = [](const std::string& path, bool bigEndian) {
+        {
+            std::ofstream f(path, std::ios::binary);
+            f << "ply\n"
+              << (bigEndian ? "format binary_big_endian 1.0\n"
+                            : "format binary_little_endian 1.0\n")
+              << "comment POINT_OFFSET 100000000.0 -200000000.0 300000000.0\n"
+              << "element vertex 2\n"
+              << "property float x\n"
+              << "property float y\n"
+              << "property float z\n"
+              << "end_header\n";
+            const float values[6] = {0.03125f, 0.0625f, 0.09375f, 0.125f, 0.15625f, 0.1875f};
+            for (float value : values)
+            {
+                if (bigEndian)
+                {
+                    writeBigEndianFloat(f, value);
+                }
+                else
+                {
+                    f.write(reinterpret_cast<const char*>(&value), sizeof(float));
+                }
+            }
+        }
+
+        std::array<double, 3> offset = {0.0, 0.0, 0.0};
+        bool hasOffset = false;
+        auto cloud = plapoint::io::readPlyLocal<Scalar>(path, &offset, &hasOffset);
+        EXPECT_EQ(cloud->size(), 2u);
+        EXPECT_TRUE(hasOffset);
+        EXPECT_DOUBLE_EQ(offset[0], 100000000.0);
+        EXPECT_DOUBLE_EQ(offset[1], -200000000.0);
+        EXPECT_DOUBLE_EQ(offset[2], 300000000.0);
+        EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 0.03125f);
+        EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), 0.0625f);
+        EXPECT_FLOAT_EQ(cloud->points().getValue(0, 2), 0.09375f);
+        EXPECT_FLOAT_EQ(cloud->points().getValue(1, 0), 0.125f);
+        EXPECT_FLOAT_EQ(cloud->points().getValue(1, 1), 0.15625f);
+        EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 0.1875f);
+        std::remove(path.c_str());
+    };
+
+    writeAndRead("/tmp/plapoint_test_local_binary_le_point_offset.ply", false);
+    writeAndRead("/tmp/plapoint_test_local_binary_be_point_offset.ply", true);
+}

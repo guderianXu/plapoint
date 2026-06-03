@@ -35,9 +35,14 @@ void swapEndian(T& val)
 
 enum class PlyFormat { ASCII, BinaryLE, BinaryBE };
 
+namespace detail {
+
 template <typename Scalar>
 std::shared_ptr<PointCloud<Scalar, plamatrix::Device::CPU>>
-readPly(const std::string& path)
+readPlyImpl(const std::string& path,
+            bool applyPointOffset,
+            std::array<double, 3>* pointOffsetOut,
+            bool* hasPointOffsetOut)
 {
     std::ifstream f(path, std::ios::binary);
     if (!f) throw std::runtime_error("Cannot open PLY file: " + path);
@@ -55,6 +60,7 @@ readPly(const std::string& path)
     std::vector<std::string> props;
     bool has_nx = false, has_ny = false, has_nz = false;
     std::array<double, 3> pointOffset = {0.0, 0.0, 0.0};
+    bool hasPointOffset = false;
 
     while (std::getline(f, line))
     {
@@ -75,7 +81,10 @@ readPly(const std::string& path)
             iss >> key;
             if (key == "POINT_OFFSET")
             {
-                iss >> pointOffset[0] >> pointOffset[1] >> pointOffset[2];
+                if (iss >> pointOffset[0] >> pointOffset[1] >> pointOffset[2])
+                {
+                    hasPointOffset = true;
+                }
             }
         }
         else if (token == "property")
@@ -87,6 +96,14 @@ readPly(const std::string& path)
             if (name == "ny") has_ny = true;
             if (name == "nz") has_nz = true;
         }
+    }
+    if (pointOffsetOut)
+    {
+        *pointOffsetOut = pointOffset;
+    }
+    if (hasPointOffsetOut)
+    {
+        *hasPointOffsetOut = hasPointOffset;
     }
 
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(n_verts, 3);
@@ -104,9 +121,9 @@ readPly(const std::string& path)
             {
                 double val = 0.0;
                 iss >> val;
-                if (p == "x")      pts(i, 0) = static_cast<Scalar>(val + pointOffset[0]);
-                else if (p == "y") pts(i, 1) = static_cast<Scalar>(val + pointOffset[1]);
-                else if (p == "z") pts(i, 2) = static_cast<Scalar>(val + pointOffset[2]);
+                if (p == "x")      pts(i, 0) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[0] : 0.0));
+                else if (p == "y") pts(i, 1) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[1] : 0.0));
+                else if (p == "z") pts(i, 2) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[2] : 0.0));
                 else if (p == "nx") nrm(i, 0) = static_cast<Scalar>(val);
                 else if (p == "ny") nrm(i, 1) = static_cast<Scalar>(val);
                 else if (p == "nz") nrm(i, 2) = static_cast<Scalar>(val);
@@ -124,9 +141,9 @@ readPly(const std::string& path)
                 f.read(reinterpret_cast<char*>(&v), sizeof(float));
                 if (swap_bytes) detail::swapEndian(v);
                 const double val = static_cast<double>(v);
-                if (p == "x")      pts(i, 0) = static_cast<Scalar>(val + pointOffset[0]);
-                else if (p == "y") pts(i, 1) = static_cast<Scalar>(val + pointOffset[1]);
-                else if (p == "z") pts(i, 2) = static_cast<Scalar>(val + pointOffset[2]);
+                if (p == "x")      pts(i, 0) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[0] : 0.0));
+                else if (p == "y") pts(i, 1) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[1] : 0.0));
+                else if (p == "z") pts(i, 2) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[2] : 0.0));
                 else if (p == "nx") nrm(i, 0) = static_cast<Scalar>(val);
                 else if (p == "ny") nrm(i, 1) = static_cast<Scalar>(val);
                 else if (p == "nz") nrm(i, 2) = static_cast<Scalar>(val);
@@ -137,6 +154,26 @@ readPly(const std::string& path)
     auto cloud = std::make_shared<PointCloud<Scalar, plamatrix::Device::CPU>>(std::move(pts));
     if (have_normals) cloud->setNormals(std::move(nrm));
     return cloud;
+}
+
+} // namespace detail
+
+template <typename Scalar>
+std::shared_ptr<PointCloud<Scalar, plamatrix::Device::CPU>>
+readPly(const std::string& path)
+{
+    return detail::readPlyImpl<Scalar>(path, true, nullptr, nullptr);
+}
+
+// Reads vertex coordinates as stored in the PLY payload without applying
+// `comment POINT_OFFSET`; returns that offset separately when requested.
+template <typename Scalar>
+std::shared_ptr<PointCloud<Scalar, plamatrix::Device::CPU>>
+readPlyLocal(const std::string& path,
+             std::array<double, 3>* pointOffsetOut = nullptr,
+             bool* hasPointOffsetOut = nullptr)
+{
+    return detail::readPlyImpl<Scalar>(path, false, pointOffsetOut, hasPointOffsetOut);
 }
 
 template <typename Scalar>
