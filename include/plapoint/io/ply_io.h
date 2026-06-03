@@ -9,6 +9,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <array>
 #include <vector>
 
 namespace plapoint {
@@ -53,6 +54,7 @@ readPly(const std::string& path)
     int n_verts = 0;
     std::vector<std::string> props;
     bool has_nx = false, has_ny = false, has_nz = false;
+    std::array<double, 3> pointOffset = {0.0, 0.0, 0.0};
 
     while (std::getline(f, line))
     {
@@ -66,6 +68,15 @@ readPly(const std::string& path)
         {
             std::string elem;
             iss >> elem >> n_verts;
+        }
+        else if (token == "comment")
+        {
+            std::string key;
+            iss >> key;
+            if (key == "POINT_OFFSET")
+            {
+                iss >> pointOffset[0] >> pointOffset[1] >> pointOffset[2];
+            }
         }
         else if (token == "property")
         {
@@ -89,16 +100,16 @@ readPly(const std::string& path)
             std::getline(f, line);
             if (!line.empty() && line.back() == '\r') line.pop_back();
             std::istringstream iss(line);
-            Scalar val;
             for (const auto& p : props)
             {
+                double val = 0.0;
                 iss >> val;
-                if (p == "x")      pts(i, 0) = val;
-                else if (p == "y") pts(i, 1) = val;
-                else if (p == "z") pts(i, 2) = val;
-                else if (p == "nx") nrm(i, 0) = val;
-                else if (p == "ny") nrm(i, 1) = val;
-                else if (p == "nz") nrm(i, 2) = val;
+                if (p == "x")      pts(i, 0) = static_cast<Scalar>(val + pointOffset[0]);
+                else if (p == "y") pts(i, 1) = static_cast<Scalar>(val + pointOffset[1]);
+                else if (p == "z") pts(i, 2) = static_cast<Scalar>(val + pointOffset[2]);
+                else if (p == "nx") nrm(i, 0) = static_cast<Scalar>(val);
+                else if (p == "ny") nrm(i, 1) = static_cast<Scalar>(val);
+                else if (p == "nz") nrm(i, 2) = static_cast<Scalar>(val);
             }
         }
     }
@@ -112,13 +123,13 @@ readPly(const std::string& path)
                 float v = 0; // PLY binary properties are always float32
                 f.read(reinterpret_cast<char*>(&v), sizeof(float));
                 if (swap_bytes) detail::swapEndian(v);
-                Scalar val = static_cast<Scalar>(v);
-                if (p == "x")      pts(i, 0) = val;
-                else if (p == "y") pts(i, 1) = val;
-                else if (p == "z") pts(i, 2) = val;
-                else if (p == "nx") nrm(i, 0) = val;
-                else if (p == "ny") nrm(i, 1) = val;
-                else if (p == "nz") nrm(i, 2) = val;
+                const double val = static_cast<double>(v);
+                if (p == "x")      pts(i, 0) = static_cast<Scalar>(val + pointOffset[0]);
+                else if (p == "y") pts(i, 1) = static_cast<Scalar>(val + pointOffset[1]);
+                else if (p == "z") pts(i, 2) = static_cast<Scalar>(val + pointOffset[2]);
+                else if (p == "nx") nrm(i, 0) = static_cast<Scalar>(val);
+                else if (p == "ny") nrm(i, 1) = static_cast<Scalar>(val);
+                else if (p == "nz") nrm(i, 2) = static_cast<Scalar>(val);
             }
         }
     }
