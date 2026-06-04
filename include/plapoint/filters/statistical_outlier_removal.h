@@ -36,6 +36,13 @@ protected:
         }
 
         std::size_t n = this->_input->size();
+        if (n == 0)
+        {
+            plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(0, 3);
+            output = this->makeOutputCloud(std::move(pts));
+            return;
+        }
+
         std::vector<Scalar> mean_dists(n, 0);
 
         for (std::size_t i = 0; i < n; ++i)
@@ -86,7 +93,7 @@ protected:
             pts(static_cast<plamatrix::Index>(i), 1) = pointCoord(src, 1);
             pts(static_cast<plamatrix::Index>(i), 2) = pointCoord(src, 2);
         }
-        output = PointCloudType(std::move(pts));
+        output = this->makeOutputCloud(std::move(pts));
         this->copyNormalsForIndices(inliers, output);
     }
 

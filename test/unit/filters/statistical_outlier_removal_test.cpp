@@ -49,3 +49,22 @@ TEST(SORTest, ThrowsIfNoSearchMethod)
     Cloud output;
     EXPECT_THROW(sor.filter(output), std::runtime_error);
 }
+
+TEST(SORTest, EmptyInputReturnsEmptyOutput)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto cloud = std::make_shared<Cloud>(0);
+    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    tree->setInputCloud(cloud);
+    tree->build();
+
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::CPU> sor;
+    sor.setInputCloud(cloud);
+    sor.setSearchMethod(tree);
+
+    Cloud output;
+    ASSERT_NO_THROW(sor.filter(output));
+    EXPECT_EQ(output.size(), 0u);
+}

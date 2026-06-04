@@ -21,13 +21,30 @@ public:
 
     void setInputSource(const std::shared_ptr<const PointCloudType>& cloud) { _source = cloud; }
     void setInputTarget(const std::shared_ptr<const PointCloudType>& cloud) { _target = cloud; }
-    void setMaxIterations(int n) { _max_iter = n; }
-    void setTransformationEpsilon(Scalar eps) { _eps = eps; }
+    void setMaxIterations(int n)
+    {
+        if (n <= 0)
+        {
+            throw std::invalid_argument("ICP: max iterations must be positive");
+        }
+        _max_iter = n;
+    }
+
+    void setTransformationEpsilon(Scalar eps)
+    {
+        if (eps <= Scalar(0))
+        {
+            throw std::invalid_argument("ICP: transformation epsilon must be positive");
+        }
+        _eps = eps;
+    }
 
     void align(PointCloudType& output)
     {
         if (!_source) throw std::runtime_error("ICP: source cloud not set");
         if (!_target) throw std::runtime_error("ICP: target cloud not set");
+        if (_source->size() == 0) throw std::invalid_argument("ICP: source cloud must not be empty");
+        if (_target->size() == 0) throw std::invalid_argument("ICP: target cloud must not be empty");
 
         // Build KD-tree on target
         auto tree = std::make_shared<search::KdTree<Scalar, Dev>>();
@@ -150,7 +167,15 @@ public:
         }
 
         _final_T = std::move(T_acc);
-        output = PointCloudType(plamatrix::transformPoints(_final_T, src));
+        auto aligned = plamatrix::transformPoints(_final_T, src);
+        if constexpr (Dev == plamatrix::Device::CPU)
+        {
+            output = PointCloudType(std::move(aligned));
+        }
+        else
+        {
+            output = PointCloudType(aligned.toGpu());
+        }
     }
 
     const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& getFinalTransformation() const { return _final_T; }

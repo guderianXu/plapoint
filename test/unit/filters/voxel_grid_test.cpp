@@ -3,6 +3,15 @@
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
 
+#ifdef PLAPOINT_WITH_CUDA
+#include <plapoint/gpu/cuda_check.h>
+
+static bool hasCudaDeviceForVoxelGrid()
+{
+    return plapoint::gpu::hasUsableCudaDevice();
+}
+#endif
+
 TEST(VoxelGridTest, DownsamplesUniformGrid)
 {
     using Scalar = float;
@@ -57,3 +66,37 @@ TEST(VoxelGridTest, ThrowsOnZeroLeafSize)
     plapoint::VoxelGrid<float, plamatrix::Device::CPU> vg;
     EXPECT_THROW(vg.setLeafSize(0, 1, 1), std::invalid_argument);
 }
+
+#ifdef PLAPOINT_WITH_CUDA
+TEST(VoxelGridTest, GpuInputProducesGpuOutput)
+{
+    if (!hasCudaDeviceForVoxelGrid())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU voxel grid test";
+    }
+
+    using Scalar = float;
+    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(3, 3);
+    pts.setValue(0, 0, 0.0f); pts.setValue(0, 1, 0.0f); pts.setValue(0, 2, 0.0f);
+    pts.setValue(1, 0, 0.2f); pts.setValue(1, 1, 0.0f); pts.setValue(1, 2, 0.0f);
+    pts.setValue(2, 0, 2.0f); pts.setValue(2, 1, 0.0f); pts.setValue(2, 2, 0.0f);
+
+    CpuCloud cpu_cloud(std::move(pts));
+    auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
+
+    plapoint::VoxelGrid<Scalar, plamatrix::Device::GPU> vg;
+    vg.setInputCloud(gpu_cloud);
+    vg.setLeafSize(1.0f, 1.0f, 1.0f);
+
+    GpuCloud output;
+    vg.filter(output);
+    auto cpu_output = output.toCpu();
+
+    ASSERT_EQ(cpu_output.size(), 2u);
+    EXPECT_FLOAT_EQ(cpu_output.points().getValue(0, 0), 0.1f);
+    EXPECT_FLOAT_EQ(cpu_output.points().getValue(1, 0), 2.0f);
+}
+#endif

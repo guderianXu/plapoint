@@ -2,7 +2,9 @@
 
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/dense/dense_matrix.h>
+#include <cmath>
 #include <cstring>
+#include <cstdint>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
@@ -49,21 +51,23 @@ struct LasHeader
     double   max_z;
     double   min_z;
 };
-#pragma pack(pop)
 
-struct LasPoint
+struct LasPointFormat0
 {
     int32_t x, y, z;
     uint16_t intensity;
-    uint8_t  return_number : 3;
-    uint8_t  number_of_returns : 3;
-    uint8_t  scan_direction_flag : 1;
-    uint8_t  edge_of_flight_line : 1;
+    uint8_t  return_flags;
     uint8_t  classification;
     int8_t   scan_angle_rank;
     uint8_t  user_data;
     uint16_t point_source_id;
 };
+#pragma pack(pop)
+
+static_assert(sizeof(LasHeader) == 227, "LAS 1.2 public header must be 227 bytes");
+static_assert(sizeof(LasPointFormat0) == 20, "LAS point format 0 record must be 20 bytes");
+
+using LasPoint = LasPointFormat0;
 
 template <typename Scalar>
 std::shared_ptr<PointCloud<Scalar, plamatrix::Device::CPU>>
@@ -74,20 +78,28 @@ readLas(const std::string& path)
 
     LasHeader hdr{};
     f.read(reinterpret_cast<char*>(&hdr), sizeof(LasHeader));
+    if (!f) throw std::runtime_error("Cannot read LAS header: " + path);
 
     if (std::strncmp(hdr.file_signature, "LASF", 4) != 0)
         throw std::runtime_error("Not a LAS file: " + path);
+    if (hdr.point_data_record_length < sizeof(LasPointFormat0))
+        throw std::runtime_error("Unsupported LAS point record length in: " + path);
 
     // Skip VLRs
-    f.seekg(hdr.point_data_offset);
+    f.seekg(static_cast<std::streamoff>(hdr.point_data_offset), std::ios::beg);
+    if (!f) throw std::runtime_error("Cannot seek to LAS point data: " + path);
 
     int n = static_cast<int>(hdr.num_point_records);
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(n, 3);
 
+    std::vector<char> record(hdr.point_data_record_length);
     for (int i = 0; i < n; ++i)
     {
-        LasPoint lp{};
-        f.read(reinterpret_cast<char*>(&lp), sizeof(LasPoint));
+        f.read(record.data(), static_cast<std::streamsize>(record.size()));
+        if (!f) throw std::runtime_error("Truncated LAS point record in: " + path);
+
+        LasPointFormat0 lp{};
+        std::memcpy(&lp, record.data(), sizeof(lp));
 
         Scalar x = static_cast<Scalar>(lp.x * hdr.x_scale_factor + hdr.x_offset);
         Scalar y = static_cast<Scalar>(lp.y * hdr.y_scale_factor + hdr.y_offset);
@@ -105,6 +117,11 @@ void writeLas(const std::string& path,
               const PointCloud<Scalar, plamatrix::Device::CPU>& cloud,
               double scale = 0.001)
 {
+    if (scale <= 0)
+    {
+        throw std::invalid_argument("LAS scale must be positive");
+    }
+
     int n = static_cast<int>(cloud.size());
 
     // Compute bounds
@@ -118,6 +135,10 @@ void writeLas(const std::string& path,
         if (y < min_y) min_y = y; if (y > max_y) max_y = y;
         if (z < min_z) min_z = z; if (z > max_z) max_z = z;
     }
+    if (n == 0)
+    {
+        min_x = max_x = min_y = max_y = min_z = max_z = 0.0;
+    }
 
     double offset_x = min_x, offset_y = min_y, offset_z = min_z;
 
@@ -129,9 +150,10 @@ void writeLas(const std::string& path,
     std::strncpy(hdr.generating_software, "PlaPoint", 31);
     hdr.header_size = sizeof(LasHeader);
     hdr.point_data_offset = sizeof(LasHeader);
-    hdr.point_data_format = 1;  // format 1: xyz + intensity + return + classification
-    hdr.point_data_record_length = sizeof(LasPoint);
+    hdr.point_data_format = 0;  // format 0: xyz + intensity + return + classification
+    hdr.point_data_record_length = sizeof(LasPointFormat0);
     hdr.num_point_records = static_cast<uint32_t>(n);
+    hdr.num_points_by_return[0] = static_cast<uint32_t>(n);
 
     hdr.x_scale_factor = scale;
     hdr.y_scale_factor = scale;
@@ -150,7 +172,7 @@ void writeLas(const std::string& path,
 
     for (int i = 0; i < n; ++i)
     {
-        LasPoint pt{};
+        LasPointFormat0 pt{};
         double x = cloud.points().getValue(i, 0);
         double y = cloud.points().getValue(i, 1);
         double z = cloud.points().getValue(i, 2);
@@ -158,8 +180,9 @@ void writeLas(const std::string& path,
         pt.y = static_cast<int32_t>(std::round((y - offset_y) / scale));
         pt.z = static_cast<int32_t>(std::round((z - offset_z) / scale));
         pt.intensity = 255;
+        pt.return_flags = 1;
         pt.classification = 1;  // unclassified
-        f.write(reinterpret_cast<const char*>(&pt), sizeof(LasPoint));
+        f.write(reinterpret_cast<const char*>(&pt), sizeof(LasPointFormat0));
     }
 }
 

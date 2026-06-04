@@ -32,6 +32,21 @@ __device__ void localTopKInsert(Scalar* d, int* idx, Scalar dist, int data_idx)
     idx[pos] = data_idx;
 }
 
+template <typename Scalar>
+__device__ Scalar maxKnnDistance();
+
+template <>
+__device__ float maxKnnDistance<float>()
+{
+    return FLT_MAX;
+}
+
+template <>
+__device__ double maxKnnDistance<double>()
+{
+    return DBL_MAX;
+}
+
 template <typename Scalar, int BLOCK_SIZE, int K>
 __global__ void bruteForceKnnKernel(
     const Scalar* __restrict__ queries,
@@ -56,7 +71,7 @@ __global__ void bruteForceKnnKernel(
     int    local_idx[K];
     for (int j = 0; j < K; ++j)
     {
-        local_d[j]   = FLT_MAX;
+        local_d[j]   = maxKnnDistance<Scalar>();
         local_idx[j] = -1;
     }
 
@@ -90,7 +105,7 @@ __global__ void bruteForceKnnKernel(
         int    final_idx[K];
         for (int j = 0; j < K; ++j)
         {
-            final_d[j]   = FLT_MAX;
+            final_d[j]   = maxKnnDistance<Scalar>();
             final_idx[j] = -1;
         }
 

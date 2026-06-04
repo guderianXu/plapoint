@@ -249,6 +249,65 @@ TEST(KdTreeGpuTest, BatchKnnMultipleKValues)
     }
 }
 
+TEST(KdTreeGpuTest, BatchKnnDoubleSupportsDistancesAboveFloatMax)
+{
+    SKIP_IF_NO_GPU();
+
+    using Scalar = double;
+    const int M = 1;
+    const int N = 2;
+    const int K = 1;
+
+    std::vector<Scalar> queries{
+        0.0, 0.0, 0.0,
+    };
+    std::vector<Scalar> data{
+        1.0e20, 0.0, 0.0,
+        2.0e20, 0.0, 0.0,
+    };
+    std::vector<int> indices;
+    std::vector<Scalar> dists;
+
+    ASSERT_NO_THROW(plapoint::gpu::batchKnn(
+        queries.data(), M, data.data(), N, K, indices, dists));
+
+    ASSERT_EQ(indices.size(), 1u);
+    ASSERT_EQ(dists.size(), 1u);
+    EXPECT_EQ(indices[0], 0);
+    EXPECT_NEAR(dists[0], 1.0e40, 1.0e32);
+}
+
+TEST(KdTreeGpuTest, BatchNearestKSearchClampsKToPointCount)
+{
+    SKIP_IF_NO_GPU();
+
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> cpu_pts(3, 3);
+    cpu_pts.setValue(0, 0, 0); cpu_pts.setValue(0, 1, 0); cpu_pts.setValue(0, 2, 0);
+    cpu_pts.setValue(1, 0, 1); cpu_pts.setValue(1, 1, 0); cpu_pts.setValue(1, 2, 0);
+    cpu_pts.setValue(2, 0, 2); cpu_pts.setValue(2, 1, 0); cpu_pts.setValue(2, 2, 0);
+    Cloud cpu_cloud(std::move(cpu_pts));
+    auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
+
+    plapoint::search::KdTree<Scalar, plamatrix::Device::GPU> tree;
+    tree.setInputCloud(gpu_cloud);
+    tree.build();
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(1, 3);
+    queries(0, 0) = 0;
+    queries(0, 1) = 0;
+    queries(0, 2) = 0;
+
+    std::vector<std::vector<int>> results;
+    ASSERT_NO_THROW(results = tree.batchNearestKSearch(queries, 5));
+
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].size(), 3u);
+}
+
 TEST(KdTreeGpuTest, RejectsUnsupportedK)
 {
     using Scalar = float;

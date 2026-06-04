@@ -31,7 +31,7 @@ protected:
             pts(static_cast<plamatrix::Index>(out_idx), 2) = pointCoord(static_cast<int>(i), 2);
             ++out_idx;
         }
-        output = PointCloudType(std::move(pts));
+        output = this->makeOutputCloud(std::move(pts));
         // Build index list for normal copying
         std::vector<int> kept_indices;
         kept_indices.reserve(out_n);

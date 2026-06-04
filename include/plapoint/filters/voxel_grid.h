@@ -61,7 +61,7 @@ protected:
             pts(out_idx, 2) = acc.sum_z / static_cast<Scalar>(acc.count);
             ++out_idx;
         }
-        output = PointCloudType(std::move(pts));
+        output = this->makeOutputCloud(std::move(pts));
     }
 
 private:

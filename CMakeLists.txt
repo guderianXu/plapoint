@@ -18,10 +18,43 @@ if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR
         AND NOT _PLAPOINT_BUILD_TESTS_USER_DEFINED)
     set(PLAPOINT_BUILD_TESTS ${BUILD_TESTS} CACHE BOOL "Build PlaPoint unit tests" FORCE)
 endif()
+
+set(_PLAPOINT_WITH_CUDA_USER_DEFINED OFF)
+if(DEFINED PLAPOINT_WITH_CUDA)
+    set(_PLAPOINT_WITH_CUDA_USER_DEFINED ON)
+endif()
 option(PLAPOINT_WITH_CUDA "Build with CUDA GPU acceleration" ON)
 
-# Detect CUDA
+# OpenMP (required by plamatrix)
+find_package(OpenMP REQUIRED)
+
+# Find plamatrix (or reuse target when included as submodule)
+if(NOT TARGET plamatrix::plamatrix)
+    find_package(plamatrix REQUIRED)
+endif()
+
+get_target_property(_PLAPOINT_PLAMATRIX_DEFS plamatrix::plamatrix INTERFACE_COMPILE_DEFINITIONS)
+if(NOT _PLAPOINT_PLAMATRIX_DEFS)
+    set(_PLAPOINT_PLAMATRIX_DEFS "")
+endif()
+set(_PLAPOINT_PLAMATRIX_WITH_CUDA OFF)
+foreach(_PLAPOINT_DEF IN LISTS _PLAPOINT_PLAMATRIX_DEFS)
+    if(_PLAPOINT_DEF MATCHES "^PLAMATRIX_WITH_CUDA(=1)?$")
+        set(_PLAPOINT_PLAMATRIX_WITH_CUDA ON)
+    endif()
+endforeach()
+
+# Detect CUDA. PlaPoint CUDA kernels require a CUDA-enabled PlaMatrix target.
 find_package(CUDAToolkit QUIET)
+if(PLAPOINT_WITH_CUDA AND NOT _PLAPOINT_PLAMATRIX_WITH_CUDA)
+    if(_PLAPOINT_WITH_CUDA_USER_DEFINED)
+        message(FATAL_ERROR "PLAPOINT_WITH_CUDA=ON requires plamatrix::plamatrix built with CUDA. "
+                            "Use a CUDA PlaMatrix package or configure PlaPoint with -DPLAPOINT_WITH_CUDA=OFF.")
+    endif()
+    message(STATUS "PlaPoint CUDA disabled because plamatrix::plamatrix is CPU-only")
+    set(PLAPOINT_WITH_CUDA OFF CACHE BOOL "Build with CUDA GPU acceleration" FORCE)
+endif()
+
 if(PLAPOINT_WITH_CUDA AND CUDAToolkit_FOUND)
     enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 17)
@@ -37,14 +70,6 @@ if(PLAPOINT_WITH_CUDA AND CUDAToolkit_FOUND)
     endif()
 else()
     set(PLAPOINT_WITH_CUDA OFF)
-endif()
-
-# OpenMP (required by plamatrix)
-find_package(OpenMP REQUIRED)
-
-# Find plamatrix (or reuse target when included as submodule)
-if(NOT TARGET plamatrix::plamatrix)
-    find_package(plamatrix REQUIRED)
 endif()
 
 # plapoint library (compiled, not header-only)

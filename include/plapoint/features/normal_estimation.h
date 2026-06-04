@@ -94,9 +94,17 @@ private:
 #ifndef PLAPOINT_WITH_CUDA
             throw std::runtime_error("PlaPoint was built without CUDA support");
 #else
-            PLAPOINT_CHECK_CUDA(cudaMemcpy(host.data(), _cloud->points().data(),
-                                           static_cast<std::size_t>(_cloud->size() * 3) * sizeof(Scalar),
+            const int n = static_cast<int>(_cloud->size());
+            std::vector<Scalar> col_major(static_cast<std::size_t>(n * 3));
+            PLAPOINT_CHECK_CUDA(cudaMemcpy(col_major.data(), _cloud->points().data(),
+                                           static_cast<std::size_t>(n * 3) * sizeof(Scalar),
                                            cudaMemcpyDeviceToHost));
+            for (int i = 0; i < n; ++i)
+            {
+                host[static_cast<std::size_t>(i * 3)]     = col_major[static_cast<std::size_t>(i)];
+                host[static_cast<std::size_t>(i * 3 + 1)] = col_major[static_cast<std::size_t>(n + i)];
+                host[static_cast<std::size_t>(i * 3 + 2)] = col_major[static_cast<std::size_t>(2 * n + i)];
+            }
 #endif
         }
     }

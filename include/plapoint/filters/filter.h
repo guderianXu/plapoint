@@ -2,6 +2,7 @@
 
 #include <plapoint/core/point_cloud.h>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace plapoint
@@ -40,6 +41,19 @@ public:
 protected:
     virtual void applyFilter(PointCloudType& output) = 0;
 
+    static PointCloudType makeOutputCloud(
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>&& points)
+    {
+        if constexpr (Dev == plamatrix::Device::CPU)
+        {
+            return PointCloudType(std::move(points));
+        }
+        else
+        {
+            return PointCloudType(points.toGpu());
+        }
+    }
+
     /// Copy normals for selected indices from input to output cloud.
     void copyNormalsForIndices(const std::vector<int>& indices, PointCloudType& output) const
     {
@@ -53,7 +67,14 @@ protected:
             nrm(i, 1) = normalCoord(src, 1);
             nrm(i, 2) = normalCoord(src, 2);
         }
-        output.setNormals(std::move(nrm));
+        if constexpr (Dev == plamatrix::Device::CPU)
+        {
+            output.setNormals(std::move(nrm));
+        }
+        else
+        {
+            output.setNormals(nrm.toGpu());
+        }
     }
 
     Scalar normalCoord(int idx, int dim) const

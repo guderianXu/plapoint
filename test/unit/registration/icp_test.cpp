@@ -50,3 +50,36 @@ TEST(ICPTest, ThrowsIfNoInput)
     plapoint::PointCloud<float, plamatrix::Device::CPU> output;
     EXPECT_THROW(icp.align(output), std::runtime_error);
 }
+
+TEST(ICPTest, ThrowsForEmptySourceOrTarget)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto empty = std::make_shared<Cloud>(0);
+
+    auto one_point_mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(1, 3);
+    one_point_mat.setValue(0, 0, 1);
+    one_point_mat.setValue(0, 1, 2);
+    one_point_mat.setValue(0, 2, 3);
+    auto one_point = std::make_shared<Cloud>(std::move(one_point_mat));
+
+    Cloud output;
+
+    plapoint::IterativeClosestPoint<Scalar, plamatrix::Device::CPU> empty_source_icp;
+    empty_source_icp.setInputSource(empty);
+    empty_source_icp.setInputTarget(one_point);
+    EXPECT_THROW(empty_source_icp.align(output), std::invalid_argument);
+
+    plapoint::IterativeClosestPoint<Scalar, plamatrix::Device::CPU> empty_target_icp;
+    empty_target_icp.setInputSource(one_point);
+    empty_target_icp.setInputTarget(empty);
+    EXPECT_THROW(empty_target_icp.align(output), std::invalid_argument);
+}
+
+TEST(ICPTest, RejectsInvalidIterationAndEpsilonParameters)
+{
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::CPU> icp;
+    EXPECT_THROW(icp.setMaxIterations(-1), std::invalid_argument);
+    EXPECT_THROW(icp.setTransformationEpsilon(0.0f), std::invalid_argument);
+}

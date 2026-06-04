@@ -139,15 +139,11 @@ public:
             {
                 return results;
             }
-            if (k > 32)
+            const int K_use = std::min(k, N);
+            if (K_use > 32)
             {
                 throw std::invalid_argument("GPU KNN supports k in [1, 32]");
             }
-            if (k > N)
-            {
-                throw std::invalid_argument("GPU KNN requires k <= point count");
-            }
-            const int K_use = k;
 
             gpu::DeviceBuffer<Scalar> d_queries(static_cast<std::size_t>(M * 3));
             gpu::DeviceBuffer<int> d_indices(static_cast<std::size_t>(M * K_use));

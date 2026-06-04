@@ -68,14 +68,30 @@ public:
     std::enable_if_t<D == plamatrix::Device::CPU, PointCloud<Scalar, plamatrix::Device::GPU>>
     toGpu() const
     {
-        return PointCloud<Scalar, plamatrix::Device::GPU>(_points.toGpu());
+        PointCloud<Scalar, plamatrix::Device::GPU> result(_points.toGpu());
+        if (_normals) result.setNormals(_normals->toGpu());
+        if (_colors) result.setColors(_colors->toGpu());
+        if (_textureCoords) result.setTextureCoords(_textureCoords->toGpu());
+        if (_faces) result.setFaces(_faces->toGpu());
+        if (_faceTextureIndices) result.setFaceTextureIndices(_faceTextureIndices->toGpu());
+        result.setMaterialLibraryFile(_materialLibraryFile);
+        result.setTextureImageFile(_textureImageFile);
+        return result;
     }
 
     template <plamatrix::Device D = Dev>
     std::enable_if_t<D == plamatrix::Device::GPU, PointCloud<Scalar, plamatrix::Device::CPU>>
     toCpu() const
     {
-        return PointCloud<Scalar, plamatrix::Device::CPU>(_points.toCpu());
+        PointCloud<Scalar, plamatrix::Device::CPU> result(_points.toCpu());
+        if (_normals) result.setNormals(_normals->toCpu());
+        if (_colors) result.setColors(_colors->toCpu());
+        if (_textureCoords) result.setTextureCoords(_textureCoords->toCpu());
+        if (_faces) result.setFaces(_faces->toCpu());
+        if (_faceTextureIndices) result.setFaceTextureIndices(_faceTextureIndices->toCpu());
+        result.setMaterialLibraryFile(_materialLibraryFile);
+        result.setTextureImageFile(_textureImageFile);
+        return result;
     }
 
     /// Set optional normals by copy (Nx3 matrix, must match point count)
