@@ -113,6 +113,10 @@ TEST(PointCloudAttributesTest, SetFacesWithTextureIndices)
     faces.setValue(0, 0, 0); faces.setValue(0, 1, 1); faces.setValue(0, 2, 2);
     cloud.setFaces(faces);
 
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> tex(10, 2);
+    tex.fill(0.0f);
+    cloud.setTextureCoords(std::move(tex));
+
     plamatrix::DenseMatrix<int, plamatrix::Device::CPU> texFaces(1, 3);
     texFaces.setValue(0, 0, 5); texFaces.setValue(0, 1, 6); texFaces.setValue(0, 2, 7);
     cloud.setFaceTextureIndices(std::move(texFaces));
@@ -126,6 +130,92 @@ TEST(PointCloudAttributesTest, SetFacesRejectsNonNx3)
     plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
     plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(2, 2);
     EXPECT_THROW(cloud.setFaces(faces), std::runtime_error);
+}
+
+TEST(PointCloudAttributesTest, SetFacesRejectsOutOfRangeVertexIndex)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
+    faces.setValue(0, 0, 0);
+    faces.setValue(0, 1, 1);
+    faces.setValue(0, 2, 3);
+
+    EXPECT_THROW(cloud.setFaces(faces), std::out_of_range);
+}
+
+TEST(PointCloudAttributesTest, SetFaceTextureIndicesRejectsMismatchedFaceCount)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(4);
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
+    faces.setValue(0, 0, 0);
+    faces.setValue(0, 1, 1);
+    faces.setValue(0, 2, 2);
+    cloud.setFaces(std::move(faces));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(2, 3);
+    face_texture_indices.fill(0);
+
+    EXPECT_THROW(cloud.setFaceTextureIndices(face_texture_indices), std::runtime_error);
+}
+
+TEST(PointCloudAttributesTest, SetFaceTextureIndicesRejectsMissingTextureCoords)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(4);
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
+    faces.setValue(0, 0, 0);
+    faces.setValue(0, 1, 1);
+    faces.setValue(0, 2, 2);
+    cloud.setFaces(std::move(faces));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(1, 3);
+    face_texture_indices.fill(0);
+
+    EXPECT_THROW(cloud.setFaceTextureIndices(face_texture_indices), std::runtime_error);
+}
+
+TEST(PointCloudAttributesTest, SetFaceTextureIndicesRejectsOutOfRangeTextureIndex)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(4);
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
+    faces.setValue(0, 0, 0);
+    faces.setValue(0, 1, 1);
+    faces.setValue(0, 2, 2);
+    cloud.setFaces(std::move(faces));
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> tex(4, 2);
+    tex.fill(0.0f);
+    cloud.setTextureCoords(std::move(tex));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(1, 3);
+    face_texture_indices.setValue(0, 0, 0);
+    face_texture_indices.setValue(0, 1, 1);
+    face_texture_indices.setValue(0, 2, 4);
+
+    EXPECT_THROW(cloud.setFaceTextureIndices(face_texture_indices), std::out_of_range);
+}
+
+TEST(PointCloudAttributesTest, ReplacingFacesRevalidatesFaceTextureIndices)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(4);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> tex(4, 2);
+    tex.fill(0.0f);
+    cloud.setTextureCoords(std::move(tex));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
+    faces.setValue(0, 0, 0);
+    faces.setValue(0, 1, 1);
+    faces.setValue(0, 2, 2);
+    cloud.setFaces(std::move(faces));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(1, 3);
+    face_texture_indices.setValue(0, 0, 0);
+    face_texture_indices.setValue(0, 1, 1);
+    face_texture_indices.setValue(0, 2, 3);
+    cloud.setFaceTextureIndices(std::move(face_texture_indices));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> too_many_faces(2, 3);
+    too_many_faces.fill(0);
+    EXPECT_THROW(cloud.setFaces(std::move(too_many_faces)), std::runtime_error);
 }
 
 TEST(PointCloudAttributesTest, MaterialLibraryFileEmptyByDefault)

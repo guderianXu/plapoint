@@ -52,6 +52,7 @@ __global__ void bruteForceKnnKernel(
     const Scalar* __restrict__ queries,
     const Scalar* __restrict__ data,
     int M, int N, int outputK,
+    bool data_column_major,
     int* __restrict__ out_indices,
     Scalar* __restrict__ out_dists)
 {
@@ -82,9 +83,12 @@ __global__ void bruteForceKnnKernel(
     // Each thread processes strided data points, updating local top-K
     for (int i = tid; i < N; i += BLOCK_SIZE)
     {
-        Scalar dx = qx - data[i * 3];
-        Scalar dy = qy - data[i * 3 + 1];
-        Scalar dz = qz - data[i * 3 + 2];
+        Scalar data_x = data_column_major ? data[i] : data[i * 3];
+        Scalar data_y = data_column_major ? data[N + i] : data[i * 3 + 1];
+        Scalar data_z = data_column_major ? data[2 * N + i] : data[i * 3 + 2];
+        Scalar dx = qx - data_x;
+        Scalar dy = qy - data_y;
+        Scalar dz = qz - data_z;
         Scalar dist = dx * dx + dy * dy + dz * dz;
         localTopKInsert<Scalar, K>(local_d, local_idx, dist, i);
     }
@@ -133,6 +137,7 @@ cudaError_t launchBruteForceKnn(
     const Scalar* d_queries, const Scalar* d_data,
     int M, int N, int K,
     int* d_out_indices, Scalar* d_out_dists,
+    bool data_column_major,
     cudaStream_t stream)
 {
     const int BLOCK_SIZE = 256;
@@ -151,23 +156,23 @@ cudaError_t launchBruteForceKnn(
     {
         case 1:
             bruteForceKnnKernel<Scalar, BLOCK_SIZE, 1>
-                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, d_out_indices, d_out_dists);
+                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
             break;
         case 4:
             bruteForceKnnKernel<Scalar, BLOCK_SIZE, 4>
-                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, d_out_indices, d_out_dists);
+                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
             break;
         case 8:
             bruteForceKnnKernel<Scalar, BLOCK_SIZE, 8>
-                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, d_out_indices, d_out_dists);
+                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
             break;
         case 16:
             bruteForceKnnKernel<Scalar, BLOCK_SIZE, 16>
-                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, d_out_indices, d_out_dists);
+                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
             break;
         default:
             bruteForceKnnKernel<Scalar, BLOCK_SIZE, 32>
-                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, d_out_indices, d_out_dists);
+                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
             break;
     }
 
@@ -175,10 +180,10 @@ cudaError_t launchBruteForceKnn(
 }
 
 template cudaError_t launchBruteForceKnn<float>(
-    const float*, const float*, int, int, int, int*, float*, cudaStream_t);
+    const float*, const float*, int, int, int, int*, float*, bool, cudaStream_t);
 
 template cudaError_t launchBruteForceKnn<double>(
-    const double*, const double*, int, int, int, int*, double*, cudaStream_t);
+    const double*, const double*, int, int, int, int*, double*, bool, cudaStream_t);
 
 } // namespace gpu
 } // namespace plapoint

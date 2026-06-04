@@ -59,6 +59,12 @@ TEST(NormalEstimationTest, ThrowsIfNoInput)
     EXPECT_THROW(ne.compute(), std::runtime_error);
 }
 
+TEST(NormalEstimationTest, RejectsInvalidKSearch)
+{
+    plapoint::NormalEstimation<float, plamatrix::Device::CPU> ne;
+    EXPECT_THROW(ne.setKSearch(2), std::invalid_argument);
+}
+
 #ifdef PLAPOINT_WITH_CUDA
 TEST(NormalEstimationTest, GpuPlaneNormalsMatchCpuLayout)
 {

@@ -6,6 +6,7 @@
 #include <plamatrix/ops/point_cloud.h>
 #include <plamatrix/ops/decomposition.h>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -21,6 +22,8 @@ public:
 
     void setInputSource(const std::shared_ptr<const PointCloudType>& cloud) { _source = cloud; }
     void setInputTarget(const std::shared_ptr<const PointCloudType>& cloud) { _target = cloud; }
+
+    /// Set the maximum number of ICP iterations. Throws if n is not positive.
     void setMaxIterations(int n)
     {
         if (n <= 0)
@@ -30,15 +33,38 @@ public:
         _max_iter = n;
     }
 
+    /// Set convergence tolerance on the incremental transform. Throws if eps is not finite and positive.
     void setTransformationEpsilon(Scalar eps)
     {
-        if (eps <= Scalar(0))
+        if (!std::isfinite(eps) || eps <= Scalar(0))
         {
             throw std::invalid_argument("ICP: transformation epsilon must be positive");
         }
         _eps = eps;
     }
 
+    /// Set the largest accepted source-target correspondence distance. Throws if distance is not finite and positive.
+    void setMaxCorrespondenceDistance(Scalar distance)
+    {
+        if (!std::isfinite(distance) || distance <= Scalar(0))
+        {
+            throw std::invalid_argument("ICP: max correspondence distance must be positive");
+        }
+        _max_corr_dist = distance;
+    }
+
+    /// Set the minimum required inlier correspondence ratio for convergence. Throws unless score is in [0, 1].
+    void setMinFitnessScore(Scalar score)
+    {
+        if (!std::isfinite(score) || score < Scalar(0) || score > Scalar(1))
+        {
+            throw std::invalid_argument("ICP: minimum fitness score must be in [0, 1]");
+        }
+        _min_fitness_score = score;
+    }
+
+    /// Align the source cloud to the target cloud and write the transformed source to output.
+    /// Throws for missing/empty clouds, too few valid correspondences, or degenerate correspondence geometry.
     void align(PointCloudType& output)
     {
         if (!_source) throw std::runtime_error("ICP: source cloud not set");
@@ -65,38 +91,53 @@ public:
                 cur(r, c) = src(r, c);
 
         _converged = false;
+        _fitness_score = Scalar(0);
+        _final_rmse = std::numeric_limits<Scalar>::infinity();
 
         for (int iter = 0; iter < _max_iter; ++iter)
         {
             // Find correspondences: batch KNN (GPU-accelerated when Dev == GPU)
-            std::vector<int> corr(static_cast<std::size_t>(n));
-            {
-                plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(n, 3);
-                for (int i = 0; i < n; ++i)
-                    for (int c = 0; c < 3; ++c)
-                        queries(i, c) = cur(i, c);
+            std::vector<int> corr(static_cast<std::size_t>(n), -1);
+            std::vector<int> active_indices;
+            active_indices.reserve(static_cast<std::size_t>(n));
+            collectCorrespondences(cur, tgt, *tree, corr, active_indices);
 
-                auto all_nn = tree->batchNearestKSearch(queries, 1);
-                for (int i = 0; i < n; ++i)
-                    corr[static_cast<std::size_t>(i)] = all_nn[static_cast<std::size_t>(i)].empty()
-                        ? 0 : all_nn[static_cast<std::size_t>(i)][0];
+            if (active_indices.size() < 3)
+            {
+                throw std::runtime_error("ICP: fewer than 3 correspondences within max distance");
             }
+            if (!hasNonCollinearGeometry(cur, active_indices))
+            {
+                throw std::runtime_error("ICP: correspondence geometry is degenerate");
+            }
+            std::vector<int> active_target_indices;
+            active_target_indices.reserve(active_indices.size());
+            for (int i : active_indices)
+            {
+                active_target_indices.push_back(corr[static_cast<std::size_t>(i)]);
+            }
+            if (!hasNonCollinearGeometry(tgt, active_target_indices))
+            {
+                throw std::runtime_error("ICP: target correspondence geometry is degenerate");
+            }
+            const int active_n = static_cast<int>(active_indices.size());
+            updateResidualMetrics(cur, tgt, corr, active_indices, n);
 
             // Compute centroids
             plamatrix::Vec3<Scalar> src_ct{0, 0, 0}, tgt_ct{0, 0, 0};
-            for (int i = 0; i < n; ++i)
+            for (int i : active_indices)
             {
                 int j = corr[static_cast<std::size_t>(i)];
                 src_ct.x += cur(i, 0); src_ct.y += cur(i, 1); src_ct.z += cur(i, 2);
                 tgt_ct.x += tgt(j, 0); tgt_ct.y += tgt(j, 1); tgt_ct.z += tgt(j, 2);
             }
-            src_ct.x /= Scalar(n); src_ct.y /= Scalar(n); src_ct.z /= Scalar(n);
-            tgt_ct.x /= Scalar(n); tgt_ct.y /= Scalar(n); tgt_ct.z /= Scalar(n);
+            src_ct.x /= Scalar(active_n); src_ct.y /= Scalar(active_n); src_ct.z /= Scalar(active_n);
+            tgt_ct.x /= Scalar(active_n); tgt_ct.y /= Scalar(active_n); tgt_ct.z /= Scalar(active_n);
 
             // Cross-covariance H (3x3)
             plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> H(3, 3);
             H.fill(0);
-            for (int i = 0; i < n; ++i)
+            for (int i : active_indices)
             {
                 int j = corr[static_cast<std::size_t>(i)];
                 Scalar sx = cur(i, 0) - src_ct.x;
@@ -153,6 +194,19 @@ public:
 
             T_acc = multiply4x4(T_step, T_acc);
             cur = plamatrix::transformPoints(T_step, cur);
+            std::vector<int> final_corr(static_cast<std::size_t>(n), -1);
+            std::vector<int> final_active_indices;
+            final_active_indices.reserve(static_cast<std::size_t>(n));
+            collectCorrespondences(cur, tgt, *tree, final_corr, final_active_indices);
+            if (final_active_indices.empty())
+            {
+                _fitness_score = Scalar(0);
+                _final_rmse = std::numeric_limits<Scalar>::infinity();
+            }
+            else
+            {
+                updateResidualMetrics(cur, tgt, final_corr, final_active_indices, n);
+            }
 
             // Convergence check
             Scalar delta = std::abs(r00-1) + std::abs(r11-1) + std::abs(r22-1)
@@ -161,7 +215,7 @@ public:
                          + std::abs(tx) + std::abs(ty) + std::abs(tz);
             if (delta < _eps)
             {
-                _converged = true;
+                _converged = final_active_indices.size() >= 3 && _fitness_score >= _min_fitness_score;
                 break;
             }
         }
@@ -178,8 +232,17 @@ public:
         }
     }
 
+    /// Return the final 4x4 source-to-target transform on CPU.
     const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& getFinalTransformation() const { return _final_T; }
+
+    /// Return true only if the transform converged and the final fitness meets the configured minimum.
     bool hasConverged() const { return _converged; }
+
+    /// Return the final inlier correspondence ratio relative to the source point count.
+    Scalar getFitnessScore() const { return _fitness_score; }
+
+    /// Return the RMSE over the final accepted correspondences.
+    Scalar getFinalRmse() const { return _final_rmse; }
 
 private:
     static plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> identity4x4()
@@ -220,10 +283,115 @@ private:
         return C;
     }
 
+    static bool hasNonCollinearGeometry(
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& points,
+        const std::vector<int>& active_indices)
+    {
+        const int first = active_indices.front();
+        const Scalar x0 = points(first, 0);
+        const Scalar y0 = points(first, 1);
+        const Scalar z0 = points(first, 2);
+        Scalar ax = 0;
+        Scalar ay = 0;
+        Scalar az = 0;
+        bool have_axis = false;
+        constexpr Scalar EPS = Scalar(1e-8);
+
+        for (int idx : active_indices)
+        {
+            ax = points(idx, 0) - x0;
+            ay = points(idx, 1) - y0;
+            az = points(idx, 2) - z0;
+            if (ax * ax + ay * ay + az * az > EPS)
+            {
+                have_axis = true;
+                break;
+            }
+        }
+        if (!have_axis)
+        {
+            return false;
+        }
+
+        for (int idx : active_indices)
+        {
+            const Scalar bx = points(idx, 0) - x0;
+            const Scalar by = points(idx, 1) - y0;
+            const Scalar bz = points(idx, 2) - z0;
+            const Scalar cx = ay * bz - az * by;
+            const Scalar cy = az * bx - ax * bz;
+            const Scalar cz = ax * by - ay * bx;
+            if (cx * cx + cy * cy + cz * cz > EPS)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void collectCorrespondences(
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& source_points,
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& target_points,
+        const search::KdTree<Scalar, Dev>& tree,
+        std::vector<int>& corr,
+        std::vector<int>& active_indices) const
+    {
+        const int n = static_cast<int>(source_points.rows());
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(n, 3);
+        for (int i = 0; i < n; ++i)
+            for (int c = 0; c < 3; ++c)
+                queries(i, c) = source_points(i, c);
+
+        const Scalar max_corr_sq = _max_corr_dist * _max_corr_dist;
+        auto all_nn = tree.batchNearestKSearch(queries, 1);
+        for (int i = 0; i < n; ++i)
+        {
+            if (all_nn[static_cast<std::size_t>(i)].empty())
+            {
+                continue;
+            }
+
+            const int j = all_nn[static_cast<std::size_t>(i)][0];
+            const Scalar dx = source_points(i, 0) - target_points(j, 0);
+            const Scalar dy = source_points(i, 1) - target_points(j, 1);
+            const Scalar dz = source_points(i, 2) - target_points(j, 2);
+            const Scalar d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 <= max_corr_sq)
+            {
+                corr[static_cast<std::size_t>(i)] = j;
+                active_indices.push_back(i);
+            }
+        }
+    }
+
+    void updateResidualMetrics(
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& source_points,
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& target_points,
+        const std::vector<int>& corr,
+        const std::vector<int>& active_indices,
+        int source_count)
+    {
+        Scalar sq_error_sum = 0;
+        for (int i : active_indices)
+        {
+            const int j = corr[static_cast<std::size_t>(i)];
+            const Scalar dx = source_points(i, 0) - target_points(j, 0);
+            const Scalar dy = source_points(i, 1) - target_points(j, 1);
+            const Scalar dz = source_points(i, 2) - target_points(j, 2);
+            sq_error_sum += dx * dx + dy * dy + dz * dz;
+        }
+        _fitness_score = static_cast<Scalar>(active_indices.size()) / static_cast<Scalar>(source_count);
+        _final_rmse = std::sqrt(sq_error_sum / static_cast<Scalar>(active_indices.size()));
+    }
+
     std::shared_ptr<const PointCloudType> _source;
     std::shared_ptr<const PointCloudType> _target;
     int _max_iter = 50;
     Scalar _eps = Scalar(1e-6);
+    Scalar _max_corr_dist = std::numeric_limits<Scalar>::infinity();
+    Scalar _min_fitness_score = Scalar(0);
+    Scalar _fitness_score = Scalar(0);
+    Scalar _final_rmse = std::numeric_limits<Scalar>::infinity();
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> _final_T;
     bool _converged = false;
 };

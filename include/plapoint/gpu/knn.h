@@ -27,5 +27,15 @@ void batchKnnDevice(const double* d_queries, int M,
                     const double* d_data, int N, int K,
                     int* d_out_indices, double* d_out_dists);
 
+/// Batch KNN on GPU with row-major queries and column-major Nx3 point data.
+/// This matches PlaMatrix DenseMatrix device storage: [x0..xN-1, y0..yN-1, z0..zN-1].
+void batchKnnDeviceColumnMajor(const float* d_queries, int M,
+                               const float* d_data, int N, int K,
+                               int* d_out_indices, float* d_out_dists);
+
+void batchKnnDeviceColumnMajor(const double* d_queries, int M,
+                               const double* d_data, int N, int K,
+                               int* d_out_indices, double* d_out_dists);
+
 } // namespace gpu
 } // namespace plapoint

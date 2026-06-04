@@ -60,13 +60,28 @@ protected:
         if (!_input || !_input->hasNormals()) return;
         int n = static_cast<int>(indices.size());
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> nrm(n, 3);
-        for (int i = 0; i < n; ++i)
+        if constexpr (Dev == plamatrix::Device::CPU)
         {
-            int src = indices[static_cast<std::size_t>(i)];
-            nrm(i, 0) = normalCoord(src, 0);
-            nrm(i, 1) = normalCoord(src, 1);
-            nrm(i, 2) = normalCoord(src, 2);
+            for (int i = 0; i < n; ++i)
+            {
+                int src = indices[static_cast<std::size_t>(i)];
+                nrm(i, 0) = normalCoord(src, 0);
+                nrm(i, 1) = normalCoord(src, 1);
+                nrm(i, 2) = normalCoord(src, 2);
+            }
         }
+        else
+        {
+            auto input_normals = _input->normals()->toCpu();
+            for (int i = 0; i < n; ++i)
+            {
+                int src = indices[static_cast<std::size_t>(i)];
+                nrm(i, 0) = input_normals(src, 0);
+                nrm(i, 1) = input_normals(src, 1);
+                nrm(i, 2) = input_normals(src, 2);
+            }
+        }
+
         if constexpr (Dev == plamatrix::Device::CPU)
         {
             output.setNormals(std::move(nrm));

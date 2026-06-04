@@ -6,6 +6,7 @@
 #include <cmath>
 #include <memory>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace plapoint {
@@ -19,22 +20,30 @@ public:
     void setInputCloud(const std::shared_ptr<PointCloudType>& cloud) { _cloud = cloud; }
     void setSearchMethod(std::shared_ptr<search::KdTree<Scalar, Dev>> tree) { _tree = tree; }
 
+    /// Smooth existing normals by averaging each point's k nearest neighbor normals.
+    /// Throws if the cloud, search method, normals, or k are invalid.
     void smooth(int k)
     {
         if (!_cloud) throw std::runtime_error("NormalRefinement: input cloud not set");
         if (!_tree)  throw std::runtime_error("NormalRefinement: search method not set");
         if (!_cloud->hasNormals()) throw std::runtime_error("NormalRefinement: cloud has no normals");
+        if (k <= 0) throw std::invalid_argument("NormalRefinement: k must be positive");
 
-        auto* normals = _cloud->normals();
         int n = static_cast<int>(_cloud->size());
+        auto points_cpu = toCpuCopy(_cloud->points());
+        auto normals_cpu = toCpuCopy(*_cloud->normals());
 
         std::vector<plamatrix::Vec3<Scalar>> temp(static_cast<std::size_t>(n));
         for (int i = 0; i < n; ++i)
-            temp[static_cast<std::size_t>(i)] = {normals->getValue(i,0), normals->getValue(i,1), normals->getValue(i,2)};
+            temp[static_cast<std::size_t>(i)] = {
+                normals_cpu(i, 0),
+                normals_cpu(i, 1),
+                normals_cpu(i, 2)
+            };
 
         for (int i = 0; i < n; ++i)
         {
-            plamatrix::Vec3<Scalar> pt = pointVec(i);
+            plamatrix::Vec3<Scalar> pt = pointVec(points_cpu, i);
             auto neighbors = _tree->nearestKSearch(pt, k);
             Scalar sx = 0, sy = 0, sz = 0;
             for (int nb : neighbors)
@@ -46,42 +55,72 @@ public:
             Scalar len = std::sqrt(sx*sx + sy*sy + sz*sz);
             if (len > Scalar(1e-10))
             {
-                normals->setValue(i, 0, sx / len);
-                normals->setValue(i, 1, sy / len);
-                normals->setValue(i, 2, sz / len);
+                normals_cpu(i, 0) = sx / len;
+                normals_cpu(i, 1) = sy / len;
+                normals_cpu(i, 2) = sz / len;
             }
         }
+        setCloudNormals(std::move(normals_cpu));
     }
 
+    /// Flip normals in place so they point toward the supplied viewpoint.
     void orientConsistently(const plamatrix::Vec3<Scalar>& viewpoint)
     {
         if (!_cloud || !_cloud->hasNormals()) return;
-        auto* normals = _cloud->normals();
         int n = static_cast<int>(_cloud->size());
+        auto points_cpu = toCpuCopy(_cloud->points());
+        auto normals_cpu = toCpuCopy(*_cloud->normals());
         for (int i = 0; i < n; ++i)
         {
-            plamatrix::Vec3<Scalar> pt = pointVec(i);
+            plamatrix::Vec3<Scalar> pt = pointVec(points_cpu, i);
             Scalar dx = viewpoint.x - pt.x, dy = viewpoint.y - pt.y, dz = viewpoint.z - pt.z;
-            Scalar nx = normals->getValue(i, 0), ny = normals->getValue(i, 1), nz = normals->getValue(i, 2);
+            Scalar nx = normals_cpu(i, 0), ny = normals_cpu(i, 1), nz = normals_cpu(i, 2);
             if (dx * nx + dy * ny + dz * nz < 0)
             {
-                normals->setValue(i, 0, -nx);
-                normals->setValue(i, 1, -ny);
-                normals->setValue(i, 2, -nz);
+                normals_cpu(i, 0) = -nx;
+                normals_cpu(i, 1) = -ny;
+                normals_cpu(i, 2) = -nz;
             }
         }
+        setCloudNormals(std::move(normals_cpu));
     }
 
 private:
-    Scalar pointCoord(int idx, int dim) const
+    static plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> toCpuCopy(
+        const plamatrix::DenseMatrix<Scalar, Dev>& m)
     {
         if constexpr (Dev == plamatrix::Device::CPU)
-            return _cloud->points()(idx, dim);
+        {
+            plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> copy(m.rows(), m.cols());
+            for (plamatrix::Index r = 0; r < m.rows(); ++r)
+                for (plamatrix::Index c = 0; c < m.cols(); ++c)
+                    copy(r, c) = m(r, c);
+            return copy;
+        }
         else
-            return _cloud->points().getValue(idx, dim);
+        {
+            return m.toCpu();
+        }
     }
-    plamatrix::Vec3<Scalar> pointVec(int idx) const
-        { return {pointCoord(idx,0), pointCoord(idx,1), pointCoord(idx,2)}; }
+
+    static plamatrix::Vec3<Scalar> pointVec(
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& points,
+        int idx)
+    {
+        return {points(idx, 0), points(idx, 1), points(idx, 2)};
+    }
+
+    void setCloudNormals(plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>&& normals_cpu)
+    {
+        if constexpr (Dev == plamatrix::Device::CPU)
+        {
+            _cloud->setNormals(std::move(normals_cpu));
+        }
+        else
+        {
+            _cloud->setNormals(normals_cpu.toGpu());
+        }
+    }
 
     std::shared_ptr<PointCloudType> _cloud;
     std::shared_ptr<search::KdTree<Scalar, Dev>> _tree;

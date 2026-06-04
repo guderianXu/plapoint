@@ -23,8 +23,23 @@ public:
     using PointCloudType = PointCloud<Scalar, plamatrix::Device::CPU>;
 
     void setInputCloud(const std::shared_ptr<const PointCloudType>& cloud) { _cloud = cloud; }
-    void setDepth(int d) { _max_depth = d; }
-    void setSolverIterations(int n) { _solver_iters = n; }
+    void setDepth(int d)
+    {
+        if (d <= 0 || d > kMaxDepth)
+        {
+            throw std::invalid_argument("Poisson: depth must be in [1, 8]");
+        }
+        _max_depth = d;
+    }
+
+    void setSolverIterations(int n)
+    {
+        if (n <= 0)
+        {
+            throw std::invalid_argument("Poisson: solver iterations must be positive");
+        }
+        _solver_iters = n;
+    }
 
     std::tuple<Matrix, Matrix> reconstruct() const
     {
@@ -394,6 +409,7 @@ private:
     }
 
     std::shared_ptr<const PointCloudType> _cloud;
+    static constexpr int kMaxDepth = 8;
     int _max_depth = 6;
     int _solver_iters = 30;
 };

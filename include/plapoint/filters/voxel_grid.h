@@ -18,7 +18,8 @@ public:
 
     void setLeafSize(Scalar lx, Scalar ly, Scalar lz)
     {
-        if (lx <= 0 || ly <= 0 || lz <= 0)
+        if (!std::isfinite(lx) || !std::isfinite(ly) || !std::isfinite(lz) ||
+            lx <= 0 || ly <= 0 || lz <= 0)
         {
             throw std::invalid_argument("VoxelGrid: leaf size must be positive");
         }
@@ -31,6 +32,16 @@ protected:
     void applyFilter(PointCloudType& output) override
     {
         if (!this->_input) return;
+        const auto* cpu_points = static_cast<const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>*>(nullptr);
+        auto staged_points = stagePointsIfNeeded();
+        if constexpr (Dev == plamatrix::Device::CPU)
+        {
+            cpu_points = &this->_input->points();
+        }
+        else
+        {
+            cpu_points = &staged_points;
+        }
 
         using Key = std::tuple<int, int, int>;
         struct Accum { Scalar sum_x = 0, sum_y = 0, sum_z = 0; int count = 0; };
@@ -39,14 +50,14 @@ protected:
         for (std::size_t i = 0; i < this->_input->size(); ++i)
         {
             Key key{
-                static_cast<int>(std::floor(pointCoord(static_cast<int>(i), 0) / _leaf_x)),
-                static_cast<int>(std::floor(pointCoord(static_cast<int>(i), 1) / _leaf_y)),
-                static_cast<int>(std::floor(pointCoord(static_cast<int>(i), 2) / _leaf_z))
+                static_cast<int>(std::floor((*cpu_points)(static_cast<plamatrix::Index>(i), 0) / _leaf_x)),
+                static_cast<int>(std::floor((*cpu_points)(static_cast<plamatrix::Index>(i), 1) / _leaf_y)),
+                static_cast<int>(std::floor((*cpu_points)(static_cast<plamatrix::Index>(i), 2) / _leaf_z))
             };
             auto& acc = voxels[key];
-            acc.sum_x += pointCoord(static_cast<int>(i), 0);
-            acc.sum_y += pointCoord(static_cast<int>(i), 1);
-            acc.sum_z += pointCoord(static_cast<int>(i), 2);
+            acc.sum_x += (*cpu_points)(static_cast<plamatrix::Index>(i), 0);
+            acc.sum_y += (*cpu_points)(static_cast<plamatrix::Index>(i), 1);
+            acc.sum_z += (*cpu_points)(static_cast<plamatrix::Index>(i), 2);
             acc.count += 1;
         }
 
@@ -65,16 +76,12 @@ protected:
     }
 
 private:
-    Scalar pointCoord(int idx, int dim) const
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> stagePointsIfNeeded() const
     {
         if constexpr (Dev == plamatrix::Device::CPU)
-        {
-            return this->_input->points()(idx, dim);
-        }
+            return plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(0, 3);
         else
-        {
-            return this->_input->points().getValue(idx, dim);
-        }
+            return this->_input->points().toCpu();
     }
 
     Scalar _leaf_x = 1;

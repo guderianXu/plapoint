@@ -52,3 +52,19 @@ TEST(PointViewTest, AccessTextureCoords)
     EXPECT_FLOAT_EQ(pt.u(), 0.25f);
     EXPECT_FLOAT_EQ(pt.v(), 0.75f);
 }
+
+TEST(PointViewTest, RejectsOutOfRangeIndex)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(1);
+    EXPECT_THROW((void)cloud[1], std::out_of_range);
+}
+
+TEST(PointViewTest, RejectsMissingOptionalAttributes)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(1);
+    auto pt = cloud[0];
+
+    EXPECT_THROW((void)pt.r(), std::runtime_error);
+    EXPECT_THROW((void)pt.nx(), std::runtime_error);
+    EXPECT_THROW((void)pt.u(), std::runtime_error);
+}

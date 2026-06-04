@@ -3,6 +3,7 @@
 #include <plamatrix/dense/dense_matrix.h>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -15,6 +16,9 @@ namespace plapoint
 template <typename Scalar, plamatrix::Device Dev>
 class PointCloud
 {
+    template <typename, plamatrix::Device>
+    friend class PointCloud;
+
 public:
     using MatrixType = plamatrix::DenseMatrix<Scalar, Dev>;
 
@@ -25,25 +29,57 @@ public:
         Scalar y() const { return _cloud.points().getValue(static_cast<plamatrix::Index>(_idx), 1); }
         Scalar z() const { return _cloud.points().getValue(static_cast<plamatrix::Index>(_idx), 2); }
 
-        uint8_t r() const { return _cloud.colors()->getValue(static_cast<plamatrix::Index>(_idx), 0); }
-        uint8_t g() const { return _cloud.colors()->getValue(static_cast<plamatrix::Index>(_idx), 1); }
-        uint8_t b() const { return _cloud.colors()->getValue(static_cast<plamatrix::Index>(_idx), 2); }
+        uint8_t r() const { requireColors(); return _cloud.colors()->getValue(static_cast<plamatrix::Index>(_idx), 0); }
+        uint8_t g() const { requireColors(); return _cloud.colors()->getValue(static_cast<plamatrix::Index>(_idx), 1); }
+        uint8_t b() const { requireColors(); return _cloud.colors()->getValue(static_cast<plamatrix::Index>(_idx), 2); }
 
-        Scalar nx() const { return _cloud.normals()->getValue(static_cast<plamatrix::Index>(_idx), 0); }
-        Scalar ny() const { return _cloud.normals()->getValue(static_cast<plamatrix::Index>(_idx), 1); }
-        Scalar nz() const { return _cloud.normals()->getValue(static_cast<plamatrix::Index>(_idx), 2); }
+        Scalar nx() const { requireNormals(); return _cloud.normals()->getValue(static_cast<plamatrix::Index>(_idx), 0); }
+        Scalar ny() const { requireNormals(); return _cloud.normals()->getValue(static_cast<plamatrix::Index>(_idx), 1); }
+        Scalar nz() const { requireNormals(); return _cloud.normals()->getValue(static_cast<plamatrix::Index>(_idx), 2); }
 
-        Scalar u() const { return _cloud.textureCoords()->getValue(static_cast<plamatrix::Index>(_idx), 0); }
-        Scalar v() const { return _cloud.textureCoords()->getValue(static_cast<plamatrix::Index>(_idx), 1); }
+        Scalar u() const { requireTextureCoords(); return _cloud.textureCoords()->getValue(static_cast<plamatrix::Index>(_idx), 0); }
+        Scalar v() const { requireTextureCoords(); return _cloud.textureCoords()->getValue(static_cast<plamatrix::Index>(_idx), 1); }
 
     private:
         friend class PointCloud;
         PointView(const PointCloud& cloud, size_t idx) : _cloud(cloud), _idx(idx) {}
+
+        void requireColors() const
+        {
+            if (!_cloud.hasColors())
+            {
+                throw std::runtime_error("PointView: cloud has no colors");
+            }
+        }
+
+        void requireNormals() const
+        {
+            if (!_cloud.hasNormals())
+            {
+                throw std::runtime_error("PointView: cloud has no normals");
+            }
+        }
+
+        void requireTextureCoords() const
+        {
+            if (!_cloud.hasTextureCoords())
+            {
+                throw std::runtime_error("PointView: cloud has no texture coordinates");
+            }
+        }
+
         const PointCloud& _cloud;
         size_t _idx;
     };
 
-    PointView operator[](size_t idx) const { return PointView(*this, idx); }
+    PointView operator[](size_t idx) const
+    {
+        if (idx >= size())
+        {
+            throw std::out_of_range("PointCloud: point index out of range");
+        }
+        return PointView(*this, idx);
+    }
 
     PointCloud() : _points(0, 3) {}
 
@@ -69,11 +105,11 @@ public:
     toGpu() const
     {
         PointCloud<Scalar, plamatrix::Device::GPU> result(_points.toGpu());
-        if (_normals) result.setNormals(_normals->toGpu());
-        if (_colors) result.setColors(_colors->toGpu());
-        if (_textureCoords) result.setTextureCoords(_textureCoords->toGpu());
-        if (_faces) result.setFaces(_faces->toGpu());
-        if (_faceTextureIndices) result.setFaceTextureIndices(_faceTextureIndices->toGpu());
+        if (_normals) result._normals = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(_normals->toGpu());
+        if (_colors) result._colors = std::make_unique<plamatrix::DenseMatrix<uint8_t, plamatrix::Device::GPU>>(_colors->toGpu());
+        if (_textureCoords) result._textureCoords = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(_textureCoords->toGpu());
+        if (_faces) result._faces = std::make_unique<plamatrix::DenseMatrix<int, plamatrix::Device::GPU>>(_faces->toGpu());
+        if (_faceTextureIndices) result._faceTextureIndices = std::make_unique<plamatrix::DenseMatrix<int, plamatrix::Device::GPU>>(_faceTextureIndices->toGpu());
         result.setMaterialLibraryFile(_materialLibraryFile);
         result.setTextureImageFile(_textureImageFile);
         return result;
@@ -84,11 +120,11 @@ public:
     toCpu() const
     {
         PointCloud<Scalar, plamatrix::Device::CPU> result(_points.toCpu());
-        if (_normals) result.setNormals(_normals->toCpu());
-        if (_colors) result.setColors(_colors->toCpu());
-        if (_textureCoords) result.setTextureCoords(_textureCoords->toCpu());
-        if (_faces) result.setFaces(_faces->toCpu());
-        if (_faceTextureIndices) result.setFaceTextureIndices(_faceTextureIndices->toCpu());
+        if (_normals) result._normals = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(_normals->toCpu());
+        if (_colors) result._colors = std::make_unique<plamatrix::DenseMatrix<uint8_t, plamatrix::Device::CPU>>(_colors->toCpu());
+        if (_textureCoords) result._textureCoords = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(_textureCoords->toCpu());
+        if (_faces) result._faces = std::make_unique<plamatrix::DenseMatrix<int, plamatrix::Device::CPU>>(_faces->toCpu());
+        if (_faceTextureIndices) result._faceTextureIndices = std::make_unique<plamatrix::DenseMatrix<int, plamatrix::Device::CPU>>(_faceTextureIndices->toCpu());
         result.setMaterialLibraryFile(_materialLibraryFile);
         result.setTextureImageFile(_textureImageFile);
         return result;
@@ -149,6 +185,8 @@ public:
     {
         if (t.rows() != _points.rows() || t.cols() != 2)
             throw std::runtime_error("Texture coords must match point count and be Nx2");
+        if (_faceTextureIndices)
+            validateIndexMatrix(*_faceTextureIndices, t.rows(), "Face texture");
         _textureCoords = std::make_unique<MatrixType>(t.rows(), t.cols());
         for (plamatrix::Index r = 0; r < t.rows(); ++r)
             for (int col = 0; col < 2; ++col)
@@ -160,6 +198,8 @@ public:
     {
         if (t.rows() != _points.rows() || t.cols() != 2)
             throw std::runtime_error("Texture coords must match point count and be Nx2");
+        if (_faceTextureIndices)
+            validateIndexMatrix(*_faceTextureIndices, t.rows(), "Face texture");
         _textureCoords = std::make_unique<MatrixType>(std::move(t));
     }
 
@@ -174,6 +214,8 @@ public:
     {
         if (f.cols() != 3)
             throw std::runtime_error("Faces must be Fx3");
+        validateIndexMatrix(f, _points.rows(), "Faces");
+        validateFaceCountForExistingTextureIndices(f.rows());
         _faces = std::make_unique<plamatrix::DenseMatrix<int, Dev>>(f.rows(), f.cols());
         for (plamatrix::Index r = 0; r < f.rows(); ++r)
             for (int col = 0; col < 3; ++col)
@@ -185,6 +227,8 @@ public:
     {
         if (f.cols() != 3)
             throw std::runtime_error("Faces must be Fx3");
+        validateIndexMatrix(f, _points.rows(), "Faces");
+        validateFaceCountForExistingTextureIndices(f.rows());
         _faces = std::make_unique<plamatrix::DenseMatrix<int, Dev>>(std::move(f));
     }
 
@@ -199,6 +243,7 @@ public:
     {
         if (ft.cols() != 3)
             throw std::runtime_error("Face texture indices must be Fx3");
+        validateFaceTextureIndices(ft);
         _faceTextureIndices = std::make_unique<plamatrix::DenseMatrix<int, Dev>>(ft.rows(), ft.cols());
         for (plamatrix::Index r = 0; r < ft.rows(); ++r)
             for (int col = 0; col < 3; ++col)
@@ -210,6 +255,7 @@ public:
     {
         if (ft.cols() != 3)
             throw std::runtime_error("Face texture indices must be Fx3");
+        validateFaceTextureIndices(ft);
         _faceTextureIndices = std::make_unique<plamatrix::DenseMatrix<int, Dev>>(std::move(ft));
     }
 
@@ -233,6 +279,49 @@ private:
             return m(r, c);
         else
             return m.getValue(r, c);
+    }
+
+    static void validateIndexMatrix(const plamatrix::DenseMatrix<int, Dev>& m,
+                                    plamatrix::Index exclusive_limit,
+                                    const char* label)
+    {
+        for (plamatrix::Index r = 0; r < m.rows(); ++r)
+        {
+            for (int c = 0; c < m.cols(); ++c)
+            {
+                const int idx = pointGet(m, r, c);
+                if (idx < 0 || idx >= exclusive_limit)
+                {
+                    throw std::out_of_range(std::string(label) + " index out of range");
+                }
+            }
+        }
+    }
+
+    void validateFaceTextureIndices(const plamatrix::DenseMatrix<int, Dev>& ft) const
+    {
+        if (!_faces)
+        {
+            throw std::runtime_error("Face texture indices require faces");
+        }
+        if (!_textureCoords)
+        {
+            throw std::runtime_error("Face texture indices require texture coordinates");
+        }
+        if (ft.rows() != _faces->rows())
+        {
+            throw std::runtime_error("Face texture indices must match face count");
+        }
+
+        validateIndexMatrix(ft, _textureCoords->rows(), "Face texture");
+    }
+
+    void validateFaceCountForExistingTextureIndices(plamatrix::Index face_count) const
+    {
+        if (_faceTextureIndices && _faceTextureIndices->rows() != face_count)
+        {
+            throw std::runtime_error("Faces must match face texture index count");
+        }
     }
 
     MatrixType _points;

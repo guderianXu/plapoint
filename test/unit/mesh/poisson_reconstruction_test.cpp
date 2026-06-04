@@ -37,3 +37,13 @@ TEST(PoissonReconstructionTest, SphereReconstructsMesh)
     EXPECT_GT(verts.rows(), 0);
     EXPECT_GT(faces.rows(), 0);
 }
+
+TEST(PoissonReconstructionTest, RejectsInvalidDepthAndSolverIterations)
+{
+    plapoint::mesh::PoissonReconstruction<float> pr;
+
+    EXPECT_THROW(pr.setDepth(0), std::invalid_argument);
+    EXPECT_THROW(pr.setDepth(9), std::invalid_argument);
+    EXPECT_THROW(pr.setDepth(31), std::invalid_argument);
+    EXPECT_THROW(pr.setSolverIterations(0), std::invalid_argument);
+}

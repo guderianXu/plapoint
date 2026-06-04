@@ -117,7 +117,7 @@ void writeLas(const std::string& path,
               const PointCloud<Scalar, plamatrix::Device::CPU>& cloud,
               double scale = 0.001)
 {
-    if (scale <= 0)
+    if (!std::isfinite(scale) || scale <= 0)
     {
         throw std::invalid_argument("LAS scale must be positive");
     }

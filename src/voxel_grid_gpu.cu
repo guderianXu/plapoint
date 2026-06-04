@@ -1,5 +1,9 @@
-// CUDA kernel for voxel grid downsampling
-// Uses atomic operations to accumulate centroids per voxel
+// Experimental CUDA kernel for voxel grid downsampling.
+//
+// This file is intentionally not part of the production plapoint target.
+// The reduction path below assumes keys and points have already been sorted
+// by voxel key; keep it out of src/CMakeLists.txt until a complete sort/reduce
+// pipeline is wired and covered by tests.
 
 #include <cuda_runtime.h>
 #include <cfloat>

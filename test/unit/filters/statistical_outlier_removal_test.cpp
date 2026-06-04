@@ -3,6 +3,7 @@
 #include <plapoint/search/kdtree.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
+#include <limits>
 
 TEST(SORTest, RemovesSingleOutlier)
 {
@@ -67,4 +68,15 @@ TEST(SORTest, EmptyInputReturnsEmptyOutput)
     Cloud output;
     ASSERT_NO_THROW(sor.filter(output));
     EXPECT_EQ(output.size(), 0u);
+}
+
+TEST(SORTest, RejectsInvalidParameters)
+{
+    plapoint::StatisticalOutlierRemoval<float, plamatrix::Device::CPU> sor;
+
+    EXPECT_THROW(sor.setMeanK(0), std::invalid_argument);
+    EXPECT_THROW(sor.setMeanK(std::numeric_limits<int>::max()), std::invalid_argument);
+    EXPECT_THROW(sor.setStddevMulThresh(-0.1f), std::invalid_argument);
+    EXPECT_THROW(sor.setStddevMulThresh(std::numeric_limits<float>::quiet_NaN()), std::invalid_argument);
+    EXPECT_THROW(sor.setStddevMulThresh(std::numeric_limits<float>::infinity()), std::invalid_argument);
 }

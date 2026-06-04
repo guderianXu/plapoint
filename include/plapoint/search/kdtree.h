@@ -16,6 +16,7 @@
 #include <memory>
 #include <queue>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace plapoint {
@@ -49,13 +50,18 @@ public:
             throw std::runtime_error("KdTree: input cloud not set");
         }
         _nodes.clear();
+        if constexpr (Dev == plamatrix::Device::GPU)
+        {
+            _host_points = std::make_shared<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(
+                _cloud->points().toCpu());
+        }
         std::vector<int> indices(static_cast<std::size_t>(_cloud->size()));
         for (std::size_t i = 0; i < indices.size(); ++i)
         {
-            indices[i] = static_cast<int>(i);
+            indices[i] = checkedInt(i, "KdTree: point index");
         }
         _nodes.reserve(indices.size());
-        buildRecursive(indices, 0, static_cast<int>(indices.size()) - 1, 0);
+        buildRecursive(indices, 0, checkedInt(indices.size(), "KdTree: point count") - 1, 0);
     }
 
     struct DistComparator
@@ -88,7 +94,7 @@ public:
     std::vector<int> radiusSearch(const plamatrix::Vec3<Scalar>& query, Scalar radius) const
     {
         std::vector<int> result;
-        if (radius < Scalar(0))
+        if (!std::isfinite(radius) || radius < Scalar(0))
         {
             throw std::invalid_argument("KdTree: radius must be non-negative");
         }
@@ -110,7 +116,7 @@ public:
         {
             throw std::invalid_argument("KdTree: queries must be an Mx3 matrix");
         }
-        int M = static_cast<int>(queries.rows());
+        int M = checkedInt(static_cast<std::size_t>(queries.rows()), "KdTree: query count");
         std::vector<std::vector<int>> results(static_cast<std::size_t>(M));
         if (M <= 0 || k <= 0)
         {
@@ -134,7 +140,7 @@ public:
 #ifndef PLAPOINT_WITH_CUDA
             throw std::runtime_error("PlaPoint was built without CUDA support");
 #else
-            int N = static_cast<int>(_cloud->size());
+            int N = checkedInt(_cloud->size(), "KdTree: point count");
             if (N <= 0)
             {
                 return results;
@@ -159,23 +165,8 @@ public:
             }
             PLAPOINT_CHECK_CUDA(cudaMemcpy(d_queries.get(), h_queries.data(), M * 3 * sizeof(Scalar), cudaMemcpyHostToDevice));
 
-            // Copy GPU column-major data to row-major temp buffer for kernel compatibility
-            gpu::DeviceBuffer<Scalar> d_rowmajor(static_cast<std::size_t>(N * 3));
-            // Reorder: DenseMatrix is col-major [x0..xN-1, y0..yN-1, z0..zN-1] → row-major [x0,y0,z0, ..., xN-1,yN-1,zN-1]
-            // Each component is separated by N in col-major; interleave them row-major
-            {
-                std::vector<Scalar> h_col(N * 3);
-                PLAPOINT_CHECK_CUDA(cudaMemcpy(h_col.data(), _cloud->points().data(), N * 3 * sizeof(Scalar), cudaMemcpyDeviceToHost));
-                std::vector<Scalar> h_row(N * 3);
-                for (int i = 0; i < N; ++i)
-                {
-                    h_row[static_cast<std::size_t>(i * 3)]     = h_col[static_cast<std::size_t>(i)];
-                    h_row[static_cast<std::size_t>(i * 3 + 1)] = h_col[static_cast<std::size_t>(N + i)];
-                    h_row[static_cast<std::size_t>(i * 3 + 2)] = h_col[static_cast<std::size_t>(2 * N + i)];
-                }
-                PLAPOINT_CHECK_CUDA(cudaMemcpy(d_rowmajor.get(), h_row.data(), N * 3 * sizeof(Scalar), cudaMemcpyHostToDevice));
-            }
-            gpu::batchKnnDevice(d_queries.get(), M, d_rowmajor.get(), N, K_use, d_indices.get(), d_dists.get());
+            gpu::batchKnnDeviceColumnMajor(
+                d_queries.get(), M, _cloud->points().data(), N, K_use, d_indices.get(), d_dists.get());
 
             std::vector<int>    flat_idx(static_cast<std::size_t>(M * K_use));
             std::vector<Scalar> flat_dst(static_cast<std::size_t>(M * K_use));
@@ -204,6 +195,10 @@ private:
         }
         else
         {
+            if (_host_points)
+            {
+                return (*_host_points)(idx, dim);
+            }
             return _cloud->points().getValue(idx, dim);
         }
     }
@@ -304,7 +299,17 @@ private:
         }
     }
 
+    static int checkedInt(std::size_t value, const char* label)
+    {
+        if (value > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        {
+            throw std::overflow_error(std::string(label) + " exceeds int range");
+        }
+        return static_cast<int>(value);
+    }
+
     std::shared_ptr<const PointCloudType> _cloud;
+    std::shared_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>> _host_points;
     std::vector<KdTreeNode<Scalar>> _nodes;
 };
 

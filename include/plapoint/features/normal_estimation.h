@@ -21,7 +21,14 @@ public:
 
     void setInputCloud(const std::shared_ptr<const PointCloudType>& cloud) { _cloud = cloud; }
     void setSearchMethod(std::shared_ptr<search::KdTree<Scalar, Dev>> tree) { _tree = tree; }
-    void setKSearch(int k) { _k = k; }
+    void setKSearch(int k)
+    {
+        if (k < 3)
+        {
+            throw std::invalid_argument("NormalEstimation: k must be at least 3");
+        }
+        _k = k;
+    }
 
     plamatrix::DenseMatrix<Scalar, Dev> compute() const
     {
@@ -29,7 +36,8 @@ public:
         if (!_tree)  throw std::runtime_error("NormalEstimation: search method not set");
 
         int n = static_cast<int>(_cloud->size());
-        plamatrix::DenseMatrix<Scalar, Dev> normals(n, 3);
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(n, 3);
+        normals.fill(0);
 
         std::vector<Scalar> pts_host(static_cast<std::size_t>(n * 3));
         copyPointsToHost(pts_host);
@@ -73,7 +81,14 @@ public:
             normals.setValue(i, 1, ny);
             normals.setValue(i, 2, nz);
         }
-        return normals;
+        if constexpr (Dev == plamatrix::Device::CPU)
+        {
+            return normals;
+        }
+        else
+        {
+            return normals.toGpu();
+        }
     }
 
 private:

@@ -108,6 +108,56 @@ TEST(KdTreeGpuTest, BatchKnnDevice)
     EXPECT_EQ(h_indices[0], 0);
 }
 
+TEST(KdTreeGpuTest, BatchKnnDeviceColumnMajor)
+{
+    SKIP_IF_NO_GPU();
+
+    using Scalar = float;
+    const int M = 2;
+    const int N = 4;
+    const int K = 2;
+
+    std::vector<Scalar> h_queries{
+        0.0f, 0.0f, 0.0f,
+        2.0f, 0.0f, 0.0f,
+    };
+    std::vector<Scalar> h_data_row_major{
+        0.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f,
+        2.0f, 0.0f, 0.0f,
+        3.0f, 0.0f, 0.0f,
+    };
+    std::vector<Scalar> h_data_col_major{
+        0.0f, 1.0f, 2.0f, 3.0f,
+        0.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 0.0f,
+    };
+
+    std::vector<int> expected_indices;
+    std::vector<Scalar> expected_dists;
+    plapoint::gpu::batchKnn(
+        h_queries.data(), M, h_data_row_major.data(), N, K, expected_indices, expected_dists);
+
+    plapoint::gpu::DeviceBuffer<Scalar> d_queries(static_cast<std::size_t>(M * 3));
+    plapoint::gpu::DeviceBuffer<Scalar> d_data(static_cast<std::size_t>(N * 3));
+    plapoint::gpu::DeviceBuffer<int> d_indices(static_cast<std::size_t>(M * K));
+    plapoint::gpu::DeviceBuffer<Scalar> d_dists(static_cast<std::size_t>(M * K));
+
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(d_queries.get(), h_queries.data(), M * 3 * sizeof(Scalar), cudaMemcpyHostToDevice));
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(d_data.get(), h_data_col_major.data(), N * 3 * sizeof(Scalar), cudaMemcpyHostToDevice));
+
+    plapoint::gpu::batchKnnDeviceColumnMajor(
+        d_queries.get(), M, d_data.get(), N, K, d_indices.get(), d_dists.get());
+
+    std::vector<int> actual_indices(static_cast<std::size_t>(M * K));
+    std::vector<Scalar> actual_dists(static_cast<std::size_t>(M * K));
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(actual_indices.data(), d_indices.get(), M * K * sizeof(int), cudaMemcpyDeviceToHost));
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(actual_dists.data(), d_dists.get(), M * K * sizeof(Scalar), cudaMemcpyDeviceToHost));
+
+    EXPECT_EQ(actual_indices, expected_indices);
+    EXPECT_EQ(actual_dists, expected_dists);
+}
+
 // ---- KdTree batchNearestKSearch with GPU-resident data ----
 TEST(KdTreeGpuTest, BatchKnnOnGpuCloud)
 {

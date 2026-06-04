@@ -36,7 +36,8 @@ GPU-accelerated point cloud processing library built on [PlaMatrix](https://gith
 When `PLAPOINT_WITH_CUDA=ON`, CUDA Toolkit is available, and `plamatrix::plamatrix`
 was built with CUDA support:
 
-- **Brute-force KNN** (`src/knn_gpu.cu`) — batched K-nearest neighbor search with one CUDA block per query point, shared memory top-K reduction
+- **Brute-force KNN** (`src/knn_gpu.cu`) — batched K-nearest neighbor search with one CUDA block per query point, shared memory top-K reduction. `KdTree<Scalar, GPU>::batchNearestKSearch()` reads PlaMatrix column-major device buffers directly.
+- **CPU-staged GPU fallbacks** — filters, normal estimation/refinement, and ICP preserve GPU input/output types but stage data through CPU for algorithms that do not yet have production CUDA kernels.
 - Explicit template instantiations in `src/plapoint.cpp` reduce downstream compile times
 
 ## Requirements

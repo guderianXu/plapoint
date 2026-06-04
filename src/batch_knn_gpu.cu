@@ -15,6 +15,7 @@ cudaError_t launchBruteForceKnn(
     const Scalar* d_queries, const Scalar* d_data,
     int M, int N, int K,
     int* d_out_indices, Scalar* d_out_dists,
+    bool data_column_major,
     cudaStream_t stream);
 } }
 
@@ -53,7 +54,7 @@ void batchKnnImpl(const Scalar* h_queries, int M,
     PLAPOINT_CHECK_CUDA(cudaMemcpy(d_data.get(), h_data, N * 3 * sizeof(Scalar), cudaMemcpyHostToDevice));
 
     cudaError_t err = launchBruteForceKnn<Scalar>(
-        d_queries.get(), d_data.get(), M, N, K_use, d_indices.get(), d_dists.get(), 0);
+        d_queries.get(), d_data.get(), M, N, K_use, d_indices.get(), d_dists.get(), false, 0);
 
     if (err != cudaSuccess)
     {
@@ -94,7 +95,8 @@ void batchKnn(const double* h_queries, int M,
 template <typename Scalar>
 void batchKnnDeviceImpl(const Scalar* d_queries, int M,
                         const Scalar* d_data, int N, int K,
-                        int* d_indices, Scalar* d_dists)
+                        int* d_indices, Scalar* d_dists,
+                        bool data_column_major)
 {
     if (M <= 0 || N <= 0 || K <= 0)
     {
@@ -109,7 +111,8 @@ void batchKnnDeviceImpl(const Scalar* d_queries, int M,
         throw std::invalid_argument("GPU KNN requires K <= N");
     }
     const int K_use = K;
-    cudaError_t err = launchBruteForceKnn<Scalar>(d_queries, d_data, M, N, K_use, d_indices, d_dists, 0);
+    cudaError_t err = launchBruteForceKnn<Scalar>(
+        d_queries, d_data, M, N, K_use, d_indices, d_dists, data_column_major, 0);
     if (err != cudaSuccess)
     {
         throw std::runtime_error(std::string("GPU KNN failed: ") + cudaGetErrorString(err));
@@ -122,14 +125,28 @@ void batchKnnDevice(const float* d_queries, int M,
                     const float* d_data, int N, int K,
                     int* d_indices, float* d_dists)
 {
-    batchKnnDeviceImpl<float>(d_queries, M, d_data, N, K, d_indices, d_dists);
+    batchKnnDeviceImpl<float>(d_queries, M, d_data, N, K, d_indices, d_dists, false);
 }
 
 void batchKnnDevice(const double* d_queries, int M,
                     const double* d_data, int N, int K,
                     int* d_indices, double* d_dists)
 {
-    batchKnnDeviceImpl<double>(d_queries, M, d_data, N, K, d_indices, d_dists);
+    batchKnnDeviceImpl<double>(d_queries, M, d_data, N, K, d_indices, d_dists, false);
+}
+
+void batchKnnDeviceColumnMajor(const float* d_queries, int M,
+                               const float* d_data, int N, int K,
+                               int* d_indices, float* d_dists)
+{
+    batchKnnDeviceImpl<float>(d_queries, M, d_data, N, K, d_indices, d_dists, true);
+}
+
+void batchKnnDeviceColumnMajor(const double* d_queries, int M,
+                               const double* d_data, int N, int K,
+                               int* d_indices, double* d_dists)
+{
+    batchKnnDeviceImpl<double>(d_queries, M, d_data, N, K, d_indices, d_dists, true);
 }
 
 } // namespace gpu

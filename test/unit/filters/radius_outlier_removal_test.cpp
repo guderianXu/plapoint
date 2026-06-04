@@ -2,6 +2,7 @@
 #include <plapoint/filters/radius_outlier_removal.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
+#include <limits>
 
 #ifdef PLAPOINT_WITH_CUDA
 #include <plapoint/gpu/cuda_check.h>
@@ -31,6 +32,16 @@ TEST(RadiusOutlierRemovalTest, RemovesIsolatedPoint)
     Cloud output;
     ror.filter(output);
     EXPECT_EQ(output.size(), 10u);
+}
+
+TEST(RadiusOutlierRemovalTest, RejectsInvalidParameters)
+{
+    plapoint::RadiusOutlierRemoval<float, plamatrix::Device::CPU> ror;
+
+    EXPECT_THROW(ror.setRadius(-0.1f), std::invalid_argument);
+    EXPECT_THROW(ror.setRadius(std::numeric_limits<float>::quiet_NaN()), std::invalid_argument);
+    EXPECT_THROW(ror.setRadius(std::numeric_limits<float>::infinity()), std::invalid_argument);
+    EXPECT_THROW(ror.setMinNeighbors(0), std::invalid_argument);
 }
 
 #ifdef PLAPOINT_WITH_CUDA
