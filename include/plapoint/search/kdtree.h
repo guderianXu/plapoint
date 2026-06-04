@@ -22,6 +22,41 @@
 namespace plapoint {
 namespace search {
 
+namespace detail {
+
+inline std::size_t checkedSizeProduct(std::size_t lhs, std::size_t rhs, const char* label)
+{
+    if (rhs != 0 && lhs > std::numeric_limits<std::size_t>::max() / rhs)
+    {
+        throw std::overflow_error(std::string(label) + " size exceeds size_t range");
+    }
+    return lhs * rhs;
+}
+
+template <typename T>
+inline std::size_t checkedByteCount(std::size_t count, const char* label)
+{
+    return checkedSizeProduct(count, sizeof(T), label);
+}
+
+template <typename Scalar>
+inline bool pointCoordinateLess(Scalar lhs, int lhs_idx, Scalar rhs, int rhs_idx)
+{
+    const bool lhs_finite = std::isfinite(lhs);
+    const bool rhs_finite = std::isfinite(rhs);
+    if (lhs_finite != rhs_finite)
+    {
+        return lhs_finite;
+    }
+    if (lhs_finite && lhs != rhs)
+    {
+        return lhs < rhs;
+    }
+    return lhs_idx < rhs_idx;
+}
+
+} // namespace detail
+
 template <typename Scalar>
 struct KdTreeNode
 {
@@ -66,7 +101,7 @@ public:
 
     struct DistComparator
     {
-        bool operator()(const std::pair<Scalar, int>& a, const std::pair<Scalar, int>& b) const
+        bool operator()(const std::pair<double, int>& a, const std::pair<double, int>& b) const
         {
             return a.first < b.first;
         }
@@ -77,7 +112,7 @@ public:
         std::vector<int> result;
         if (_nodes.empty() || k <= 0) return result;
 
-        using DistIndex = std::pair<Scalar, int>;
+        using DistIndex = std::pair<double, int>;
         std::priority_queue<DistIndex, std::vector<DistIndex>, DistComparator> pq;
 
         nearestKSearchRecursive(query, k, 0, pq);
@@ -96,10 +131,10 @@ public:
         std::vector<int> result;
         if (!std::isfinite(radius) || radius < Scalar(0))
         {
-            throw std::invalid_argument("KdTree: radius must be non-negative");
+            throw std::invalid_argument("KdTree: radius must be finite and non-negative");
         }
         if (_nodes.empty()) return result;
-        radiusSearchRecursive(query, radius * radius, 0, result);
+        radiusSearchRecursive(query, radius, 0, result);
         return result;
     }
 
@@ -108,7 +143,7 @@ public:
     /// On CPU: loops over queries using the kd-tree.
     /// @param queries   M x 3 matrix of query points
     /// @param k         number of neighbors per query
-    /// @return          vector of M vectors, each with K indices
+    /// @return          vector of M vectors, each with up to K finite neighbor indices
     std::vector<std::vector<int>> batchNearestKSearch(
         const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& queries, int k) const
     {
@@ -129,10 +164,12 @@ public:
 
         if constexpr (Dev == plamatrix::Device::CPU)
         {
+            const int N = checkedInt(_cloud->size(), "KdTree: point count");
             for (int i = 0; i < M; ++i)
             {
                 plamatrix::Vec3<Scalar> q{queries(i, 0), queries(i, 1), queries(i, 2)};
-                results[static_cast<std::size_t>(i)] = nearestKSearch(q, k);
+                auto row = nearestKSearch(q, k);
+                results[static_cast<std::size_t>(i)] = filterFiniteNeighbors(q, row, N);
             }
         }
         else
@@ -148,37 +185,66 @@ public:
             const int K_use = std::min(k, N);
             if (K_use > 32)
             {
-                throw std::invalid_argument("GPU KNN supports k in [1, 32]");
+                for (int i = 0; i < M; ++i)
+                {
+                    plamatrix::Vec3<Scalar> q{queries(i, 0), queries(i, 1), queries(i, 2)};
+                    auto row = nearestKSearch(q, k);
+                    results[static_cast<std::size_t>(i)] = filterFiniteNeighbors(q, row, N);
+                }
+                return results;
             }
 
-            gpu::DeviceBuffer<Scalar> d_queries(static_cast<std::size_t>(M * 3));
-            gpu::DeviceBuffer<int> d_indices(static_cast<std::size_t>(M * K_use));
-            gpu::DeviceBuffer<Scalar> d_dists(static_cast<std::size_t>(M * K_use));
+            const std::size_t query_count = static_cast<std::size_t>(M);
+            const std::size_t k_count = static_cast<std::size_t>(K_use);
+            const std::size_t query_scalars =
+                detail::checkedSizeProduct(query_count, 3, "KdTree: query buffer");
+            const std::size_t result_count =
+                detail::checkedSizeProduct(query_count, k_count, "KdTree: result buffer");
+            const std::size_t query_bytes =
+                detail::checkedByteCount<Scalar>(query_scalars, "KdTree: query buffer");
+            const std::size_t index_bytes =
+                detail::checkedByteCount<int>(result_count, "KdTree: index buffer");
+            const std::size_t dist_bytes =
+                detail::checkedByteCount<Scalar>(result_count, "KdTree: distance buffer");
+
+            gpu::DeviceBuffer<Scalar> d_queries(query_scalars);
+            gpu::DeviceBuffer<int> d_indices(result_count);
+            gpu::DeviceBuffer<Scalar> d_dists(result_count);
 
             // Copy host queries to GPU
-            std::vector<Scalar> h_queries(static_cast<std::size_t>(M * 3));
+            std::vector<Scalar> h_queries(query_scalars);
             for (int i = 0; i < M; ++i)
             {
-                h_queries[static_cast<std::size_t>(i * 3)]     = queries(i, 0);
-                h_queries[static_cast<std::size_t>(i * 3 + 1)] = queries(i, 1);
-                h_queries[static_cast<std::size_t>(i * 3 + 2)] = queries(i, 2);
+                const std::size_t row_offset = static_cast<std::size_t>(i) * 3u;
+                h_queries[row_offset]     = queries(i, 0);
+                h_queries[row_offset + 1] = queries(i, 1);
+                h_queries[row_offset + 2] = queries(i, 2);
             }
-            PLAPOINT_CHECK_CUDA(cudaMemcpy(d_queries.get(), h_queries.data(), M * 3 * sizeof(Scalar), cudaMemcpyHostToDevice));
+            PLAPOINT_CHECK_CUDA(cudaMemcpy(d_queries.get(), h_queries.data(), query_bytes, cudaMemcpyHostToDevice));
 
             gpu::batchKnnDeviceColumnMajor(
                 d_queries.get(), M, _cloud->points().data(), N, K_use, d_indices.get(), d_dists.get());
 
-            std::vector<int>    flat_idx(static_cast<std::size_t>(M * K_use));
-            std::vector<Scalar> flat_dst(static_cast<std::size_t>(M * K_use));
-            PLAPOINT_CHECK_CUDA(cudaMemcpy(flat_idx.data(), d_indices.get(), M * K_use * sizeof(int),    cudaMemcpyDeviceToHost));
-            PLAPOINT_CHECK_CUDA(cudaMemcpy(flat_dst.data(),  d_dists.get(),   M * K_use * sizeof(Scalar), cudaMemcpyDeviceToHost));
+            std::vector<int>    flat_idx(result_count);
+            std::vector<Scalar> flat_dst(result_count);
+            PLAPOINT_CHECK_CUDA(cudaMemcpy(flat_idx.data(), d_indices.get(), index_bytes, cudaMemcpyDeviceToHost));
+            PLAPOINT_CHECK_CUDA(cudaMemcpy(flat_dst.data(),  d_dists.get(),  dist_bytes, cudaMemcpyDeviceToHost));
 
             for (int i = 0; i < M; ++i)
             {
-                results[static_cast<std::size_t>(i)].resize(static_cast<std::size_t>(K_use));
+                auto& row = results[static_cast<std::size_t>(i)];
+                row.reserve(static_cast<std::size_t>(K_use));
+                const std::size_t row_offset = static_cast<std::size_t>(i) * k_count;
                 for (int j = 0; j < K_use; ++j)
-                    results[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] =
-                        flat_idx[static_cast<std::size_t>(i * K_use + j)];
+                {
+                    const std::size_t flat_offset = row_offset + static_cast<std::size_t>(j);
+                    const int idx = flat_idx[flat_offset];
+                    const Scalar dist = flat_dst[flat_offset];
+                    if (idx >= 0 && idx < N && std::isfinite(dist))
+                    {
+                        row.push_back(idx);
+                    }
+                }
             }
 #endif
         }
@@ -208,10 +274,51 @@ private:
         return {pointCoord(idx, 0), pointCoord(idx, 1), pointCoord(idx, 2)};
     }
 
+    std::vector<int> filterFiniteNeighbors(
+        const plamatrix::Vec3<Scalar>& query,
+        const std::vector<int>& neighbors,
+        int point_count) const
+    {
+        std::vector<int> filtered;
+        filtered.reserve(neighbors.size());
+        for (int idx : neighbors)
+        {
+            if (idx < 0 || idx >= point_count)
+            {
+                continue;
+            }
+            const double d = finiteDistance(query, pointVec(idx));
+            if (std::isfinite(d))
+            {
+                filtered.push_back(idx);
+            }
+        }
+        return filtered;
+    }
+
     Scalar distSq(const plamatrix::Vec3<Scalar>& a, const plamatrix::Vec3<Scalar>& b) const
     {
         Scalar dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
         return dx * dx + dy * dy + dz * dz;
+    }
+
+    static double finiteDistance(
+        const plamatrix::Vec3<Scalar>& a,
+        const plamatrix::Vec3<Scalar>& b)
+    {
+        const double dx = static_cast<double>(a.x) - static_cast<double>(b.x);
+        const double dy = static_cast<double>(a.y) - static_cast<double>(b.y);
+        const double dz = static_cast<double>(a.z) - static_cast<double>(b.z);
+        return std::hypot(std::hypot(dx, dy), dz);
+    }
+
+    static bool finiteDistanceWithinRadius(
+        const plamatrix::Vec3<Scalar>& a,
+        const plamatrix::Vec3<Scalar>& b,
+        Scalar radius)
+    {
+        const double distance = finiteDistance(a, b);
+        return std::isfinite(distance) && distance <= static_cast<double>(radius);
     }
 
     int buildRecursive(std::vector<int>& indices, int start, int end, int depth)
@@ -221,7 +328,9 @@ private:
         int dim = depth % 3;
         int mid = start + (end - start) / 2;
         std::nth_element(indices.begin() + start, indices.begin() + mid, indices.begin() + end + 1,
-                         [&](int a, int b) { return pointCoord(a, dim) < pointCoord(b, dim); });
+                         [&](int a, int b) {
+                             return detail::pointCoordinateLess(pointCoord(a, dim), a, pointCoord(b, dim), b);
+                         });
 
         int node_idx = static_cast<int>(_nodes.size());
         KdTreeNode<Scalar> node{};
@@ -237,65 +346,79 @@ private:
 
     void nearestKSearchRecursive(const plamatrix::Vec3<Scalar>& query, int k,
                                  int node_idx,
-                                 std::priority_queue<std::pair<Scalar, int>,
-                                     std::vector<std::pair<Scalar, int>>,
+                                 std::priority_queue<std::pair<double, int>,
+                                     std::vector<std::pair<double, int>>,
                                      DistComparator>& pq) const
     {
         if (node_idx < 0) return;
         const auto& node = _nodes[static_cast<std::size_t>(node_idx)];
 
         auto pt = pointVec(node.point_idx);
-        Scalar d = distSq(query, pt);
+        double d = finiteDistance(query, pt);
 
-        if (static_cast<int>(pq.size()) < k)
+        if (std::isfinite(d) && static_cast<int>(pq.size()) < k)
         {
             pq.push({d, node.point_idx});
         }
-        else if (d < pq.top().first)
+        else if (std::isfinite(d) && d < pq.top().first)
         {
             pq.pop();
             pq.push({d, node.point_idx});
         }
 
         int dim = node.split_dim;
-        Scalar diff = (dim == 0 ? query.x : (dim == 1 ? query.y : query.z)) - node.split_val;
+        const double query_coord = static_cast<double>(dim == 0 ? query.x : (dim == 1 ? query.y : query.z));
+        const double diff = query_coord - static_cast<double>(node.split_val);
+        if (!std::isfinite(diff))
+        {
+            nearestKSearchRecursive(query, k, node.left, pq);
+            nearestKSearchRecursive(query, k, node.right, pq);
+            return;
+        }
         int near = diff <= 0 ? node.left : node.right;
         int far  = diff <= 0 ? node.right : node.left;
 
         nearestKSearchRecursive(query, k, near, pq);
 
-        Scalar max_dist = pq.empty() ? std::numeric_limits<Scalar>::max() : pq.top().first;
-        if (diff * diff < max_dist || static_cast<int>(pq.size()) < k)
+        const double max_dist = pq.empty() ? std::numeric_limits<double>::infinity() : pq.top().first;
+        const double split_dist = std::abs(diff);
+        if (!std::isfinite(split_dist) || split_dist <= max_dist || static_cast<int>(pq.size()) < k)
         {
             nearestKSearchRecursive(query, k, far, pq);
         }
     }
 
-    void radiusSearchRecursive(const plamatrix::Vec3<Scalar>& query, Scalar r2,
+    void radiusSearchRecursive(const plamatrix::Vec3<Scalar>& query, Scalar radius,
                                int node_idx, std::vector<int>& result) const
     {
         if (node_idx < 0) return;
         const auto& node = _nodes[static_cast<std::size_t>(node_idx)];
 
         auto pt = pointVec(node.point_idx);
-        Scalar d = distSq(query, pt);
-        if (d <= r2)
+        if (finiteDistanceWithinRadius(query, pt, radius))
         {
             result.push_back(node.point_idx);
         }
 
         int dim = node.split_dim;
-        Scalar diff = (dim == 0 ? query.x : (dim == 1 ? query.y : query.z)) - node.split_val;
-
-        if (diff <= 0)
+        const double query_coord = static_cast<double>(dim == 0 ? query.x : (dim == 1 ? query.y : query.z));
+        const double diff = query_coord - static_cast<double>(node.split_val);
+        if (!std::isfinite(diff))
         {
-            radiusSearchRecursive(query, r2, node.left, result);
-            if (diff * diff <= r2) radiusSearchRecursive(query, r2, node.right, result);
+            radiusSearchRecursive(query, radius, node.left, result);
+            radiusSearchRecursive(query, radius, node.right, result);
+            return;
         }
-        else
+
+        const int near = diff <= 0 ? node.left : node.right;
+        const int far = diff <= 0 ? node.right : node.left;
+
+        radiusSearchRecursive(query, radius, near, result);
+
+        const double split_distance = std::abs(diff);
+        if (!std::isfinite(split_distance) || split_distance <= static_cast<double>(radius))
         {
-            radiusSearchRecursive(query, r2, node.right, result);
-            if (diff * diff <= r2) radiusSearchRecursive(query, r2, node.left, result);
+            radiusSearchRecursive(query, radius, far, result);
         }
     }
 

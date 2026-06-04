@@ -3,6 +3,8 @@
 
 #include <cuda_runtime.h>
 #include <cfloat>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 namespace plapoint {
@@ -11,9 +13,11 @@ namespace gpu {
 // Per-thread maintains local top-K in ascending order (smallest distance at index 0)
 // This makes it easy to compare against the K-th largest (which is at d[K-1])
 
-template <typename Scalar, int K>
-__device__ void localTopKInsert(Scalar* d, int* idx, Scalar dist, int data_idx)
+template <int K>
+__device__ void localTopKInsert(double* d, int* idx, double dist, int data_idx)
 {
+    if (!isfinite(dist)) return;
+
     // Sorted ascending: d[0] is smallest, d[K-1] is largest
     // If dist >= largest kept distance, skip
     if (dist >= d[K - 1]) return;
@@ -47,6 +51,37 @@ __device__ double maxKnnDistance<double>()
     return DBL_MAX;
 }
 
+template <typename Scalar>
+__device__ Scalar clampOutputDistance(double dist)
+{
+    const Scalar max_dist = maxKnnDistance<Scalar>();
+    if (!isfinite(dist) || dist >= static_cast<double>(max_dist))
+    {
+        return max_dist;
+    }
+    return static_cast<Scalar>(dist);
+}
+
+template <typename Scalar>
+__device__ double squaredOutputDistance(
+    Scalar qx, Scalar qy, Scalar qz,
+    Scalar data_x, Scalar data_y, Scalar data_z)
+{
+    const double dx = static_cast<double>(qx) - static_cast<double>(data_x);
+    const double dy = static_cast<double>(qy) - static_cast<double>(data_y);
+    const double dz = static_cast<double>(qz) - static_cast<double>(data_z);
+    const double scaled_distance = norm3d(dx, dy, dz);
+    if (!isfinite(scaled_distance))
+    {
+        return DBL_MAX;
+    }
+    if (scaled_distance >= sqrt(DBL_MAX))
+    {
+        return DBL_MAX;
+    }
+    return scaled_distance * scaled_distance;
+}
+
 template <typename Scalar, int BLOCK_SIZE, int K>
 __global__ void bruteForceKnnKernel(
     const Scalar* __restrict__ queries,
@@ -57,47 +92,51 @@ __global__ void bruteForceKnnKernel(
     Scalar* __restrict__ out_dists)
 {
     // Shared memory: each thread writes its local K, then thread 0 merges
-    // Layout: BLOCK_SIZE * K distances | BLOCK_SIZE * K indices
+    // Layout: BLOCK_SIZE * K double distances | BLOCK_SIZE * K indices
     extern __shared__ char smem[];
-    Scalar* s_dists = reinterpret_cast<Scalar*>(smem);
+    double* s_dists = reinterpret_cast<double*>(smem);
     int*    s_inds  = reinterpret_cast<int*>(s_dists + BLOCK_SIZE * K);
 
     int tid = threadIdx.x;
-    int query_idx = blockIdx.x;
+    int query_idx = static_cast<int>(blockIdx.x);
 
     if (query_idx >= M) return;
 
     // Per-thread local top-K (registers)
-    Scalar local_d[K];
+    double local_key[K];
     int    local_idx[K];
     for (int j = 0; j < K; ++j)
     {
-        local_d[j]   = maxKnnDistance<Scalar>();
+        local_key[j] = HUGE_VAL;
         local_idx[j] = -1;
     }
 
-    Scalar qx = queries[query_idx * 3];
-    Scalar qy = queries[query_idx * 3 + 1];
-    Scalar qz = queries[query_idx * 3 + 2];
+    const size_t query_offset = static_cast<size_t>(query_idx) * 3u;
+    Scalar qx = queries[query_offset];
+    Scalar qy = queries[query_offset + 1u];
+    Scalar qz = queries[query_offset + 2u];
 
-    // Each thread processes strided data points, updating local top-K
-    for (int i = tid; i < N; i += BLOCK_SIZE)
+    // Each thread processes strided data points, updating local top-K.
+    const size_t n_size = static_cast<size_t>(N);
+    for (size_t data_idx = static_cast<size_t>(tid); data_idx < n_size; data_idx += BLOCK_SIZE)
     {
-        Scalar data_x = data_column_major ? data[i] : data[i * 3];
-        Scalar data_y = data_column_major ? data[N + i] : data[i * 3 + 1];
-        Scalar data_z = data_column_major ? data[2 * N + i] : data[i * 3 + 2];
-        Scalar dx = qx - data_x;
-        Scalar dy = qy - data_y;
-        Scalar dz = qz - data_z;
-        Scalar dist = dx * dx + dy * dy + dz * dz;
-        localTopKInsert<Scalar, K>(local_d, local_idx, dist, i);
+        const int point_idx = static_cast<int>(data_idx);
+        const size_t row_major_offset = data_idx * 3u;
+        Scalar data_x = data_column_major ? data[data_idx] : data[row_major_offset];
+        Scalar data_y = data_column_major ? data[n_size + data_idx] : data[row_major_offset + 1u];
+        Scalar data_z = data_column_major ? data[2u * n_size + data_idx] : data[row_major_offset + 2u];
+        const double dx = static_cast<double>(qx) - static_cast<double>(data_x);
+        const double dy = static_cast<double>(qy) - static_cast<double>(data_y);
+        const double dz = static_cast<double>(qz) - static_cast<double>(data_z);
+        const double dist_key = norm3d(dx, dy, dz);
+        localTopKInsert<K>(local_key, local_idx, dist_key, point_idx);
     }
     __syncthreads();
 
     // Each thread writes its local top-K to shared memory
     for (int j = 0; j < K; ++j)
     {
-        s_dists[tid * K + j] = local_d[j];
+        s_dists[tid * K + j] = local_key[j];
         s_inds[tid * K + j]  = local_idx[j];
     }
     __syncthreads();
@@ -105,11 +144,11 @@ __global__ void bruteForceKnnKernel(
     // Thread 0 merges all threads' results into final top-K
     if (tid == 0)
     {
-        Scalar final_d[K];
+        double final_key[K];
         int    final_idx[K];
         for (int j = 0; j < K; ++j)
         {
-            final_d[j]   = maxKnnDistance<Scalar>();
+            final_key[j] = HUGE_VAL;
             final_idx[j] = -1;
         }
 
@@ -119,15 +158,32 @@ __global__ void bruteForceKnnKernel(
             {
                 int idx = s_inds[t * K + j];
                 if (idx >= 0)
-                    localTopKInsert<Scalar, K>(final_d, final_idx, s_dists[t * K + j], idx);
+                {
+                    const double candidate_key = s_dists[t * K + j];
+                    localTopKInsert<K>(final_key, final_idx, candidate_key, idx);
+                }
             }
         }
 
         for (int k = 0; k < outputK; ++k)
         {
-            out_indices[query_idx * outputK + k] = final_idx[k];
+            const size_t output_offset =
+                static_cast<size_t>(query_idx) * static_cast<size_t>(outputK) + static_cast<size_t>(k);
+            out_indices[output_offset] = final_idx[k];
             if (out_dists)
-                out_dists[query_idx * outputK + k] = final_d[k];
+            {
+                double out_dist = DBL_MAX;
+                if (final_idx[k] >= 0)
+                {
+                    const int idx = final_idx[k];
+                    const size_t row_major_offset = static_cast<size_t>(idx) * 3u;
+                    const Scalar data_x = data_column_major ? data[static_cast<size_t>(idx)] : data[row_major_offset];
+                    const Scalar data_y = data_column_major ? data[n_size + static_cast<size_t>(idx)] : data[row_major_offset + 1u];
+                    const Scalar data_z = data_column_major ? data[2u * n_size + static_cast<size_t>(idx)] : data[row_major_offset + 2u];
+                    out_dist = squaredOutputDistance(qx, qy, qz, data_x, data_y, data_z);
+                }
+                out_dists[output_offset] = clampOutputDistance<Scalar>(out_dist);
+            }
         }
     }
 }
@@ -140,7 +196,8 @@ cudaError_t launchBruteForceKnn(
     bool data_column_major,
     cudaStream_t stream)
 {
-    const int BLOCK_SIZE = 256;
+    constexpr int kDefaultBlockSize = 256;
+    constexpr int kLargeKBlockSize = 128;
 
     int K_template = K;
     if (K <= 1)      K_template = 1;
@@ -149,30 +206,32 @@ cudaError_t launchBruteForceKnn(
     else if (K <= 16) K_template = 16;
     else              K_template = 32;
 
-    // Shared memory: BLOCK_SIZE * K_template per type
-    size_t smem = BLOCK_SIZE * K_template * (sizeof(Scalar) + sizeof(int));
+    // Shared memory: BLOCK_SIZE * K_template double distances plus indices.
+    const int block_size = (K_template <= 16) ? kDefaultBlockSize : kLargeKBlockSize;
+    size_t smem = static_cast<size_t>(block_size) * static_cast<size_t>(K_template)
+        * (sizeof(double) + sizeof(int));
 
     switch (K_template)
     {
         case 1:
-            bruteForceKnnKernel<Scalar, BLOCK_SIZE, 1>
-                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
+            bruteForceKnnKernel<Scalar, kDefaultBlockSize, 1>
+                <<<M, kDefaultBlockSize, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
             break;
         case 4:
-            bruteForceKnnKernel<Scalar, BLOCK_SIZE, 4>
-                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
+            bruteForceKnnKernel<Scalar, kDefaultBlockSize, 4>
+                <<<M, kDefaultBlockSize, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
             break;
         case 8:
-            bruteForceKnnKernel<Scalar, BLOCK_SIZE, 8>
-                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
+            bruteForceKnnKernel<Scalar, kDefaultBlockSize, 8>
+                <<<M, kDefaultBlockSize, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
             break;
         case 16:
-            bruteForceKnnKernel<Scalar, BLOCK_SIZE, 16>
-                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
+            bruteForceKnnKernel<Scalar, kDefaultBlockSize, 16>
+                <<<M, kDefaultBlockSize, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
             break;
         default:
-            bruteForceKnnKernel<Scalar, BLOCK_SIZE, 32>
-                <<<M, BLOCK_SIZE, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
+            bruteForceKnnKernel<Scalar, kLargeKBlockSize, 32>
+                <<<M, kLargeKBlockSize, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
             break;
     }
 

@@ -3,6 +3,7 @@
 #include <plapoint/gpu/knn.h>
 #include <plapoint/gpu/cuda_check.h>
 #include <cuda_runtime.h>
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -44,14 +45,25 @@ void batchKnnImpl(const Scalar* h_queries, int M,
     }
 
     const int K_use = K;
+    const std::size_t query_count = static_cast<std::size_t>(M);
+    const std::size_t data_count = static_cast<std::size_t>(N);
+    const std::size_t k_count = static_cast<std::size_t>(K_use);
+    const std::size_t query_scalars = detail::checkedSizeProduct(query_count, 3, "GPU KNN query buffer");
+    const std::size_t data_scalars = detail::checkedSizeProduct(data_count, 3, "GPU KNN data buffer");
+    const std::size_t result_count =
+        detail::checkedSizeProduct(query_count, k_count, "GPU KNN result buffer");
+    const std::size_t query_bytes = detail::checkedByteCount<Scalar>(query_scalars, "GPU KNN query buffer");
+    const std::size_t data_bytes = detail::checkedByteCount<Scalar>(data_scalars, "GPU KNN data buffer");
+    const std::size_t index_bytes = detail::checkedByteCount<int>(result_count, "GPU KNN index buffer");
+    const std::size_t dist_bytes = detail::checkedByteCount<Scalar>(result_count, "GPU KNN distance buffer");
 
-    DeviceBuffer<Scalar> d_queries(static_cast<std::size_t>(M * 3));
-    DeviceBuffer<Scalar> d_data(static_cast<std::size_t>(N * 3));
-    DeviceBuffer<int> d_indices(static_cast<std::size_t>(M * K_use));
-    DeviceBuffer<Scalar> d_dists(static_cast<std::size_t>(M * K_use));
+    DeviceBuffer<Scalar> d_queries(query_scalars);
+    DeviceBuffer<Scalar> d_data(data_scalars);
+    DeviceBuffer<int> d_indices(result_count);
+    DeviceBuffer<Scalar> d_dists(result_count);
 
-    PLAPOINT_CHECK_CUDA(cudaMemcpy(d_queries.get(), h_queries, M * 3 * sizeof(Scalar), cudaMemcpyHostToDevice));
-    PLAPOINT_CHECK_CUDA(cudaMemcpy(d_data.get(), h_data, N * 3 * sizeof(Scalar), cudaMemcpyHostToDevice));
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(d_queries.get(), h_queries, query_bytes, cudaMemcpyHostToDevice));
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(d_data.get(), h_data, data_bytes, cudaMemcpyHostToDevice));
 
     cudaError_t err = launchBruteForceKnn<Scalar>(
         d_queries.get(), d_data.get(), M, N, K_use, d_indices.get(), d_dists.get(), false, 0);
@@ -62,11 +74,11 @@ void batchKnnImpl(const Scalar* h_queries, int M,
     }
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    out_indices.resize(static_cast<std::size_t>(M * K_use));
-    out_dists.resize(static_cast<std::size_t>(M * K_use));
+    out_indices.resize(result_count);
+    out_dists.resize(result_count);
 
-    PLAPOINT_CHECK_CUDA(cudaMemcpy(out_indices.data(), d_indices.get(), M * K_use * sizeof(int), cudaMemcpyDeviceToHost));
-    PLAPOINT_CHECK_CUDA(cudaMemcpy(out_dists.data(), d_dists.get(), M * K_use * sizeof(Scalar), cudaMemcpyDeviceToHost));
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(out_indices.data(), d_indices.get(), index_bytes, cudaMemcpyDeviceToHost));
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(out_dists.data(), d_dists.get(), dist_bytes, cudaMemcpyDeviceToHost));
 }
 
 // Explicit instantiations

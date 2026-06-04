@@ -62,9 +62,11 @@ public:
 
         void requireTextureCoords() const
         {
-            if (!_cloud.hasTextureCoords())
+            if (!_cloud.hasTextureCoords() ||
+                !_cloud.hasPointAlignedTextureCoords() ||
+                _idx >= static_cast<size_t>(_cloud.textureCoords()->rows()))
             {
-                throw std::runtime_error("PointView: cloud has no texture coordinates");
+                throw std::runtime_error("PointView: cloud has no texture coordinate for point");
             }
         }
 
@@ -104,6 +106,7 @@ public:
     std::enable_if_t<D == plamatrix::Device::CPU, PointCloud<Scalar, plamatrix::Device::GPU>>
     toGpu() const
     {
+        validateStructure();
         PointCloud<Scalar, plamatrix::Device::GPU> result(_points.toGpu());
         if (_normals) result._normals = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(_normals->toGpu());
         if (_colors) result._colors = std::make_unique<plamatrix::DenseMatrix<uint8_t, plamatrix::Device::GPU>>(_colors->toGpu());
@@ -112,6 +115,7 @@ public:
         if (_faceTextureIndices) result._faceTextureIndices = std::make_unique<plamatrix::DenseMatrix<int, plamatrix::Device::GPU>>(_faceTextureIndices->toGpu());
         result.setMaterialLibraryFile(_materialLibraryFile);
         result.setTextureImageFile(_textureImageFile);
+        result.validateStructure();
         return result;
     }
 
@@ -119,6 +123,7 @@ public:
     std::enable_if_t<D == plamatrix::Device::GPU, PointCloud<Scalar, plamatrix::Device::CPU>>
     toCpu() const
     {
+        validateStructure();
         PointCloud<Scalar, plamatrix::Device::CPU> result(_points.toCpu());
         if (_normals) result._normals = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(_normals->toCpu());
         if (_colors) result._colors = std::make_unique<plamatrix::DenseMatrix<uint8_t, plamatrix::Device::CPU>>(_colors->toCpu());
@@ -127,6 +132,7 @@ public:
         if (_faceTextureIndices) result._faceTextureIndices = std::make_unique<plamatrix::DenseMatrix<int, plamatrix::Device::CPU>>(_faceTextureIndices->toCpu());
         result.setMaterialLibraryFile(_materialLibraryFile);
         result.setTextureImageFile(_textureImageFile);
+        result.validateStructure();
         return result;
     }
 
@@ -180,11 +186,11 @@ public:
 
     plamatrix::DenseMatrix<uint8_t, Dev>* colors() { return _colors.get(); }
 
-    /// Set optional texture coordinates by copy (Nx2 matrix, must match point count)
+    /// Set optional texture coordinates by copy (Tx2 UV table).
     void setTextureCoords(const MatrixType& t)
     {
-        if (t.rows() != _points.rows() || t.cols() != 2)
-            throw std::runtime_error("Texture coords must match point count and be Nx2");
+        if (t.cols() != 2)
+            throw std::runtime_error("Texture coords must be Tx2");
         if (_faceTextureIndices)
             validateIndexMatrix(*_faceTextureIndices, t.rows(), "Face texture");
         _textureCoords = std::make_unique<MatrixType>(t.rows(), t.cols());
@@ -196,8 +202,8 @@ public:
     /// Set optional texture coordinates by move
     void setTextureCoords(MatrixType&& t)
     {
-        if (t.rows() != _points.rows() || t.cols() != 2)
-            throw std::runtime_error("Texture coords must match point count and be Nx2");
+        if (t.cols() != 2)
+            throw std::runtime_error("Texture coords must be Tx2");
         if (_faceTextureIndices)
             validateIndexMatrix(*_faceTextureIndices, t.rows(), "Face texture");
         _textureCoords = std::make_unique<MatrixType>(std::move(t));
@@ -285,11 +291,25 @@ private:
                                     plamatrix::Index exclusive_limit,
                                     const char* label)
     {
+        if constexpr (Dev == plamatrix::Device::GPU)
+        {
+            validateCpuIndexMatrix(m.toCpu(), exclusive_limit, label);
+        }
+        else
+        {
+            validateCpuIndexMatrix(m, exclusive_limit, label);
+        }
+    }
+
+    static void validateCpuIndexMatrix(const plamatrix::DenseMatrix<int, plamatrix::Device::CPU>& m,
+                                       plamatrix::Index exclusive_limit,
+                                       const char* label)
+    {
         for (plamatrix::Index r = 0; r < m.rows(); ++r)
         {
             for (int c = 0; c < m.cols(); ++c)
             {
-                const int idx = pointGet(m, r, c);
+                const int idx = m(r, c);
                 if (idx < 0 || idx >= exclusive_limit)
                 {
                     throw std::out_of_range(std::string(label) + " index out of range");
@@ -300,6 +320,10 @@ private:
 
     void validateFaceTextureIndices(const plamatrix::DenseMatrix<int, Dev>& ft) const
     {
+        if (ft.cols() != 3)
+        {
+            throw std::runtime_error("Face texture indices must be Fx3");
+        }
         if (!_faces)
         {
             throw std::runtime_error("Face texture indices require faces");
@@ -322,6 +346,53 @@ private:
         {
             throw std::runtime_error("Faces must match face texture index count");
         }
+    }
+
+    void validateStructure() const
+    {
+        if (_points.cols() != 3)
+            throw std::runtime_error("PointCloud points must be Nx3");
+        if (_normals && (_normals->rows() != _points.rows() || _normals->cols() != 3))
+            throw std::runtime_error("Normals must match point count and be Nx3");
+        if (_colors && (_colors->rows() != _points.rows() || _colors->cols() != 3))
+            throw std::runtime_error("Colors must match point count and be Nx3");
+        if (_textureCoords && _textureCoords->cols() != 2)
+            throw std::runtime_error("Texture coords must be Tx2");
+        if (_faces)
+        {
+            if (_faces->cols() != 3)
+                throw std::runtime_error("Faces must be Fx3");
+            validateIndexMatrix(*_faces, _points.rows(), "Faces");
+        }
+        if (_faceTextureIndices)
+            validateFaceTextureIndices(*_faceTextureIndices);
+    }
+
+    bool hasPointAlignedTextureCoords() const
+    {
+        if (!_textureCoords || _textureCoords->rows() != _points.rows())
+        {
+            return false;
+        }
+        if (!_faceTextureIndices)
+        {
+            return true;
+        }
+        if (!_faces || _faceTextureIndices->rows() != _faces->rows())
+        {
+            return false;
+        }
+        for (plamatrix::Index r = 0; r < _faces->rows(); ++r)
+        {
+            for (int col = 0; col < 3; ++col)
+            {
+                if (_faceTextureIndices->getValue(r, col) != _faces->getValue(r, col))
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     MatrixType _points;

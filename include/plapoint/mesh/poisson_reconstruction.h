@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <tuple>
@@ -45,6 +46,7 @@ public:
     {
         if (!_cloud) throw std::runtime_error("Poisson: input cloud not set");
         if (!_cloud->hasNormals()) throw std::runtime_error("Poisson: cloud must have normals");
+        validateInputCloud();
 
         int n = static_cast<int>(_cloud->size());
 
@@ -131,6 +133,35 @@ private:
             children.fill(-1);
         }
     };
+
+    void validateInputCloud() const
+    {
+        if (_cloud->size() == 0)
+        {
+            throw std::invalid_argument("Poisson: input cloud must not be empty");
+        }
+        if (_cloud->size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        {
+            throw std::overflow_error("Poisson: point count exceeds int range");
+        }
+
+        const auto* normals = _cloud->normals();
+        for (std::size_t i = 0; i < _cloud->size(); ++i)
+        {
+            for (int c = 0; c < 3; ++c)
+            {
+                const auto row = static_cast<plamatrix::Index>(i);
+                if (!std::isfinite(_cloud->points()(row, c)))
+                {
+                    throw std::invalid_argument("Poisson: points must be finite");
+                }
+                if (!std::isfinite(normals->getValue(row, c)))
+                {
+                    throw std::invalid_argument("Poisson: normals must be finite");
+                }
+            }
+        }
+    }
 
     static int createNode(std::vector<OctreeNode>& nodes, Scalar x, Scalar y, Scalar z, Scalar s, int d)
     {

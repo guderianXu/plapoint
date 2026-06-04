@@ -2,6 +2,8 @@
 #include <plapoint/search/kdtree.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
+#include <algorithm>
+#include <limits>
 
 class KdTreeTest : public ::testing::Test
 {
@@ -52,6 +54,27 @@ TEST_F(KdTreeTest, NearestKSearchSinglePoint)
     // points 0,1,2 are closest to origin
 }
 
+TEST_F(KdTreeTest, NearestKSearchKeepsExtremeButFiniteDistance)
+{
+    constexpr Scalar max_value = std::numeric_limits<Scalar>::max();
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(1, 3);
+    mat.setValue(0, 0, Scalar(0));
+    mat.setValue(0, 1, Scalar(0));
+    mat.setValue(0, 2, Scalar(0));
+    auto extreme_cloud = std::make_shared<Cloud>(std::move(mat));
+
+    KdTree tree;
+    tree.setInputCloud(extreme_cloud);
+    tree.build();
+
+    plamatrix::Vec3<Scalar> query{max_value, 0, 0};
+    const auto results = tree.nearestKSearch(query, 1);
+
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0], 0);
+}
+
 TEST_F(KdTreeTest, RadiusSearch)
 {
     KdTree tree;
@@ -72,6 +95,47 @@ TEST_F(KdTreeTest, RadiusSearchRejectsNegativeRadius)
 
     plamatrix::Vec3<Scalar> query{0, 0, 0};
     EXPECT_THROW(tree.radiusSearch(query, Scalar(-1)), std::invalid_argument);
+}
+
+TEST_F(KdTreeTest, RadiusSearchUsesFiniteDistanceForExtremeCoordinates)
+{
+    constexpr Scalar max_value = std::numeric_limits<Scalar>::max();
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
+    mat.setValue(0, 0, -max_value); mat.setValue(0, 1, 0); mat.setValue(0, 2, 0);
+    mat.setValue(1, 0, Scalar(0)); mat.setValue(1, 1, 0); mat.setValue(1, 2, 0);
+    auto extreme_cloud = std::make_shared<Cloud>(std::move(mat));
+
+    KdTree tree;
+    tree.setInputCloud(extreme_cloud);
+    tree.build();
+
+    plamatrix::Vec3<Scalar> query{max_value, 0, 0};
+    const auto results = tree.radiusSearch(query, max_value);
+
+    EXPECT_EQ(std::find(results.begin(), results.end(), 0), results.end());
+    EXPECT_NE(std::find(results.begin(), results.end(), 1), results.end());
+}
+
+TEST_F(KdTreeTest, RadiusSearchTraversesBothSidesWhenSplitDistanceIsNonFinite)
+{
+    const Scalar nan = std::numeric_limits<Scalar>::quiet_NaN();
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(3, 3);
+    mat.setValue(0, 0, Scalar(0)); mat.setValue(0, 1, Scalar(0)); mat.setValue(0, 2, Scalar(0));
+    mat.setValue(1, 0, nan); mat.setValue(1, 1, Scalar(0)); mat.setValue(1, 2, Scalar(0));
+    mat.setValue(2, 0, nan); mat.setValue(2, 1, Scalar(1)); mat.setValue(2, 2, Scalar(0));
+    auto mixed_cloud = std::make_shared<Cloud>(std::move(mat));
+
+    KdTree tree;
+    tree.setInputCloud(mixed_cloud);
+    tree.build();
+
+    plamatrix::Vec3<Scalar> query{Scalar(0), Scalar(0), Scalar(0)};
+    const auto results = tree.radiusSearch(query, Scalar(0.5));
+
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0], 0);
 }
 
 TEST_F(KdTreeTest, BatchNearestKSearchRejectsNon3ColumnQueries)
@@ -96,4 +160,117 @@ TEST_F(KdTreeTest, BatchNearestKSearchWithoutInputReturnsEmptyRows)
     ASSERT_EQ(results.size(), 2u);
     EXPECT_TRUE(results[0].empty());
     EXPECT_TRUE(results[1].empty());
+}
+
+TEST_F(KdTreeTest, BatchNearestKSearchClampsKToPointCount)
+{
+    KdTree tree;
+    tree.setInputCloud(cloud);
+    tree.build();
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(1, 3);
+    queries(0, 0) = Scalar(0);
+    queries(0, 1) = Scalar(0);
+    queries(0, 2) = Scalar(0);
+
+    auto results = tree.batchNearestKSearch(queries, 50);
+
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].size(), cloud->size());
+}
+
+TEST_F(KdTreeTest, BatchNearestKSearchDropsInvalidInfiniteDistances)
+{
+    constexpr Scalar infinity = std::numeric_limits<Scalar>::infinity();
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(1, 3);
+    mat.setValue(0, 0, infinity);
+    mat.setValue(0, 1, Scalar(0));
+    mat.setValue(0, 2, Scalar(0));
+    auto far_cloud = std::make_shared<Cloud>(std::move(mat));
+
+    KdTree tree;
+    tree.setInputCloud(far_cloud);
+    tree.build();
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(1, 3);
+    queries(0, 0) = Scalar(0);
+    queries(0, 1) = Scalar(0);
+    queries(0, 2) = Scalar(0);
+
+    const auto results = tree.batchNearestKSearch(queries, 1);
+
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_TRUE(results[0].empty());
+}
+
+TEST_F(KdTreeTest, BatchNearestKSearchKeepsExtremeButFiniteDistance)
+{
+    constexpr Scalar max_value = std::numeric_limits<Scalar>::max();
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(1, 3);
+    mat.setValue(0, 0, Scalar(0));
+    mat.setValue(0, 1, Scalar(0));
+    mat.setValue(0, 2, Scalar(0));
+    auto extreme_cloud = std::make_shared<Cloud>(std::move(mat));
+
+    KdTree tree;
+    tree.setInputCloud(extreme_cloud);
+    tree.build();
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(1, 3);
+    queries(0, 0) = max_value;
+    queries(0, 1) = Scalar(0);
+    queries(0, 2) = Scalar(0);
+
+    const auto results = tree.batchNearestKSearch(queries, 1);
+
+    ASSERT_EQ(results.size(), 1u);
+    ASSERT_EQ(results[0].size(), 1u);
+    EXPECT_EQ(results[0][0], 0);
+}
+
+TEST_F(KdTreeTest, BatchNearestKSearchSkipsInvalidDistanceAndReturnsFiniteCandidate)
+{
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
+    mat.setValue(0, 0, std::numeric_limits<Scalar>::quiet_NaN());
+    mat.setValue(0, 1, Scalar(0));
+    mat.setValue(0, 2, Scalar(0));
+    mat.setValue(1, 0, Scalar(0));
+    mat.setValue(1, 1, Scalar(0));
+    mat.setValue(1, 2, Scalar(0));
+    auto mixed_cloud = std::make_shared<Cloud>(std::move(mat));
+
+    KdTree tree;
+    tree.setInputCloud(mixed_cloud);
+    tree.build();
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(1, 3);
+    queries(0, 0) = Scalar(0);
+    queries(0, 1) = Scalar(0);
+    queries(0, 2) = Scalar(0);
+
+    const auto results = tree.batchNearestKSearch(queries, 1);
+
+    ASSERT_EQ(results.size(), 1u);
+    ASSERT_EQ(results[0].size(), 1u);
+    EXPECT_EQ(results[0][0], 1);
+}
+
+TEST(KdTreeSizeCheckTest, CheckedSizeProductRejectsOverflow)
+{
+    EXPECT_EQ(plapoint::search::detail::checkedSizeProduct(7, 3, "test buffer"), 21u);
+    EXPECT_THROW(
+        plapoint::search::detail::checkedSizeProduct(
+            std::numeric_limits<std::size_t>::max(), 2, "test buffer"),
+        std::overflow_error);
+}
+
+TEST(KdTreeOrderingTest, PointCoordinateLessHandlesNonFiniteValuesDeterministically)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_TRUE(plapoint::search::detail::pointCoordinateLess(0.0f, 0, nan, 1));
+    EXPECT_FALSE(plapoint::search::detail::pointCoordinateLess(nan, 1, 0.0f, 0));
+    EXPECT_TRUE(plapoint::search::detail::pointCoordinateLess(nan, 1, nan, 2));
+    EXPECT_FALSE(plapoint::search::detail::pointCoordinateLess(nan, 2, nan, 1));
 }

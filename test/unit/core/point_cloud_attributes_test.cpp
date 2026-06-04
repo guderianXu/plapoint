@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
+#include <string>
 
 #ifdef PLAPOINT_WITH_CUDA
 #include <plapoint/gpu/cuda_check.h>
@@ -79,7 +80,7 @@ TEST(PointCloudAttributesTest, SetTextureCoords)
 TEST(PointCloudAttributesTest, SetTextureCoordsRejectsWrongSize)
 {
     plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> tex(5, 2);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> tex(10, 3);
     EXPECT_THROW(cloud.setTextureCoords(tex), std::runtime_error);
 }
 
@@ -320,5 +321,163 @@ TEST(PointCloudAttributesTest, CpuGpuRoundtripPreservesOptionalAttributes)
 
     EXPECT_EQ(roundtrip.materialLibraryFile(), "materials.mtl");
     EXPECT_EQ(roundtrip.textureImageFile(), "diffuse.png");
+}
+
+TEST(PointCloudAttributesTest, ToGpuRejectsMutableInvalidFaceTextureIndices)
+{
+    if (!hasCudaDeviceForAttributes())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping point-cloud validation transfer test";
+    }
+
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> texture_coords(3, 2);
+    texture_coords.fill(0.0f);
+    cloud.setTextureCoords(std::move(texture_coords));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
+    faces.setValue(0, 0, 0);
+    faces.setValue(0, 1, 1);
+    faces.setValue(0, 2, 2);
+    cloud.setFaces(std::move(faces));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(1, 3);
+    face_texture_indices.setValue(0, 0, 0);
+    face_texture_indices.setValue(0, 1, 1);
+    face_texture_indices.setValue(0, 2, 2);
+    cloud.setFaceTextureIndices(std::move(face_texture_indices));
+
+    cloud.faceTextureIndices()->setValue(0, 2, 3);
+
+    EXPECT_THROW((void)cloud.toGpu(), std::out_of_range);
+}
+
+TEST(PointCloudAttributesTest, ToGpuRejectsMutableInvalidPointShapeBeforeTransfer)
+{
+    if (!hasCudaDeviceForAttributes())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping point-cloud validation transfer test";
+    }
+
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
+    cloud.points() = plamatrix::DenseMatrix<float, plamatrix::Device::CPU>(3, 4);
+
+    try
+    {
+        (void)cloud.toGpu();
+        FAIL() << "Expected invalid point shape to be rejected";
+    }
+    catch (const std::runtime_error& ex)
+    {
+        EXPECT_NE(std::string(ex.what()).find("PointCloud points must be Nx3"), std::string::npos);
+    }
+}
+
+TEST(PointCloudAttributesTest, ToGpuRejectsMutableInvalidFaceTextureShape)
+{
+    if (!hasCudaDeviceForAttributes())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping point-cloud validation transfer test";
+    }
+
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> texture_coords(3, 2);
+    texture_coords.fill(0.0f);
+    cloud.setTextureCoords(std::move(texture_coords));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
+    faces.fill(0);
+    cloud.setFaces(std::move(faces));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(1, 3);
+    face_texture_indices.fill(0);
+    cloud.setFaceTextureIndices(std::move(face_texture_indices));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> invalid_face_texture_indices(1, 2);
+    invalid_face_texture_indices.fill(0);
+    *cloud.faceTextureIndices() = std::move(invalid_face_texture_indices);
+
+    EXPECT_THROW((void)cloud.toGpu(), std::runtime_error);
+}
+
+TEST(PointCloudAttributesTest, ToCpuRejectsMutableInvalidGpuFaceTextureIndices)
+{
+    if (!hasCudaDeviceForAttributes())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping point-cloud validation transfer test";
+    }
+
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> texture_coords(3, 2);
+    texture_coords.fill(0.0f);
+    cloud.setTextureCoords(std::move(texture_coords));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
+    faces.setValue(0, 0, 0);
+    faces.setValue(0, 1, 1);
+    faces.setValue(0, 2, 2);
+    cloud.setFaces(std::move(faces));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(1, 3);
+    face_texture_indices.setValue(0, 0, 0);
+    face_texture_indices.setValue(0, 1, 1);
+    face_texture_indices.setValue(0, 2, 2);
+    cloud.setFaceTextureIndices(std::move(face_texture_indices));
+
+    auto gpu_cloud = cloud.toGpu();
+    gpu_cloud.faceTextureIndices()->setValue(0, 1, 3);
+
+    EXPECT_THROW((void)gpu_cloud.toCpu(), std::out_of_range);
+}
+
+TEST(PointCloudAttributesTest, ToCpuRejectsMutableInvalidGpuFaceTextureShape)
+{
+    if (!hasCudaDeviceForAttributes())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping point-cloud validation transfer test";
+    }
+
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> texture_coords(3, 2);
+    texture_coords.fill(0.0f);
+    cloud.setTextureCoords(std::move(texture_coords));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
+    faces.fill(0);
+    cloud.setFaces(std::move(faces));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(1, 3);
+    face_texture_indices.fill(0);
+    cloud.setFaceTextureIndices(std::move(face_texture_indices));
+
+    auto gpu_cloud = cloud.toGpu();
+    auto invalid_face_texture_indices =
+        plamatrix::DenseMatrix<int, plamatrix::Device::GPU>(1, 2);
+    invalid_face_texture_indices.fill(0);
+    *gpu_cloud.faceTextureIndices() = std::move(invalid_face_texture_indices);
+
+    EXPECT_THROW((void)gpu_cloud.toCpu(), std::runtime_error);
+}
+
+TEST(PointCloudAttributesTest, ToCpuRejectsMutableInvalidGpuPointShapeBeforeTransfer)
+{
+    if (!hasCudaDeviceForAttributes())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping point-cloud validation transfer test";
+    }
+
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
+    auto gpu_cloud = cloud.toGpu();
+    gpu_cloud.points() = plamatrix::DenseMatrix<float, plamatrix::Device::GPU>(3, 4);
+
+    try
+    {
+        (void)gpu_cloud.toCpu();
+        FAIL() << "Expected invalid point shape to be rejected";
+    }
+    catch (const std::runtime_error& ex)
+    {
+        EXPECT_NE(std::string(ex.what()).find("PointCloud points must be Nx3"), std::string::npos);
+    }
 }
 #endif

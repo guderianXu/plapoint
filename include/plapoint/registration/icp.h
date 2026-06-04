@@ -5,6 +5,7 @@
 #include <plamatrix/dense/dense_matrix.h>
 #include <plamatrix/ops/point_cloud.h>
 #include <plamatrix/ops/decomposition.h>
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -43,10 +44,10 @@ public:
         _eps = eps;
     }
 
-    /// Set the largest accepted source-target correspondence distance. Throws if distance is not finite and positive.
+    /// Set the largest accepted source-target correspondence distance. Positive infinity disables the limit.
     void setMaxCorrespondenceDistance(Scalar distance)
     {
-        if (!std::isfinite(distance) || distance <= Scalar(0))
+        if (std::isnan(distance) || distance <= Scalar(0))
         {
             throw std::invalid_argument("ICP: max correspondence distance must be positive");
         }
@@ -77,9 +78,10 @@ public:
         tree->setInputCloud(_target);
         tree->build();
 
-        int n = static_cast<int>(_source->size());
+        int n = checkedInt(_source->size(), "ICP: source point count exceeds int range");
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> src = toCpuCopy(_source->points());
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> tgt = toCpuCopy(_target->points());
+        validateFinitePointMatrix(src, "ICP: source cloud contains non-finite point");
 
         // Accumulate transform as 4x4 identity
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> T_acc = identity4x4();
@@ -123,32 +125,50 @@ public:
             const int active_n = static_cast<int>(active_indices.size());
             updateResidualMetrics(cur, tgt, corr, active_indices, n);
 
-            // Compute centroids
-            plamatrix::Vec3<Scalar> src_ct{0, 0, 0}, tgt_ct{0, 0, 0};
+            // Compute centroids in double to avoid overflowing float-scale accumulators.
+            double src_ct[3]{0.0, 0.0, 0.0};
+            double tgt_ct[3]{0.0, 0.0, 0.0};
             for (int i : active_indices)
             {
                 int j = corr[static_cast<std::size_t>(i)];
-                src_ct.x += cur(i, 0); src_ct.y += cur(i, 1); src_ct.z += cur(i, 2);
-                tgt_ct.x += tgt(j, 0); tgt_ct.y += tgt(j, 1); tgt_ct.z += tgt(j, 2);
+                src_ct[0] += static_cast<double>(cur(i, 0));
+                src_ct[1] += static_cast<double>(cur(i, 1));
+                src_ct[2] += static_cast<double>(cur(i, 2));
+                tgt_ct[0] += static_cast<double>(tgt(j, 0));
+                tgt_ct[1] += static_cast<double>(tgt(j, 1));
+                tgt_ct[2] += static_cast<double>(tgt(j, 2));
             }
-            src_ct.x /= Scalar(active_n); src_ct.y /= Scalar(active_n); src_ct.z /= Scalar(active_n);
-            tgt_ct.x /= Scalar(active_n); tgt_ct.y /= Scalar(active_n); tgt_ct.z /= Scalar(active_n);
+            for (int c = 0; c < 3; ++c)
+            {
+                src_ct[c] /= static_cast<double>(active_n);
+                tgt_ct[c] /= static_cast<double>(active_n);
+                (void)finiteScalarFromDouble(src_ct[c], "ICP: correspondence centroid is not representable");
+                (void)finiteScalarFromDouble(tgt_ct[c], "ICP: correspondence centroid is not representable");
+            }
 
             // Cross-covariance H (3x3)
             plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> H(3, 3);
             H.fill(0);
+            double h_acc[3][3]{};
             for (int i : active_indices)
             {
                 int j = corr[static_cast<std::size_t>(i)];
-                Scalar sx = cur(i, 0) - src_ct.x;
-                Scalar sy = cur(i, 1) - src_ct.y;
-                Scalar sz = cur(i, 2) - src_ct.z;
-                Scalar tx = tgt(j, 0) - tgt_ct.x;
-                Scalar ty = tgt(j, 1) - tgt_ct.y;
-                Scalar tz = tgt(j, 2) - tgt_ct.z;
-                H(0, 0) += sx * tx; H(0, 1) += sx * ty; H(0, 2) += sx * tz;
-                H(1, 0) += sy * tx; H(1, 1) += sy * ty; H(1, 2) += sy * tz;
-                H(2, 0) += sz * tx; H(2, 1) += sz * ty; H(2, 2) += sz * tz;
+                const double sx = static_cast<double>(cur(i, 0)) - src_ct[0];
+                const double sy = static_cast<double>(cur(i, 1)) - src_ct[1];
+                const double sz = static_cast<double>(cur(i, 2)) - src_ct[2];
+                const double tx = static_cast<double>(tgt(j, 0)) - tgt_ct[0];
+                const double ty = static_cast<double>(tgt(j, 1)) - tgt_ct[1];
+                const double tz = static_cast<double>(tgt(j, 2)) - tgt_ct[2];
+                h_acc[0][0] += sx * tx; h_acc[0][1] += sx * ty; h_acc[0][2] += sx * tz;
+                h_acc[1][0] += sy * tx; h_acc[1][1] += sy * ty; h_acc[1][2] += sy * tz;
+                h_acc[2][0] += sz * tx; h_acc[2][1] += sz * ty; h_acc[2][2] += sz * tz;
+            }
+            for (int r = 0; r < 3; ++r)
+            {
+                for (int c = 0; c < 3; ++c)
+                {
+                    H(r, c) = finiteScalarFromDouble(h_acc[r][c], "ICP: cross-covariance is not representable");
+                }
             }
 
             auto [U, S, Vt] = plamatrix::svd(H);
@@ -169,20 +189,29 @@ public:
             if (det < 0)
             {
                 // Flip sign on last column of V
-                r00 = -Vt.getValue(0,0)*U.getValue(0,0) - Vt.getValue(1,0)*U.getValue(0,1) + Vt.getValue(2,0)*U.getValue(0,2);
-                r01 = -Vt.getValue(0,0)*U.getValue(1,0) - Vt.getValue(1,0)*U.getValue(1,1) + Vt.getValue(2,0)*U.getValue(1,2);
-                r02 = -Vt.getValue(0,0)*U.getValue(2,0) - Vt.getValue(1,0)*U.getValue(2,1) + Vt.getValue(2,0)*U.getValue(2,2);
-                r10 = -Vt.getValue(0,1)*U.getValue(0,0) - Vt.getValue(1,1)*U.getValue(0,1) + Vt.getValue(2,1)*U.getValue(0,2);
-                r11 = -Vt.getValue(0,1)*U.getValue(1,0) - Vt.getValue(1,1)*U.getValue(1,1) + Vt.getValue(2,1)*U.getValue(1,2);
-                r12 = -Vt.getValue(0,1)*U.getValue(2,0) - Vt.getValue(1,1)*U.getValue(2,1) + Vt.getValue(2,1)*U.getValue(2,2);
-                r20 = -Vt.getValue(0,2)*U.getValue(0,0) - Vt.getValue(1,2)*U.getValue(0,1) + Vt.getValue(2,2)*U.getValue(0,2);
-                r21 = -Vt.getValue(0,2)*U.getValue(1,0) - Vt.getValue(1,2)*U.getValue(1,1) + Vt.getValue(2,2)*U.getValue(1,2);
-                r22 = -Vt.getValue(0,2)*U.getValue(2,0) - Vt.getValue(1,2)*U.getValue(2,1) + Vt.getValue(2,2)*U.getValue(2,2);
+                r00 = Vt.getValue(0,0)*U.getValue(0,0) + Vt.getValue(1,0)*U.getValue(0,1) - Vt.getValue(2,0)*U.getValue(0,2);
+                r01 = Vt.getValue(0,0)*U.getValue(1,0) + Vt.getValue(1,0)*U.getValue(1,1) - Vt.getValue(2,0)*U.getValue(1,2);
+                r02 = Vt.getValue(0,0)*U.getValue(2,0) + Vt.getValue(1,0)*U.getValue(2,1) - Vt.getValue(2,0)*U.getValue(2,2);
+                r10 = Vt.getValue(0,1)*U.getValue(0,0) + Vt.getValue(1,1)*U.getValue(0,1) - Vt.getValue(2,1)*U.getValue(0,2);
+                r11 = Vt.getValue(0,1)*U.getValue(1,0) + Vt.getValue(1,1)*U.getValue(1,1) - Vt.getValue(2,1)*U.getValue(1,2);
+                r12 = Vt.getValue(0,1)*U.getValue(2,0) + Vt.getValue(1,1)*U.getValue(2,1) - Vt.getValue(2,1)*U.getValue(2,2);
+                r20 = Vt.getValue(0,2)*U.getValue(0,0) + Vt.getValue(1,2)*U.getValue(0,1) - Vt.getValue(2,2)*U.getValue(0,2);
+                r21 = Vt.getValue(0,2)*U.getValue(1,0) + Vt.getValue(1,2)*U.getValue(1,1) - Vt.getValue(2,2)*U.getValue(1,2);
+                r22 = Vt.getValue(0,2)*U.getValue(2,0) + Vt.getValue(1,2)*U.getValue(2,1) - Vt.getValue(2,2)*U.getValue(2,2);
             }
 
-            Scalar tx = tgt_ct.x - (r00*src_ct.x + r01*src_ct.y + r02*src_ct.z);
-            Scalar ty = tgt_ct.y - (r10*src_ct.x + r11*src_ct.y + r12*src_ct.z);
-            Scalar tz = tgt_ct.z - (r20*src_ct.x + r21*src_ct.y + r22*src_ct.z);
+            const double tx_d = tgt_ct[0] - (static_cast<double>(r00) * src_ct[0]
+                                           + static_cast<double>(r01) * src_ct[1]
+                                           + static_cast<double>(r02) * src_ct[2]);
+            const double ty_d = tgt_ct[1] - (static_cast<double>(r10) * src_ct[0]
+                                           + static_cast<double>(r11) * src_ct[1]
+                                           + static_cast<double>(r12) * src_ct[2]);
+            const double tz_d = tgt_ct[2] - (static_cast<double>(r20) * src_ct[0]
+                                           + static_cast<double>(r21) * src_ct[1]
+                                           + static_cast<double>(r22) * src_ct[2]);
+            Scalar tx = finiteScalarFromDouble(tx_d, "ICP: transform step is not representable");
+            Scalar ty = finiteScalarFromDouble(ty_d, "ICP: transform step is not representable");
+            Scalar tz = finiteScalarFromDouble(tz_d, "ICP: transform step is not representable");
 
             // Build step transform 4x4
             plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> T_step(4, 4);
@@ -194,6 +223,7 @@ public:
 
             T_acc = multiply4x4(T_step, T_acc);
             cur = plamatrix::transformPoints(T_step, cur);
+            validateFinitePointMatrix(cur, "ICP: transformed source contains non-finite point");
             std::vector<int> final_corr(static_cast<std::size_t>(n), -1);
             std::vector<int> final_active_indices;
             final_active_indices.reserve(static_cast<std::size_t>(n));
@@ -222,6 +252,7 @@ public:
 
         _final_T = std::move(T_acc);
         auto aligned = plamatrix::transformPoints(_final_T, src);
+        validateFinitePointMatrix(aligned, "ICP: aligned output contains non-finite point");
         if constexpr (Dev == plamatrix::Device::CPU)
         {
             output = PointCloudType(std::move(aligned));
@@ -277,56 +308,116 @@ private:
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> C(4, 4);
         C.fill(0);
         for (int i = 0; i < 4; ++i)
+        {
             for (int j = 0; j < 4; ++j)
+            {
+                double sum = 0.0;
                 for (int k = 0; k < 4; ++k)
-                    C(i, j) += A(i, k) * B(k, j);
+                {
+                    sum += static_cast<double>(A(i, k)) * static_cast<double>(B(k, j));
+                }
+                C(i, j) = finiteScalarFromDouble(sum, "ICP: accumulated transform is not representable");
+            }
+        }
         return C;
+    }
+
+    static void validateFinitePointMatrix(
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& points,
+        const char* message)
+    {
+        for (plamatrix::Index r = 0; r < points.rows(); ++r)
+        {
+            for (int c = 0; c < 3; ++c)
+            {
+                if (!std::isfinite(points(r, c)))
+                {
+                    throw std::invalid_argument(message);
+                }
+            }
+        }
     }
 
     static bool hasNonCollinearGeometry(
         const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& points,
         const std::vector<int>& active_indices)
     {
-        const int first = active_indices.front();
-        const Scalar x0 = points(first, 0);
-        const Scalar y0 = points(first, 1);
-        const Scalar z0 = points(first, 2);
-        Scalar ax = 0;
-        Scalar ay = 0;
-        Scalar az = 0;
-        bool have_axis = false;
-        constexpr Scalar EPS = Scalar(1e-8);
-
-        for (int idx : active_indices)
-        {
-            ax = points(idx, 0) - x0;
-            ay = points(idx, 1) - y0;
-            az = points(idx, 2) - z0;
-            if (ax * ax + ay * ay + az * az > EPS)
-            {
-                have_axis = true;
-                break;
-            }
-        }
-        if (!have_axis)
+        if (active_indices.size() < 3)
         {
             return false;
         }
 
+        long double coord_scale = 0.0L;
         for (int idx : active_indices)
         {
-            const Scalar bx = points(idx, 0) - x0;
-            const Scalar by = points(idx, 1) - y0;
-            const Scalar bz = points(idx, 2) - z0;
-            const Scalar cx = ay * bz - az * by;
-            const Scalar cy = az * bx - ax * bz;
-            const Scalar cz = ax * by - ay * bx;
-            if (cx * cx + cy * cy + cz * cz > EPS)
+            for (int c = 0; c < 3; ++c)
             {
-                return true;
+                const long double value = static_cast<long double>(points(idx, c));
+                if (!std::isfinite(value))
+                {
+                    return false;
+                }
+                coord_scale = std::max(coord_scale, std::abs(value));
             }
         }
-        return false;
+        if (coord_scale <= 0.0L)
+        {
+            return false;
+        }
+        const auto normalized = [&](int idx, int c) -> long double {
+            return static_cast<long double>(points(idx, c)) / coord_scale;
+        };
+
+        const int axis_a = active_indices.front();
+        int axis_b = axis_a;
+        long double max_len = 0.0L;
+        for (int idx : active_indices)
+        {
+            const long double dx = normalized(idx, 0) - normalized(axis_a, 0);
+            const long double dy = normalized(idx, 1) - normalized(axis_a, 1);
+            const long double dz = normalized(idx, 2) - normalized(axis_a, 2);
+            const long double len = std::hypot(dx, dy, dz);
+            if (std::isfinite(len) && len > max_len)
+            {
+                max_len = len;
+                axis_b = idx;
+            }
+        }
+        if (max_len <= 0.0L)
+        {
+            return false;
+        }
+
+        const long double ax = normalized(axis_b, 0) - normalized(axis_a, 0);
+        const long double ay = normalized(axis_b, 1) - normalized(axis_a, 1);
+        const long double az = normalized(axis_b, 2) - normalized(axis_a, 2);
+        const long double inv_a = 1.0L / max_len;
+        const long double anx = ax * inv_a;
+        const long double any = ay * inv_a;
+        const long double anz = az * inv_a;
+        long double max_cross = 0.0L;
+        for (int idx : active_indices)
+        {
+            const long double bx = normalized(idx, 0) - normalized(axis_a, 0);
+            const long double by = normalized(idx, 1) - normalized(axis_a, 1);
+            const long double bz = normalized(idx, 2) - normalized(axis_a, 2);
+            const long double b_len = std::hypot(bx, by, bz);
+            if (!std::isfinite(b_len) || b_len <= 0.0L)
+            {
+                continue;
+            }
+            const long double inv_b = 1.0L / b_len;
+            const long double bnx = bx * inv_b;
+            const long double bny = by * inv_b;
+            const long double bnz = bz * inv_b;
+            const long double cx = any * bnz - anz * bny;
+            const long double cy = anz * bnx - anx * bnz;
+            const long double cz = anx * bny - any * bnx;
+            max_cross = std::max(max_cross, std::hypot(cx, cy, cz));
+        }
+
+        constexpr long double kMinSineAngle = 1.0e-6L;
+        return max_cross > kMinSineAngle;
     }
 
     void collectCorrespondences(
@@ -342,7 +433,6 @@ private:
             for (int c = 0; c < 3; ++c)
                 queries(i, c) = source_points(i, c);
 
-        const Scalar max_corr_sq = _max_corr_dist * _max_corr_dist;
         auto all_nn = tree.batchNearestKSearch(queries, 1);
         for (int i = 0; i < n; ++i)
         {
@@ -352,11 +442,14 @@ private:
             }
 
             const int j = all_nn[static_cast<std::size_t>(i)][0];
-            const Scalar dx = source_points(i, 0) - target_points(j, 0);
-            const Scalar dy = source_points(i, 1) - target_points(j, 1);
-            const Scalar dz = source_points(i, 2) - target_points(j, 2);
-            const Scalar d2 = dx * dx + dy * dy + dz * dz;
-            if (d2 <= max_corr_sq)
+            if (j < 0 || j >= target_points.rows())
+            {
+                continue;
+            }
+            const double dx = static_cast<double>(source_points(i, 0)) - static_cast<double>(target_points(j, 0));
+            const double dy = static_cast<double>(source_points(i, 1)) - static_cast<double>(target_points(j, 1));
+            const double dz = static_cast<double>(source_points(i, 2)) - static_cast<double>(target_points(j, 2));
+            if (withinMaxCorrespondenceDistance(dx, dy, dz))
             {
                 corr[static_cast<std::size_t>(i)] = j;
                 active_indices.push_back(i);
@@ -371,17 +464,83 @@ private:
         const std::vector<int>& active_indices,
         int source_count)
     {
-        Scalar sq_error_sum = 0;
+        double scale = 0.0;
+        double scaled_sq_sum = 0.0;
         for (int i : active_indices)
         {
             const int j = corr[static_cast<std::size_t>(i)];
-            const Scalar dx = source_points(i, 0) - target_points(j, 0);
-            const Scalar dy = source_points(i, 1) - target_points(j, 1);
-            const Scalar dz = source_points(i, 2) - target_points(j, 2);
-            sq_error_sum += dx * dx + dy * dy + dz * dz;
+            const double dx = static_cast<double>(source_points(i, 0)) - static_cast<double>(target_points(j, 0));
+            const double dy = static_cast<double>(source_points(i, 1)) - static_cast<double>(target_points(j, 1));
+            const double dz = static_cast<double>(source_points(i, 2)) - static_cast<double>(target_points(j, 2));
+            const double dist = std::hypot(dx, dy, dz);
+            if (!std::isfinite(dist))
+            {
+                throw std::runtime_error("ICP: residual distance is not finite");
+            }
+            if (dist == 0.0)
+            {
+                continue;
+            }
+            if (dist > scale)
+            {
+                const double ratio = scale / dist;
+                scaled_sq_sum = scaled_sq_sum * ratio * ratio + 1.0;
+                scale = dist;
+            }
+            else
+            {
+                const double ratio = dist / scale;
+                scaled_sq_sum += ratio * ratio;
+            }
         }
+        const double rmse = (scale == 0.0)
+            ? 0.0
+            : scale * std::sqrt(scaled_sq_sum / static_cast<double>(active_indices.size()));
         _fitness_score = static_cast<Scalar>(active_indices.size()) / static_cast<Scalar>(source_count);
-        _final_rmse = std::sqrt(sq_error_sum / static_cast<Scalar>(active_indices.size()));
+        _final_rmse = metricScalarFromDouble(rmse);
+    }
+
+    bool withinMaxCorrespondenceDistance(double dx, double dy, double dz) const
+    {
+        const double dist = std::hypot(dx, dy, dz);
+        if (!std::isfinite(dist))
+        {
+            return false;
+        }
+        if (!std::isfinite(_max_corr_dist))
+        {
+            return true;
+        }
+        return dist <= static_cast<double>(_max_corr_dist);
+    }
+
+    static int checkedInt(std::size_t value, const char* message)
+    {
+        if (value > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        {
+            throw std::overflow_error(message);
+        }
+        return static_cast<int>(value);
+    }
+
+    static Scalar finiteScalarFromDouble(double value, const char* message)
+    {
+        if (!std::isfinite(value) ||
+            std::abs(value) > static_cast<double>(std::numeric_limits<Scalar>::max()))
+        {
+            throw std::runtime_error(message);
+        }
+        return static_cast<Scalar>(value);
+    }
+
+    static Scalar metricScalarFromDouble(double value)
+    {
+        const Scalar max_value = std::numeric_limits<Scalar>::max();
+        if (!std::isfinite(value) || value >= static_cast<double>(max_value))
+        {
+            return max_value;
+        }
+        return static_cast<Scalar>(value);
     }
 
     std::shared_ptr<const PointCloudType> _source;
