@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cfloat>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -8,6 +9,15 @@
 #include <type_traits>
 
 #include <cuda_runtime.h>
+#include <thrust/device_ptr.h>
+#include <thrust/execution_policy.h>
+#include <thrust/functional.h>
+#include <thrust/iterator/constant_iterator.h>
+#include <thrust/reduce.h>
+#include <thrust/scan.h>
+#include <thrust/sequence.h>
+#include <thrust/sort.h>
+#include <thrust/transform.h>
 
 #include <plapoint/gpu/cuda_check.h>
 #include <plapoint/gpu/icp.h>
@@ -41,6 +51,42 @@ struct IcpTargetTileBounds
     double max_y;
     double max_z;
     int has_valid_point;
+};
+
+struct IcpGridCellKey
+{
+    int x;
+    int y;
+    int z;
+};
+
+struct IcpGridCellKeyLess
+{
+    __host__ __device__ bool operator()(const IcpGridCellKey& lhs, const IcpGridCellKey& rhs) const
+    {
+        if (lhs.x != rhs.x) return lhs.x < rhs.x;
+        if (lhs.y != rhs.y) return lhs.y < rhs.y;
+        return lhs.z < rhs.z;
+    }
+};
+
+struct IcpGridCellKeyEqual
+{
+    __host__ __device__ bool operator()(const IcpGridCellKey& lhs, const IcpGridCellKey& rhs) const
+    {
+        return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
+    }
+};
+
+struct IcpTargetSpatialGrid
+{
+    const IcpGridCellKey* cell_keys = nullptr;
+    const int* sorted_target_indices = nullptr;
+    const int* cell_starts = nullptr;
+    const int* cell_counts = nullptr;
+    int cell_count = 0;
+    double cell_size = 0.0;
+    bool active = false;
 };
 
 struct IcpStepTransformInput
@@ -104,6 +150,103 @@ __device__ bool loadFiniteColumnMajorPoint(const Scalar* points, int point_count
     y = static_cast<double>(points[point_count + idx]);
     z = static_cast<double>(points[2 * point_count + idx]);
     return isfinite(x) && isfinite(y) && isfinite(z);
+}
+
+__host__ __device__ int icpGridCellCoordinate(double value, double cell_size)
+{
+    const double coordinate = floor(value / cell_size);
+    if (coordinate <= static_cast<double>(INT_MIN))
+    {
+        return INT_MIN;
+    }
+    if (coordinate >= static_cast<double>(INT_MAX))
+    {
+        return INT_MAX;
+    }
+    return static_cast<int>(coordinate);
+}
+
+__device__ bool offsetGridCellCoordinate(int base, int offset, int& result)
+{
+    if ((offset < 0 && base == INT_MIN) || (offset > 0 && base == INT_MAX))
+    {
+        return false;
+    }
+    result = base + offset;
+    return true;
+}
+
+template <typename Scalar>
+struct ComputeIcpTargetGridCellKey
+{
+    const Scalar* points;
+    int point_count;
+    double cell_size;
+
+    __host__ __device__ IcpGridCellKey operator()(int idx) const
+    {
+        const double x = static_cast<double>(points[idx]);
+        const double y = static_cast<double>(points[point_count + idx]);
+        const double z = static_cast<double>(points[2 * point_count + idx]);
+        if (!isfinite(x) || !isfinite(y) || !isfinite(z))
+        {
+            return {INT_MAX, INT_MAX, INT_MAX};
+        }
+        return {
+            icpGridCellCoordinate(x, cell_size),
+            icpGridCellCoordinate(y, cell_size),
+            icpGridCellCoordinate(z, cell_size)
+        };
+    }
+};
+
+__device__ int findIcpGridCell(const IcpGridCellKey* cell_keys, int cell_count, const IcpGridCellKey& query)
+{
+    int first = 0;
+    int last = cell_count;
+    const IcpGridCellKeyLess less{};
+    const IcpGridCellKeyEqual equal{};
+    while (first < last)
+    {
+        const int mid = first + (last - first) / 2;
+        if (less(cell_keys[mid], query))
+        {
+            first = mid + 1;
+        }
+        else
+        {
+            last = mid;
+        }
+    }
+    return first < cell_count && equal(cell_keys[first], query) ? first : -1;
+}
+
+__device__ void recordAcceptedCorrespondence(
+    RawIcpStats& local,
+    double sx,
+    double sy,
+    double sz,
+    double tx,
+    double ty,
+    double tz,
+    double residual_sq)
+{
+    local.active_count = 1;
+    local.residual_sq_sum = residual_sq;
+
+    const double source_values[3]{sx, sy, sz};
+    const double target_values[3]{tx, ty, tz};
+    for (int r = 0; r < 3; ++r)
+    {
+        local.src_sum[r] = source_values[r];
+        local.tgt_sum[r] = target_values[r];
+        for (int c = 0; c < 3; ++c)
+        {
+            local.cross_sum[r * 3 + c] = source_values[r] * target_values[c];
+            local.src_outer_sum[r * 3 + c] = source_values[r] * source_values[c];
+            local.tgt_outer_sum[r * 3 + c] = target_values[r] * target_values[c];
+        }
+    }
 }
 
 template <typename Scalar>
@@ -307,22 +450,176 @@ __global__ void collectCorrespondenceStatsKernel(
             {
                 correspondence_indices[source_idx] = best_idx;
             }
-            local.active_count = 1;
-            local.residual_sq_sum = best_dist_sq;
+            recordAcceptedCorrespondence(local, sx, sy, sz, best_tx, best_ty, best_tz, best_dist_sq);
+        }
+    }
 
-            const double source_values[3]{sx, sy, sz};
-            const double target_values[3]{best_tx, best_ty, best_tz};
-            for (int r = 0; r < 3; ++r)
+    __shared__ RawIcpStats shared_stats[kIcpStatsBlockSize];
+    shared_stats[local_idx] = local;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            addRawIcpStats(shared_stats[local_idx], shared_stats[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (local_idx == 0)
+    {
+        partial_stats[blockIdx.x] = shared_stats[0];
+    }
+}
+
+template <typename Scalar>
+__global__ void collectCorrespondenceStatsSpatialGridKernel(
+    const Scalar* source_points,
+    int source_count,
+    const Scalar* target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    int* correspondence_indices,
+    IcpTargetSpatialGrid target_grid,
+    RawIcpStats* partial_stats)
+{
+    const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int local_idx = threadIdx.x;
+    RawIcpStats local{};
+    bool source_valid = false;
+    double sx = 0.0;
+    double sy = 0.0;
+    double sz = 0.0;
+
+    if (source_idx < source_count)
+    {
+        if (!loadFiniteColumnMajorPoint(source_points, source_count, source_idx, sx, sy, sz))
+        {
+            if (correspondence_indices)
             {
-                local.src_sum[r] = source_values[r];
-                local.tgt_sum[r] = target_values[r];
-                for (int c = 0; c < 3; ++c)
+                correspondence_indices[source_idx] = -1;
+            }
+            local.invalid_source_count = 1;
+        }
+        else
+        {
+            source_valid = true;
+        }
+    }
+
+    int best_idx = -1;
+    double best_dist_sq = INFINITY;
+    double best_tx = 0.0;
+    double best_ty = 0.0;
+    double best_tz = 0.0;
+    const double max_dist = static_cast<double>(max_correspondence_distance);
+
+    if (source_valid && target_grid.active)
+    {
+        const IcpGridCellKey source_key{
+            icpGridCellCoordinate(sx, target_grid.cell_size),
+            icpGridCellCoordinate(sy, target_grid.cell_size),
+            icpGridCellCoordinate(sz, target_grid.cell_size)
+        };
+
+        for (int dx_cell = -1; dx_cell <= 1; ++dx_cell)
+        {
+            IcpGridCellKey query_key{};
+            if (!offsetGridCellCoordinate(source_key.x, dx_cell, query_key.x))
+            {
+                continue;
+            }
+            for (int dy_cell = -1; dy_cell <= 1; ++dy_cell)
+            {
+                if (!offsetGridCellCoordinate(source_key.y, dy_cell, query_key.y))
                 {
-                    local.cross_sum[r * 3 + c] = source_values[r] * target_values[c];
-                    local.src_outer_sum[r * 3 + c] = source_values[r] * source_values[c];
-                    local.tgt_outer_sum[r * 3 + c] = target_values[r] * target_values[c];
+                    continue;
+                }
+                for (int dz_cell = -1; dz_cell <= 1; ++dz_cell)
+                {
+                    if (!offsetGridCellCoordinate(source_key.z, dz_cell, query_key.z))
+                    {
+                        continue;
+                    }
+
+                    const int cell_idx = findIcpGridCell(target_grid.cell_keys, target_grid.cell_count, query_key);
+                    if (cell_idx < 0)
+                    {
+                        continue;
+                    }
+
+                    const int start = target_grid.cell_starts[cell_idx];
+                    const int count = target_grid.cell_counts[cell_idx];
+                    for (int offset = 0; offset < count; ++offset)
+                    {
+                        const int target_idx = target_grid.sorted_target_indices[start + offset];
+#ifdef PLAPOINT_ENABLE_TESTING
+                        atomicAdd(&g_icp_target_candidate_visit_count, 1ull);
+#endif
+                        double tx = 0.0;
+                        double ty = 0.0;
+                        double tz = 0.0;
+                        if (!loadFiniteColumnMajorPoint(target_points, target_count, target_idx, tx, ty, tz))
+                        {
+                            continue;
+                        }
+
+                        const double dx = sx - tx;
+                        if (fabs(dx) > max_dist)
+                        {
+                            continue;
+                        }
+                        const double dy = sy - ty;
+                        if (fabs(dy) > max_dist)
+                        {
+                            continue;
+                        }
+                        const double dz = sz - tz;
+                        if (fabs(dz) > max_dist)
+                        {
+                            continue;
+                        }
+#ifdef PLAPOINT_ENABLE_TESTING
+                        atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
+#endif
+                        const double dist_sq = dx * dx + dy * dy + dz * dz;
+                        if (isfinite(dist_sq) && dist_sq < best_dist_sq)
+                        {
+                            best_dist_sq = dist_sq;
+                            best_idx = target_idx;
+                            best_tx = tx;
+                            best_ty = ty;
+                            best_tz = tz;
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    if (source_valid)
+    {
+        bool accepted = best_idx >= 0;
+        if (accepted)
+        {
+            accepted = best_dist_sq <= max_dist * max_dist;
+        }
+
+        if (!accepted)
+        {
+            if (correspondence_indices)
+            {
+                correspondence_indices[source_idx] = -1;
+            }
+        }
+        else
+        {
+            if (correspondence_indices)
+            {
+                correspondence_indices[source_idx] = best_idx;
+            }
+            recordAcceptedCorrespondence(local, sx, sy, sz, best_tx, best_ty, best_tz, best_dist_sq);
         }
     }
 
@@ -691,6 +988,13 @@ bool shouldPrecomputeTargetTileBounds(Scalar max_correspondence_distance)
 }
 
 template <typename Scalar>
+bool shouldUseTargetSpatialGrid(Scalar max_correspondence_distance)
+{
+    const double max_dist = static_cast<double>(max_correspondence_distance);
+    return std::isfinite(max_dist) && max_dist > 0.0;
+}
+
+template <typename Scalar>
 const IcpTargetTileBounds* prepareTargetTileBounds(
     const Scalar* d_target_points,
     int target_count,
@@ -712,6 +1016,68 @@ const IcpTargetTileBounds* prepareTargetTileBounds(
         d_bounds);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
     return d_bounds;
+}
+
+template <typename Scalar>
+IcpTargetSpatialGrid prepareTargetSpatialGrid(
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+    IcpTargetSpatialGrid grid{};
+    if (!shouldUseTargetSpatialGrid(max_correspondence_distance))
+    {
+        return grid;
+    }
+
+    workspace.reserveTargetSpatialGrid(target_count);
+    auto* d_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridKeysStorage());
+    auto* d_unique_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridUniqueKeysStorage());
+    auto* d_indices = reinterpret_cast<int*>(workspace.targetSpatialGridIndicesStorage());
+    auto* d_cell_starts = reinterpret_cast<int*>(workspace.targetSpatialGridCellStartsStorage());
+    auto* d_cell_counts = reinterpret_cast<int*>(workspace.targetSpatialGridCellCountsStorage());
+
+    auto policy = thrust::cuda::par.on(stream);
+    auto keys = thrust::device_pointer_cast(d_keys);
+    auto unique_keys = thrust::device_pointer_cast(d_unique_keys);
+    auto indices = thrust::device_pointer_cast(d_indices);
+    auto cell_starts = thrust::device_pointer_cast(d_cell_starts);
+    auto cell_counts = thrust::device_pointer_cast(d_cell_counts);
+
+    thrust::sequence(policy, indices, indices + target_count, 0);
+    thrust::transform(
+        policy,
+        indices,
+        indices + target_count,
+        keys,
+        ComputeIcpTargetGridCellKey<Scalar>{
+            d_target_points,
+            target_count,
+            static_cast<double>(max_correspondence_distance)
+        });
+    thrust::sort_by_key(policy, keys, keys + target_count, indices, IcpGridCellKeyLess{});
+    const auto reduced = thrust::reduce_by_key(
+        policy,
+        keys,
+        keys + target_count,
+        thrust::make_constant_iterator(1),
+        unique_keys,
+        cell_counts,
+        IcpGridCellKeyEqual{},
+        thrust::plus<int>{});
+    const int cell_count = static_cast<int>(reduced.first - unique_keys);
+    thrust::exclusive_scan(policy, cell_counts, cell_counts + cell_count, cell_starts);
+
+    grid.cell_keys = d_unique_keys;
+    grid.sorted_target_indices = d_indices;
+    grid.cell_starts = d_cell_starts;
+    grid.cell_counts = d_cell_counts;
+    grid.cell_count = cell_count;
+    grid.cell_size = static_cast<double>(max_correspondence_distance);
+    grid.active = true;
+    return grid;
 }
 
 template <typename Scalar>
@@ -815,22 +1181,44 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
     const int grid_size = icpStatsPartialCount(source_count);
     auto* d_partials = reinterpret_cast<RawIcpStats*>(active_workspace.partialStorage());
     auto* d_stats = reinterpret_cast<RawIcpStats*>(active_workspace.statsStorage());
-    const IcpTargetTileBounds* d_target_tile_bounds = prepareTargetTileBounds(
+    const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
         d_target_points,
         target_count,
         max_correspondence_distance,
         active_workspace,
         stream);
 
-    collectCorrespondenceStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
-        d_source_points,
-        source_count,
-        d_target_points,
-        target_count,
-        max_correspondence_distance,
-        d_correspondence_indices,
-        d_target_tile_bounds,
-        d_partials);
+    if (target_grid.active)
+    {
+        collectCorrespondenceStatsSpatialGridKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            d_correspondence_indices,
+            target_grid,
+            d_partials);
+    }
+    else
+    {
+        const IcpTargetTileBounds* d_target_tile_bounds = prepareTargetTileBounds(
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            active_workspace,
+            stream);
+
+        collectCorrespondenceStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            d_correspondence_indices,
+            d_target_tile_bounds,
+            d_partials);
+    }
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
     reduceRawIcpStatsKernel<<<1, block_size, 0, stream>>>(
@@ -1077,22 +1465,44 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
     auto* d_partials = reinterpret_cast<RawIcpStats*>(stats_workspace.partialStorage());
     auto* d_stats = reinterpret_cast<RawIcpStats*>(stats_workspace.statsStorage());
     auto* d_result = reinterpret_cast<IcpStepTransformRawResult*>(step_workspace.resultStorage());
-    const IcpTargetTileBounds* d_target_tile_bounds = prepareTargetTileBounds(
+    const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
         d_target_points,
         target_count,
         max_correspondence_distance,
         stats_workspace,
         stream);
 
-    collectCorrespondenceStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
-        d_source_points,
-        source_count,
-        d_target_points,
-        target_count,
-        max_correspondence_distance,
-        nullptr,
-        d_target_tile_bounds,
-        d_partials);
+    if (target_grid.active)
+    {
+        collectCorrespondenceStatsSpatialGridKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            nullptr,
+            target_grid,
+            d_partials);
+    }
+    else
+    {
+        const IcpTargetTileBounds* d_target_tile_bounds = prepareTargetTileBounds(
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            stats_workspace,
+            stream);
+
+        collectCorrespondenceStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            nullptr,
+            d_target_tile_bounds,
+            d_partials);
+    }
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
     reduceRawIcpStatsKernel<<<1, block_size, 0, stream>>>(
@@ -1249,6 +1659,33 @@ void IcpCorrespondenceStatsWorkspace::reserveTargetTileBounds(int target_count)
         _target_tile_bounds_storage.allocate(
             static_cast<std::size_t>(required_tiles) * sizeof(IcpTargetTileBounds));
         _target_tile_bound_capacity = required_tiles;
+    }
+}
+
+void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGrid(int target_count)
+{
+    if (target_count < 0)
+    {
+        throw std::invalid_argument("ICP GPU: target point count must not be negative");
+    }
+    if (target_count == 0)
+    {
+        return;
+    }
+
+    if (targetSpatialGridCapacity() < target_count)
+    {
+        _target_spatial_grid_keys_storage.allocate(
+            static_cast<std::size_t>(target_count) * sizeof(IcpGridCellKey));
+        _target_spatial_grid_unique_keys_storage.allocate(
+            static_cast<std::size_t>(target_count) * sizeof(IcpGridCellKey));
+        _target_spatial_grid_indices_storage.allocate(
+            static_cast<std::size_t>(target_count) * sizeof(int));
+        _target_spatial_grid_cell_starts_storage.allocate(
+            static_cast<std::size_t>(target_count) * sizeof(int));
+        _target_spatial_grid_cell_counts_storage.allocate(
+            static_cast<std::size_t>(target_count) * sizeof(int));
+        _target_spatial_grid_capacity = target_count;
     }
 }
 

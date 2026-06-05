@@ -528,7 +528,7 @@ TEST(ICPGpuPathTest, CorrespondenceStatsSkipsFarTargetTilesBeforeCandidateLoop)
         target.setValue(i, 1, 1000.0f);
         target.setValue(i, 2, 1000.0f);
     }
-    target.setValue(0, 0, 0.5f);
+    target.setValue(0, 0, 0.0f);
     target.setValue(0, 1, 0.0f);
     target.setValue(0, 2, 0.0f);
 
@@ -541,11 +541,11 @@ TEST(ICPGpuPathTest, CorrespondenceStatsSkipsFarTargetTilesBeforeCandidateLoop)
         static_cast<int>(source_gpu.rows()),
         target_gpu.data(),
         static_cast<int>(target_gpu.rows()),
-        1.0f,
+        0.0f,
         nullptr);
 
     EXPECT_EQ(stats.active_count, 1);
-    EXPECT_LE(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 128ull);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 128ull);
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsPrecomputesFiniteRadiusTargetTileBoundsOnce)
@@ -571,7 +571,7 @@ TEST(ICPGpuPathTest, CorrespondenceStatsPrecomputesFiniteRadiusTargetTileBoundsO
         target.setValue(i, 1, 1000.0f);
         target.setValue(i, 2, 1000.0f);
     }
-    target.setValue(0, 0, 0.5f);
+    target.setValue(0, 0, 0.0f);
     target.setValue(0, 1, 0.0f);
     target.setValue(0, 2, 0.0f);
 
@@ -585,12 +585,81 @@ TEST(ICPGpuPathTest, CorrespondenceStatsPrecomputesFiniteRadiusTargetTileBoundsO
         static_cast<int>(source_gpu.rows()),
         target_gpu.data(),
         static_cast<int>(target_gpu.rows()),
-        1.0f,
+        0.0f,
         nullptr,
         workspace);
 
     EXPECT_EQ(stats.active_count, point_count);
-    EXPECT_LE(plapoint::gpu::icpTargetTileBoundComputationCountForTesting(), 3ull);
+    EXPECT_EQ(plapoint::gpu::icpTargetTileBoundComputationCountForTesting(), 3ull);
+}
+
+TEST(ICPGpuPathTest, CorrespondenceStatsUsesFiniteRadiusSpatialGridCandidates)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source(1, 3);
+    source.setValue(0, 0, 0.0f);
+    source.setValue(0, 1, 0.0f);
+    source.setValue(0, 2, 0.0f);
+
+    constexpr int target_count = 256;
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(target_count, 3);
+    target.setValue(0, 0, 0.5f);
+    target.setValue(0, 1, 0.0f);
+    target.setValue(0, 2, 0.0f);
+    for (int i = 1; i < target_count; ++i)
+    {
+        target.setValue(i, 0, 1000.0f + static_cast<float>(i * 3));
+        target.setValue(i, 1, 1000.0f);
+        target.setValue(i, 2, 1000.0f);
+    }
+
+    auto source_gpu = source.toGpu();
+    auto target_gpu = target.toGpu();
+
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        nullptr,
+        workspace);
+
+    EXPECT_EQ(stats.active_count, 1);
+    EXPECT_LE(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 4ull);
+    EXPECT_GE(workspace.targetSpatialGridCapacity(), target_count);
+    auto* first_grid_keys = workspace.targetSpatialGridKeysStorage();
+    auto* first_grid_unique_keys = workspace.targetSpatialGridUniqueKeysStorage();
+    auto* first_grid_indices = workspace.targetSpatialGridIndicesStorage();
+    auto* first_grid_cell_starts = workspace.targetSpatialGridCellStartsStorage();
+    auto* first_grid_cell_counts = workspace.targetSpatialGridCellCountsStorage();
+    EXPECT_NE(first_grid_keys, nullptr);
+    EXPECT_NE(first_grid_unique_keys, nullptr);
+    EXPECT_NE(first_grid_indices, nullptr);
+    EXPECT_NE(first_grid_cell_starts, nullptr);
+    EXPECT_NE(first_grid_cell_counts, nullptr);
+
+    const auto second_stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        nullptr,
+        workspace);
+
+    EXPECT_EQ(second_stats.active_count, 1);
+    EXPECT_EQ(workspace.targetSpatialGridKeysStorage(), first_grid_keys);
+    EXPECT_EQ(workspace.targetSpatialGridUniqueKeysStorage(), first_grid_unique_keys);
+    EXPECT_EQ(workspace.targetSpatialGridIndicesStorage(), first_grid_indices);
+    EXPECT_EQ(workspace.targetSpatialGridCellStartsStorage(), first_grid_cell_starts);
+    EXPECT_EQ(workspace.targetSpatialGridCellCountsStorage(), first_grid_cell_counts);
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsWorkspaceReusesDeviceStorage)

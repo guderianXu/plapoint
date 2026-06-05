@@ -56,11 +56,17 @@ public:
     /// Reserve reusable target tile bounds storage for finite-radius pruning.
     void reserveTargetTileBounds(int target_count);
 
+    /// Reserve reusable target spatial grid storage for finite-radius candidate search.
+    void reserveTargetSpatialGrid(int target_count);
+
     /// Return the currently reserved partial reduction capacity, in blocks.
     int partialCapacity() const { return _partial_capacity; }
 
     /// Return the currently reserved target tile bound capacity, in tiles.
     int targetTileBoundCapacity() const { return _target_tile_bound_capacity; }
+
+    /// Return the currently reserved target spatial grid capacity, in points.
+    int targetSpatialGridCapacity() const { return _target_spatial_grid_capacity; }
 
     /// Return the reusable partial reduction storage pointer, or null before reserve().
     unsigned char* partialStorage() { return _partial_storage.get(); }
@@ -71,12 +77,33 @@ public:
     /// Return the reusable target tile bounds storage pointer, or null before reserveTargetTileBounds().
     unsigned char* targetTileBoundsStorage() { return _target_tile_bounds_storage.get(); }
 
+    /// Return the reusable sorted target-grid key storage pointer.
+    unsigned char* targetSpatialGridKeysStorage() { return _target_spatial_grid_keys_storage.get(); }
+
+    /// Return the reusable unique target-grid cell key storage pointer.
+    unsigned char* targetSpatialGridUniqueKeysStorage() { return _target_spatial_grid_unique_keys_storage.get(); }
+
+    /// Return the reusable sorted target index storage pointer.
+    unsigned char* targetSpatialGridIndicesStorage() { return _target_spatial_grid_indices_storage.get(); }
+
+    /// Return the reusable target-grid cell start storage pointer.
+    unsigned char* targetSpatialGridCellStartsStorage() { return _target_spatial_grid_cell_starts_storage.get(); }
+
+    /// Return the reusable target-grid cell count storage pointer.
+    unsigned char* targetSpatialGridCellCountsStorage() { return _target_spatial_grid_cell_counts_storage.get(); }
+
 private:
     DeviceBuffer<unsigned char> _partial_storage;
     DeviceBuffer<unsigned char> _stats_storage;
     DeviceBuffer<unsigned char> _target_tile_bounds_storage;
+    DeviceBuffer<unsigned char> _target_spatial_grid_keys_storage;
+    DeviceBuffer<unsigned char> _target_spatial_grid_unique_keys_storage;
+    DeviceBuffer<unsigned char> _target_spatial_grid_indices_storage;
+    DeviceBuffer<unsigned char> _target_spatial_grid_cell_starts_storage;
+    DeviceBuffer<unsigned char> _target_spatial_grid_cell_counts_storage;
     int _partial_capacity = 0;
     int _target_tile_bound_capacity = 0;
+    int _target_spatial_grid_capacity = 0;
 };
 
 /// Reusable device storage for converting ICP correspondence stats into a 4x4 step transform.

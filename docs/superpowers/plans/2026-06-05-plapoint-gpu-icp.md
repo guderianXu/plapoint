@@ -4,7 +4,7 @@
 
 **Goal:** Move `IterativeClosestPoint<Scalar, GPU>` away from full CPU-staged point processing and keep the per-point ICP workload on GPU.
 
-**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences with shared-memory target tiling, precomputed finite-radius target tile bounding-box skips, and per-candidate axis pruning, accumulate centroid/covariance/residual stats on device with block-level reductions, fuse stats reduction with rigid step-transform solving through a GPU quaternion/Jacobi solver, initialize and asynchronously update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. Reduced stats, step deltas, and small metric checks still synchronize to CPU while current points, step transforms, degeneracy flags, and transform accumulation stay GPU-resident. The GPU align loop reads the initial source buffer directly, skips transformed final-stats scans on non-terminal iterations, and computes final metrics only when convergence or the final iteration requires them. The legacy CPU final transform is copied from the GPU lazily only when `getFinalTransformation()` is called.
+**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences with a finite-radius target spatial grid or the shared-memory target-tiling fallback, use precomputed finite-radius target tile bounding-box skips and per-candidate axis pruning on the fallback path, accumulate centroid/covariance/residual stats on device with block-level reductions, fuse stats reduction with rigid step-transform solving through a GPU quaternion/Jacobi solver, initialize and asynchronously update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. Reduced stats, step deltas, and small metric checks still synchronize to CPU while current points, step transforms, degeneracy flags, and transform accumulation stay GPU-resident. The GPU align loop reads the initial source buffer directly, skips transformed final-stats scans on non-terminal iterations, and computes final metrics only when convergence or the final iteration requires them. The legacy CPU final transform is copied from the GPU lazily only when `getFinalTransformation()` is called.
 
 **Tech Stack:** C++17, CUDA runtime, PlaMatrix GPU `DenseMatrix`, Google Test, PlaPoint benchmark executable.
 
@@ -269,6 +269,21 @@
 - [x] Store reusable target tile bounds in `IcpCorrespondenceStatsWorkspace`.
 - [x] Feed precomputed bounds into stats kernels so source blocks do not repeat tile bound reductions.
 
+### Task 22: Finite-Radius Target Spatial Grid
+
+**Files:**
+- Modify: `include/plapoint/gpu/icp.h`
+- Modify: `src/icp_gpu.cu`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `benchmarks/plapoint_benchmarks.cpp`
+- Modify: `README.md`
+
+- [x] Add a CUDA-only failing test showing tile bounding boxes still visit too many far candidates when one tile mixes near and far targets.
+- [x] Store reusable sorted target cell keys, sorted indices, cell starts, and cell counts in `IcpCorrespondenceStatsWorkspace`.
+- [x] Build a finite-radius target spatial grid with Thrust sort/reduce and scan only the source cell's 27 neighboring cells.
+- [x] Keep the existing target-tiling fallback for infinite radius and zero-radius direct helper calls.
+- [x] Add finite-radius CPU/GPU ICP benchmark rows.
+
 Verification evidence:
 
 - `git diff --check`: clean.
@@ -366,11 +381,19 @@ Verification evidence:
   1 targeted test passed after precomputing finite-radius target tile bounds.
 - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
   23 targeted ICP GPU/stats/validation tests passed after reusing target tile bounds from the stats workspace.
+- `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsUsesFiniteRadiusSpatialGridCandidates` before the spatial grid:
+  failed as expected with 128 target candidate visits instead of the expected at most 4.
+- `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsUsesFiniteRadiusSpatialGridCandidates`:
+  1 targeted test passed after scanning finite-radius target spatial-grid candidates.
+- `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsSkipsFarTargetTilesBeforeCandidateLoop:ICPGpuPathTest.CorrespondenceStatsPrecomputesFiniteRadiusTargetTileBoundsOnce:ICPGpuPathTest.CorrespondenceStatsUsesFiniteRadiusSpatialGridCandidates`:
+  3 targeted finite-radius tile/grid pruning tests passed after separating zero-radius tile fallback coverage from finite-radius spatial-grid coverage.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  24 targeted ICP GPU/stats/validation tests passed after adding the finite-radius target spatial grid.
 - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
 - `cmake --build build-codex-cuda -j$(nproc) && ctest --test-dir build-codex-cuda --output-on-failure`:
-  199 tests, 0 failed.
+  200 tests, 0 failed.
 - `cmake --build build-codex-cpu-bench -j$(nproc) && ./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CPU benchmark rows emitted through `cpu_icp_identity,512,1,33.7613`.
+  CPU benchmark rows emitted through `cpu_icp_identity,512,1,30.8842` and `cpu_icp_finite_radius,512,1,29.3633`.
 - `cmake --build build-codex-cuda-bench-only -j$(nproc) && ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CUDA benchmark rows included `gpu_icp_identity,512,1,0.376841`.
+  CUDA benchmark rows included `gpu_icp_identity,512,1,0.378113` and `gpu_icp_finite_radius,512,1,0.331729`.
