@@ -109,6 +109,17 @@ struct IcpStepTransformRawResult
     int valid;
 };
 
+struct IcpAlignmentStepRawResult
+{
+    int active_count;
+    int invalid_source_count;
+    int src_has_non_collinear_geometry;
+    int tgt_has_non_collinear_geometry;
+    int step_valid;
+    double residual_sq_sum;
+    double delta;
+};
+
 constexpr int kIcpStatsBlockSize = 128;
 
 template <typename Scalar>
@@ -123,6 +134,13 @@ __device__ void computeStepTransformFromRawStatsValue(
     Scalar* step_transform,
     IcpStepTransformRawResult* result);
 
+template <typename Scalar>
+__device__ void writeAlignmentStepRawResultFromRawStats(
+    const RawIcpStats& raw,
+    Scalar* step_transform,
+    IcpAlignmentStepRawResult* result,
+    bool exact_identity_step);
+
 #ifdef PLAPOINT_ENABLE_TESTING
 std::atomic<int> g_icp_correspondence_stats_call_count{0};
 std::atomic<int> g_icp_residual_stats_call_count{0};
@@ -130,6 +148,7 @@ std::atomic<std::uintptr_t> g_icp_first_stats_source_pointer{0};
 std::atomic<int> g_icp_step_transform_input_copy_count{0};
 std::atomic<int> g_icp_exact_pointwise_step_call_count{0};
 std::atomic<int> g_icp_raw_stats_step_kernel_launch_count{0};
+std::atomic<int> g_icp_alignment_step_call_count{0};
 std::atomic<int> g_icp_host_synchronization_count{0};
 std::atomic<int> g_icp_target_spatial_grid_build_count{0};
 std::atomic<std::uintptr_t> g_icp_last_transform_output_pointer{0};
@@ -1554,6 +1573,39 @@ __global__ void reduceRawIcpStatsAndSetExactPointwiseIdentityStepKernel(
 }
 
 template <typename Scalar>
+__global__ void reduceRawIcpStatsAndSetExactPointwiseIdentityAlignmentStepKernel(
+    const RawIcpStats* partial_stats,
+    int partial_count,
+    Scalar* step_transform,
+    IcpAlignmentStepRawResult* result)
+{
+    const int local_idx = threadIdx.x;
+    RawIcpStats local{};
+    for (int idx = local_idx; idx < partial_count; idx += blockDim.x)
+    {
+        addRawIcpStats(local, partial_stats[idx]);
+    }
+
+    __shared__ RawIcpStats shared_stats[kIcpStatsBlockSize];
+    shared_stats[local_idx] = local;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            addRawIcpStats(shared_stats[local_idx], shared_stats[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (local_idx == 0)
+    {
+        writeAlignmentStepRawResultFromRawStats<Scalar>(shared_stats[0], step_transform, result, true);
+    }
+}
+
+template <typename Scalar>
 __global__ void reduceRawIcpStatsAndComputeStepTransformKernel(
     const RawIcpStats* partial_stats,
     int partial_count,
@@ -1586,6 +1638,39 @@ __global__ void reduceRawIcpStatsAndComputeStepTransformKernel(
         const RawIcpStats raw = shared_stats[0];
         *stats = raw;
         computeStepTransformFromRawStatsValue<Scalar>(raw, step_transform, result);
+    }
+}
+
+template <typename Scalar>
+__global__ void reduceRawIcpStatsAndComputeAlignmentStepKernel(
+    const RawIcpStats* partial_stats,
+    int partial_count,
+    Scalar* step_transform,
+    IcpAlignmentStepRawResult* result)
+{
+    const int local_idx = threadIdx.x;
+    RawIcpStats local{};
+    for (int idx = local_idx; idx < partial_count; idx += blockDim.x)
+    {
+        addRawIcpStats(local, partial_stats[idx]);
+    }
+
+    __shared__ RawIcpStats shared_stats[kIcpStatsBlockSize];
+    shared_stats[local_idx] = local;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            addRawIcpStats(shared_stats[local_idx], shared_stats[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (local_idx == 0)
+    {
+        writeAlignmentStepRawResultFromRawStats<Scalar>(shared_stats[0], step_transform, result, false);
     }
 }
 
@@ -1933,6 +2018,75 @@ __device__ void computeStepTransformFromRawStatsValue(
     computeStepTransformFromInput<Scalar>(input, step_transform, result);
 }
 
+__device__ bool rawStatsCovarianceHasNonCollinearGeometry(
+    const double sum[3],
+    const double outer_sum[9],
+    int active_count)
+{
+    if (active_count <= 0)
+    {
+        return false;
+    }
+
+    const double inv_count = 1.0 / static_cast<double>(active_count);
+    const double c00 = outer_sum[0] - sum[0] * sum[0] * inv_count;
+    const double c01 = outer_sum[1] - sum[0] * sum[1] * inv_count;
+    const double c02 = outer_sum[2] - sum[0] * sum[2] * inv_count;
+    const double c11 = outer_sum[4] - sum[1] * sum[1] * inv_count;
+    const double c12 = outer_sum[5] - sum[1] * sum[2] * inv_count;
+    const double c22 = outer_sum[8] - sum[2] * sum[2] * inv_count;
+    const double trace = c00 + c11 + c22;
+    if (!isfinite(trace) || trace <= 0.0)
+    {
+        return false;
+    }
+
+    const double principal_minor_sum = c00 * c11 + c00 * c22 + c11 * c22 -
+        (c01 * c01 + c02 * c02 + c12 * c12);
+    if (!isfinite(principal_minor_sum))
+    {
+        return false;
+    }
+
+    const double threshold = fmax(trace * trace * 1.0e-12, trace * 1.0e-30);
+    return principal_minor_sum > threshold;
+}
+
+template <typename Scalar>
+__device__ void writeAlignmentStepRawResultFromRawStats(
+    const RawIcpStats& raw,
+    Scalar* step_transform,
+    IcpAlignmentStepRawResult* result,
+    bool exact_identity_step)
+{
+    IcpStepTransformRawResult step_result{};
+    if (exact_identity_step)
+    {
+        for (int idx = 0; idx < 16; ++idx)
+        {
+            const int row = idx & 3;
+            const int col = idx >> 2;
+            step_transform[idx] = row == col ? Scalar(1) : Scalar(0);
+        }
+        step_result.delta = 0.0;
+        step_result.valid = raw.active_count > 0 && isfinite(raw.residual_sq_sum) ? 1 : 0;
+    }
+    else
+    {
+        computeStepTransformFromRawStatsValue<Scalar>(raw, step_transform, &step_result);
+    }
+
+    result->active_count = raw.active_count;
+    result->invalid_source_count = raw.invalid_source_count;
+    result->src_has_non_collinear_geometry =
+        rawStatsCovarianceHasNonCollinearGeometry(raw.src_sum, raw.src_outer_sum, raw.active_count) ? 1 : 0;
+    result->tgt_has_non_collinear_geometry =
+        rawStatsCovarianceHasNonCollinearGeometry(raw.tgt_sum, raw.tgt_outer_sum, raw.active_count) ? 1 : 0;
+    result->step_valid = step_result.valid;
+    result->residual_sq_sum = raw.residual_sq_sum;
+    result->delta = step_result.delta;
+}
+
 bool covarianceHasNonCollinearGeometry(const double covariance[9]);
 
 template <typename Scalar>
@@ -2051,6 +2205,50 @@ bool launchExactPointwiseStatsAndIdentityStep(
         d_partials,
         partial_count,
         d_stats,
+        d_step_transform,
+        d_result);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    return true;
+}
+
+template <typename Scalar>
+bool launchExactPointwiseAlignmentStep(
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    RawIcpStats* d_partials,
+    int partial_count,
+    Scalar* d_step_transform,
+    IcpAlignmentStepRawResult* d_result,
+    cudaStream_t stream)
+{
+    if (!shouldTryExactPointwiseStats(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            nullptr))
+    {
+        return false;
+    }
+
+    constexpr int block_size = kIcpStatsBlockSize;
+    collectExactPointwiseCorrespondenceStatsKernel<Scalar><<<partial_count, block_size, 0, stream>>>(
+        d_source_points,
+        d_target_points,
+        source_count,
+        d_partials);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_exact_pointwise_step_call_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    reduceRawIcpStatsAndSetExactPointwiseIdentityAlignmentStepKernel<Scalar><<<1, block_size, 0, stream>>>(
+        d_partials,
+        partial_count,
         d_step_transform,
         d_result);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
@@ -2241,6 +2439,20 @@ IcpResidualStats<Scalar> makeHostResidualStats(const RawIcpResidualStats& raw)
     stats.invalid_source_count = raw.invalid_source_count;
     stats.residual_sq_sum = raw.residual_sq_sum;
     return stats;
+}
+
+template <typename Scalar>
+IcpAlignmentStepResult<Scalar> makeHostAlignmentStepResult(const IcpAlignmentStepRawResult& raw)
+{
+    IcpAlignmentStepResult<Scalar> result;
+    result.active_count = raw.active_count;
+    result.invalid_source_count = raw.invalid_source_count;
+    result.residual_sq_sum = raw.residual_sq_sum;
+    result.src_has_non_collinear_geometry = raw.src_has_non_collinear_geometry != 0;
+    result.tgt_has_non_collinear_geometry = raw.tgt_has_non_collinear_geometry != 0;
+    result.step.delta = static_cast<Scalar>(raw.delta);
+    result.step_valid = raw.step_valid != 0;
+    return result;
 }
 
 bool covarianceHasNonCollinearGeometry(const double covariance[9])
@@ -2899,6 +3111,129 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
     return result;
 }
 
+template <typename Scalar>
+IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    Scalar* d_step_transform,
+    cudaStream_t stream)
+{
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_alignment_step_call_count.fetch_add(1, std::memory_order_relaxed);
+    std::uintptr_t empty = 0;
+    g_icp_first_stats_source_pointer.compare_exchange_strong(
+        empty,
+        reinterpret_cast<std::uintptr_t>(d_source_points),
+        std::memory_order_relaxed,
+        std::memory_order_relaxed);
+#endif
+
+    if (source_count <= 0 || target_count <= 0)
+    {
+        return {};
+    }
+    if (!d_source_points || !d_target_points || !d_step_transform)
+    {
+        throw std::invalid_argument("ICP GPU: device pointers must not be null");
+    }
+
+    stats_workspace.reserve(source_count);
+
+    constexpr int block_size = kIcpStatsBlockSize;
+    const int grid_size = icpStatsPartialCount(source_count);
+    auto* d_partials = reinterpret_cast<RawIcpStats*>(stats_workspace.partialStorage());
+    auto* d_result = reinterpret_cast<IcpAlignmentStepRawResult*>(stats_workspace.statsStorage());
+    IcpAlignmentStepRawResult raw_result{};
+
+    const bool exact_pointwise_stats = launchExactPointwiseAlignmentStep(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        d_partials,
+        grid_size,
+        d_step_transform,
+        d_result,
+        stream);
+
+    if (exact_pointwise_stats)
+    {
+        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpAlignmentStepRawResult),
+                                            cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+        g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+        PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+        if (std::isfinite(raw_result.residual_sq_sum))
+        {
+            return makeHostAlignmentStepResult<Scalar>(raw_result);
+        }
+    }
+
+    {
+        const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            stats_workspace,
+            stream);
+
+        if (target_grid.active)
+        {
+            collectCorrespondenceStatsSpatialGridKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+                d_source_points,
+                source_count,
+                d_target_points,
+                target_count,
+                max_correspondence_distance,
+                nullptr,
+                target_grid,
+                d_partials);
+        }
+        else
+        {
+            const IcpTargetTileBounds* d_target_tile_bounds = prepareTargetTileBounds(
+                d_target_points,
+                target_count,
+                max_correspondence_distance,
+                stats_workspace,
+                stream);
+
+            collectCorrespondenceStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+                d_source_points,
+                source_count,
+                d_target_points,
+                target_count,
+                max_correspondence_distance,
+                nullptr,
+                d_target_tile_bounds,
+                d_partials);
+        }
+        PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+        reduceRawIcpStatsAndComputeAlignmentStepKernel<Scalar><<<1, block_size, 0, stream>>>(
+            d_partials,
+            grid_size,
+            d_step_transform,
+            d_result);
+        PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    }
+
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpAlignmentStepRawResult),
+                                        cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    return makeHostAlignmentStepResult<Scalar>(raw_result);
+}
+
 } // namespace
 
 #ifdef PLAPOINT_ENABLE_TESTING
@@ -2987,6 +3322,16 @@ void resetIcpRawStatsStepKernelLaunchCountForTesting()
 int icpRawStatsStepKernelLaunchCountForTesting()
 {
     return g_icp_raw_stats_step_kernel_launch_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpAlignmentStepCallCountForTesting()
+{
+    g_icp_alignment_step_call_count.store(0, std::memory_order_relaxed);
+}
+
+int icpAlignmentStepCallCountForTesting()
+{
+    return g_icp_alignment_step_call_count.load(std::memory_order_relaxed);
 }
 
 void resetIcpHostSynchronizationCountForTesting()
@@ -3456,6 +3801,48 @@ IcpStatsAndStepTransformResult<double> computeIcpStatsAndStepTransformColumnMajo
         stats_workspace,
         d_step_transform,
         step_workspace,
+        stream);
+}
+
+IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajor(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    cudaStream_t stream)
+{
+    return computeIcpAlignmentStepColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        d_step_transform,
+        stream);
+}
+
+IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajor(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    cudaStream_t stream)
+{
+    return computeIcpAlignmentStepColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        d_step_transform,
         stream);
 }
 

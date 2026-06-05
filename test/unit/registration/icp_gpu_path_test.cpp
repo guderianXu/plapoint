@@ -164,6 +164,8 @@ void resetIcpExactPointwiseStepCallCountForTesting();
 int icpExactPointwiseStepCallCountForTesting();
 void resetIcpRawStatsStepKernelLaunchCountForTesting();
 int icpRawStatsStepKernelLaunchCountForTesting();
+void resetIcpAlignmentStepCallCountForTesting();
+int icpAlignmentStepCallCountForTesting();
 void resetIcpHostSynchronizationCountForTesting();
 int icpHostSynchronizationCountForTesting();
 void resetIcpTargetTileBoundComputationCountForTesting();
@@ -324,6 +326,61 @@ TEST(ICPGpuPathTest, StepTransformFromStatsWritesDeviceTransform)
         for (int col = 0; col < 4; ++col)
         {
             EXPECT_NEAR(step.getValue(row, col), expected.getValue(row, col), 1.0e-5f);
+        }
+    }
+}
+
+TEST(ICPGpuPathTest, AlignmentStepCompactResultMatchesFullStatsStepResult)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto source_cpu = makeNonCollinearPoints();
+    auto target_cpu = makeTranslatedNonCollinearPoints(source_cpu, 0.1f, -0.05f, 0.025f);
+    auto source_gpu = source_cpu.toGpu();
+    auto target_gpu = target_cpu.toGpu();
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace full_stats_workspace;
+    plapoint::gpu::IcpStepTransformWorkspace full_step_workspace;
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> full_step_gpu(4, 4);
+    const auto full_result = plapoint::gpu::computeIcpStatsAndStepTransformColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        2.0f,
+        full_stats_workspace,
+        full_step_gpu.data(),
+        full_step_workspace);
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace compact_stats_workspace;
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> compact_step_gpu(4, 4);
+    const auto compact_result = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        2.0f,
+        compact_stats_workspace,
+        compact_step_gpu.data());
+
+    EXPECT_EQ(compact_result.active_count, full_result.stats.active_count);
+    EXPECT_EQ(compact_result.invalid_source_count, full_result.stats.invalid_source_count);
+    EXPECT_NEAR(compact_result.residual_sq_sum, full_result.stats.residual_sq_sum, 1.0e-12);
+    EXPECT_EQ(compact_result.src_has_non_collinear_geometry, full_result.stats.src_has_non_collinear_geometry);
+    EXPECT_EQ(compact_result.tgt_has_non_collinear_geometry, full_result.stats.tgt_has_non_collinear_geometry);
+    EXPECT_EQ(compact_result.step_valid, full_result.step_valid);
+    EXPECT_NEAR(compact_result.step.delta, full_result.step.delta, 1.0e-6f);
+
+    auto full_step = full_step_gpu.toCpu();
+    auto compact_step = compact_step_gpu.toCpu();
+    for (int row = 0; row < 4; ++row)
+    {
+        for (int col = 0; col < 4; ++col)
+        {
+            EXPECT_NEAR(compact_step.getValue(row, col), full_step.getValue(row, col), 1.0e-6f);
         }
     }
 }
@@ -1186,7 +1243,6 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     auto* first_stats_storage = icp._gpu_stats_workspace.statsStorage();
     auto* first_grid_keys = icp._gpu_stats_workspace.targetSpatialGridKeysStorage();
     auto* first_grid_indices = icp._gpu_stats_workspace.targetSpatialGridIndicesStorage();
-    auto* first_step_result = icp._gpu_step_workspace.resultStorage();
     auto* first_step_transform = icp._gpu_T_step->data();
     auto* first_acc_transform = icp._gpu_T_acc->data();
     auto* first_next_acc_transform = icp._gpu_next_T_acc->data();
@@ -1212,7 +1268,6 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     EXPECT_NE(first_stats_storage, nullptr);
     EXPECT_NE(first_grid_keys, nullptr);
     EXPECT_NE(first_grid_indices, nullptr);
-    EXPECT_NE(first_step_result, nullptr);
     EXPECT_NE(first_step_transform, nullptr);
     EXPECT_NE(first_acc_transform, nullptr);
     EXPECT_NE(first_next_acc_transform, nullptr);
@@ -1222,7 +1277,6 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     EXPECT_EQ(icp._gpu_stats_workspace.statsStorage(), first_stats_storage);
     EXPECT_EQ(icp._gpu_stats_workspace.targetSpatialGridKeysStorage(), first_grid_keys);
     EXPECT_EQ(icp._gpu_stats_workspace.targetSpatialGridIndicesStorage(), first_grid_indices);
-    EXPECT_EQ(icp._gpu_step_workspace.resultStorage(), first_step_result);
     std::vector<const float*> current_transform_buffers = {
         icp._gpu_T_step->data(),
         icp._gpu_T_acc->data(),
@@ -1791,11 +1845,13 @@ TEST(ICPGpuPathTest, AlignFusesStatsAndStepToAvoidExtraHostSynchronization)
 
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     plapoint::gpu::resetIcpRawStatsStepKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpAlignmentStepCallCountForTesting();
     GpuCloud output;
     icp.align(output);
 
     EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpRawStatsStepKernelLaunchCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepCallCountForTesting(), 1);
     EXPECT_EQ(output.size(), source->size());
 }
 

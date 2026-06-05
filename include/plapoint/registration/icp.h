@@ -360,7 +360,6 @@ private:
         reserveGpuTransformBuffers();
         gpu::setIdentityTransform4x4Async(_gpu_T_acc->data(), 0);
         _gpu_stats_workspace.reserve(source_count);
-        _gpu_step_workspace.reserve();
 
         _converged = false;
         _fitness_score = Scalar(0);
@@ -370,16 +369,15 @@ private:
 
         for (int iter = 0; iter < _max_iter; ++iter)
         {
-            const auto stats_and_step = gpu::computeIcpStatsAndStepTransformColumnMajor(
+            const auto stats_and_step = gpu::computeIcpAlignmentStepColumnMajor(
                 cur_points,
                 source_count,
                 _target->points().data(),
                 target_count,
                 _max_corr_dist,
                 _gpu_stats_workspace,
-                _gpu_T_step->data(),
-                _gpu_step_workspace);
-            const auto& stats = stats_and_step.stats;
+                _gpu_T_step->data());
+            const auto& stats = stats_and_step;
             if (stats.invalid_source_count > 0)
             {
                 throw std::invalid_argument(iter == 0
@@ -400,7 +398,6 @@ private:
             }
 
             updateResidualMetricsFromGpuStats(stats, source_count);
-            validateGpuStepTransformStatsInput(stats);
             if (!stats_and_step.step_valid)
             {
                 throw std::runtime_error("ICP: transform step is not representable");
@@ -896,7 +893,6 @@ private:
     mutable bool _final_T_cpu_valid = false;
 #ifdef PLAPOINT_WITH_CUDA
     gpu::IcpCorrespondenceStatsWorkspace _gpu_stats_workspace;
-    gpu::IcpStepTransformWorkspace _gpu_step_workspace;
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_T_acc;
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_next_T_acc;
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_T_step;

@@ -52,6 +52,20 @@ struct IcpStatsAndStepTransformResult
     bool step_valid = false;
 };
 
+/// Host-side compact result for one GPU ICP alignment iteration.
+/// It omits full covariance data that the alignment loop does not need.
+template <typename Scalar>
+struct IcpAlignmentStepResult
+{
+    int active_count = 0;
+    int invalid_source_count = 0;
+    double residual_sq_sum = 0.0;
+    bool src_has_non_collinear_geometry = false;
+    bool tgt_has_non_collinear_geometry = false;
+    IcpStepTransformResult<Scalar> step;
+    bool step_valid = false;
+};
+
 /// Reusable device storage for ICP correspondence stats reductions.
 /// Reserve it once for a source size and pass it to repeated stats calls to avoid repeated allocations.
 class IcpCorrespondenceStatsWorkspace
@@ -309,6 +323,30 @@ IcpStatsAndStepTransformResult<double> computeIcpStatsAndStepTransformColumnMajo
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     double* d_step_transform,
     IcpStepTransformWorkspace& step_workspace,
+    cudaStream_t stream = 0);
+
+/// Compute compact stats and the step transform needed by the GPU ICP alignment loop.
+/// Copies only the compact convergence/error summary and step delta back to host.
+IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajor(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    cudaStream_t stream = 0);
+
+/// Compute compact stats and the step transform needed by the GPU ICP alignment loop.
+/// Copies only the compact convergence/error summary and step delta back to host.
+IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajor(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
     cudaStream_t stream = 0);
 
 /// Multiply two 4x4 column-major device transforms and write C = A * B.

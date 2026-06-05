@@ -1242,3 +1242,43 @@ Verification evidence:
   The launch reduction is structurally useful, but this benchmark run stayed within noise compared with Task 44's
   1.10259 ms stats+step row; the hot cost is now dominated by correspondence search/reduction and the required host
   copy/synchronization rather than the removed small launch.
+
+## Task 46: Use Compact Alignment Step Summary
+
+- Goal: reduce per-iteration CPU/GPU transfer payload and avoid allocating the old step-transform workspace in
+  `IterativeClosestPoint::alignGpu()`. The alignment loop only needs active/invalid counts, residual sum,
+  non-collinear geometry flags, step validity, and step delta; it does not need the full host covariance summary.
+- Implementation:
+  - Added `IcpAlignmentStepResult` and `computeIcpAlignmentStepColumnMajor`, a compact stats+step path for the
+    alignment loop.
+  - Added compact device-side raw result generation that computes source/target non-collinear geometry flags on GPU
+    and copies back a small summary instead of full `RawIcpStats` plus a separate step result.
+  - Kept the public full `computeIcpStatsAndStepTransformColumnMajor` API unchanged for callers that need full
+    covariance details.
+  - Switched `alignGpu()` to the compact path and removed its persistent `IcpStepTransformWorkspace` member/reserve.
+  - Added tests comparing compact and full stats+step outputs and verifying `align()` uses the compact path.
+- `git diff --check` after the compact alignment step summary:
+  clean.
+- `cmake --build build-codex-cuda -j$(nproc)` and
+  `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignmentStepCompactResultMatchesFullStatsStepResult:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPGpuPathTest.AlignComputesStepFromDeviceStatsWithoutHostInputCopy:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics:ICPGpuPathTest.AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled:ICPGpuPathTest.AlignReusesGpuWorkspacesAcrossRepeatedCalls`:
+  6 targeted compact-step/align/workspace tests passed.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  43 targeted ICP GPU/stats/validation tests passed.
+- `ctest --test-dir build-codex-cuda --output-on-failure`:
+  220 tests, 0 failed.
+- `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+  143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+  `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+  rows included
+  `gpu_icp_identity,100000,5,0.271869`,
+  `gpu_icp_finite_radius,100000,5,1.01293`,
+  `gpu_icp_finite_radius_translation,100000,5,3.10399`,
+  `gpu_icp_finite_radius_translation_reuse,100000,5,2.48447`,
+  `gpu_icp_finite_radius_translation_reuse_output,100000,5,2.45308`,
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,5,1.95356`,
+  `gpu_icp_stats_step_finite_radius_translation_new_workspace,100000,5,1.53502`,
+  `gpu_icp_stats_step_finite_radius_translation_cached_grid,100000,5,1.1019`, and
+  `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,1.07391`.
+  The align rows improved slightly on this run; the standalone public stats+step rows are intentionally unchanged
+  because the compact path is used by `alignGpu()` rather than by the full-stats benchmark rows.
