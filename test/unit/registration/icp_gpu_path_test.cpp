@@ -759,6 +759,50 @@ TEST(ICPGpuPathTest, CorrespondenceStatsUsesFiniteRadiusSpatialGridCandidates)
     EXPECT_EQ(workspace.targetSpatialGridCellCountsStorage(), first_grid_cell_counts);
 }
 
+TEST(ICPGpuPathTest, CorrespondenceStatsSpatialGridSkipsNonFiniteTargetInSaturatedCell)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    constexpr float saturated_cell_value = 2147483648.0f;
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source(1, 3);
+    source.setValue(0, 0, saturated_cell_value);
+    source.setValue(0, 1, saturated_cell_value);
+    source.setValue(0, 2, saturated_cell_value);
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(2, 3);
+    target.setValue(0, 0, std::numeric_limits<float>::quiet_NaN());
+    target.setValue(0, 1, std::numeric_limits<float>::quiet_NaN());
+    target.setValue(0, 2, std::numeric_limits<float>::quiet_NaN());
+    target.setValue(1, 0, saturated_cell_value);
+    target.setValue(1, 1, saturated_cell_value);
+    target.setValue(1, 2, saturated_cell_value);
+
+    auto source_gpu = source.toGpu();
+    auto target_gpu = target.toGpu();
+    plapoint::gpu::DeviceBuffer<int> indices(1);
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        indices.get(),
+        workspace);
+
+    int host_index = -1;
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(&host_index, indices.get(), sizeof(int), cudaMemcpyDeviceToHost));
+    EXPECT_EQ(stats.active_count, 1);
+    EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-12);
+    EXPECT_EQ(host_index, 1);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 2ull);
+}
+
 TEST(ICPGpuPathTest, CorrespondenceStatsBatchesSpatialGridNeighborLookupsByXY)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

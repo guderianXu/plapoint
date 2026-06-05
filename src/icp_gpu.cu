@@ -205,6 +205,15 @@ __device__ bool loadFiniteColumnMajorPoint(const Scalar* points, int point_count
     return isfinite(x) && isfinite(y) && isfinite(z);
 }
 
+template <typename Scalar>
+__device__ void loadColumnMajorPoint(const Scalar* points, int point_count, int idx,
+                                     double& x, double& y, double& z)
+{
+    x = static_cast<double>(points[idx]);
+    y = static_cast<double>(points[point_count + idx]);
+    z = static_cast<double>(points[2 * point_count + idx]);
+}
+
 __host__ __device__ int icpGridCellCoordinate(double value, double cell_size)
 {
     const double coordinate = floor(value / cell_size);
@@ -698,10 +707,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                         double tx = 0.0;
                         double ty = 0.0;
                         double tz = 0.0;
-                        if (!loadFiniteColumnMajorPoint(target_points, target_count, target_idx, tx, ty, tz))
-                        {
-                            continue;
-                        }
+                        loadColumnMajorPoint(target_points, target_count, target_idx, tx, ty, tz);
 
                         const double dx = sx - tx;
                         if (fabs(dx) > max_dist)
@@ -1093,10 +1099,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
                         double tx = 0.0;
                         double ty = 0.0;
                         double tz = 0.0;
-                        if (!loadFiniteColumnMajorPoint(target_points, target_count, target_idx, tx, ty, tz))
-                        {
-                            continue;
-                        }
+                        loadColumnMajorPoint(target_points, target_count, target_idx, tx, ty, tz);
 
                         const double dx = sx - tx;
                         if (fabs(dx) > max_dist)
@@ -1434,10 +1437,7 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                         double tx = 0.0;
                         double ty = 0.0;
                         double tz = 0.0;
-                        if (!loadFiniteColumnMajorPoint(target_points, target_count, target_idx, tx, ty, tz))
-                        {
-                            continue;
-                        }
+                        loadColumnMajorPoint(target_points, target_count, target_idx, tx, ty, tz);
 
                         const double dx = sx - tx;
                         if (fabs(dx) > max_dist)
