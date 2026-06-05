@@ -370,6 +370,8 @@ TEST(ICPGpuPathTest, CorrespondenceStatsAllowOmittedIndexOutput)
     auto source = makeNonCollinearPoints().toGpu();
     auto target = makeNonCollinearPoints().toGpu();
 
+    plapoint::gpu::resetIcpFullDistanceEvaluationCountForTesting();
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
     const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
         source.data(),
         static_cast<int>(source.rows()),
@@ -389,6 +391,8 @@ TEST(ICPGpuPathTest, CorrespondenceStatsAllowOmittedIndexOutput)
     EXPECT_NEAR(stats.tgt_centroid[2], 0.25, 1.0e-12);
     EXPECT_TRUE(stats.src_has_non_collinear_geometry);
     EXPECT_TRUE(stats.tgt_has_non_collinear_geometry);
+    EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 0ull);
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsStillWriteRequestedIndexOutput)
@@ -402,6 +406,7 @@ TEST(ICPGpuPathTest, CorrespondenceStatsStillWriteRequestedIndexOutput)
     auto target = makeNonCollinearPoints().toGpu();
     plapoint::gpu::DeviceBuffer<int> indices(static_cast<std::size_t>(source.rows()));
 
+    plapoint::gpu::resetIcpFullDistanceEvaluationCountForTesting();
     const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
         source.data(),
         static_cast<int>(source.rows()),
@@ -423,6 +428,7 @@ TEST(ICPGpuPathTest, CorrespondenceStatsStillWriteRequestedIndexOutput)
     {
         EXPECT_EQ(host_indices[static_cast<std::size_t>(i)], i);
     }
+    EXPECT_GT(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsReportsDegenerateGeometry)
@@ -1511,6 +1517,40 @@ TEST(ICPGpuPathTest, AlignSkipsFinalStatsForNonTerminalGpuIterations)
     EXPECT_EQ(output.size(), source->size());
 }
 
+TEST(ICPGpuPathTest, AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto target_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxIterations(1);
+
+    plapoint::gpu::resetIcpFullDistanceEvaluationCountForTesting();
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    GpuCloud output;
+    icp.align(output);
+
+    EXPECT_TRUE(icp.hasConverged());
+    EXPECT_EQ(output.size(), source->size());
+    EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-6f);
+    EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
+}
+
 TEST(ICPGpuPathTest, AlignReusesIterationStatsForExactIdentityTerminalMetrics)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
@@ -1693,6 +1733,7 @@ TEST(ICPGpuPathTest, AlignFusesStatsAndStepToAvoidExtraHostSynchronization)
     plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(2.0f);
     icp.setMaxIterations(1);
     icp.setTransformationEpsilon(1.0e-8f);
 

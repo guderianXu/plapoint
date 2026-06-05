@@ -733,6 +733,65 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
 }
 
 template <typename Scalar>
+__global__ void collectExactPointwiseCorrespondenceStatsKernel(
+    const Scalar* source_points,
+    const Scalar* target_points,
+    int point_count,
+    RawIcpStats* partial_stats)
+{
+    const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int local_idx = threadIdx.x;
+    RawIcpStats local{};
+
+    if (source_idx < point_count)
+    {
+        const Scalar raw_sx = source_points[source_idx];
+        const Scalar raw_sy = source_points[point_count + source_idx];
+        const Scalar raw_sz = source_points[2 * point_count + source_idx];
+        const Scalar raw_tx = target_points[source_idx];
+        const Scalar raw_ty = target_points[point_count + source_idx];
+        const Scalar raw_tz = target_points[2 * point_count + source_idx];
+
+        if (raw_sx != raw_tx || raw_sy != raw_ty || raw_sz != raw_tz)
+        {
+            local.residual_sq_sum = INFINITY;
+        }
+        else
+        {
+            const double sx = static_cast<double>(raw_sx);
+            const double sy = static_cast<double>(raw_sy);
+            const double sz = static_cast<double>(raw_sz);
+            if (!isfinite(sx) || !isfinite(sy) || !isfinite(sz))
+            {
+                local.invalid_source_count = 1;
+            }
+            else
+            {
+                recordAcceptedCorrespondence(local, sx, sy, sz, sx, sy, sz, 0.0);
+            }
+        }
+    }
+
+    __shared__ RawIcpStats shared_stats[kIcpStatsBlockSize];
+    shared_stats[local_idx] = local;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            addRawIcpStats(shared_stats[local_idx], shared_stats[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (local_idx == 0)
+    {
+        partial_stats[blockIdx.x] = shared_stats[0];
+    }
+}
+
+template <typename Scalar>
 __global__ void collectResidualStatsKernel(
     const Scalar* source_points,
     int source_count,
@@ -1744,6 +1803,75 @@ bool shouldUseTargetSpatialGrid(Scalar max_correspondence_distance)
 }
 
 template <typename Scalar>
+bool shouldTryExactPointwiseStats(
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    const int* d_correspondence_indices)
+{
+    if (d_correspondence_indices || source_count != target_count)
+    {
+        return false;
+    }
+    if (d_source_points == d_target_points)
+    {
+        return true;
+    }
+    const double max_dist = static_cast<double>(max_correspondence_distance);
+    return !std::isfinite(max_dist);
+}
+
+template <typename Scalar>
+bool tryComputeExactPointwiseStats(
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    const int* d_correspondence_indices,
+    RawIcpStats* d_partials,
+    int partial_count,
+    RawIcpStats* d_stats,
+    RawIcpStats& raw,
+    cudaStream_t stream)
+{
+    if (!shouldTryExactPointwiseStats(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            d_correspondence_indices))
+    {
+        return false;
+    }
+
+    constexpr int block_size = kIcpStatsBlockSize;
+    collectExactPointwiseCorrespondenceStatsKernel<Scalar><<<partial_count, block_size, 0, stream>>>(
+        d_source_points,
+        d_target_points,
+        source_count,
+        d_partials);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    reduceRawIcpStatsKernel<<<1, block_size, 0, stream>>>(
+        d_partials,
+        partial_count,
+        d_stats);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
+                                        cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    return std::isfinite(raw.residual_sq_sum);
+}
+
+template <typename Scalar>
 const IcpTargetTileBounds* prepareTargetTileBounds(
     const Scalar* d_target_points,
     int target_count,
@@ -1954,6 +2082,23 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
     const int grid_size = icpStatsPartialCount(source_count);
     auto* d_partials = reinterpret_cast<RawIcpStats*>(active_workspace.partialStorage());
     auto* d_stats = reinterpret_cast<RawIcpStats*>(active_workspace.statsStorage());
+    RawIcpStats raw{};
+    if (tryComputeExactPointwiseStats(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            d_correspondence_indices,
+            d_partials,
+            grid_size,
+            d_stats,
+            raw,
+            stream))
+    {
+        return makeHostStats<Scalar>(raw);
+    }
+
     const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
         d_target_points,
         target_count,
@@ -2000,7 +2145,6 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
         d_stats);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    RawIcpStats raw{};
     PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
                                         cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
@@ -2426,51 +2570,68 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
     auto* d_partials = reinterpret_cast<RawIcpStats*>(stats_workspace.partialStorage());
     auto* d_stats = reinterpret_cast<RawIcpStats*>(stats_workspace.statsStorage());
     auto* d_result = reinterpret_cast<IcpStepTransformRawResult*>(step_workspace.resultStorage());
-    const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
+    RawIcpStats raw{};
+    const bool exact_pointwise_stats = tryComputeExactPointwiseStats(
+        d_source_points,
+        source_count,
         d_target_points,
         target_count,
         max_correspondence_distance,
-        stats_workspace,
+        nullptr,
+        d_partials,
+        grid_size,
+        d_stats,
+        raw,
         stream);
 
-    if (target_grid.active)
+    if (!exact_pointwise_stats)
     {
-        collectCorrespondenceStatsSpatialGridKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
-            d_source_points,
-            source_count,
-            d_target_points,
-            target_count,
-            max_correspondence_distance,
-            nullptr,
-            target_grid,
-            d_partials);
-    }
-    else
-    {
-        const IcpTargetTileBounds* d_target_tile_bounds = prepareTargetTileBounds(
+        const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
             d_target_points,
             target_count,
             max_correspondence_distance,
             stats_workspace,
             stream);
 
-        collectCorrespondenceStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
-            d_source_points,
-            source_count,
-            d_target_points,
-            target_count,
-            max_correspondence_distance,
-            nullptr,
-            d_target_tile_bounds,
-            d_partials);
-    }
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+        if (target_grid.active)
+        {
+            collectCorrespondenceStatsSpatialGridKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+                d_source_points,
+                source_count,
+                d_target_points,
+                target_count,
+                max_correspondence_distance,
+                nullptr,
+                target_grid,
+                d_partials);
+        }
+        else
+        {
+            const IcpTargetTileBounds* d_target_tile_bounds = prepareTargetTileBounds(
+                d_target_points,
+                target_count,
+                max_correspondence_distance,
+                stats_workspace,
+                stream);
 
-    reduceRawIcpStatsKernel<<<1, block_size, 0, stream>>>(
-        d_partials,
-        grid_size,
-        d_stats);
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+            collectCorrespondenceStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+                d_source_points,
+                source_count,
+                d_target_points,
+                target_count,
+                max_correspondence_distance,
+                nullptr,
+                d_target_tile_bounds,
+                d_partials);
+        }
+        PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+        reduceRawIcpStatsKernel<<<1, block_size, 0, stream>>>(
+            d_partials,
+            grid_size,
+            d_stats);
+        PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    }
 
     computeStepTransformFromRawStatsKernel<Scalar><<<1, 1, 0, stream>>>(
         d_stats,
@@ -2478,7 +2639,6 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
         d_result);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    RawIcpStats raw{};
     IcpStepTransformRawResult raw_result{};
     PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
                                         cudaMemcpyDeviceToHost, stream));
