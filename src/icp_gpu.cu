@@ -120,6 +120,7 @@ std::atomic<int> g_icp_host_synchronization_count{0};
 std::atomic<int> g_icp_target_spatial_grid_build_count{0};
 std::atomic<std::uintptr_t> g_icp_last_transform_output_pointer{0};
 std::atomic<int> g_icp_transform_points_call_count{0};
+std::atomic<int> g_icp_transform_multiply_call_count{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
 __device__ unsigned long long g_icp_target_candidate_visit_count;
 __device__ unsigned long long g_icp_target_tile_bound_computation_count;
@@ -2203,6 +2204,10 @@ void multiplyTransform4x4Impl(
         throw std::invalid_argument("ICP GPU: transform pointers must not be null");
     }
 
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_transform_multiply_call_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+
     multiplyTransform4x4Kernel<Scalar><<<1, 16, 0, stream>>>(d_A, d_B, d_C);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 }
@@ -2619,6 +2624,16 @@ void resetIcpTransformPointsCallCountForTesting()
 int icpTransformPointsCallCountForTesting()
 {
     return g_icp_transform_points_call_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpTransformMultiplyCallCountForTesting()
+{
+    g_icp_transform_multiply_call_count.store(0, std::memory_order_relaxed);
+}
+
+int icpTransformMultiplyCallCountForTesting()
+{
+    return g_icp_transform_multiply_call_count.load(std::memory_order_relaxed);
 }
 #endif
 

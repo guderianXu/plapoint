@@ -172,6 +172,8 @@ void resetIcpLastTransformOutputPointerForTesting();
 const void* icpLastTransformOutputPointerForTesting();
 void resetIcpTransformPointsCallCountForTesting();
 int icpTransformPointsCallCountForTesting();
+void resetIcpTransformMultiplyCallCountForTesting();
+int icpTransformMultiplyCallCountForTesting();
 
 } // namespace gpu
 } // namespace plapoint
@@ -1070,6 +1072,11 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     auto* first_step_transform = icp._gpu_T_step->data();
     auto* first_acc_transform = icp._gpu_T_acc->data();
     auto* first_next_acc_transform = icp._gpu_next_T_acc->data();
+    std::vector<const float*> first_transform_buffers = {
+        first_step_transform,
+        first_acc_transform,
+        first_next_acc_transform};
+    std::sort(first_transform_buffers.begin(), first_transform_buffers.end());
     ASSERT_NE(icp._gpu_points_a, nullptr);
     ASSERT_NE(icp._gpu_points_b, nullptr);
     auto* first_points_a = icp._gpu_points_a->data();
@@ -1098,13 +1105,12 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     EXPECT_EQ(icp._gpu_stats_workspace.targetSpatialGridKeysStorage(), first_grid_keys);
     EXPECT_EQ(icp._gpu_stats_workspace.targetSpatialGridIndicesStorage(), first_grid_indices);
     EXPECT_EQ(icp._gpu_step_workspace.resultStorage(), first_step_result);
-    EXPECT_EQ(icp._gpu_T_step->data(), first_step_transform);
-    const bool transform_buffers_match =
-        (icp._gpu_T_acc->data() == first_acc_transform &&
-         icp._gpu_next_T_acc->data() == first_next_acc_transform) ||
-        (icp._gpu_T_acc->data() == first_next_acc_transform &&
-         icp._gpu_next_T_acc->data() == first_acc_transform);
-    EXPECT_TRUE(transform_buffers_match);
+    std::vector<const float*> current_transform_buffers = {
+        icp._gpu_T_step->data(),
+        icp._gpu_T_acc->data(),
+        icp._gpu_next_T_acc->data()};
+    std::sort(current_transform_buffers.begin(), current_transform_buffers.end());
+    EXPECT_EQ(current_transform_buffers, first_transform_buffers);
     EXPECT_EQ(icp._gpu_points_a->data(), first_points_a);
     EXPECT_EQ(icp._gpu_points_b->data(), first_points_b);
     EXPECT_NE(source->points().data(), first_points_a);
@@ -1465,12 +1471,14 @@ TEST(ICPGpuPathTest, AlignReusesIterationStatsForExactIdentityTerminalMetrics)
     plapoint::gpu::resetIcpCorrespondenceStatsCallCountForTesting();
     plapoint::gpu::resetIcpResidualStatsCallCountForTesting();
     plapoint::gpu::resetIcpTransformPointsCallCountForTesting();
+    plapoint::gpu::resetIcpTransformMultiplyCallCountForTesting();
     GpuCloud output;
     icp.align(output);
 
     EXPECT_EQ(plapoint::gpu::icpCorrespondenceStatsCallCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpTransformMultiplyCallCountForTesting(), 0);
     EXPECT_EQ(icp._gpu_points_a, nullptr);
     EXPECT_EQ(icp._gpu_points_b, nullptr);
     EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-6f);
@@ -1504,15 +1512,24 @@ TEST(ICPGpuPathTest, AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics)
     plapoint::gpu::resetIcpCorrespondenceStatsCallCountForTesting();
     plapoint::gpu::resetIcpResidualStatsCallCountForTesting();
     plapoint::gpu::resetIcpTransformPointsCallCountForTesting();
+    plapoint::gpu::resetIcpTransformMultiplyCallCountForTesting();
     GpuCloud output;
     icp.align(output);
 
     EXPECT_EQ(plapoint::gpu::icpCorrespondenceStatsCallCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpTransformMultiplyCallCountForTesting(), 0);
     EXPECT_EQ(icp._gpu_points_a, nullptr);
     EXPECT_EQ(icp._gpu_points_b, nullptr);
     EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-5f);
+    const auto& final_transform = icp.getFinalTransformation();
+    EXPECT_NEAR(final_transform.getValue(0, 0), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(final_transform.getValue(1, 1), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(final_transform.getValue(2, 2), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(final_transform.getValue(0, 3), 0.1f, 1.0e-5f);
+    EXPECT_NEAR(final_transform.getValue(1, 3), -0.05f, 1.0e-5f);
+    EXPECT_NEAR(final_transform.getValue(2, 3), 0.025f, 1.0e-5f);
     EXPECT_EQ(output.size(), source->size());
 }
 
@@ -1542,11 +1559,13 @@ TEST(ICPGpuPathTest, AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled)
 
     plapoint::gpu::resetIcpCorrespondenceStatsCallCountForTesting();
     plapoint::gpu::resetIcpTransformPointsCallCountForTesting();
+    plapoint::gpu::resetIcpTransformMultiplyCallCountForTesting();
     GpuCloud output;
     icp.align(output);
 
     EXPECT_EQ(plapoint::gpu::icpCorrespondenceStatsCallCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTransformMultiplyCallCountForTesting(), 0);
     EXPECT_EQ(icp._gpu_points_a, nullptr);
     EXPECT_EQ(icp._gpu_points_b, nullptr);
     EXPECT_EQ(output.size(), source->size());

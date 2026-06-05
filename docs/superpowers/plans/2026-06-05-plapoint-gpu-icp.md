@@ -808,6 +808,7 @@ Verification evidence:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
 - `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:
   204 tests, 0 failed.
+
 - `cmake --build build-codex-cuda -j$(nproc) &&
   ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesCallerGpuOutputStorageWhenShapeMatches:ICPGpuPathTest.AlignReplacesAttributedGpuOutputInsteadOfKeepingStaleMetadata`
   after adding output-storage reuse tests:
@@ -925,3 +926,41 @@ Verification evidence:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
 - `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:
   204 tests, 0 failed.
+
+## Task 38: First-Iteration Transform Accumulation Fast Path
+
+- Goal: skip the initial GPU ICP accumulated-transform 4x4 multiply. The accumulated transform starts as identity, so
+  the first non-identity step can become the accumulated transform by swapping the persistent step and accumulated
+  transform buffers instead of launching `multiplyTransform4x4Kernel`.
+- Implementation:
+  - Captured `_gpu_T_step->data()` as `step_transform` before any buffer-role swap so point transformation and fused
+    final residual stats still use the current iteration step.
+  - Swapped `_gpu_T_acc` and `_gpu_T_step` only for the first non-identity iteration; later iterations still multiply
+    `step * accumulated` into `_gpu_next_T_acc`.
+  - Added a testing-only transform-multiply launch counter and updated GPU ICP path tests to assert that one-iteration
+    non-identity and skip-final-metrics alignments avoid the 4x4 multiply launch.
+  - Updated the repeated-align workspace test to verify the three transform buffers are reused as a set, because buffer
+    roles may rotate after the first-iteration swap.
+- `git diff --check` after the fast path:
+  clean.
+- `cmake --build build-codex-cuda -j$(nproc)` and
+  `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics:ICPGpuPathTest.AlignReusesGpuWorkspacesAcrossRepeatedCalls:ICPGpuPathTest.FinalTransformationDeviceIsAvailableAfterGpuAlign:ICPGpuPathTest.GpuAlignMaterializesCpuFinalTransformLazily`:
+  4 targeted GPU ICP transform/workspace tests passed.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  39 targeted ICP GPU/stats/validation tests passed.
+- `ctest --test-dir build-codex-cuda --output-on-failure`:
+  216 tests, 0 failed.
+- `ctest --test-dir build-codex-cpu --output-on-failure`:
+  143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+  `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`:
+  large finite-radius GPU ICP benchmark rows included
+  `gpu_icp_finite_radius,100000,5,1.68775`,
+  `gpu_icp_finite_radius_translation,100000,5,3.78043`,
+  `gpu_icp_finite_radius_translation_reuse,100000,5,3.14122`,
+  `gpu_icp_finite_radius_translation_reuse_output,100000,5,3.10376`,
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,5,2.61468`,
+  `gpu_icp_stats_step_finite_radius_translation_cached_grid,100000,5,1.34966`, and
+  `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,1.31061`.
+  The 4x4 multiply skip removes one small launch in one-iteration paths; measured end-to-end speed is within run-to-run
+  noise because nearest-neighbor/grid work remains dominant at this scale.

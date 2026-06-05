@@ -406,6 +406,7 @@ private:
                 throw std::runtime_error("ICP: transform step is not representable");
             }
             const auto step_result = stats_and_step.step;
+            const Scalar* step_transform = _gpu_T_step->data();
             const bool terminal_iteration = step_result.delta < _eps || iter + 1 == _max_iter;
             const bool terminal_identity_step = terminal_iteration && step_result.delta == Scalar(0);
             Scalar* transform_output_points = nullptr;
@@ -420,12 +421,19 @@ private:
             }
             if (!terminal_identity_step)
             {
-                gpu::multiplyTransform4x4Async(
-                    _gpu_T_step->data(),
-                    _gpu_T_acc->data(),
-                    _gpu_next_T_acc->data(),
-                    0);
-                std::swap(_gpu_T_acc, _gpu_next_T_acc);
+                if (iter == 0)
+                {
+                    std::swap(_gpu_T_acc, _gpu_T_step);
+                }
+                else
+                {
+                    gpu::multiplyTransform4x4Async(
+                        step_transform,
+                        _gpu_T_acc->data(),
+                        _gpu_next_T_acc->data(),
+                        0);
+                    std::swap(_gpu_T_acc, _gpu_next_T_acc);
+                }
             }
 
             if (terminal_identity_step)
@@ -436,7 +444,7 @@ private:
             else if (terminal_iteration && _compute_final_metrics)
             {
                 auto final_stats = gpu::transformPointsAndComputeIcpResidualStatsColumnMajor(
-                    _gpu_T_step->data(),
+                    step_transform,
                     cur_points,
                     source_count,
                     _target->points().data(),
@@ -468,7 +476,7 @@ private:
             else
             {
                 gpu::transformPointsColumnMajorAsync(
-                    _gpu_T_step->data(),
+                    step_transform,
                     cur_points,
                     source_count,
                     transform_output_points,
