@@ -409,20 +409,29 @@ private:
             }
             const auto step_result = stats_and_step.step;
             const bool terminal_iteration = step_result.delta < _eps || iter + 1 == _max_iter;
+            const bool terminal_identity_step = terminal_iteration && step_result.delta == Scalar(0);
             Scalar* transform_output_points = next_points;
-            if (terminal_iteration && !output_aliases_input)
+            if (terminal_iteration && !terminal_identity_step && !output_aliases_input)
             {
                 transform_output_points = prepareGpuOutputPointBuffer(output, source_count);
                 final_points_written_to_output = true;
             }
-            gpu::multiplyTransform4x4Async(
-                _gpu_T_step->data(),
-                _gpu_T_acc->data(),
-                _gpu_next_T_acc->data(),
-                0);
-            std::swap(_gpu_T_acc, _gpu_next_T_acc);
+            if (!terminal_identity_step)
+            {
+                gpu::multiplyTransform4x4Async(
+                    _gpu_T_step->data(),
+                    _gpu_T_acc->data(),
+                    _gpu_next_T_acc->data(),
+                    0);
+                std::swap(_gpu_T_acc, _gpu_next_T_acc);
+            }
 
-            if (terminal_iteration && _compute_final_metrics)
+            if (terminal_identity_step)
+            {
+                _converged = stats.active_count >= 3 && _fitness_score >= _min_fitness_score;
+                break;
+            }
+            else if (terminal_iteration && _compute_final_metrics)
             {
                 auto final_stats = gpu::transformPointsAndComputeIcpResidualStatsColumnMajor(
                     _gpu_T_step->data(),
@@ -481,11 +490,14 @@ private:
         if (!final_points_written_to_output)
         {
             Scalar* output_points = prepareGpuOutputPointBuffer(output, source_count);
-            PLAPOINT_CHECK_CUDA(cudaMemcpy(
-                output_points,
-                cur_points,
-                static_cast<std::size_t>(source_count) * 3u * sizeof(Scalar),
-                cudaMemcpyDeviceToDevice));
+            if (output_points != cur_points)
+            {
+                PLAPOINT_CHECK_CUDA(cudaMemcpy(
+                    output_points,
+                    cur_points,
+                    static_cast<std::size_t>(source_count) * 3u * sizeof(Scalar),
+                    cudaMemcpyDeviceToDevice));
+            }
         }
     }
 

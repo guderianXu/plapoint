@@ -35,6 +35,24 @@ plamatrix::DenseMatrix<float, plamatrix::Device::CPU> makeNonCollinearPoints()
     return points;
 }
 
+plamatrix::DenseMatrix<float, plamatrix::Device::CPU> makeTranslatedNonCollinearPoints(
+    const plamatrix::DenseMatrix<float, plamatrix::Device::CPU>& source,
+    float tx,
+    float ty,
+    float tz)
+{
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> transform(4, 4);
+    transform.fill(0.0f);
+    transform.setValue(0, 0, 1.0f);
+    transform.setValue(1, 1, 1.0f);
+    transform.setValue(2, 2, 1.0f);
+    transform.setValue(3, 3, 1.0f);
+    transform.setValue(0, 3, tx);
+    transform.setValue(1, 3, ty);
+    transform.setValue(2, 3, tz);
+    return plamatrix::transformPoints(transform, source);
+}
+
 plamatrix::DenseMatrix<float, plamatrix::Device::CPU> makeCollinearPoints()
 {
     plamatrix::DenseMatrix<float, plamatrix::Device::CPU> points(4, 3);
@@ -963,8 +981,10 @@ TEST(ICPGpuPathTest, AlignDoesNotPopulateGpuPointCpuCaches)
     using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
     using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
 
-    auto source_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
-    auto target_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto source_points = makeNonCollinearPoints();
+    auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.1f, -0.05f, 0.025f);
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
@@ -995,8 +1015,10 @@ TEST(ICPGpuPathTest, AlignReusesFiniteRadiusSpatialGridAcrossStatsCalls)
     using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
     using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
 
-    auto source_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
-    auto target_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto source_points = makeNonCollinearPoints();
+    auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.1f, -0.05f, 0.025f);
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
@@ -1024,8 +1046,10 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
     using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
 
-    auto source_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
-    auto target_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto source_points = makeNonCollinearPoints();
+    auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.1f, -0.05f, 0.025f);
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
@@ -1098,8 +1122,10 @@ TEST(ICPGpuPathTest, AlignReusesCallerGpuOutputStorageWhenShapeMatches)
     using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
     using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
 
-    auto source_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
-    auto target_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto source_points = makeNonCollinearPoints();
+    auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.1f, -0.05f, 0.025f);
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
@@ -1135,8 +1161,10 @@ TEST(ICPGpuPathTest, AlignWritesTerminalGpuTransformDirectlyToReusableOutput)
     using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
     using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
 
-    auto source_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
-    auto target_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto source_points = makeNonCollinearPoints();
+    auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.1f, -0.05f, 0.025f);
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
@@ -1168,8 +1196,10 @@ TEST(ICPGpuPathTest, AlignUsesScratchForTerminalTransformWhenOutputAliasesSource
     using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
     using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
 
-    auto source_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
-    auto target_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto source_points_cpu = makeNonCollinearPoints();
+    auto target_points = makeTranslatedNonCollinearPoints(source_points_cpu, 0.1f, -0.05f, 0.025f);
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points_cpu));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
     const auto* source_points = static_cast<const GpuCloud&>(*source).points().data();
@@ -1406,7 +1436,7 @@ TEST(ICPGpuPathTest, AlignSkipsFinalStatsForNonTerminalGpuIterations)
     EXPECT_EQ(output.size(), source->size());
 }
 
-TEST(ICPGpuPathTest, AlignUsesResidualStatsForTerminalFinalMetrics)
+TEST(ICPGpuPathTest, AlignReusesIterationStatsForExactIdentityTerminalMetrics)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -1433,10 +1463,47 @@ TEST(ICPGpuPathTest, AlignUsesResidualStatsForTerminalFinalMetrics)
     GpuCloud output;
     icp.align(output);
 
+    EXPECT_EQ(plapoint::gpu::icpCorrespondenceStatsCallCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 0);
+    EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-6f);
+    EXPECT_EQ(output.size(), source->size());
+}
+
+TEST(ICPGpuPathTest, AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_points = makeNonCollinearPoints();
+    auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.1f, -0.05f, 0.025f);
+
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(2.0f);
+    icp.setMaxIterations(1);
+
+    plapoint::gpu::resetIcpCorrespondenceStatsCallCountForTesting();
+    plapoint::gpu::resetIcpResidualStatsCallCountForTesting();
+    plapoint::gpu::resetIcpTransformPointsCallCountForTesting();
+    GpuCloud output;
+    icp.align(output);
+
     EXPECT_EQ(plapoint::gpu::icpCorrespondenceStatsCallCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 0);
-    EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-6f);
+    EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-5f);
     EXPECT_EQ(output.size(), source->size());
 }
 
@@ -1450,8 +1517,10 @@ TEST(ICPGpuPathTest, AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled)
     using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
     using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
 
-    auto source_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
-    auto target_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto source_points = makeNonCollinearPoints();
+    auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.1f, -0.05f, 0.025f);
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
