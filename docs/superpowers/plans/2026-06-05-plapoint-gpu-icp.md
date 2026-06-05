@@ -1201,3 +1201,44 @@ Verification evidence:
   `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,1.07306`.
   Compared with Task 43's benchmark, the cached-grid finite-radius stats row improved from 1.33411 ms to 1.07306 ms,
   and the reusable skip-final-metrics align row improved from 2.43083 ms to 1.96362 ms on this run.
+
+## Task 45: Fuse Normal Stats Reduction And Step Solve
+
+- Goal: remove the standalone raw-stats-to-step kernel launch from the normal fused stats+step path. Before this
+  task, `computeIcpStatsAndStepTransformColumnMajorImpl` launched correspondence stats, reduced raw stats, launched
+  a separate step solver kernel, then copied stats and step result back.
+- Implementation:
+  - Added `reduceRawIcpStatsAndComputeStepTransformKernel`, which reduces partial raw ICP stats, writes the reduced
+    stats buffer, builds the Kabsch/quaternion step input, and computes the step transform from thread 0 in the same
+    kernel.
+  - Switched only the normal stats+step path to this fused reduce+step kernel.
+  - Kept the stats-only API on `reduceRawIcpStatsKernel` and kept `computeIcpStepTransformFromDeviceStats` on the
+    existing standalone raw-stats step kernel.
+  - Added a testing counter for standalone raw-stats step kernel launches and extended
+    `AlignFusesStatsAndStepToAvoidExtraHostSynchronization` to require zero such launches during `align()`.
+- `git diff --check` after the normal reduce+step fusion:
+  clean.
+- `cmake --build build-codex-cuda -j$(nproc)` and
+  `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics:ICPGpuPathTest.AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridXYLookupsBeforeSearch:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance`:
+  5 targeted stats+step/spatial-grid/align tests passed.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  42 targeted ICP GPU/stats/validation tests passed.
+- `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+  143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `ctest --test-dir build-codex-cuda --output-on-failure`:
+  219 tests, 0 failed.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+  `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+  rows included
+  `gpu_icp_identity,100000,5,0.281052`,
+  `gpu_icp_finite_radius,100000,5,1.02139`,
+  `gpu_icp_finite_radius_translation,100000,5,3.11762`,
+  `gpu_icp_finite_radius_translation_reuse,100000,5,2.5013`,
+  `gpu_icp_finite_radius_translation_reuse_output,100000,5,2.4525`,
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,5,1.95691`,
+  `gpu_icp_stats_step_finite_radius_translation_new_workspace,100000,5,1.53215`,
+  `gpu_icp_stats_step_finite_radius_translation_cached_grid,100000,5,1.11012`, and
+  `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,1.07211`.
+  The launch reduction is structurally useful, but this benchmark run stayed within noise compared with Task 44's
+  1.10259 ms stats+step row; the hot cost is now dominated by correspondence search/reduction and the required host
+  copy/synchronization rather than the removed small launch.

@@ -111,12 +111,25 @@ struct IcpStepTransformRawResult
 
 constexpr int kIcpStatsBlockSize = 128;
 
+template <typename Scalar>
+__device__ void computeStepTransformFromInput(
+    const IcpStepTransformInput& input,
+    Scalar* step_transform,
+    IcpStepTransformRawResult* result);
+
+template <typename Scalar>
+__device__ void computeStepTransformFromRawStatsValue(
+    const RawIcpStats& raw,
+    Scalar* step_transform,
+    IcpStepTransformRawResult* result);
+
 #ifdef PLAPOINT_ENABLE_TESTING
 std::atomic<int> g_icp_correspondence_stats_call_count{0};
 std::atomic<int> g_icp_residual_stats_call_count{0};
 std::atomic<std::uintptr_t> g_icp_first_stats_source_pointer{0};
 std::atomic<int> g_icp_step_transform_input_copy_count{0};
 std::atomic<int> g_icp_exact_pointwise_step_call_count{0};
+std::atomic<int> g_icp_raw_stats_step_kernel_launch_count{0};
 std::atomic<int> g_icp_host_synchronization_count{0};
 std::atomic<int> g_icp_target_spatial_grid_build_count{0};
 std::atomic<std::uintptr_t> g_icp_last_transform_output_pointer{0};
@@ -1540,6 +1553,42 @@ __global__ void reduceRawIcpStatsAndSetExactPointwiseIdentityStepKernel(
     }
 }
 
+template <typename Scalar>
+__global__ void reduceRawIcpStatsAndComputeStepTransformKernel(
+    const RawIcpStats* partial_stats,
+    int partial_count,
+    RawIcpStats* stats,
+    Scalar* step_transform,
+    IcpStepTransformRawResult* result)
+{
+    const int local_idx = threadIdx.x;
+    RawIcpStats local{};
+    for (int idx = local_idx; idx < partial_count; idx += blockDim.x)
+    {
+        addRawIcpStats(local, partial_stats[idx]);
+    }
+
+    __shared__ RawIcpStats shared_stats[kIcpStatsBlockSize];
+    shared_stats[local_idx] = local;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            addRawIcpStats(shared_stats[local_idx], shared_stats[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (local_idx == 0)
+    {
+        const RawIcpStats raw = shared_stats[0];
+        *stats = raw;
+        computeStepTransformFromRawStatsValue<Scalar>(raw, step_transform, result);
+    }
+}
+
 __global__ void reduceRawIcpResidualStatsKernel(
     const RawIcpResidualStats* partial_stats,
     int partial_count,
@@ -1849,7 +1898,16 @@ __global__ void computeStepTransformFromRawStatsKernel(
         return;
     }
 
-    if (raw_stats->active_count <= 0)
+    computeStepTransformFromRawStatsValue<Scalar>(*raw_stats, step_transform, result);
+}
+
+template <typename Scalar>
+__device__ void computeStepTransformFromRawStatsValue(
+    const RawIcpStats& raw,
+    Scalar* step_transform,
+    IcpStepTransformRawResult* result)
+{
+    if (raw.active_count <= 0)
     {
         result->delta = 0.0;
         result->valid = 0;
@@ -1857,7 +1915,6 @@ __global__ void computeStepTransformFromRawStatsKernel(
     }
 
     IcpStepTransformInput input{};
-    const RawIcpStats raw = *raw_stats;
     const double inv_count = 1.0 / static_cast<double>(raw.active_count);
     for (int c = 0; c < 3; ++c)
     {
@@ -2675,6 +2732,9 @@ IcpStepTransformResult<Scalar> computeIcpStepTransformFromDeviceStatsImpl(
 
     const auto* d_stats = reinterpret_cast<const RawIcpStats*>(stats_workspace.statsStorage());
     auto* d_result = reinterpret_cast<IcpStepTransformRawResult*>(step_workspace.resultStorage());
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_raw_stats_step_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
+#endif
     computeStepTransformFromRawStatsKernel<Scalar><<<1, 1, 0, stream>>>(
         d_stats,
         d_step_transform,
@@ -2814,18 +2874,14 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
         }
         PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-        reduceRawIcpStatsKernel<<<1, block_size, 0, stream>>>(
+        reduceRawIcpStatsAndComputeStepTransformKernel<Scalar><<<1, block_size, 0, stream>>>(
             d_partials,
             grid_size,
-            d_stats);
+            d_stats,
+            d_step_transform,
+            d_result);
         PLAPOINT_CHECK_CUDA(cudaGetLastError());
     }
-
-    computeStepTransformFromRawStatsKernel<Scalar><<<1, 1, 0, stream>>>(
-        d_stats,
-        d_step_transform,
-        d_result);
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
     PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
                                         cudaMemcpyDeviceToHost, stream));
@@ -2921,6 +2977,16 @@ void resetIcpExactPointwiseStepCallCountForTesting()
 int icpExactPointwiseStepCallCountForTesting()
 {
     return g_icp_exact_pointwise_step_call_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpRawStatsStepKernelLaunchCountForTesting()
+{
+    g_icp_raw_stats_step_kernel_launch_count.store(0, std::memory_order_relaxed);
+}
+
+int icpRawStatsStepKernelLaunchCountForTesting()
+{
+    return g_icp_raw_stats_step_kernel_launch_count.load(std::memory_order_relaxed);
 }
 
 void resetIcpHostSynchronizationCountForTesting()

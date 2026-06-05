@@ -162,6 +162,8 @@ void resetIcpStepTransformInputCopyCountForTesting();
 int icpStepTransformInputCopyCountForTesting();
 void resetIcpExactPointwiseStepCallCountForTesting();
 int icpExactPointwiseStepCallCountForTesting();
+void resetIcpRawStatsStepKernelLaunchCountForTesting();
+int icpRawStatsStepKernelLaunchCountForTesting();
 void resetIcpHostSynchronizationCountForTesting();
 int icpHostSynchronizationCountForTesting();
 void resetIcpTargetTileBoundComputationCountForTesting();
@@ -1788,10 +1790,12 @@ TEST(ICPGpuPathTest, AlignFusesStatsAndStepToAvoidExtraHostSynchronization)
     icp.setTransformationEpsilon(1.0e-8f);
 
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
+    plapoint::gpu::resetIcpRawStatsStepKernelLaunchCountForTesting();
     GpuCloud output;
     icp.align(output);
 
     EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpRawStatsStepKernelLaunchCountForTesting(), 0);
     EXPECT_EQ(output.size(), source->size());
 }
 
