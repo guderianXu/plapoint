@@ -276,6 +276,18 @@ __device__ double minDistanceSqToIcpGridCell(
     return dx * dx + dy * dy + dz * dz;
 }
 
+__device__ double minDistanceSqToIcpGridCellXY(
+    double x,
+    double y,
+    int cell_x,
+    int cell_y,
+    double cell_size)
+{
+    const double dx = distanceOutsideIcpGridCellAxis(x, cell_x, cell_size);
+    const double dy = distanceOutsideIcpGridCellAxis(y, cell_y, cell_size);
+    return dx * dx + dy * dy;
+}
+
 __device__ void recordAcceptedCorrespondence(
     RawIcpStats& local,
     double sx,
@@ -606,6 +618,17 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                 int query_y = 0;
                 const int dy_cell = offset_order[dy_offset_idx];
                 if (!offsetGridCellCoordinate(source_key.y, dy_cell, query_y))
+                {
+                    continue;
+                }
+
+                const double min_xy_dist_sq = minDistanceSqToIcpGridCellXY(
+                    sx,
+                    sy,
+                    query_x,
+                    query_y,
+                    target_grid.cell_size);
+                if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq > best_dist_sq)
                 {
                     continue;
                 }
@@ -997,6 +1020,17 @@ __global__ void collectResidualStatsSpatialGridKernel(
                     continue;
                 }
 
+                const double min_xy_dist_sq = minDistanceSqToIcpGridCellXY(
+                    sx,
+                    sy,
+                    query_x,
+                    query_y,
+                    target_grid.cell_size);
+                if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq >= best_dist_sq)
+                {
+                    continue;
+                }
+
                 IcpGridCellKey query_key{query_x, query_y, min_z};
                 int cell_idx = lowerBoundIcpGridCell(target_grid.cell_keys, target_grid.cell_count, query_key);
                 while (cell_idx < target_grid.cell_count && !stop_cell_scan)
@@ -1323,6 +1357,17 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                 int query_y = 0;
                 const int dy_cell = offset_order[dy_offset_idx];
                 if (!offsetGridCellCoordinate(source_key.y, dy_cell, query_y))
+                {
+                    continue;
+                }
+
+                const double min_xy_dist_sq = minDistanceSqToIcpGridCellXY(
+                    sx,
+                    sy,
+                    query_x,
+                    query_y,
+                    target_grid.cell_size);
+                if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq >= best_dist_sq)
                 {
                     continue;
                 }
