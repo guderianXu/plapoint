@@ -96,6 +96,69 @@ TEST(ICPGpuPathTest, MultiplyTransform4x4UsesColumnMajorTransformComposition)
     }
 }
 
+TEST(ICPGpuPathTest, CorrespondenceStatsAllowOmittedIndexOutput)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto source = makeNonCollinearPoints().toGpu();
+    auto target = makeNonCollinearPoints().toGpu();
+
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source.data(),
+        static_cast<int>(source.rows()),
+        target.data(),
+        static_cast<int>(target.rows()),
+        std::numeric_limits<float>::infinity(),
+        nullptr);
+
+    EXPECT_EQ(stats.active_count, 4);
+    EXPECT_EQ(stats.invalid_source_count, 0);
+    EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-12);
+    EXPECT_NEAR(stats.src_centroid[0], 0.25, 1.0e-12);
+    EXPECT_NEAR(stats.src_centroid[1], 0.25, 1.0e-12);
+    EXPECT_NEAR(stats.src_centroid[2], 0.25, 1.0e-12);
+    EXPECT_NEAR(stats.tgt_centroid[0], 0.25, 1.0e-12);
+    EXPECT_NEAR(stats.tgt_centroid[1], 0.25, 1.0e-12);
+    EXPECT_NEAR(stats.tgt_centroid[2], 0.25, 1.0e-12);
+}
+
+TEST(ICPGpuPathTest, CorrespondenceStatsStillWriteRequestedIndexOutput)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto source = makeNonCollinearPoints().toGpu();
+    auto target = makeNonCollinearPoints().toGpu();
+    plapoint::gpu::DeviceBuffer<int> indices(static_cast<std::size_t>(source.rows()));
+
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source.data(),
+        static_cast<int>(source.rows()),
+        target.data(),
+        static_cast<int>(target.rows()),
+        std::numeric_limits<float>::infinity(),
+        indices.get());
+
+    std::vector<int> host_indices(static_cast<std::size_t>(source.rows()), -1);
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(
+        host_indices.data(),
+        indices.get(),
+        host_indices.size() * sizeof(int),
+        cudaMemcpyDeviceToHost));
+
+    EXPECT_EQ(stats.active_count, 4);
+    ASSERT_EQ(host_indices.size(), 4u);
+    for (int i = 0; i < 4; ++i)
+    {
+        EXPECT_EQ(host_indices[static_cast<std::size_t>(i)], i);
+    }
+}
+
 TEST(ICPGpuPathTest, AlignDoesNotPopulateGpuPointCpuCaches)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

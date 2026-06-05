@@ -319,7 +319,6 @@ private:
                                        static_cast<std::size_t>(source_count) * 3u * sizeof(Scalar),
                                        cudaMemcpyDeviceToDevice));
 
-        gpu::DeviceBuffer<int> d_corr(static_cast<std::size_t>(source_count));
         auto T_acc_gpu = identity4x4().toGpu();
 
         _converged = false;
@@ -335,7 +334,7 @@ private:
                 _target->points().data(),
                 target_count,
                 _max_corr_dist,
-                d_corr.get());
+                nullptr);
             if (stats.invalid_source_count > 0)
             {
                 throw std::invalid_argument(iter == 0
@@ -369,7 +368,7 @@ private:
                 _target->points().data(),
                 target_count,
                 _max_corr_dist,
-                d_corr.get());
+                nullptr);
             if (final_stats.invalid_source_count > 0)
             {
                 throw std::invalid_argument("ICP: transformed source contains non-finite point");

@@ -24,7 +24,8 @@ struct IcpCorrespondenceStats
 };
 
 /// Compute nearest-neighbor ICP correspondences for PlaMatrix column-major Nx3 device point arrays.
-/// The returned stats are copied to host after synchronizing the supplied stream.
+/// The returned stats are copied to host after synchronizing the supplied stream. If
+/// d_correspondence_indices is null, per-source correspondence indices are not written.
 IcpCorrespondenceStats<float> computeIcpCorrespondenceStatsColumnMajor(
     const float* d_source_points,
     int source_count,

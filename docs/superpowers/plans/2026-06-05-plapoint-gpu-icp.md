@@ -4,7 +4,7 @@
 
 **Goal:** Move `IterativeClosestPoint<Scalar, GPU>` away from full CPU-staged point processing and keep the per-point ICP workload on GPU.
 
-**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences, accumulate centroid/covariance/residual stats on device, update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. The small Kabsch SVD remains CPU-side while current points and transform accumulation stay GPU-resident.
+**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences, accumulate centroid/covariance/residual stats on device with block-level reductions, update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. The small Kabsch SVD remains CPU-side while current points and transform accumulation stay GPU-resident.
 
 **Tech Stack:** C++17, CUDA runtime, PlaMatrix GPU `DenseMatrix`, Google Test, PlaPoint benchmark executable.
 
@@ -27,7 +27,7 @@
 - Modify: `src/CMakeLists.txt`
 
 - [x] Add `gpu::IcpCorrespondenceStats<Scalar>` with active count, invalid source count, centroids, covariance sums, and residual sum.
-- [x] Implement a CUDA kernel that scans target points for each source point, filters non-finite distances and max correspondence distance, and accumulates stats with device atomics.
+- [x] Implement a CUDA kernel that scans target points for each source point, filters non-finite distances and max correspondence distance, and accumulates stats with device-side reductions.
 - [x] Copy only the small stats struct back to host after stream synchronization.
 
 ### Task 3: GPU ICP Align Path
@@ -55,7 +55,20 @@
 - [x] Keep `alignGpu()` transform accumulation in a GPU `DenseMatrix` and copy it to CPU only for the legacy `getFinalTransformation()` API.
 - [x] Expose `getFinalTransformationDevice()` for GPU ICP callers.
 
-### Task 5: Documentation, Benchmark, And Verification
+### Task 5: Correspondence Stats Hot-Path Reduction
+
+**Files:**
+- Modify: `include/plapoint/gpu/icp.h`
+- Modify: `src/icp_gpu.cu`
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+
+- [x] Add a CUDA-only failing test showing aggregate stats can be computed with `d_correspondence_indices == nullptr`.
+- [x] Keep explicit correspondence index output covered for callers that still request it.
+- [x] Remove the unused GPU ICP `DeviceBuffer<int>` allocation and pass `nullptr` from `alignGpu()`.
+- [x] Replace per-point global double atomics with per-block shared-memory stats reduction and a second-stage partial reducer.
+
+### Task 6: Documentation, Benchmark, And Verification
 
 **Files:**
 - Modify: `README.md`
@@ -73,12 +86,16 @@ Verification evidence:
 - `cmake --build build-codex-cuda -j$(nproc)` after adding `FinalTransformationDeviceIsAvailableAfterGpuAlign`:
   failed as expected because `IterativeClosestPoint<float, GPU>` had no `getFinalTransformationDevice()` member.
 - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*`:
-  3 targeted GPU ICP path tests passed.
+  5 targeted GPU ICP path tests passed after adding optional correspondence output coverage.
+- `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsAllowOmittedIndexOutput`:
+  failed as expected before the null-output optimization with `ICP GPU: device pointers must not be null`.
+- `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment`:
+  6 targeted ICP GPU/stats tests passed after block-reduction implementation.
 - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
 - `cmake --build build-codex-cuda -j$(nproc) && ctest --test-dir build-codex-cuda --output-on-failure`:
-  182 tests, 0 failed.
+  184 tests, 0 failed.
 - `./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CPU benchmark rows emitted through `cpu_icp_identity,512,1,31.9915`.
+  CPU benchmark rows emitted through `cpu_icp_identity,512,1,30.0036`.
 - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CUDA benchmark rows included `gpu_icp_identity,512,1,2.8043`.
+  CUDA benchmark rows included `gpu_icp_identity,512,1,1.36816`.
