@@ -342,6 +342,8 @@ private:
     {
         const int source_count = checkedInt(_source->size(), "ICP: source point count exceeds int range");
         const int target_count = checkedInt(_target->size(), "ICP: target point count exceeds int range");
+        const bool output_aliases_input = outputAliasesGpuInput(output);
+        bool final_points_written_to_output = false;
 
         const Scalar* cur_points = _source->points().data();
         reserveGpuPointBuffers(source_count);
@@ -397,19 +399,33 @@ private:
                 throw std::runtime_error("ICP: transform step is not representable");
             }
             const auto step_result = stats_and_step.step;
+            const bool terminal_iteration = step_result.delta < _eps || iter + 1 == _max_iter;
+            Scalar* transform_output_points = next_points;
+            if (terminal_iteration && !output_aliases_input)
+            {
+                transform_output_points = prepareGpuOutputPointBuffer(output, source_count);
+                final_points_written_to_output = true;
+            }
             gpu::multiplyTransform4x4Async(
                 _gpu_T_step->data(),
                 _gpu_T_acc->data(),
                 _gpu_next_T_acc->data(),
                 0);
             std::swap(_gpu_T_acc, _gpu_next_T_acc);
-            gpu::transformPointsColumnMajorAsync(_gpu_T_step->data(), cur_points, source_count, next_points, 0);
-            cur_points = next_points;
-            next_points_in_a = !next_points_in_a;
-            next_points = next_points_in_a ? _gpu_points_a->data() : _gpu_points_b->data();
+            gpu::transformPointsColumnMajorAsync(
+                _gpu_T_step->data(),
+                cur_points,
+                source_count,
+                transform_output_points,
+                0);
+            cur_points = transform_output_points;
+            if (!terminal_iteration)
+            {
+                next_points_in_a = !next_points_in_a;
+                next_points = next_points_in_a ? _gpu_points_a->data() : _gpu_points_b->data();
+            }
 
-            const bool needs_final_stats = step_result.delta < _eps || iter + 1 == _max_iter;
-            if (needs_final_stats)
+            if (terminal_iteration)
             {
                 auto final_stats = gpu::computeIcpCorrespondenceStatsColumnMajor(
                     cur_points,
@@ -442,12 +458,21 @@ private:
         }
 
         _final_T_gpu_valid = true;
-        Scalar* output_points = prepareGpuOutputPointBuffer(output, source_count);
-        PLAPOINT_CHECK_CUDA(cudaMemcpy(
-            output_points,
-            cur_points,
-            static_cast<std::size_t>(source_count) * 3u * sizeof(Scalar),
-            cudaMemcpyDeviceToDevice));
+        if (!final_points_written_to_output)
+        {
+            Scalar* output_points = prepareGpuOutputPointBuffer(output, source_count);
+            PLAPOINT_CHECK_CUDA(cudaMemcpy(
+                output_points,
+                cur_points,
+                static_cast<std::size_t>(source_count) * 3u * sizeof(Scalar),
+                cudaMemcpyDeviceToDevice));
+        }
+    }
+
+    bool outputAliasesGpuInput(const PointCloudType& output) const
+    {
+        const auto* output_address = static_cast<const PointCloudType*>(&output);
+        return output_address == _source.get() || output_address == _target.get();
     }
 
     template <plamatrix::Device D = Dev>

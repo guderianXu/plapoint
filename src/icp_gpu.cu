@@ -110,6 +110,7 @@ std::atomic<std::uintptr_t> g_icp_first_stats_source_pointer{0};
 std::atomic<int> g_icp_step_transform_input_copy_count{0};
 std::atomic<int> g_icp_host_synchronization_count{0};
 std::atomic<int> g_icp_target_spatial_grid_build_count{0};
+std::atomic<std::uintptr_t> g_icp_last_transform_output_pointer{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
 __device__ unsigned long long g_icp_target_candidate_visit_count;
 __device__ unsigned long long g_icp_target_tile_bound_computation_count;
@@ -1301,6 +1302,12 @@ void transformPointsColumnMajorImpl(
         throw std::invalid_argument("ICP GPU: transform point pointers must not be null");
     }
 
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_last_transform_output_pointer.store(
+        reinterpret_cast<std::uintptr_t>(d_output_points),
+        std::memory_order_relaxed);
+#endif
+
     constexpr int block_size = 256;
     const int grid_size = (point_count + block_size - 1) / block_size;
     transformPointsColumnMajorKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
@@ -1641,6 +1648,17 @@ void resetIcpTargetSpatialGridBuildCountForTesting()
 int icpTargetSpatialGridBuildCountForTesting()
 {
     return g_icp_target_spatial_grid_build_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpLastTransformOutputPointerForTesting()
+{
+    g_icp_last_transform_output_pointer.store(0, std::memory_order_relaxed);
+}
+
+const void* icpLastTransformOutputPointerForTesting()
+{
+    return reinterpret_cast<const void*>(
+        g_icp_last_transform_output_pointer.load(std::memory_order_relaxed));
 }
 #endif
 

@@ -371,6 +371,24 @@
 - [x] Run targeted GPU ICP tests and benchmark smoke.
 - [x] Run full CPU/CUDA tests.
 
+### Task 29: Direct Terminal GPU ICP Transform Into Caller Output
+
+**Files:**
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `src/icp_gpu.cu`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `README.md`
+- Modify: `docs/superpowers/plans/2026-06-05-plapoint-gpu-icp.md`
+
+- [x] Add a CUDA-only test hook for the most recent point-transform output pointer.
+- [x] Add CUDA-only coverage requiring terminal GPU ICP transforms to write directly into a reusable caller
+  output cloud instead of internal scratch.
+- [x] Keep source/target-aliased output clouds on the scratch-and-copy fallback path so final stats do not observe
+  mutated inputs.
+- [x] Direct terminal transforms into plain non-input caller output storage and skip the final device-to-device copy.
+- [x] Run targeted GPU ICP tests and benchmark smoke.
+- [x] Run full CPU/CUDA tests.
+
 Verification evidence:
 
 - `git diff --check`: clean.
@@ -553,6 +571,30 @@ Verification evidence:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
 - `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:
   206 tests, 0 failed.
+- `cmake --build build-codex-cuda -j$(nproc) &&
+  ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignWritesTerminalGpuTransformDirectlyToReusableOutput`
+  after adding the terminal direct-output test hook and test:
+  failed as expected because the final transform still wrote `_gpu_points_a` and then copied into output.
+- `cmake --build build-codex-cuda -j$(nproc) &&
+  ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesCallerGpuOutputStorageWhenShapeMatches:ICPGpuPathTest.AlignWritesTerminalGpuTransformDirectlyToReusableOutput:ICPGpuPathTest.AlignUsesScratchForTerminalTransformWhenOutputAliasesSource:ICPGpuPathTest.AlignReplacesAttributedGpuOutputInsteadOfKeepingStaleMetadata`:
+  4 targeted GPU output-path tests passed after direct terminal output writes and input-alias fallback.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  32 targeted ICP GPU/stats/validation tests passed after direct terminal output writes.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+  `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1` after direct
+  terminal output writes:
+  CUDA benchmark rows included `gpu_icp_finite_radius_translation,512,1,0.361795`,
+  `gpu_icp_finite_radius_translation_reuse,512,1,0.263994`, and
+  `gpu_icp_finite_radius_translation_reuse_output,512,1,0.26528`.
+- `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5` after direct
+  terminal output writes:
+  CUDA benchmark rows included `gpu_icp_finite_radius_translation,512,5,0.357869`,
+  `gpu_icp_finite_radius_translation_reuse,512,5,0.260998`, and
+  `gpu_icp_finite_radius_translation_reuse_output,512,5,0.260873`.
+- `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+  142 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:
+  208 tests, 0 failed.
 - `cmake --build build-codex-cuda -j$(nproc)` after extending `AlignReusesGpuWorkspacesAcrossRepeatedCalls`
   to check 4x4 transform buffers:
   failed as expected because `IterativeClosestPoint<float, GPU>` had no persistent `_gpu_T_step`, `_gpu_T_acc`,
