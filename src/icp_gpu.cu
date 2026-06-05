@@ -50,6 +50,7 @@ constexpr int kIcpStatsBlockSize = 128;
 #ifdef PLAPOINT_ENABLE_TESTING
 std::atomic<int> g_icp_correspondence_stats_call_count{0};
 std::atomic<std::uintptr_t> g_icp_first_stats_source_pointer{0};
+std::atomic<int> g_icp_step_transform_input_copy_count{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
 __device__ unsigned long long g_icp_target_candidate_visit_count;
 #endif
@@ -497,17 +498,12 @@ __device__ Scalar checkedDeviceScalar(double value, int& valid)
 }
 
 template <typename Scalar>
-__global__ void computeStepTransformFromStatsKernel(
-    const IcpStepTransformInput* input,
+__device__ void computeStepTransformFromInput(
+    const IcpStepTransformInput& input,
     Scalar* step_transform,
     IcpStepTransformRawResult* result)
 {
-    if (threadIdx.x != 0 || blockIdx.x != 0)
-    {
-        return;
-    }
-
-    const double* h = input->cross_covariance;
+    const double* h = input.cross_covariance;
     double N[16];
     N[0] = h[0] + h[4] + h[8];
     N[1] = h[5] - h[7];
@@ -557,12 +553,12 @@ __global__ void computeStepTransformFromStatsKernel(
     const double r21 = 2.0 * (y * z + w * x);
     const double r22 = 1.0 - 2.0 * (x * x + y * y);
 
-    const double tx = input->tgt_centroid[0] -
-        (r00 * input->src_centroid[0] + r01 * input->src_centroid[1] + r02 * input->src_centroid[2]);
-    const double ty = input->tgt_centroid[1] -
-        (r10 * input->src_centroid[0] + r11 * input->src_centroid[1] + r12 * input->src_centroid[2]);
-    const double tz = input->tgt_centroid[2] -
-        (r20 * input->src_centroid[0] + r21 * input->src_centroid[1] + r22 * input->src_centroid[2]);
+    const double tx = input.tgt_centroid[0] -
+        (r00 * input.src_centroid[0] + r01 * input.src_centroid[1] + r02 * input.src_centroid[2]);
+    const double ty = input.tgt_centroid[1] -
+        (r10 * input.src_centroid[0] + r11 * input.src_centroid[1] + r12 * input.src_centroid[2]);
+    const double tz = input.tgt_centroid[2] -
+        (r20 * input.src_centroid[0] + r21 * input.src_centroid[1] + r22 * input.src_centroid[2]);
 
     step_transform[0] = checkedDeviceScalar<Scalar>(r00, valid);
     step_transform[1] = checkedDeviceScalar<Scalar>(r10, valid);
@@ -586,6 +582,58 @@ __global__ void computeStepTransformFromStatsKernel(
                   + fabs(r12) + fabs(r20) + fabs(r21)
                   + fabs(tx) + fabs(ty) + fabs(tz);
     result->valid = valid;
+}
+
+template <typename Scalar>
+__global__ void computeStepTransformFromStatsKernel(
+    const IcpStepTransformInput* input,
+    Scalar* step_transform,
+    IcpStepTransformRawResult* result)
+{
+    if (threadIdx.x != 0 || blockIdx.x != 0)
+    {
+        return;
+    }
+
+    computeStepTransformFromInput<Scalar>(*input, step_transform, result);
+}
+
+template <typename Scalar>
+__global__ void computeStepTransformFromRawStatsKernel(
+    const RawIcpStats* raw_stats,
+    Scalar* step_transform,
+    IcpStepTransformRawResult* result)
+{
+    if (threadIdx.x != 0 || blockIdx.x != 0)
+    {
+        return;
+    }
+
+    if (raw_stats->active_count <= 0)
+    {
+        result->delta = 0.0;
+        result->valid = 0;
+        return;
+    }
+
+    IcpStepTransformInput input{};
+    const RawIcpStats raw = *raw_stats;
+    const double inv_count = 1.0 / static_cast<double>(raw.active_count);
+    for (int c = 0; c < 3; ++c)
+    {
+        input.src_centroid[c] = raw.src_sum[c] * inv_count;
+        input.tgt_centroid[c] = raw.tgt_sum[c] * inv_count;
+    }
+    for (int r = 0; r < 3; ++r)
+    {
+        for (int c = 0; c < 3; ++c)
+        {
+            const int idx = r * 3 + c;
+            input.cross_covariance[idx] = raw.cross_sum[idx] -
+                raw.src_sum[r] * raw.tgt_sum[c] * inv_count;
+        }
+    }
+    computeStepTransformFromInput<Scalar>(input, step_transform, result);
 }
 
 bool covarianceHasNonCollinearGeometry(const double covariance[9]);
@@ -831,10 +879,55 @@ IcpStepTransformResult<Scalar> computeIcpStepTransformFromStatsImpl(
 
     auto* d_input = reinterpret_cast<IcpStepTransformInput*>(active_workspace.inputStorage());
     auto* d_result = reinterpret_cast<IcpStepTransformRawResult*>(active_workspace.resultStorage());
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_step_transform_input_copy_count.fetch_add(1, std::memory_order_relaxed);
+#endif
     PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(d_input, &input, sizeof(IcpStepTransformInput),
                                         cudaMemcpyHostToDevice, stream));
     computeStepTransformFromStatsKernel<Scalar><<<1, 1, 0, stream>>>(
         d_input,
+        d_step_transform,
+        d_result);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    IcpStepTransformRawResult raw_result{};
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpStepTransformRawResult),
+                                        cudaMemcpyDeviceToHost, stream));
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    if (!raw_result.valid)
+    {
+        throw std::runtime_error("ICP: transform step is not representable");
+    }
+
+    IcpStepTransformResult<Scalar> result;
+    result.delta = static_cast<Scalar>(raw_result.delta);
+    return result;
+}
+
+template <typename Scalar>
+IcpStepTransformResult<Scalar> computeIcpStepTransformFromDeviceStatsImpl(
+    const IcpCorrespondenceStats<Scalar>& stats,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    Scalar* d_step_transform,
+    IcpStepTransformWorkspace& step_workspace,
+    cudaStream_t stream)
+{
+    if (!d_step_transform)
+    {
+        throw std::invalid_argument("ICP GPU: step transform pointer must not be null");
+    }
+    if (!stats_workspace.statsStorage())
+    {
+        throw std::invalid_argument("ICP GPU: stats workspace must contain reduced stats");
+    }
+    validateStepTransformStatsInput(stats);
+
+    step_workspace.reserve();
+
+    const auto* d_stats = reinterpret_cast<const RawIcpStats*>(stats_workspace.statsStorage());
+    auto* d_result = reinterpret_cast<IcpStepTransformRawResult*>(step_workspace.resultStorage());
+    computeStepTransformFromRawStatsKernel<Scalar><<<1, 1, 0, stream>>>(
+        d_stats,
         d_step_transform,
         d_result);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
@@ -901,6 +994,16 @@ unsigned long long icpTargetCandidateVisitCountForTesting()
     unsigned long long count = 0;
     PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_target_candidate_visit_count, sizeof(count)));
     return count;
+}
+
+void resetIcpStepTransformInputCopyCountForTesting()
+{
+    g_icp_step_transform_input_copy_count.store(0, std::memory_order_relaxed);
+}
+
+int icpStepTransformInputCopyCountForTesting()
+{
+    return g_icp_step_transform_input_copy_count.load(std::memory_order_relaxed);
 }
 #endif
 
@@ -1053,6 +1156,36 @@ IcpStepTransformResult<double> computeIcpStepTransformFromStats(
     cudaStream_t stream)
 {
     return computeIcpStepTransformFromStatsImpl(stats, d_step_transform, &workspace, stream);
+}
+
+IcpStepTransformResult<float> computeIcpStepTransformFromDeviceStats(
+    const IcpCorrespondenceStats<float>& stats,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    IcpStepTransformWorkspace& step_workspace,
+    cudaStream_t stream)
+{
+    return computeIcpStepTransformFromDeviceStatsImpl(
+        stats,
+        stats_workspace,
+        d_step_transform,
+        step_workspace,
+        stream);
+}
+
+IcpStepTransformResult<double> computeIcpStepTransformFromDeviceStats(
+    const IcpCorrespondenceStats<double>& stats,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    IcpStepTransformWorkspace& step_workspace,
+    cudaStream_t stream)
+{
+    return computeIcpStepTransformFromDeviceStatsImpl(
+        stats,
+        stats_workspace,
+        d_step_transform,
+        step_workspace,
+        stream);
 }
 
 void multiplyTransform4x4(

@@ -150,6 +150,24 @@ IcpStepTransformResult<double> computeIcpStepTransformFromStats(
     IcpStepTransformWorkspace& workspace,
     cudaStream_t stream = 0);
 
+/// Compute the 4x4 ICP step transform from the device-side stats reduction in stats_workspace.
+/// stats must be the host summary returned by the most recent stats call that used stats_workspace.
+IcpStepTransformResult<float> computeIcpStepTransformFromDeviceStats(
+    const IcpCorrespondenceStats<float>& stats,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    IcpStepTransformWorkspace& step_workspace,
+    cudaStream_t stream = 0);
+
+/// Compute the 4x4 ICP step transform from the device-side stats reduction in stats_workspace.
+/// stats must be the host summary returned by the most recent stats call that used stats_workspace.
+IcpStepTransformResult<double> computeIcpStepTransformFromDeviceStats(
+    const IcpCorrespondenceStats<double>& stats,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    IcpStepTransformWorkspace& step_workspace,
+    cudaStream_t stream = 0);
+
 /// Multiply two 4x4 column-major device transforms and write C = A * B.
 /// Throws if any device pointer is null or the CUDA launch fails.
 void multiplyTransform4x4(

@@ -385,8 +385,9 @@ private:
             }
 
             updateResidualMetricsFromGpuStats(stats, source_count);
-            const auto step_result = gpu::computeIcpStepTransformFromStats(
+            const auto step_result = gpu::computeIcpStepTransformFromDeviceStats(
                 stats,
+                stats_workspace,
                 T_step_gpu.data(),
                 step_workspace);
             gpu::multiplyTransform4x4Async(T_step_gpu.data(), T_acc_gpu.data(), next_T_acc_gpu.data(), 0);
