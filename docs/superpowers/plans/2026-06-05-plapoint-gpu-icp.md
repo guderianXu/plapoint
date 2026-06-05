@@ -4,7 +4,7 @@
 
 **Goal:** Move `IterativeClosestPoint<Scalar, GPU>` away from full CPU-staged point processing and keep the per-point ICP workload on GPU.
 
-**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences with shared-memory target tiling, accumulate centroid/covariance/residual stats on device with block-level reductions, compute the rigid step transform with a GPU quaternion/Jacobi solver, update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. Reduced stats and small metric checks still synchronize to CPU while current points, step transforms, degeneracy flags, and transform accumulation stay GPU-resident.
+**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences with shared-memory target tiling, accumulate centroid/covariance/residual stats on device with block-level reductions, compute the rigid step transform with a GPU quaternion/Jacobi solver, update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. Reduced stats and small metric checks still synchronize to CPU while current points, step transforms, degeneracy flags, and transform accumulation stay GPU-resident. The GPU align loop skips transformed final-stats scans on non-terminal iterations and computes final metrics only when convergence or the final iteration requires them.
 
 **Tech Stack:** C++17, CUDA runtime, PlaMatrix GPU `DenseMatrix`, Google Test, PlaPoint benchmark executable.
 
@@ -145,6 +145,20 @@
 - [x] Make `alignGpu()` use stats geometry flags instead of running CPU SVD on 3x3 covariance matrices.
 - [x] Remove the GPU path's private CPU SVD degeneracy helper.
 
+### Task 12: Conditional Final Stats
+
+**Files:**
+- Modify: `CMakeLists.txt`
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `src/icp_gpu.cu`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `README.md`
+
+- [x] Add a CUDA-only test counter showing a two-iteration GPU ICP run should call correspondence stats three times instead of four.
+- [x] Keep the counter compiled only for test builds with `PLAPOINT_ENABLE_TESTING`.
+- [x] Skip transformed final-stats scans on non-terminal iterations.
+- [x] Still compute final metrics for convergence and max-iteration exit cases.
+
 Verification evidence:
 
 - `git diff --check`: clean.
@@ -170,11 +184,19 @@ Verification evidence:
   failed as expected because `IcpCorrespondenceStats` did not expose source/target non-collinear geometry flags.
 - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
   13 targeted ICP GPU/stats/validation tests passed after moving GPU-path degeneracy checks off CPU SVD.
+- `cmake --build build-codex-cuda -j$(nproc)` after adding `AlignSkipsFinalStatsForNonTerminalGpuIterations`:
+  failed as expected because the test-only stats call counter hooks did not exist yet.
+- `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignSkipsFinalStatsForNonTerminalGpuIterations` before the conditional final-stats change:
+  failed as expected with 4 correspondence stats calls instead of the expected 3.
+- `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignSkipsFinalStatsForNonTerminalGpuIterations`:
+  1 targeted test passed after skipping transformed final-stats scans on non-terminal iterations.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  14 targeted ICP GPU/stats/validation tests passed after the conditional final-stats change.
 - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
 - `ctest --test-dir build-codex-cuda --output-on-failure`:
-  189 tests, 0 failed.
+  190 tests, 0 failed.
 - `./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CPU benchmark rows emitted through `cpu_icp_identity,512,1,31.9223`.
+  CPU benchmark rows emitted through `cpu_icp_identity,512,1,30.2468`.
 - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CUDA benchmark rows included `gpu_icp_identity,512,1,0.403703`.
+  CUDA benchmark rows included `gpu_icp_identity,512,1,0.398064`.

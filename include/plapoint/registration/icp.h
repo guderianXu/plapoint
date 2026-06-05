@@ -372,32 +372,36 @@ private:
             gpu::transformPointsColumnMajorAsync(T_step_gpu.data(), cur.data(), source_count, next_cur.data(), 0);
             std::swap(cur, next_cur);
 
-            auto final_stats = gpu::computeIcpCorrespondenceStatsColumnMajor(
-                cur.data(),
-                source_count,
-                _target->points().data(),
-                target_count,
-                _max_corr_dist,
-                nullptr,
-                stats_workspace);
-            if (final_stats.invalid_source_count > 0)
+            const bool needs_final_stats = step_result.delta < _eps || iter + 1 == _max_iter;
+            if (needs_final_stats)
             {
-                throw std::invalid_argument("ICP: transformed source contains non-finite point");
-            }
-            if (final_stats.active_count == 0)
-            {
-                _fitness_score = Scalar(0);
-                _final_rmse = std::numeric_limits<Scalar>::infinity();
-            }
-            else
-            {
-                updateResidualMetricsFromGpuStats(final_stats, source_count);
-            }
+                auto final_stats = gpu::computeIcpCorrespondenceStatsColumnMajor(
+                    cur.data(),
+                    source_count,
+                    _target->points().data(),
+                    target_count,
+                    _max_corr_dist,
+                    nullptr,
+                    stats_workspace);
+                if (final_stats.invalid_source_count > 0)
+                {
+                    throw std::invalid_argument("ICP: transformed source contains non-finite point");
+                }
+                if (final_stats.active_count == 0)
+                {
+                    _fitness_score = Scalar(0);
+                    _final_rmse = std::numeric_limits<Scalar>::infinity();
+                }
+                else
+                {
+                    updateResidualMetricsFromGpuStats(final_stats, source_count);
+                }
 
-            if (step_result.delta < _eps)
-            {
-                _converged = final_stats.active_count >= 3 && _fitness_score >= _min_fitness_score;
-                break;
+                if (step_result.delta < _eps)
+                {
+                    _converged = final_stats.active_count >= 3 && _fitness_score >= _min_fitness_score;
+                    break;
+                }
             }
         }
 

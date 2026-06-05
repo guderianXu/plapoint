@@ -125,6 +125,17 @@ plapoint::gpu::IcpCorrespondenceStats<float> makeMatchedStats(
 
 } // namespace
 
+namespace plapoint
+{
+namespace gpu
+{
+
+void resetIcpCorrespondenceStatsCallCountForTesting();
+int icpCorrespondenceStatsCallCountForTesting();
+
+} // namespace gpu
+} // namespace plapoint
+
 TEST(ICPGpuPathTest, MultiplyTransform4x4UsesColumnMajorTransformComposition)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
@@ -495,6 +506,47 @@ TEST(ICPGpuPathTest, FinalTransformationDeviceIsAvailableAfterGpuAlign)
     EXPECT_NEAR(transform_cpu.getValue(0, 3), 0.0f, 1.0e-5f);
     EXPECT_NEAR(transform_cpu.getValue(1, 3), 0.0f, 1.0e-5f);
     EXPECT_NEAR(transform_cpu.getValue(2, 3), 0.0f, 1.0e-5f);
+}
+
+TEST(ICPGpuPathTest, AlignSkipsFinalStatsForNonTerminalGpuIterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_points = makeNonCollinearPoints();
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> transform(4, 4);
+    transform.fill(0.0f);
+    transform.setValue(0, 0, 1.0f);
+    transform.setValue(1, 1, 1.0f);
+    transform.setValue(2, 2, 1.0f);
+    transform.setValue(3, 3, 1.0f);
+    transform.setValue(0, 3, 0.2f);
+    transform.setValue(1, 3, -0.1f);
+    transform.setValue(2, 3, 0.05f);
+    auto target_points = plamatrix::transformPoints(transform, source_points);
+
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxIterations(2);
+    icp.setTransformationEpsilon(1.0e-8f);
+
+    plapoint::gpu::resetIcpCorrespondenceStatsCallCountForTesting();
+    GpuCloud output;
+    icp.align(output);
+
+    EXPECT_EQ(plapoint::gpu::icpCorrespondenceStatsCallCountForTesting(), 3);
+    EXPECT_EQ(output.size(), source->size());
 }
 
 #endif // PLAPOINT_WITH_CUDA

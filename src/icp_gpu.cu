@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
 #include <cmath>
 #include <limits>
@@ -44,6 +45,10 @@ struct IcpStepTransformRawResult
 };
 
 constexpr int kIcpStatsBlockSize = 128;
+
+#ifdef PLAPOINT_ENABLE_TESTING
+std::atomic<int> g_icp_correspondence_stats_call_count{0};
+#endif
 
 int icpStatsPartialCount(int source_count)
 {
@@ -574,6 +579,10 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
     IcpCorrespondenceStatsWorkspace* workspace,
     cudaStream_t stream)
 {
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+
     if (source_count <= 0 || target_count <= 0)
     {
         return {};
@@ -743,6 +752,18 @@ IcpStepTransformResult<Scalar> computeIcpStepTransformFromStatsImpl(
 }
 
 } // namespace
+
+#ifdef PLAPOINT_ENABLE_TESTING
+void resetIcpCorrespondenceStatsCallCountForTesting()
+{
+    g_icp_correspondence_stats_call_count.store(0, std::memory_order_relaxed);
+}
+
+int icpCorrespondenceStatsCallCountForTesting()
+{
+    return g_icp_correspondence_stats_call_count.load(std::memory_order_relaxed);
+}
+#endif
 
 void IcpCorrespondenceStatsWorkspace::reserve(int source_count)
 {

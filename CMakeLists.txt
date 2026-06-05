@@ -98,6 +98,10 @@ if(PLAPOINT_WITH_CUDA)
     target_link_libraries(plapoint PRIVATE CUDA::cudart)
 endif()
 
+if(PLAPOINT_BUILD_TESTS)
+    target_compile_definitions(plapoint PRIVATE PLAPOINT_ENABLE_TESTING=1)
+endif()
+
 # Source files
 add_subdirectory(src)
 
