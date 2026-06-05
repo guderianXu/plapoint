@@ -990,7 +990,7 @@ TEST(ICPGpuPathTest, CorrespondenceStatsLoadsSpatialGridTargetIndexOnlyForCompet
     EXPECT_EQ(stats.active_count, 1);
     EXPECT_NEAR(stats.residual_sq_sum, 0.36, 1.0e-6);
     EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 2ull);
-    EXPECT_EQ(plapoint::gpu::icpTargetIndexLoadCountForTesting(), 1ull);
+    EXPECT_EQ(plapoint::gpu::icpTargetIndexLoadCountForTesting(), 0ull);
 }
 
 TEST(ICPGpuPathTest, ResidualStatsStopsSpatialGridLookupsAfterExactMatch)
@@ -1121,6 +1121,20 @@ TEST(ICPGpuPathTest, CorrespondenceStatsSpatialGridTieKeepsLowerTargetIndex)
     PLAPOINT_CHECK_CUDA(cudaMemcpy(&host_index, indices.get(), sizeof(int), cudaMemcpyDeviceToHost));
     EXPECT_EQ(stats.active_count, 1);
     EXPECT_EQ(host_index, 0);
+
+    plapoint::gpu::resetIcpTargetIndexLoadCountForTesting();
+    const auto unindexed_stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        nullptr,
+        workspace);
+
+    EXPECT_EQ(unindexed_stats.active_count, 1);
+    EXPECT_NEAR(unindexed_stats.tgt_centroid[0], 1.5, 1.0e-6);
+    EXPECT_EQ(plapoint::gpu::icpTargetIndexLoadCountForTesting(), 2ull);
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsReusesFiniteRadiusSpatialGridForSameTarget)

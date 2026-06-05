@@ -1451,3 +1451,50 @@ Verification evidence:
   Compared with Task 49 on this machine, cached-grid stats+step improved from 0.970505 ms to 0.94603 ms, stats-only
   cached-grid improved from 0.933812 ms to 0.91683 ms, and alignment reuse rows improved from 2.20899 ms to
   2.16523 ms.
+
+## Task 51: Defer Spatial-Grid Best Target Index Materialization
+
+- Goal: reduce target-index memory traffic in the no-output finite-radius spatial-grid correspondence stats path.
+  After Task 49, candidate target indices were loaded only for candidates that could match the current best distance,
+  but the first/better candidate still loaded an index even when `correspondence_indices == nullptr`.
+- Implementation:
+  - Changed the spatial-grid correspondence kernel to track the best sorted-grid offset separately from the materialized
+    target index.
+  - Deferred `sorted_target_indices` reads until equal-distance tie-breaking or explicit correspondence-index output
+    requires the index.
+  - Preserved deterministic lower-target-index tie-breaking by lazily loading both the challenger index and the current
+    best index when an equal-distance tie occurs.
+  - Updated the target-index load counter test to expect zero index loads for an ordinary no-output nearest-neighbor
+    stats call, and extended the tie test to cover the no-output path.
+- Rejected experiment:
+  - I tried dynamic X/Y neighbor-cell ordering based on the source position inside its grid cell. It reduced some align
+    rows but regressed cached stats rows on repeat benchmark runs, for example
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` around 0.954 ms versus Task 50's 0.94603 ms and
+    `gpu_icp_stats_finite_radius_translation_cached_grid` around 0.917 ms versus Task 50's 0.91683 ms. That change was
+    reverted before this task was kept.
+- `git diff --check` after the deferred best-index materialization:
+  clean.
+- `cmake --build build-codex-cuda -j$(nproc)` and
+  `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsLoadsSpatialGridTargetIndexOnlyForCompetitiveCandidates:ICPGpuPathTest.CorrespondenceStatsSpatialGridTieKeepsLowerTargetIndex:ICPGpuPathTest.CorrespondenceStatsStopsSpatialGridAfterExactMatchWhenIndicesOmitted:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance`:
+  4 targeted spatial-grid/tie tests passed.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  45 targeted ICP GPU/spatial-grid/validation tests passed.
+- `ctest --test-dir build-codex-cuda --output-on-failure`:
+  222 tests, 0 failed.
+- `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+  143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+  `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+  rows included
+  `gpu_icp_identity,100000,5,0.273054`,
+  `gpu_icp_finite_radius,100000,5,1.00459`,
+  `gpu_icp_finite_radius_translation,100000,5,2.7777`,
+  `gpu_icp_finite_radius_translation_reuse,100000,5,2.14185`,
+  `gpu_icp_finite_radius_translation_reuse_output,100000,5,2.09804`,
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,5,1.69878`,
+  `gpu_icp_stats_step_finite_radius_translation_new_workspace,100000,5,1.44623`,
+  `gpu_icp_stats_step_finite_radius_translation_cached_grid,100000,5,0.937737`, and
+  `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,0.901087`.
+  Compared with Task 50 on this machine, cached-grid stats+step improved from 0.94603 ms to 0.937737 ms,
+  stats-only cached-grid improved from 0.91683 ms to 0.901087 ms, alignment reuse improved from 2.16523 ms to
+  2.14185 ms, and the skip-final-metrics reuse row improved from 1.72318 ms to 1.69878 ms.

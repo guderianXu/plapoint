@@ -705,6 +705,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
         }
     }
 
+    int best_sorted_offset = -1;
     int best_idx = -1;
     double best_dist_sq = INFINITY;
     double best_tx = 0.0;
@@ -820,13 +821,27 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                         const double dist_sq = dx * dx + dy * dy + dz * dz;
                         if (isfinite(dist_sq) && dist_sq <= best_dist_sq)
                         {
-                            const int target_idx = target_grid.sorted_target_indices[sorted_offset];
+                            bool update_best = dist_sq < best_dist_sq || best_sorted_offset < 0;
+                            int target_idx = -1;
+                            if (!update_best)
+                            {
+                                target_idx = target_grid.sorted_target_indices[sorted_offset];
 #ifdef PLAPOINT_ENABLE_TESTING
-                            atomicAdd(&g_icp_target_index_load_count, 1ull);
+                                atomicAdd(&g_icp_target_index_load_count, 1ull);
 #endif
-                            if (dist_sq < best_dist_sq || best_idx < 0 || target_idx < best_idx)
+                                if (best_idx < 0)
+                                {
+                                    best_idx = target_grid.sorted_target_indices[best_sorted_offset];
+#ifdef PLAPOINT_ENABLE_TESTING
+                                    atomicAdd(&g_icp_target_index_load_count, 1ull);
+#endif
+                                }
+                                update_best = target_idx < best_idx;
+                            }
+                            if (update_best)
                             {
                                 best_dist_sq = dist_sq;
+                                best_sorted_offset = sorted_offset;
                                 best_idx = target_idx;
                                 best_tx = tx;
                                 best_ty = ty;
@@ -847,7 +862,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
 
     if (source_valid)
     {
-        bool accepted = best_idx >= 0;
+        bool accepted = best_sorted_offset >= 0;
         if (accepted)
         {
             accepted = best_dist_sq <= max_dist_sq;
@@ -864,6 +879,13 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
         {
             if (correspondence_indices)
             {
+                if (best_idx < 0)
+                {
+                    best_idx = target_grid.sorted_target_indices[best_sorted_offset];
+#ifdef PLAPOINT_ENABLE_TESTING
+                    atomicAdd(&g_icp_target_index_load_count, 1ull);
+#endif
+                }
                 correspondence_indices[source_idx] = best_idx;
             }
             recordAcceptedCorrespondence(local, sx, sy, sz, best_tx, best_ty, best_tz, best_dist_sq);
