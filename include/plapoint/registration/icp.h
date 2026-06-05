@@ -353,11 +353,11 @@ private:
             {
                 throw std::runtime_error("ICP: fewer than 3 correspondences within max distance");
             }
-            if (!hasNonCollinearCovariance(stats.src_covariance))
+            if (!stats.src_has_non_collinear_geometry)
             {
                 throw std::runtime_error("ICP: correspondence geometry is degenerate");
             }
-            if (!hasNonCollinearCovariance(stats.tgt_covariance))
+            if (!stats.tgt_has_non_collinear_geometry)
             {
                 throw std::runtime_error("ICP: target correspondence geometry is degenerate");
             }
@@ -405,30 +405,6 @@ private:
         _final_T_gpu =
             std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(std::move(T_acc_gpu));
         output = PointCloudType(std::move(cur));
-    }
-
-    static bool hasNonCollinearCovariance(const double covariance[9])
-    {
-        const double trace = covariance[0] + covariance[4] + covariance[8];
-        if (!std::isfinite(trace) || trace <= 0.0)
-        {
-            return false;
-        }
-
-        plamatrix::DenseMatrix<double, plamatrix::Device::CPU> matrix(3, 3);
-        for (int r = 0; r < 3; ++r)
-        {
-            for (int c = 0; c < 3; ++c)
-            {
-                matrix(r, c) = covariance[r * 3 + c];
-            }
-        }
-        auto [U, S, Vt] = plamatrix::svd(matrix);
-        (void)U;
-        (void)Vt;
-        const double second_singular_value = S.getValue(1, 0);
-        return std::isfinite(second_singular_value) &&
-               second_singular_value > std::max(trace * 1.0e-12, 1.0e-30);
     }
 
     void updateResidualMetricsFromGpuStats(

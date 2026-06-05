@@ -23,6 +23,8 @@ struct IcpCorrespondenceStats
     double src_covariance[9]{};
     double tgt_covariance[9]{};
     double residual_sq_sum = 0.0;
+    bool src_has_non_collinear_geometry = false;
+    bool tgt_has_non_collinear_geometry = false;
 };
 
 /// Small host-side result from the GPU ICP step-transform solver.

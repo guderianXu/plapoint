@@ -35,6 +35,16 @@ plamatrix::DenseMatrix<float, plamatrix::Device::CPU> makeNonCollinearPoints()
     return points;
 }
 
+plamatrix::DenseMatrix<float, plamatrix::Device::CPU> makeCollinearPoints()
+{
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> points(4, 3);
+    points.setValue(0, 0, 0.0f); points.setValue(0, 1, 0.0f); points.setValue(0, 2, 0.0f);
+    points.setValue(1, 0, 1.0f); points.setValue(1, 1, 0.0f); points.setValue(1, 2, 0.0f);
+    points.setValue(2, 0, 2.0f); points.setValue(2, 1, 0.0f); points.setValue(2, 2, 0.0f);
+    points.setValue(3, 0, 3.0f); points.setValue(3, 1, 0.0f); points.setValue(3, 2, 0.0f);
+    return points;
+}
+
 plamatrix::DenseMatrix<float, plamatrix::Device::CPU> multiplyCpu4x4(
     const plamatrix::DenseMatrix<float, plamatrix::Device::CPU>& A,
     const plamatrix::DenseMatrix<float, plamatrix::Device::CPU>& B)
@@ -259,6 +269,8 @@ TEST(ICPGpuPathTest, CorrespondenceStatsAllowOmittedIndexOutput)
     EXPECT_NEAR(stats.tgt_centroid[0], 0.25, 1.0e-12);
     EXPECT_NEAR(stats.tgt_centroid[1], 0.25, 1.0e-12);
     EXPECT_NEAR(stats.tgt_centroid[2], 0.25, 1.0e-12);
+    EXPECT_TRUE(stats.src_has_non_collinear_geometry);
+    EXPECT_TRUE(stats.tgt_has_non_collinear_geometry);
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsStillWriteRequestedIndexOutput)
@@ -293,6 +305,29 @@ TEST(ICPGpuPathTest, CorrespondenceStatsStillWriteRequestedIndexOutput)
     {
         EXPECT_EQ(host_indices[static_cast<std::size_t>(i)], i);
     }
+}
+
+TEST(ICPGpuPathTest, CorrespondenceStatsReportsDegenerateGeometry)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto source = makeCollinearPoints().toGpu();
+    auto target = makeCollinearPoints().toGpu();
+
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source.data(),
+        static_cast<int>(source.rows()),
+        target.data(),
+        static_cast<int>(target.rows()),
+        std::numeric_limits<float>::infinity(),
+        nullptr);
+
+    EXPECT_EQ(stats.active_count, 4);
+    EXPECT_FALSE(stats.src_has_non_collinear_geometry);
+    EXPECT_FALSE(stats.tgt_has_non_collinear_geometry);
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsFindsNearestTargetsPastFirstTile)

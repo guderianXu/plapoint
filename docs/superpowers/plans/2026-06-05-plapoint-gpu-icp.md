@@ -4,7 +4,7 @@
 
 **Goal:** Move `IterativeClosestPoint<Scalar, GPU>` away from full CPU-staged point processing and keep the per-point ICP workload on GPU.
 
-**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences with shared-memory target tiling, accumulate centroid/covariance/residual stats on device with block-level reductions, compute the rigid step transform with a GPU quaternion/Jacobi solver, update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. Reduced stats and small degeneracy/metric checks still synchronize to CPU while current points, step transforms, and transform accumulation stay GPU-resident.
+**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences with shared-memory target tiling, accumulate centroid/covariance/residual stats on device with block-level reductions, compute the rigid step transform with a GPU quaternion/Jacobi solver, update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. Reduced stats and small metric checks still synchronize to CPU while current points, step transforms, degeneracy flags, and transform accumulation stay GPU-resident.
 
 **Tech Stack:** C++17, CUDA runtime, PlaMatrix GPU `DenseMatrix`, Google Test, PlaPoint benchmark executable.
 
@@ -38,7 +38,7 @@
 - [x] Branch `align()` to `alignGpu()` when `Dev == plamatrix::Device::GPU`.
 - [x] Copy the source points device-to-device into the current-iteration buffer without calling `pointsCpu()`.
 - [x] Use GPU stats for correspondence count, residual metrics, centroids, and cross-covariance.
-- [x] Keep CPU Kabsch SVD for the 3x3 step transform and apply the step transform with PlaMatrix GPU `transformPoints()`.
+- [x] Move the 3x3 step transform off the CPU Kabsch/SVD path and apply the step transform with GPU point kernels.
 - [x] Preserve CPU path behavior and error messages for missing input, empty clouds, too few correspondences, and non-finite source points.
 
 ### Task 4: Device-Side Final Transform Accumulation
@@ -131,6 +131,20 @@
 - [x] Compute the point-to-point ICP step rotation in CUDA with a Davenport quaternion matrix and 4x4 Jacobi eigen solve.
 - [x] Make `alignGpu()` use the GPU step solver and remove the private CPU Kabsch/SVD step helper.
 
+### Task 11: Stats Degeneracy Flags
+
+**Files:**
+- Modify: `include/plapoint/gpu/icp.h`
+- Modify: `src/icp_gpu.cu`
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `README.md`
+
+- [x] Add CUDA stats tests requiring non-collinear geometry flags for valid and collinear correspondence sets.
+- [x] Derive source and target rank-2 geometry flags from covariance invariants while building the reduced stats summary.
+- [x] Make `alignGpu()` use stats geometry flags instead of running CPU SVD on 3x3 covariance matrices.
+- [x] Remove the GPU path's private CPU SVD degeneracy helper.
+
 Verification evidence:
 
 - `git diff --check`: clean.
@@ -152,11 +166,15 @@ Verification evidence:
   failed as expected because `plapoint::gpu::computeIcpStepTransformFromStats` did not exist yet.
 - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPValidation.RecoversKnownTransform`:
   11 targeted ICP GPU/stats/validation tests passed after switching `alignGpu()` to the GPU step solver.
+- `cmake --build build-codex-cuda -j$(nproc)` after adding stats geometry flag assertions:
+  failed as expected because `IcpCorrespondenceStats` did not expose source/target non-collinear geometry flags.
+- `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  13 targeted ICP GPU/stats/validation tests passed after moving GPU-path degeneracy checks off CPU SVD.
 - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
 - `ctest --test-dir build-codex-cuda --output-on-failure`:
-  188 tests, 0 failed.
+  189 tests, 0 failed.
 - `./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CPU benchmark rows emitted through `cpu_icp_identity,512,1,30.9959`.
+  CPU benchmark rows emitted through `cpu_icp_identity,512,1,31.9223`.
 - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CUDA benchmark rows included `gpu_icp_identity,512,1,0.40855`.
+  CUDA benchmark rows included `gpu_icp_identity,512,1,0.403703`.

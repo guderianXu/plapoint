@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <limits>
@@ -497,6 +498,8 @@ __global__ void computeStepTransformFromStatsKernel(
     result->valid = valid;
 }
 
+bool covarianceHasNonCollinearGeometry(const double covariance[9]);
+
 template <typename Scalar>
 IcpCorrespondenceStats<Scalar> makeHostStats(const RawIcpStats& raw)
 {
@@ -530,7 +533,34 @@ IcpCorrespondenceStats<Scalar> makeHostStats(const RawIcpStats& raw)
                 raw.tgt_sum[r] * raw.tgt_sum[c] * inv_count;
         }
     }
+    stats.src_has_non_collinear_geometry = covarianceHasNonCollinearGeometry(stats.src_covariance);
+    stats.tgt_has_non_collinear_geometry = covarianceHasNonCollinearGeometry(stats.tgt_covariance);
     return stats;
+}
+
+bool covarianceHasNonCollinearGeometry(const double covariance[9])
+{
+    const double c00 = covariance[0];
+    const double c01 = covariance[1];
+    const double c02 = covariance[2];
+    const double c11 = covariance[4];
+    const double c12 = covariance[5];
+    const double c22 = covariance[8];
+    const double trace = c00 + c11 + c22;
+    if (!std::isfinite(trace) || trace <= 0.0)
+    {
+        return false;
+    }
+
+    const double principal_minor_sum = c00 * c11 + c00 * c22 + c11 * c22 -
+        (c01 * c01 + c02 * c02 + c12 * c12);
+    if (!std::isfinite(principal_minor_sum))
+    {
+        return false;
+    }
+
+    const double threshold = std::max(trace * trace * 1.0e-12, trace * 1.0e-30);
+    return principal_minor_sum > threshold;
 }
 
 template <typename Scalar>
