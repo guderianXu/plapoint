@@ -4,7 +4,7 @@
 
 **Goal:** Move `IterativeClosestPoint<Scalar, GPU>` away from full CPU-staged point processing and keep the per-point ICP workload on GPU.
 
-**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences with a cached finite-radius target spatial grid or the shared-memory target-tiling fallback, use precomputed finite-radius target tile bounding-box skips and per-candidate axis pruning on the fallback path, accumulate centroid/covariance/residual stats on device with block-level reductions, fuse stats reduction with rigid step-transform solving through a GPU quaternion/Jacobi solver, initialize and asynchronously update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. Reduced stats, step deltas, and small metric checks still synchronize to CPU while current points, step transforms, degeneracy flags, and transform accumulation stay GPU-resident. The GPU align loop reads the initial source buffer directly, skips transformed final-stats scans on non-terminal iterations, and computes final metrics only when convergence or the final iteration requires them. The legacy CPU final transform is copied from the GPU lazily only when `getFinalTransformation()` is called.
+**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences with a cached finite-radius target spatial grid or the shared-memory target-tiling fallback, use precomputed finite-radius target tile bounding-box skips and per-candidate axis pruning on the fallback path, accumulate centroid/covariance/residual stats on device with block-level reductions, fuse stats reduction with rigid step-transform solving through a GPU quaternion/Jacobi solver, initialize and asynchronously update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. Reduced stats, step deltas, and small metric checks still synchronize to CPU while current points, step transforms, degeneracy flags, and transform accumulation stay GPU-resident. The GPU align loop reads the initial source buffer directly, skips transformed final-stats scans on non-terminal iterations, computes final metrics only when convergence or the final iteration requires them, and can skip terminal final metrics in the opt-in throughput mode. The legacy CPU final transform is copied from the GPU lazily only when `getFinalTransformation()` is called.
 
 **Tech Stack:** C++17, CUDA runtime, PlaMatrix GPU `DenseMatrix`, Google Test, PlaPoint benchmark executable.
 
@@ -405,8 +405,51 @@
 - [x] Run a larger GPU ICP benchmark smoke with CPU ICP skipped.
 - [x] Run full CPU/CUDA tests.
 
+### Task 31: Optional Final Metrics And ICP Phase Benchmarks
+
+**Files:**
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `test/unit/registration/icp_test.cpp`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `benchmarks/plapoint_benchmarks.cpp`
+- Modify: `README.md`
+- Modify: `docs/superpowers/plans/2026-06-05-plapoint-gpu-icp.md`
+
+- [x] Add an opt-in `setComputeFinalMetrics(false)` throughput mode that skips the terminal post-transform
+  fitness/RMSE correspondence scan while preserving the default metric behavior.
+- [x] Cover the CPU path to prove the final aligned output and transform remain correct when final metrics are
+  disabled.
+- [x] Cover the GPU path with the test-only stats-call counter to prove the terminal final-stats scan is skipped
+  only when final metrics are disabled.
+- [x] Add large-point benchmark rows for skip-final-metrics ICP, one-shot stats+step with a new workspace,
+  cached-grid stats+step, and cached-grid stats-only.
+- [x] Run targeted ICP tests, full CPU/CUDA tests, and benchmark smoke after the final documentation update.
+
 Verification evidence:
 
+- `cmake --build build-codex-cuda -j$(nproc)` after adding the CPU/GPU final-metrics opt-out tests:
+  failed as expected because `IterativeClosestPoint<..., CPU/GPU>` had no `setComputeFinalMetrics()` member.
+- `git diff --check && cmake --build build-codex-cuda -j$(nproc) &&
+  ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPTest.CanDisableFinalMetricComputationForThroughput:ICPTest.FinalRmseReflectsResidualAfterLastStep:ICPGpuPathTest.AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled:ICPGpuPathTest.AlignSkipsFinalStatsForNonTerminalGpuIterations`:
+  4 targeted final-metrics tests passed.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  33 targeted ICP GPU/stats/validation tests passed after adding the opt-in final-metrics skip.
+- `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
+  143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda -j$(nproc) && ctest --test-dir build-codex-cuda --output-on-failure`:
+  210 tests, 0 failed.
+- `cmake --build build-codex-cpu-bench -j$(nproc) &&
+  ./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
+  CPU benchmark rows included `cpu_icp_identity,512,1,32.5152` and
+  `cpu_icp_finite_radius_translation_reuse,512,1,30.6308`.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+  ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 2 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`:
+  large finite-radius GPU ICP benchmark rows included
+  `gpu_icp_finite_radius_translation_reuse_output,100000,2,8.78242`,
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,2,5.87974`,
+  `gpu_icp_stats_step_finite_radius_translation_new_workspace,100000,2,3.3311`,
+  `gpu_icp_stats_step_finite_radius_translation_cached_grid,100000,2,2.91339`, and
+  `gpu_icp_stats_finite_radius_translation_cached_grid,100000,2,2.85862`.
 - `git diff --check`: clean.
 - `cmake --build build-codex-cuda -j$(nproc)` after adding `FinalTransformationDeviceIsAvailableAfterGpuAlign`:
   failed as expected because `IterativeClosestPoint<float, GPU>` had no `getFinalTransformationDevice()` member.

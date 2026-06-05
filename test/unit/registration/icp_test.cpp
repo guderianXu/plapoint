@@ -616,6 +616,56 @@ TEST(ICPTest, FinalRmseReflectsResidualAfterLastStep)
     EXPECT_NEAR(icp.getFinalRmse(), Scalar(0), Scalar(1e-4));
 }
 
+TEST(ICPTest, CanDisableFinalMetricComputationForThroughput)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto src_mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(4, 3);
+    auto tgt_mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(4, 3);
+    const Scalar target_points[4][3] = {
+        {0, 0, 0},
+        {10, 0, 0},
+        {0, 10, 0},
+        {0, 0, 10},
+    };
+    for (int i = 0; i < 4; ++i)
+    {
+        tgt_mat.setValue(i, 0, target_points[i][0]);
+        tgt_mat.setValue(i, 1, target_points[i][1]);
+        tgt_mat.setValue(i, 2, target_points[i][2]);
+        src_mat.setValue(i, 0, target_points[i][0] + Scalar(1));
+        src_mat.setValue(i, 1, target_points[i][1] + Scalar(2));
+        src_mat.setValue(i, 2, target_points[i][2] + Scalar(3));
+    }
+
+    auto source = std::make_shared<Cloud>(std::move(src_mat));
+    auto target = std::make_shared<Cloud>(std::move(tgt_mat));
+
+    plapoint::IterativeClosestPoint<Scalar, plamatrix::Device::CPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxIterations(1);
+    icp.setMaxCorrespondenceDistance(Scalar(5));
+    icp.setComputeFinalMetrics(false);
+
+    Cloud output;
+    icp.align(output);
+
+    const auto& T = icp.getFinalTransformation();
+    EXPECT_NEAR(T.getValue(0, 3), Scalar(-1), Scalar(1e-4));
+    EXPECT_NEAR(T.getValue(1, 3), Scalar(-2), Scalar(1e-4));
+    EXPECT_NEAR(T.getValue(2, 3), Scalar(-3), Scalar(1e-4));
+    EXPECT_GT(icp.getFinalRmse(), Scalar(0));
+    ASSERT_EQ(output.size(), target->size());
+    for (std::size_t i = 0; i < output.size(); ++i)
+    {
+        EXPECT_NEAR(output[i].x(), (*target)[i].x(), Scalar(1e-4));
+        EXPECT_NEAR(output[i].y(), (*target)[i].y(), Scalar(1e-4));
+        EXPECT_NEAR(output[i].z(), (*target)[i].z(), Scalar(1e-4));
+    }
+}
+
 TEST(ICPTest, ReflectionCorrectionProducesProperRotation)
 {
     using Scalar = float;

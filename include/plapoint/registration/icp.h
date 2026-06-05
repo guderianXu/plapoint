@@ -79,6 +79,10 @@ public:
         _min_fitness_score = score;
     }
 
+    /// Enable or disable final post-transform fitness/RMSE recomputation. Enabled by default.
+    /// Disable only for throughput paths that do not consume final metrics.
+    void setComputeFinalMetrics(bool enabled) { _compute_final_metrics = enabled; }
+
     /// Align the source cloud to the target cloud and write the transformed source to output.
     /// Throws for missing/empty clouds, too few valid correspondences, or degenerate correspondence geometry.
     void align(PointCloudType& output)
@@ -250,18 +254,23 @@ public:
             T_acc = multiply4x4(T_step, T_acc);
             cur = plamatrix::transformPoints(T_step, cur);
             validateFinitePointMatrix(cur, "ICP: transformed source contains non-finite point");
-            std::vector<int> final_corr(static_cast<std::size_t>(n), -1);
-            std::vector<int> final_active_indices;
-            final_active_indices.reserve(static_cast<std::size_t>(n));
-            collectCorrespondences(cur, tgt, *tree, final_corr, final_active_indices);
-            if (final_active_indices.empty())
+            std::size_t convergence_active_count = active_indices.size();
+            if (_compute_final_metrics)
             {
-                _fitness_score = Scalar(0);
-                _final_rmse = std::numeric_limits<Scalar>::infinity();
-            }
-            else
-            {
-                updateResidualMetrics(cur, tgt, final_corr, final_active_indices, n);
+                std::vector<int> final_corr(static_cast<std::size_t>(n), -1);
+                std::vector<int> final_active_indices;
+                final_active_indices.reserve(static_cast<std::size_t>(n));
+                collectCorrespondences(cur, tgt, *tree, final_corr, final_active_indices);
+                convergence_active_count = final_active_indices.size();
+                if (final_active_indices.empty())
+                {
+                    _fitness_score = Scalar(0);
+                    _final_rmse = std::numeric_limits<Scalar>::infinity();
+                }
+                else
+                {
+                    updateResidualMetrics(cur, tgt, final_corr, final_active_indices, n);
+                }
             }
 
             // Convergence check
@@ -271,7 +280,7 @@ public:
                          + std::abs(tx) + std::abs(ty) + std::abs(tz);
             if (delta < _eps)
             {
-                _converged = final_active_indices.size() >= 3 && _fitness_score >= _min_fitness_score;
+                _converged = convergence_active_count >= 3 && _fitness_score >= _min_fitness_score;
                 break;
             }
         }
@@ -425,7 +434,7 @@ private:
                 next_points = next_points_in_a ? _gpu_points_a->data() : _gpu_points_b->data();
             }
 
-            if (terminal_iteration)
+            if (terminal_iteration && _compute_final_metrics)
             {
                 auto final_stats = gpu::computeIcpCorrespondenceStatsColumnMajor(
                     cur_points,
@@ -454,6 +463,11 @@ private:
                     _converged = final_stats.active_count >= 3 && _fitness_score >= _min_fitness_score;
                     break;
                 }
+            }
+            else if (terminal_iteration && step_result.delta < _eps)
+            {
+                _converged = stats.active_count >= 3 && _fitness_score >= _min_fitness_score;
+                break;
             }
         }
 
@@ -843,6 +857,7 @@ private:
     Scalar _eps = Scalar(1e-6);
     Scalar _max_corr_dist = std::numeric_limits<Scalar>::infinity();
     Scalar _min_fitness_score = Scalar(0);
+    bool _compute_final_metrics = true;
     Scalar _fitness_score = Scalar(0);
     Scalar _final_rmse = std::numeric_limits<Scalar>::infinity();
     mutable plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> _final_T;
