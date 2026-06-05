@@ -436,13 +436,12 @@ private:
 
             if (terminal_iteration && _compute_final_metrics)
             {
-                auto final_stats = gpu::computeIcpCorrespondenceStatsColumnMajor(
+                auto final_stats = gpu::computeIcpResidualStatsColumnMajor(
                     cur_points,
                     source_count,
                     _target->points().data(),
                     target_count,
                     _max_corr_dist,
-                    nullptr,
                     _gpu_stats_workspace);
                 if (final_stats.invalid_source_count > 0)
                 {
@@ -547,9 +546,8 @@ private:
         }
     }
 
-    void updateResidualMetricsFromGpuStats(
-        const gpu::IcpCorrespondenceStats<Scalar>& stats,
-        int source_count)
+    template <typename GpuStats>
+    void updateResidualMetricsFromGpuStats(const GpuStats& stats, int source_count)
     {
         if (stats.active_count <= 0)
         {

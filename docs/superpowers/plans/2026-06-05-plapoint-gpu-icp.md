@@ -453,8 +453,42 @@
 - [x] Keep equal-distance cells conservative and make finite-grid ties choose the lower target index.
 - [x] Run targeted spatial-grid tests, full CPU/CUDA tests, and the 100k finite-radius GPU ICP benchmark.
 
+### Task 34: Lightweight Terminal Residual Metrics
+
+**Files:**
+- Modify: `include/plapoint/gpu/icp.h`
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `src/icp_gpu.cu`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `docs/superpowers/plans/2026-06-05-plapoint-gpu-icp.md`
+
+- [x] Add a lightweight GPU residual stats helper that computes only active count, invalid source count, and
+  residual sum for final fitness/RMSE metrics.
+- [x] Keep the main iteration path on full correspondence moment/covariance stats for step solving and degeneracy
+  checks.
+- [x] Route default terminal final metrics through the lightweight residual stats helper.
+- [x] Keep `setComputeFinalMetrics(false)` behavior unchanged.
+- [x] Run targeted final-metrics tests, full CPU/CUDA tests, and the 100k finite-radius GPU ICP benchmark.
+
 Verification evidence:
 
+- `git diff --check && cmake --build build-codex-cuda -j$(nproc) &&
+  ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignUsesResidualStatsForTerminalFinalMetrics:ICPGpuPathTest.AlignSkipsFinalStatsForNonTerminalGpuIterations:ICPGpuPathTest.AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled`:
+  3 targeted final-metrics tests passed. The new test confirms terminal default metrics use one residual-stats scan,
+  while the opt-in skip-final-metrics mode still skips it.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  37 targeted ICP GPU/stats/validation tests passed.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+  ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 2 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`:
+  large finite-radius GPU ICP benchmark rows included
+  `gpu_icp_finite_radius_translation_reuse_output,100000,2,3.19518`,
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,2,2.61584`,
+  `gpu_icp_stats_step_finite_radius_translation_cached_grid,100000,2,1.34983`, and
+  `gpu_icp_stats_finite_radius_translation_cached_grid,100000,2,1.31153`.
+- `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
+  143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda -j$(nproc) && ctest --test-dir build-codex-cuda --output-on-failure`:
+  214 tests, 0 failed.
 - `cmake --build build-codex-cuda -j$(nproc) &&
   ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance`
   before cell-distance pruning:

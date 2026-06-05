@@ -27,6 +27,15 @@ struct IcpCorrespondenceStats
     bool tgt_has_non_collinear_geometry = false;
 };
 
+/// Small host-side summary of GPU ICP residual metrics.
+template <typename Scalar>
+struct IcpResidualStats
+{
+    int active_count = 0;
+    int invalid_source_count = 0;
+    double residual_sq_sum = 0.0;
+};
+
 /// Small host-side result from the GPU ICP step-transform solver.
 template <typename Scalar>
 struct IcpStepTransformResult
@@ -183,6 +192,26 @@ IcpCorrespondenceStats<double> computeIcpCorrespondenceStatsColumnMajor(
     int target_count,
     double max_correspondence_distance,
     int* d_correspondence_indices,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream = 0);
+
+/// Compute only final residual metrics using caller-owned reusable device workspace.
+IcpResidualStats<float> computeIcpResidualStatsColumnMajor(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream = 0);
+
+/// Compute only final residual metrics using caller-owned reusable device workspace.
+IcpResidualStats<double> computeIcpResidualStatsColumnMajor(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
     IcpCorrespondenceStatsWorkspace& workspace,
     cudaStream_t stream = 0);
 
