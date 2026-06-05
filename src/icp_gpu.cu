@@ -32,6 +32,17 @@ struct RawIcpStats
     double residual_sq_sum;
 };
 
+struct IcpTargetTileBounds
+{
+    double min_x;
+    double min_y;
+    double min_z;
+    double max_x;
+    double max_y;
+    double max_z;
+    int has_valid_point;
+};
+
 struct IcpStepTransformInput
 {
     double src_centroid[3];
@@ -54,11 +65,17 @@ std::atomic<int> g_icp_step_transform_input_copy_count{0};
 std::atomic<int> g_icp_host_synchronization_count{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
 __device__ unsigned long long g_icp_target_candidate_visit_count;
+__device__ unsigned long long g_icp_target_tile_bound_computation_count;
 #endif
 
 int icpStatsPartialCount(int source_count)
 {
     return (source_count + kIcpStatsBlockSize - 1) / kIcpStatsBlockSize;
+}
+
+int icpTargetTileCount(int target_count)
+{
+    return (target_count + kIcpStatsBlockSize - 1) / kIcpStatsBlockSize;
 }
 
 __device__ void addRawIcpStats(RawIcpStats& dst, const RawIcpStats& src)
@@ -90,6 +107,68 @@ __device__ bool loadFiniteColumnMajorPoint(const Scalar* points, int point_count
 }
 
 template <typename Scalar>
+__global__ void computeTargetTileBoundsKernel(
+    const Scalar* target_points,
+    int target_count,
+    IcpTargetTileBounds* target_tile_bounds)
+{
+    const int local_idx = threadIdx.x;
+    const int tile_start = static_cast<int>(blockIdx.x) * kIcpStatsBlockSize;
+    const int target_idx = tile_start + local_idx;
+
+    double tx = 0.0;
+    double ty = 0.0;
+    double tz = 0.0;
+    const bool target_valid = target_idx < target_count &&
+        loadFiniteColumnMajorPoint(target_points, target_count, target_idx, tx, ty, tz);
+
+    __shared__ double min_x[kIcpStatsBlockSize];
+    __shared__ double min_y[kIcpStatsBlockSize];
+    __shared__ double min_z[kIcpStatsBlockSize];
+    __shared__ double max_x[kIcpStatsBlockSize];
+    __shared__ double max_y[kIcpStatsBlockSize];
+    __shared__ double max_z[kIcpStatsBlockSize];
+
+    min_x[local_idx] = target_valid ? tx : INFINITY;
+    min_y[local_idx] = target_valid ? ty : INFINITY;
+    min_z[local_idx] = target_valid ? tz : INFINITY;
+    max_x[local_idx] = target_valid ? tx : -INFINITY;
+    max_y[local_idx] = target_valid ? ty : -INFINITY;
+    max_z[local_idx] = target_valid ? tz : -INFINITY;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            min_x[local_idx] = fmin(min_x[local_idx], min_x[local_idx + stride]);
+            min_y[local_idx] = fmin(min_y[local_idx], min_y[local_idx + stride]);
+            min_z[local_idx] = fmin(min_z[local_idx], min_z[local_idx + stride]);
+            max_x[local_idx] = fmax(max_x[local_idx], max_x[local_idx + stride]);
+            max_y[local_idx] = fmax(max_y[local_idx], max_y[local_idx + stride]);
+            max_z[local_idx] = fmax(max_z[local_idx], max_z[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (local_idx == 0)
+    {
+        IcpTargetTileBounds bounds{};
+        bounds.min_x = min_x[0];
+        bounds.min_y = min_y[0];
+        bounds.min_z = min_z[0];
+        bounds.max_x = max_x[0];
+        bounds.max_y = max_y[0];
+        bounds.max_z = max_z[0];
+        bounds.has_valid_point = isfinite(min_x[0]) ? 1 : 0;
+        target_tile_bounds[blockIdx.x] = bounds;
+#ifdef PLAPOINT_ENABLE_TESTING
+        atomicAdd(&g_icp_target_tile_bound_computation_count, 1ull);
+#endif
+    }
+}
+
+template <typename Scalar>
 __global__ void collectCorrespondenceStatsKernel(
     const Scalar* source_points,
     int source_count,
@@ -97,6 +176,7 @@ __global__ void collectCorrespondenceStatsKernel(
     int target_count,
     Scalar max_correspondence_distance,
     int* correspondence_indices,
+    const IcpTargetTileBounds* target_tile_bounds,
     RawIcpStats* partial_stats)
 {
     const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -133,16 +213,11 @@ __global__ void collectCorrespondenceStatsKernel(
     __shared__ double target_tile_x[kIcpStatsBlockSize];
     __shared__ double target_tile_y[kIcpStatsBlockSize];
     __shared__ double target_tile_z[kIcpStatsBlockSize];
-    __shared__ double target_tile_min_x[kIcpStatsBlockSize];
-    __shared__ double target_tile_min_y[kIcpStatsBlockSize];
-    __shared__ double target_tile_min_z[kIcpStatsBlockSize];
-    __shared__ double target_tile_max_x[kIcpStatsBlockSize];
-    __shared__ double target_tile_max_y[kIcpStatsBlockSize];
-    __shared__ double target_tile_max_z[kIcpStatsBlockSize];
     __shared__ int target_tile_valid[kIcpStatsBlockSize];
 
     for (int tile_start = 0; tile_start < target_count; tile_start += kIcpStatsBlockSize)
     {
+        const int tile_idx = tile_start / kIcpStatsBlockSize;
         const int target_idx = tile_start + local_idx;
         double tx = 0.0;
         double ty = 0.0;
@@ -153,48 +228,17 @@ __global__ void collectCorrespondenceStatsKernel(
         target_tile_y[local_idx] = ty;
         target_tile_z[local_idx] = tz;
         target_tile_valid[local_idx] = target_valid ? 1 : 0;
-        if (can_prune_by_radius)
-        {
-            target_tile_min_x[local_idx] = target_valid ? tx : INFINITY;
-            target_tile_min_y[local_idx] = target_valid ? ty : INFINITY;
-            target_tile_min_z[local_idx] = target_valid ? tz : INFINITY;
-            target_tile_max_x[local_idx] = target_valid ? tx : -INFINITY;
-            target_tile_max_y[local_idx] = target_valid ? ty : -INFINITY;
-            target_tile_max_z[local_idx] = target_valid ? tz : -INFINITY;
-        }
         __syncthreads();
 
-        if (can_prune_by_radius)
-        {
-            for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
-            {
-                if (local_idx < stride)
-                {
-                    target_tile_min_x[local_idx] =
-                        fmin(target_tile_min_x[local_idx], target_tile_min_x[local_idx + stride]);
-                    target_tile_min_y[local_idx] =
-                        fmin(target_tile_min_y[local_idx], target_tile_min_y[local_idx + stride]);
-                    target_tile_min_z[local_idx] =
-                        fmin(target_tile_min_z[local_idx], target_tile_min_z[local_idx + stride]);
-                    target_tile_max_x[local_idx] =
-                        fmax(target_tile_max_x[local_idx], target_tile_max_x[local_idx + stride]);
-                    target_tile_max_y[local_idx] =
-                        fmax(target_tile_max_y[local_idx], target_tile_max_y[local_idx + stride]);
-                    target_tile_max_z[local_idx] =
-                        fmax(target_tile_max_z[local_idx], target_tile_max_z[local_idx + stride]);
-                }
-                __syncthreads();
-            }
-        }
-
         bool tile_relevant = true;
-        if (source_valid && can_prune_by_radius)
+        if (source_valid && can_prune_by_radius && target_tile_bounds)
         {
+            const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
             tile_relevant =
-                isfinite(target_tile_min_x[0]) &&
-                sx >= target_tile_min_x[0] - max_dist && sx <= target_tile_max_x[0] + max_dist &&
-                sy >= target_tile_min_y[0] - max_dist && sy <= target_tile_max_y[0] + max_dist &&
-                sz >= target_tile_min_z[0] - max_dist && sz <= target_tile_max_z[0] + max_dist;
+                bounds.has_valid_point &&
+                sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&
+                sy >= bounds.min_y - max_dist && sy <= bounds.max_y + max_dist &&
+                sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
         }
 
         if (source_valid && tile_relevant)
@@ -640,6 +684,37 @@ __global__ void computeStepTransformFromRawStatsKernel(
 bool covarianceHasNonCollinearGeometry(const double covariance[9]);
 
 template <typename Scalar>
+bool shouldPrecomputeTargetTileBounds(Scalar max_correspondence_distance)
+{
+    const double max_dist = static_cast<double>(max_correspondence_distance);
+    return std::isfinite(max_dist) && max_dist >= 0.0;
+}
+
+template <typename Scalar>
+const IcpTargetTileBounds* prepareTargetTileBounds(
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+    if (!shouldPrecomputeTargetTileBounds(max_correspondence_distance))
+    {
+        return nullptr;
+    }
+
+    workspace.reserveTargetTileBounds(target_count);
+    auto* d_bounds = reinterpret_cast<IcpTargetTileBounds*>(workspace.targetTileBoundsStorage());
+    const int tile_count = icpTargetTileCount(target_count);
+    computeTargetTileBoundsKernel<Scalar><<<tile_count, kIcpStatsBlockSize, 0, stream>>>(
+        d_target_points,
+        target_count,
+        d_bounds);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    return d_bounds;
+}
+
+template <typename Scalar>
 IcpCorrespondenceStats<Scalar> makeHostStats(const RawIcpStats& raw)
 {
     IcpCorrespondenceStats<Scalar> stats;
@@ -740,6 +815,12 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
     const int grid_size = icpStatsPartialCount(source_count);
     auto* d_partials = reinterpret_cast<RawIcpStats*>(active_workspace.partialStorage());
     auto* d_stats = reinterpret_cast<RawIcpStats*>(active_workspace.statsStorage());
+    const IcpTargetTileBounds* d_target_tile_bounds = prepareTargetTileBounds(
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        active_workspace,
+        stream);
 
     collectCorrespondenceStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
         d_source_points,
@@ -748,6 +829,7 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
         target_count,
         max_correspondence_distance,
         d_correspondence_indices,
+        d_target_tile_bounds,
         d_partials);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
@@ -995,6 +1077,12 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
     auto* d_partials = reinterpret_cast<RawIcpStats*>(stats_workspace.partialStorage());
     auto* d_stats = reinterpret_cast<RawIcpStats*>(stats_workspace.statsStorage());
     auto* d_result = reinterpret_cast<IcpStepTransformRawResult*>(step_workspace.resultStorage());
+    const IcpTargetTileBounds* d_target_tile_bounds = prepareTargetTileBounds(
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        stream);
 
     collectCorrespondenceStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
         d_source_points,
@@ -1003,6 +1091,7 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
         target_count,
         max_correspondence_distance,
         nullptr,
+        d_target_tile_bounds,
         d_partials);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
@@ -1105,6 +1194,19 @@ int icpHostSynchronizationCountForTesting()
 {
     return g_icp_host_synchronization_count.load(std::memory_order_relaxed);
 }
+
+void resetIcpTargetTileBoundComputationCountForTesting()
+{
+    const unsigned long long zero = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyToSymbol(g_icp_target_tile_bound_computation_count, &zero, sizeof(zero)));
+}
+
+unsigned long long icpTargetTileBoundComputationCountForTesting()
+{
+    unsigned long long count = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_target_tile_bound_computation_count, sizeof(count)));
+    return count;
+}
 #endif
 
 void IcpCorrespondenceStatsWorkspace::reserve(int source_count)
@@ -1127,6 +1229,26 @@ void IcpCorrespondenceStatsWorkspace::reserve(int source_count)
     if (_stats_storage.size() < sizeof(RawIcpStats))
     {
         _stats_storage.allocate(sizeof(RawIcpStats));
+    }
+}
+
+void IcpCorrespondenceStatsWorkspace::reserveTargetTileBounds(int target_count)
+{
+    if (target_count < 0)
+    {
+        throw std::invalid_argument("ICP GPU: target point count must not be negative");
+    }
+    if (target_count == 0)
+    {
+        return;
+    }
+
+    const int required_tiles = icpTargetTileCount(target_count);
+    if (targetTileBoundCapacity() < required_tiles)
+    {
+        _target_tile_bounds_storage.allocate(
+            static_cast<std::size_t>(required_tiles) * sizeof(IcpTargetTileBounds));
+        _target_tile_bound_capacity = required_tiles;
     }
 }
 

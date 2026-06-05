@@ -53,8 +53,14 @@ public:
     /// Reserve enough storage for the supplied source point count. Throws for negative counts.
     void reserve(int source_count);
 
+    /// Reserve reusable target tile bounds storage for finite-radius pruning.
+    void reserveTargetTileBounds(int target_count);
+
     /// Return the currently reserved partial reduction capacity, in blocks.
     int partialCapacity() const { return _partial_capacity; }
+
+    /// Return the currently reserved target tile bound capacity, in tiles.
+    int targetTileBoundCapacity() const { return _target_tile_bound_capacity; }
 
     /// Return the reusable partial reduction storage pointer, or null before reserve().
     unsigned char* partialStorage() { return _partial_storage.get(); }
@@ -62,10 +68,15 @@ public:
     /// Return the reusable final stats storage pointer, or null before reserve().
     unsigned char* statsStorage() { return _stats_storage.get(); }
 
+    /// Return the reusable target tile bounds storage pointer, or null before reserveTargetTileBounds().
+    unsigned char* targetTileBoundsStorage() { return _target_tile_bounds_storage.get(); }
+
 private:
     DeviceBuffer<unsigned char> _partial_storage;
     DeviceBuffer<unsigned char> _stats_storage;
+    DeviceBuffer<unsigned char> _target_tile_bounds_storage;
     int _partial_capacity = 0;
+    int _target_tile_bound_capacity = 0;
 };
 
 /// Reusable device storage for converting ICP correspondence stats into a 4x4 step transform.

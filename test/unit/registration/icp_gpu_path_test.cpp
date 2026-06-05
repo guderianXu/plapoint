@@ -142,6 +142,8 @@ void resetIcpStepTransformInputCopyCountForTesting();
 int icpStepTransformInputCopyCountForTesting();
 void resetIcpHostSynchronizationCountForTesting();
 int icpHostSynchronizationCountForTesting();
+void resetIcpTargetTileBoundComputationCountForTesting();
+unsigned long long icpTargetTileBoundComputationCountForTesting();
 
 } // namespace gpu
 } // namespace plapoint
@@ -544,6 +546,51 @@ TEST(ICPGpuPathTest, CorrespondenceStatsSkipsFarTargetTilesBeforeCandidateLoop)
 
     EXPECT_EQ(stats.active_count, 1);
     EXPECT_LE(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 128ull);
+}
+
+TEST(ICPGpuPathTest, CorrespondenceStatsPrecomputesFiniteRadiusTargetTileBoundsOnce)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    constexpr int point_count = 257;
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source(point_count, 3);
+    for (int i = 0; i < point_count; ++i)
+    {
+        source.setValue(i, 0, 0.0f);
+        source.setValue(i, 1, 0.0f);
+        source.setValue(i, 2, 0.0f);
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(point_count, 3);
+    for (int i = 0; i < point_count; ++i)
+    {
+        target.setValue(i, 0, 1000.0f + static_cast<float>(i));
+        target.setValue(i, 1, 1000.0f);
+        target.setValue(i, 2, 1000.0f);
+    }
+    target.setValue(0, 0, 0.5f);
+    target.setValue(0, 1, 0.0f);
+    target.setValue(0, 2, 0.0f);
+
+    auto source_gpu = source.toGpu();
+    auto target_gpu = target.toGpu();
+
+    plapoint::gpu::resetIcpTargetTileBoundComputationCountForTesting();
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        nullptr,
+        workspace);
+
+    EXPECT_EQ(stats.active_count, point_count);
+    EXPECT_LE(plapoint::gpu::icpTargetTileBoundComputationCountForTesting(), 3ull);
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsWorkspaceReusesDeviceStorage)
