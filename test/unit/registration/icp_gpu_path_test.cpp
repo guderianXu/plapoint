@@ -159,6 +159,63 @@ TEST(ICPGpuPathTest, CorrespondenceStatsStillWriteRequestedIndexOutput)
     }
 }
 
+TEST(ICPGpuPathTest, CorrespondenceStatsFindsNearestTargetsPastFirstTile)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source(3, 3);
+    source.setValue(0, 0, -3.0f); source.setValue(0, 1, 1.0f);  source.setValue(0, 2, 0.5f);
+    source.setValue(1, 0, 4.0f);  source.setValue(1, 1, -2.0f); source.setValue(1, 2, 1.5f);
+    source.setValue(2, 0, 8.0f);  source.setValue(2, 1, 2.0f);  source.setValue(2, 2, -1.0f);
+
+    constexpr int target_count = 257;
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(target_count, 3);
+    for (int i = 0; i < target_count; ++i)
+    {
+        target.setValue(i, 0, 1000.0f + static_cast<float>(i));
+        target.setValue(i, 1, -1000.0f - static_cast<float>(i));
+        target.setValue(i, 2, 500.0f + static_cast<float>(i));
+    }
+
+    const int expected_indices[3]{130, 200, 256};
+    for (int row = 0; row < 3; ++row)
+    {
+        const int target_row = expected_indices[row];
+        target.setValue(target_row, 0, source.getValue(row, 0));
+        target.setValue(target_row, 1, source.getValue(row, 1));
+        target.setValue(target_row, 2, source.getValue(row, 2));
+    }
+
+    auto source_gpu = source.toGpu();
+    auto target_gpu = target.toGpu();
+    plapoint::gpu::DeviceBuffer<int> indices(static_cast<std::size_t>(source.rows()));
+
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        std::numeric_limits<float>::infinity(),
+        indices.get());
+
+    std::vector<int> host_indices(static_cast<std::size_t>(source.rows()), -1);
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(
+        host_indices.data(),
+        indices.get(),
+        host_indices.size() * sizeof(int),
+        cudaMemcpyDeviceToHost));
+
+    EXPECT_EQ(stats.active_count, 3);
+    EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-12);
+    for (int row = 0; row < 3; ++row)
+    {
+        EXPECT_EQ(host_indices[static_cast<std::size_t>(row)], expected_indices[row]);
+    }
+}
+
 TEST(ICPGpuPathTest, AlignDoesNotPopulateGpuPointCpuCaches)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

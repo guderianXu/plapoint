@@ -69,12 +69,13 @@ __global__ void collectCorrespondenceStatsKernel(
     const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int local_idx = threadIdx.x;
     RawIcpStats local{};
+    bool source_valid = false;
+    double sx = 0.0;
+    double sy = 0.0;
+    double sz = 0.0;
 
     if (source_idx < source_count)
     {
-        double sx = 0.0;
-        double sy = 0.0;
-        double sz = 0.0;
         if (!loadFiniteColumnMajorPoint(source_points, source_count, source_idx, sx, sy, sz))
         {
             if (correspondence_indices)
@@ -85,70 +86,97 @@ __global__ void collectCorrespondenceStatsKernel(
         }
         else
         {
-            int best_idx = -1;
-            double best_dist_sq = INFINITY;
-            double best_tx = 0.0;
-            double best_ty = 0.0;
-            double best_tz = 0.0;
-            for (int target_idx = 0; target_idx < target_count; ++target_idx)
+            source_valid = true;
+        }
+    }
+
+    int best_idx = -1;
+    double best_dist_sq = INFINITY;
+    double best_tx = 0.0;
+    double best_ty = 0.0;
+    double best_tz = 0.0;
+    __shared__ double target_tile_x[kIcpStatsBlockSize];
+    __shared__ double target_tile_y[kIcpStatsBlockSize];
+    __shared__ double target_tile_z[kIcpStatsBlockSize];
+    __shared__ int target_tile_valid[kIcpStatsBlockSize];
+
+    for (int tile_start = 0; tile_start < target_count; tile_start += kIcpStatsBlockSize)
+    {
+        const int target_idx = tile_start + local_idx;
+        double tx = 0.0;
+        double ty = 0.0;
+        double tz = 0.0;
+        const bool target_valid = target_idx < target_count &&
+            loadFiniteColumnMajorPoint(target_points, target_count, target_idx, tx, ty, tz);
+        target_tile_x[local_idx] = tx;
+        target_tile_y[local_idx] = ty;
+        target_tile_z[local_idx] = tz;
+        target_tile_valid[local_idx] = target_valid ? 1 : 0;
+        __syncthreads();
+
+        if (source_valid)
+        {
+            const int tile_count = min(kIcpStatsBlockSize, target_count - tile_start);
+            for (int tile_offset = 0; tile_offset < tile_count; ++tile_offset)
             {
-                double tx = 0.0;
-                double ty = 0.0;
-                double tz = 0.0;
-                if (!loadFiniteColumnMajorPoint(target_points, target_count, target_idx, tx, ty, tz))
+                if (!target_tile_valid[tile_offset])
                 {
                     continue;
                 }
 
-                const double dx = sx - tx;
-                const double dy = sy - ty;
-                const double dz = sz - tz;
+                const double dx = sx - target_tile_x[tile_offset];
+                const double dy = sy - target_tile_y[tile_offset];
+                const double dz = sz - target_tile_z[tile_offset];
                 const double dist_sq = dx * dx + dy * dy + dz * dz;
                 if (isfinite(dist_sq) && dist_sq < best_dist_sq)
                 {
                     best_dist_sq = dist_sq;
-                    best_idx = target_idx;
-                    best_tx = tx;
-                    best_ty = ty;
-                    best_tz = tz;
+                    best_idx = tile_start + tile_offset;
+                    best_tx = target_tile_x[tile_offset];
+                    best_ty = target_tile_y[tile_offset];
+                    best_tz = target_tile_z[tile_offset];
                 }
             }
+        }
+        __syncthreads();
+    }
 
-            bool accepted = best_idx >= 0;
-            if (accepted && isfinite(static_cast<double>(max_correspondence_distance)))
+    if (source_valid)
+    {
+        bool accepted = best_idx >= 0;
+        if (accepted && isfinite(static_cast<double>(max_correspondence_distance)))
+        {
+            const double max_dist = static_cast<double>(max_correspondence_distance);
+            accepted = best_dist_sq <= max_dist * max_dist;
+        }
+
+        if (!accepted)
+        {
+            if (correspondence_indices)
             {
-                const double max_dist = static_cast<double>(max_correspondence_distance);
-                accepted = best_dist_sq <= max_dist * max_dist;
+                correspondence_indices[source_idx] = -1;
             }
-
-            if (!accepted)
+        }
+        else
+        {
+            if (correspondence_indices)
             {
-                if (correspondence_indices)
-                {
-                    correspondence_indices[source_idx] = -1;
-                }
+                correspondence_indices[source_idx] = best_idx;
             }
-            else
-            {
-                if (correspondence_indices)
-                {
-                    correspondence_indices[source_idx] = best_idx;
-                }
-                local.active_count = 1;
-                local.residual_sq_sum = best_dist_sq;
+            local.active_count = 1;
+            local.residual_sq_sum = best_dist_sq;
 
-                const double source_values[3]{sx, sy, sz};
-                const double target_values[3]{best_tx, best_ty, best_tz};
-                for (int r = 0; r < 3; ++r)
+            const double source_values[3]{sx, sy, sz};
+            const double target_values[3]{best_tx, best_ty, best_tz};
+            for (int r = 0; r < 3; ++r)
+            {
+                local.src_sum[r] = source_values[r];
+                local.tgt_sum[r] = target_values[r];
+                for (int c = 0; c < 3; ++c)
                 {
-                    local.src_sum[r] = source_values[r];
-                    local.tgt_sum[r] = target_values[r];
-                    for (int c = 0; c < 3; ++c)
-                    {
-                        local.cross_sum[r * 3 + c] = source_values[r] * target_values[c];
-                        local.src_outer_sum[r * 3 + c] = source_values[r] * source_values[c];
-                        local.tgt_outer_sum[r * 3 + c] = target_values[r] * target_values[c];
-                    }
+                    local.cross_sum[r * 3 + c] = source_values[r] * target_values[c];
+                    local.src_outer_sum[r * 3 + c] = source_values[r] * source_values[c];
+                    local.tgt_outer_sum[r * 3 + c] = target_values[r] * target_values[c];
                 }
             }
         }
