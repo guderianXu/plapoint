@@ -1060,8 +1060,7 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     icp.setMaxIterations(1);
 
     plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
-    GpuCloud first_output;
-    icp.align(first_output);
+    icp.align(*source);
 
     auto* first_partial_storage = icp._gpu_stats_workspace.partialStorage();
     auto* first_stats_storage = icp._gpu_stats_workspace.statsStorage();
@@ -1071,15 +1070,19 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     auto* first_step_transform = icp._gpu_T_step->data();
     auto* first_acc_transform = icp._gpu_T_acc->data();
     auto* first_next_acc_transform = icp._gpu_next_T_acc->data();
+    ASSERT_NE(icp._gpu_points_a, nullptr);
+    ASSERT_NE(icp._gpu_points_b, nullptr);
     auto* first_points_a = icp._gpu_points_a->data();
     auto* first_points_b = icp._gpu_points_b->data();
     const int first_partial_capacity = icp._gpu_stats_workspace.partialCapacity();
 
-    GpuCloud second_output;
-    icp.align(second_output);
+    auto second_source_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto second_source = std::make_shared<GpuCloud>(second_source_cpu->toGpu());
+    icp.setInputSource(second_source);
+    icp.align(*second_source);
 
-    EXPECT_EQ(first_output.size(), source->size());
-    EXPECT_EQ(second_output.size(), source->size());
+    EXPECT_EQ(source->size(), target->size());
+    EXPECT_EQ(second_source->size(), target->size());
     EXPECT_NE(first_partial_storage, nullptr);
     EXPECT_NE(first_stats_storage, nullptr);
     EXPECT_NE(first_grid_keys, nullptr);
@@ -1104,10 +1107,10 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     EXPECT_TRUE(transform_buffers_match);
     EXPECT_EQ(icp._gpu_points_a->data(), first_points_a);
     EXPECT_EQ(icp._gpu_points_b->data(), first_points_b);
-    EXPECT_NE(first_output.points().data(), first_points_a);
-    EXPECT_NE(first_output.points().data(), first_points_b);
-    EXPECT_NE(second_output.points().data(), first_points_a);
-    EXPECT_NE(second_output.points().data(), first_points_b);
+    EXPECT_NE(source->points().data(), first_points_a);
+    EXPECT_NE(source->points().data(), first_points_b);
+    EXPECT_NE(second_source->points().data(), first_points_a);
+    EXPECT_NE(second_source->points().data(), first_points_b);
     EXPECT_EQ(icp._gpu_stats_workspace.partialCapacity(), first_partial_capacity);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
 }
@@ -1140,15 +1143,15 @@ TEST(ICPGpuPathTest, AlignReusesCallerGpuOutputStorageWhenShapeMatches)
 
     const auto* first_output_points = static_cast<const GpuCloud&>(output).points().data();
     ASSERT_NE(first_output_points, nullptr);
-    ASSERT_NE(icp._gpu_points_a, nullptr);
-    ASSERT_NE(icp._gpu_points_b, nullptr);
+    EXPECT_EQ(icp._gpu_points_a, nullptr);
+    EXPECT_EQ(icp._gpu_points_b, nullptr);
 
     icp.align(output);
 
     EXPECT_EQ(output.size(), source->size());
     EXPECT_EQ(static_cast<const GpuCloud&>(output).points().data(), first_output_points);
-    EXPECT_NE(static_cast<const GpuCloud&>(output).points().data(), icp._gpu_points_a->data());
-    EXPECT_NE(static_cast<const GpuCloud&>(output).points().data(), icp._gpu_points_b->data());
+    EXPECT_EQ(icp._gpu_points_a, nullptr);
+    EXPECT_EQ(icp._gpu_points_b, nullptr);
 }
 
 TEST(ICPGpuPathTest, AlignWritesTerminalGpuTransformDirectlyToReusableOutput)
@@ -1182,8 +1185,8 @@ TEST(ICPGpuPathTest, AlignWritesTerminalGpuTransformDirectlyToReusableOutput)
 
     EXPECT_EQ(static_cast<const GpuCloud&>(output).points().data(), output_points);
     EXPECT_EQ(plapoint::gpu::icpLastTransformOutputPointerForTesting(), output_points);
-    EXPECT_NE(plapoint::gpu::icpLastTransformOutputPointerForTesting(), icp._gpu_points_a->data());
-    EXPECT_NE(plapoint::gpu::icpLastTransformOutputPointerForTesting(), icp._gpu_points_b->data());
+    EXPECT_EQ(icp._gpu_points_a, nullptr);
+    EXPECT_EQ(icp._gpu_points_b, nullptr);
 }
 
 TEST(ICPGpuPathTest, AlignUsesScratchForTerminalTransformWhenOutputAliasesSource)
@@ -1216,6 +1219,8 @@ TEST(ICPGpuPathTest, AlignUsesScratchForTerminalTransformWhenOutputAliasesSource
     EXPECT_EQ(source->size(), target->size());
     EXPECT_EQ(static_cast<const GpuCloud&>(*source).points().data(), source_points);
     EXPECT_NE(plapoint::gpu::icpLastTransformOutputPointerForTesting(), source_points);
+    ASSERT_NE(icp._gpu_points_a, nullptr);
+    ASSERT_NE(icp._gpu_points_b, nullptr);
     const bool transform_output_is_scratch =
         plapoint::gpu::icpLastTransformOutputPointerForTesting() == icp._gpu_points_a->data() ||
         plapoint::gpu::icpLastTransformOutputPointerForTesting() == icp._gpu_points_b->data();
@@ -1466,6 +1471,8 @@ TEST(ICPGpuPathTest, AlignReusesIterationStatsForExactIdentityTerminalMetrics)
     EXPECT_EQ(plapoint::gpu::icpCorrespondenceStatsCallCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 0);
+    EXPECT_EQ(icp._gpu_points_a, nullptr);
+    EXPECT_EQ(icp._gpu_points_b, nullptr);
     EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-6f);
     EXPECT_EQ(output.size(), source->size());
 }
@@ -1503,6 +1510,8 @@ TEST(ICPGpuPathTest, AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics)
     EXPECT_EQ(plapoint::gpu::icpCorrespondenceStatsCallCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 0);
+    EXPECT_EQ(icp._gpu_points_a, nullptr);
+    EXPECT_EQ(icp._gpu_points_b, nullptr);
     EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-5f);
     EXPECT_EQ(output.size(), source->size());
 }
@@ -1538,6 +1547,8 @@ TEST(ICPGpuPathTest, AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled)
 
     EXPECT_EQ(plapoint::gpu::icpCorrespondenceStatsCallCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 1);
+    EXPECT_EQ(icp._gpu_points_a, nullptr);
+    EXPECT_EQ(icp._gpu_points_b, nullptr);
     EXPECT_EQ(output.size(), source->size());
 }
 

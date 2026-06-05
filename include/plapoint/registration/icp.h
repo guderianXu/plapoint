@@ -355,8 +355,6 @@ private:
         bool final_points_written_to_output = false;
 
         const Scalar* cur_points = _source->points().data();
-        reserveGpuPointBuffers(source_count);
-        Scalar* next_points = _gpu_points_a->data();
         bool next_points_in_a = true;
 
         reserveGpuTransformBuffers();
@@ -410,11 +408,15 @@ private:
             const auto step_result = stats_and_step.step;
             const bool terminal_iteration = step_result.delta < _eps || iter + 1 == _max_iter;
             const bool terminal_identity_step = terminal_iteration && step_result.delta == Scalar(0);
-            Scalar* transform_output_points = next_points;
+            Scalar* transform_output_points = nullptr;
             if (terminal_iteration && !terminal_identity_step && !output_aliases_input)
             {
                 transform_output_points = prepareGpuOutputPointBuffer(output, source_count);
                 final_points_written_to_output = true;
+            }
+            else if (!terminal_identity_step)
+            {
+                transform_output_points = gpuPointScratchBuffer(source_count, next_points_in_a);
             }
             if (!terminal_identity_step)
             {
@@ -477,7 +479,6 @@ private:
             if (!terminal_iteration)
             {
                 next_points_in_a = !next_points_in_a;
-                next_points = next_points_in_a ? _gpu_points_a->data() : _gpu_points_b->data();
             }
             else if (step_result.delta < _eps)
             {
@@ -499,6 +500,12 @@ private:
                     cudaMemcpyDeviceToDevice));
             }
         }
+    }
+
+    Scalar* gpuPointScratchBuffer(int point_count, bool use_first_buffer)
+    {
+        reserveGpuPointBuffers(point_count);
+        return use_first_buffer ? _gpu_points_a->data() : _gpu_points_b->data();
     }
 
     bool outputAliasesGpuInput(const PointCloudType& output) const

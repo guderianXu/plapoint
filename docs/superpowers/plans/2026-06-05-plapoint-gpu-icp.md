@@ -505,8 +505,41 @@
 - [x] Run targeted identity/non-identity final-metrics tests, full CPU/CUDA tests, and the 100k finite-radius GPU
   ICP benchmark.
 
+### Task 37: Lazy GPU Point Scratch Allocation
+
+**Files:**
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `docs/superpowers/plans/2026-06-05-plapoint-gpu-icp.md`
+
+- [x] Allocate GPU transformed-point scratch buffers only when a transform cannot write directly to the caller
+  output or must avoid mutating aliased input.
+- [x] Keep terminal non-identity direct-output and exact-identity terminal paths free of internal point scratch
+  allocations.
+- [x] Preserve scratch allocation and reuse when output aliases the source or target cloud.
+- [x] Update GPU ICP path tests to distinguish direct-output, exact-identity, and alias-scratch cases.
+- [x] Run targeted scratch/output tests, full CPU/CUDA tests, and the 100k finite-radius GPU ICP benchmark.
+
 Verification evidence:
 
+- `git diff --check && cmake --build build-codex-cuda -j$(nproc)`:
+  CUDA test build passed after making GPU ICP point scratch allocation lazy.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesGpuWorkspacesAcrossRepeatedCalls:ICPGpuPathTest.AlignReusesCallerGpuOutputStorageWhenShapeMatches:ICPGpuPathTest.AlignWritesTerminalGpuTransformDirectlyToReusableOutput:ICPGpuPathTest.AlignUsesScratchForTerminalTransformWhenOutputAliasesSource:ICPGpuPathTest.AlignReusesIterationStatsForExactIdentityTerminalMetrics:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics:ICPGpuPathTest.AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled`:
+  7 targeted scratch/output tests passed. Direct-output and exact-identity cases leave internal point scratch null,
+  while aliased output still allocates and reuses scratch.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+  ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`:
+  large finite-radius GPU ICP benchmark rows included
+  `gpu_icp_finite_radius,100000,5,1.68297`,
+  `gpu_icp_finite_radius_translation_reuse_output,100000,5,3.09038`,
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,5,2.60597`, and
+  `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,1.3107`.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  39 targeted ICP GPU/stats/validation tests passed.
+- `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
+  143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda -j$(nproc) && ctest --test-dir build-codex-cuda --output-on-failure`:
+  216 tests, 0 failed.
 - `git diff --check && cmake --build build-codex-cuda -j$(nproc)`:
   CUDA test build passed after adding the exact-identity terminal fast path.
 - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesIterationStatsForExactIdentityTerminalMetrics:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics:ICPGpuPathTest.AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled:ICPGpuPathTest.AlignWritesTerminalGpuTransformDirectlyToReusableOutput:ICPGpuPathTest.AlignUsesScratchForTerminalTransformWhenOutputAliasesSource:ICPGpuPathTest.AlignDoesNotPopulateGpuPointCpuCaches:ICPGpuPathTest.AlignReusesFiniteRadiusSpatialGridAcrossStatsCalls`:
