@@ -50,6 +50,7 @@ constexpr int kIcpStatsBlockSize = 128;
 #ifdef PLAPOINT_ENABLE_TESTING
 std::atomic<int> g_icp_correspondence_stats_call_count{0};
 std::atomic<std::uintptr_t> g_icp_first_stats_source_pointer{0};
+__device__ unsigned long long g_icp_full_distance_evaluation_count;
 #endif
 
 int icpStatsPartialCount(int source_count)
@@ -124,6 +125,8 @@ __global__ void collectCorrespondenceStatsKernel(
     double best_tx = 0.0;
     double best_ty = 0.0;
     double best_tz = 0.0;
+    const double max_dist = static_cast<double>(max_correspondence_distance);
+    const bool can_prune_by_radius = isfinite(max_dist) && max_dist >= 0.0;
     __shared__ double target_tile_x[kIcpStatsBlockSize];
     __shared__ double target_tile_y[kIcpStatsBlockSize];
     __shared__ double target_tile_z[kIcpStatsBlockSize];
@@ -154,8 +157,23 @@ __global__ void collectCorrespondenceStatsKernel(
                 }
 
                 const double dx = sx - target_tile_x[tile_offset];
+                if (can_prune_by_radius && fabs(dx) > max_dist)
+                {
+                    continue;
+                }
                 const double dy = sy - target_tile_y[tile_offset];
+                if (can_prune_by_radius && fabs(dy) > max_dist)
+                {
+                    continue;
+                }
                 const double dz = sz - target_tile_z[tile_offset];
+                if (can_prune_by_radius && fabs(dz) > max_dist)
+                {
+                    continue;
+                }
+#ifdef PLAPOINT_ENABLE_TESTING
+                atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
+#endif
                 const double dist_sq = dx * dx + dy * dy + dz * dz;
                 if (isfinite(dist_sq) && dist_sq < best_dist_sq)
                 {
@@ -173,9 +191,8 @@ __global__ void collectCorrespondenceStatsKernel(
     if (source_valid)
     {
         bool accepted = best_idx >= 0;
-        if (accepted && isfinite(static_cast<double>(max_correspondence_distance)))
+        if (accepted && isfinite(max_dist))
         {
-            const double max_dist = static_cast<double>(max_correspondence_distance);
             accepted = best_dist_sq <= max_dist * max_dist;
         }
 
@@ -806,6 +823,19 @@ const void* icpFirstStatsSourcePointerForTesting()
 {
     return reinterpret_cast<const void*>(
         g_icp_first_stats_source_pointer.load(std::memory_order_relaxed));
+}
+
+void resetIcpFullDistanceEvaluationCountForTesting()
+{
+    const unsigned long long zero = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyToSymbol(g_icp_full_distance_evaluation_count, &zero, sizeof(zero)));
+}
+
+unsigned long long icpFullDistanceEvaluationCountForTesting()
+{
+    unsigned long long count = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_full_distance_evaluation_count, sizeof(count)));
+    return count;
 }
 #endif
 

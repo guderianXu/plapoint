@@ -134,6 +134,8 @@ void resetIcpCorrespondenceStatsCallCountForTesting();
 int icpCorrespondenceStatsCallCountForTesting();
 void resetIcpFirstStatsSourcePointerForTesting();
 const void* icpFirstStatsSourcePointerForTesting();
+void resetIcpFullDistanceEvaluationCountForTesting();
+unsigned long long icpFullDistanceEvaluationCountForTesting();
 
 } // namespace gpu
 } // namespace plapoint
@@ -463,6 +465,39 @@ TEST(ICPGpuPathTest, CorrespondenceStatsFindsNearestTargetsPastFirstTile)
     {
         EXPECT_EQ(host_indices[static_cast<std::size_t>(row)], expected_indices[row]);
     }
+}
+
+TEST(ICPGpuPathTest, CorrespondenceStatsPrunesFarTargetsBeforeFullDistanceEvaluation)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source(1, 3);
+    source.setValue(0, 0, 0.0f);
+    source.setValue(0, 1, 0.0f);
+    source.setValue(0, 2, 0.0f);
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(3, 3);
+    target.setValue(0, 0, 0.5f);   target.setValue(0, 1, 0.0f);    target.setValue(0, 2, 0.0f);
+    target.setValue(1, 0, 100.0f); target.setValue(1, 1, 0.0f);    target.setValue(1, 2, 0.0f);
+    target.setValue(2, 0, 0.0f);   target.setValue(2, 1, -200.0f); target.setValue(2, 2, 0.0f);
+
+    auto source_gpu = source.toGpu();
+    auto target_gpu = target.toGpu();
+
+    plapoint::gpu::resetIcpFullDistanceEvaluationCountForTesting();
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        nullptr);
+
+    EXPECT_EQ(stats.active_count, 1);
+    EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 1ull);
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsWorkspaceReusesDeviceStorage)
