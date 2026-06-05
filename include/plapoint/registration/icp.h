@@ -320,6 +320,8 @@ private:
                                        cudaMemcpyDeviceToDevice));
 
         auto T_acc_gpu = identity4x4().toGpu();
+        gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+        stats_workspace.reserve(source_count);
 
         _converged = false;
         _fitness_score = Scalar(0);
@@ -334,7 +336,8 @@ private:
                 _target->points().data(),
                 target_count,
                 _max_corr_dist,
-                nullptr);
+                nullptr,
+                stats_workspace);
             if (stats.invalid_source_count > 0)
             {
                 throw std::invalid_argument(iter == 0
@@ -368,7 +371,8 @@ private:
                 _target->points().data(),
                 target_count,
                 _max_corr_dist,
-                nullptr);
+                nullptr,
+                stats_workspace);
             if (final_stats.invalid_source_count > 0)
             {
                 throw std::invalid_argument("ICP: transformed source contains non-finite point");

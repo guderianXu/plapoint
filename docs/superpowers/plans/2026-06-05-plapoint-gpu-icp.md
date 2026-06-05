@@ -78,7 +78,20 @@
 - [x] Load target coordinates and finite flags into shared memory per source block.
 - [x] Reuse each target tile across source threads in the block before loading the next tile.
 
-### Task 7: Documentation, Benchmark, And Verification
+### Task 7: Reusable Stats Workspace
+
+**Files:**
+- Modify: `include/plapoint/gpu/icp.h`
+- Modify: `src/icp_gpu.cu`
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+
+- [x] Add a CUDA stats test requiring `IcpCorrespondenceStatsWorkspace` to reuse device storage across repeated calls.
+- [x] Implement reusable partial-reduction and final-stats device storage.
+- [x] Keep the original no-workspace stats overload for compatibility.
+- [x] Reserve workspace once in `alignGpu()` and reuse it for both stats calls in each iteration.
+
+### Task 8: Documentation, Benchmark, And Verification
 
 **Files:**
 - Modify: `README.md`
@@ -100,12 +113,14 @@ Verification evidence:
 - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsAllowOmittedIndexOutput`:
   failed as expected before the null-output optimization with `ICP GPU: device pointers must not be null`.
 - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment`:
-  7 targeted ICP GPU/stats tests passed after block-reduction and target-tiling implementation.
+  8 targeted ICP GPU/stats tests passed after block-reduction, target-tiling, and reusable workspace implementation.
+- `cmake --build build-codex-cuda -j$(nproc)` after adding `CorrespondenceStatsWorkspaceReusesDeviceStorage`:
+  failed as expected because `plapoint::gpu::IcpCorrespondenceStatsWorkspace` did not exist yet.
 - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
-- `cmake --build build-codex-cuda -j$(nproc) && ctest --test-dir build-codex-cuda --output-on-failure`:
-  185 tests, 0 failed.
+- `ctest --test-dir build-codex-cuda --output-on-failure`:
+  186 tests, 0 failed.
 - `./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CPU benchmark rows emitted through `cpu_icp_identity,512,1,30.5816`.
+  CPU benchmark rows emitted through `cpu_icp_identity,512,1,32.7031`.
 - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CUDA benchmark rows included `gpu_icp_identity,512,1,1.06828`.
+  CUDA benchmark rows included `gpu_icp_identity,512,1,1.05141`.

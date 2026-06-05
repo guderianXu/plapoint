@@ -28,6 +28,11 @@ struct RawIcpStats
 
 constexpr int kIcpStatsBlockSize = 128;
 
+int icpStatsPartialCount(int source_count)
+{
+    return (source_count + kIcpStatsBlockSize - 1) / kIcpStatsBlockSize;
+}
+
 __device__ void addRawIcpStats(RawIcpStats& dst, const RawIcpStats& src)
 {
     dst.active_count += src.active_count;
@@ -295,6 +300,7 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
     int target_count,
     Scalar max_correspondence_distance,
     int* d_correspondence_indices,
+    IcpCorrespondenceStatsWorkspace* workspace,
     cudaStream_t stream)
 {
     if (source_count <= 0 || target_count <= 0)
@@ -306,10 +312,14 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
         throw std::invalid_argument("ICP GPU: device pointers must not be null");
     }
 
+    IcpCorrespondenceStatsWorkspace local_workspace;
+    IcpCorrespondenceStatsWorkspace& active_workspace = workspace ? *workspace : local_workspace;
+    active_workspace.reserve(source_count);
+
     constexpr int block_size = kIcpStatsBlockSize;
-    const int grid_size = (source_count + block_size - 1) / block_size;
-    DeviceBuffer<RawIcpStats> d_partials(static_cast<std::size_t>(grid_size));
-    DeviceBuffer<RawIcpStats> d_stats(1);
+    const int grid_size = icpStatsPartialCount(source_count);
+    auto* d_partials = reinterpret_cast<RawIcpStats*>(active_workspace.partialStorage());
+    auto* d_stats = reinterpret_cast<RawIcpStats*>(active_workspace.statsStorage());
 
     collectCorrespondenceStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
         d_source_points,
@@ -318,17 +328,17 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
         target_count,
         max_correspondence_distance,
         d_correspondence_indices,
-        d_partials.get());
+        d_partials);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
     reduceRawIcpStatsKernel<<<1, block_size, 0, stream>>>(
-        d_partials.get(),
+        d_partials,
         grid_size,
-        d_stats.get());
+        d_stats);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
     RawIcpStats raw{};
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats.get(), sizeof(RawIcpStats),
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
                                         cudaMemcpyDeviceToHost, stream));
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
     return makeHostStats<Scalar>(raw);
@@ -353,6 +363,29 @@ void multiplyTransform4x4Impl(
 
 } // namespace
 
+void IcpCorrespondenceStatsWorkspace::reserve(int source_count)
+{
+    if (source_count < 0)
+    {
+        throw std::invalid_argument("ICP GPU: source point count must not be negative");
+    }
+    if (source_count == 0)
+    {
+        return;
+    }
+
+    const int required_partials = icpStatsPartialCount(source_count);
+    if (partialCapacity() < required_partials)
+    {
+        _partial_storage.allocate(static_cast<std::size_t>(required_partials) * sizeof(RawIcpStats));
+        _partial_capacity = required_partials;
+    }
+    if (_stats_storage.size() < sizeof(RawIcpStats))
+    {
+        _stats_storage.allocate(sizeof(RawIcpStats));
+    }
+}
+
 IcpCorrespondenceStats<float> computeIcpCorrespondenceStatsColumnMajor(
     const float* d_source_points,
     int source_count,
@@ -369,6 +402,28 @@ IcpCorrespondenceStats<float> computeIcpCorrespondenceStatsColumnMajor(
         target_count,
         max_correspondence_distance,
         d_correspondence_indices,
+        nullptr,
+        stream);
+}
+
+IcpCorrespondenceStats<float> computeIcpCorrespondenceStatsColumnMajor(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    int* d_correspondence_indices,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+    return computeIcpCorrespondenceStatsColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        d_correspondence_indices,
+        &workspace,
         stream);
 }
 
@@ -388,6 +443,28 @@ IcpCorrespondenceStats<double> computeIcpCorrespondenceStatsColumnMajor(
         target_count,
         max_correspondence_distance,
         d_correspondence_indices,
+        nullptr,
+        stream);
+}
+
+IcpCorrespondenceStats<double> computeIcpCorrespondenceStatsColumnMajor(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    int* d_correspondence_indices,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+    return computeIcpCorrespondenceStatsColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        d_correspondence_indices,
+        &workspace,
         stream);
 }
 

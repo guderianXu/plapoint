@@ -216,6 +216,47 @@ TEST(ICPGpuPathTest, CorrespondenceStatsFindsNearestTargetsPastFirstTile)
     }
 }
 
+TEST(ICPGpuPathTest, CorrespondenceStatsWorkspaceReusesDeviceStorage)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto source = makeNonCollinearPoints().toGpu();
+    auto target = makeNonCollinearPoints().toGpu();
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+
+    const auto first_stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source.data(),
+        static_cast<int>(source.rows()),
+        target.data(),
+        static_cast<int>(target.rows()),
+        std::numeric_limits<float>::infinity(),
+        nullptr,
+        workspace);
+    auto* first_partial_storage = workspace.partialStorage();
+    auto* first_stats_storage = workspace.statsStorage();
+    const int first_partial_capacity = workspace.partialCapacity();
+
+    const auto second_stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source.data(),
+        static_cast<int>(source.rows()),
+        target.data(),
+        static_cast<int>(target.rows()),
+        std::numeric_limits<float>::infinity(),
+        nullptr,
+        workspace);
+
+    EXPECT_EQ(first_stats.active_count, 4);
+    EXPECT_EQ(second_stats.active_count, 4);
+    EXPECT_NE(first_partial_storage, nullptr);
+    EXPECT_NE(first_stats_storage, nullptr);
+    EXPECT_EQ(workspace.partialStorage(), first_partial_storage);
+    EXPECT_EQ(workspace.statsStorage(), first_stats_storage);
+    EXPECT_EQ(workspace.partialCapacity(), first_partial_capacity);
+}
+
 TEST(ICPGpuPathTest, AlignDoesNotPopulateGpuPointCpuCaches)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
