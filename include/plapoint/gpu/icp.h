@@ -59,6 +59,15 @@ public:
     /// Reserve reusable target spatial grid storage for finite-radius candidate search.
     void reserveTargetSpatialGrid(int target_count);
 
+    /// Clear cached target spatial-grid metadata. Call this if target device contents mutate in place.
+    void invalidateTargetSpatialGridCache();
+
+    /// Return true when the cached target spatial grid matches the supplied target identity and cell size.
+    bool targetSpatialGridCacheMatches(const void* target_points, int target_count, double cell_size) const;
+
+    /// Mark the reusable target spatial grid storage as containing the supplied target grid.
+    void markTargetSpatialGridCache(const void* target_points, int target_count, double cell_size, int cell_count);
+
     /// Return the currently reserved partial reduction capacity, in blocks.
     int partialCapacity() const { return _partial_capacity; }
 
@@ -67,6 +76,9 @@ public:
 
     /// Return the currently reserved target spatial grid capacity, in points.
     int targetSpatialGridCapacity() const { return _target_spatial_grid_capacity; }
+
+    /// Return the number of unique cells in the currently cached target spatial grid.
+    int targetSpatialGridCellCount() const { return _target_spatial_grid_cell_count; }
 
     /// Return the reusable partial reduction storage pointer, or null before reserve().
     unsigned char* partialStorage() { return _partial_storage.get(); }
@@ -104,6 +116,11 @@ private:
     int _partial_capacity = 0;
     int _target_tile_bound_capacity = 0;
     int _target_spatial_grid_capacity = 0;
+    int _target_spatial_grid_cell_count = 0;
+    const void* _target_spatial_grid_points = nullptr;
+    int _target_spatial_grid_point_count = 0;
+    double _target_spatial_grid_cell_size = 0.0;
+    bool _target_spatial_grid_cache_valid = false;
 };
 
 /// Reusable device storage for converting ICP correspondence stats into a 4x4 step transform.

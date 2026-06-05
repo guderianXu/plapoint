@@ -109,6 +109,7 @@ std::atomic<int> g_icp_correspondence_stats_call_count{0};
 std::atomic<std::uintptr_t> g_icp_first_stats_source_pointer{0};
 std::atomic<int> g_icp_step_transform_input_copy_count{0};
 std::atomic<int> g_icp_host_synchronization_count{0};
+std::atomic<int> g_icp_target_spatial_grid_build_count{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
 __device__ unsigned long long g_icp_target_candidate_visit_count;
 __device__ unsigned long long g_icp_target_tile_bound_computation_count;
@@ -1032,12 +1033,26 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
         return grid;
     }
 
+    const double cell_size = static_cast<double>(max_correspondence_distance);
     workspace.reserveTargetSpatialGrid(target_count);
     auto* d_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridKeysStorage());
     auto* d_unique_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridUniqueKeysStorage());
     auto* d_indices = reinterpret_cast<int*>(workspace.targetSpatialGridIndicesStorage());
     auto* d_cell_starts = reinterpret_cast<int*>(workspace.targetSpatialGridCellStartsStorage());
     auto* d_cell_counts = reinterpret_cast<int*>(workspace.targetSpatialGridCellCountsStorage());
+
+    grid.cell_keys = d_unique_keys;
+    grid.sorted_target_indices = d_indices;
+    grid.cell_starts = d_cell_starts;
+    grid.cell_counts = d_cell_counts;
+    grid.cell_size = cell_size;
+
+    if (workspace.targetSpatialGridCacheMatches(d_target_points, target_count, cell_size))
+    {
+        grid.cell_count = workspace.targetSpatialGridCellCount();
+        grid.active = true;
+        return grid;
+    }
 
     auto policy = thrust::cuda::par.on(stream);
     auto keys = thrust::device_pointer_cast(d_keys);
@@ -1055,7 +1070,7 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
         ComputeIcpTargetGridCellKey<Scalar>{
             d_target_points,
             target_count,
-            static_cast<double>(max_correspondence_distance)
+            cell_size
         });
     thrust::sort_by_key(policy, keys, keys + target_count, indices, IcpGridCellKeyLess{});
     const auto reduced = thrust::reduce_by_key(
@@ -1070,13 +1085,13 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     const int cell_count = static_cast<int>(reduced.first - unique_keys);
     thrust::exclusive_scan(policy, cell_counts, cell_counts + cell_count, cell_starts);
 
-    grid.cell_keys = d_unique_keys;
-    grid.sorted_target_indices = d_indices;
-    grid.cell_starts = d_cell_starts;
-    grid.cell_counts = d_cell_counts;
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_target_spatial_grid_build_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+
     grid.cell_count = cell_count;
-    grid.cell_size = static_cast<double>(max_correspondence_distance);
     grid.active = true;
+    workspace.markTargetSpatialGridCache(d_target_points, target_count, cell_size, cell_count);
     return grid;
 }
 
@@ -1617,6 +1632,16 @@ unsigned long long icpTargetTileBoundComputationCountForTesting()
     PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_target_tile_bound_computation_count, sizeof(count)));
     return count;
 }
+
+void resetIcpTargetSpatialGridBuildCountForTesting()
+{
+    g_icp_target_spatial_grid_build_count.store(0, std::memory_order_relaxed);
+}
+
+int icpTargetSpatialGridBuildCountForTesting()
+{
+    return g_icp_target_spatial_grid_build_count.load(std::memory_order_relaxed);
+}
 #endif
 
 void IcpCorrespondenceStatsWorkspace::reserve(int source_count)
@@ -1675,6 +1700,7 @@ void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGrid(int target_count)
 
     if (targetSpatialGridCapacity() < target_count)
     {
+        invalidateTargetSpatialGridCache();
         _target_spatial_grid_keys_storage.allocate(
             static_cast<std::size_t>(target_count) * sizeof(IcpGridCellKey));
         _target_spatial_grid_unique_keys_storage.allocate(
@@ -1687,6 +1713,39 @@ void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGrid(int target_count)
             static_cast<std::size_t>(target_count) * sizeof(int));
         _target_spatial_grid_capacity = target_count;
     }
+}
+
+void IcpCorrespondenceStatsWorkspace::invalidateTargetSpatialGridCache()
+{
+    _target_spatial_grid_cache_valid = false;
+    _target_spatial_grid_points = nullptr;
+    _target_spatial_grid_point_count = 0;
+    _target_spatial_grid_cell_size = 0.0;
+    _target_spatial_grid_cell_count = 0;
+}
+
+bool IcpCorrespondenceStatsWorkspace::targetSpatialGridCacheMatches(
+    const void* target_points,
+    int target_count,
+    double cell_size) const
+{
+    return _target_spatial_grid_cache_valid &&
+        _target_spatial_grid_points == target_points &&
+        _target_spatial_grid_point_count == target_count &&
+        _target_spatial_grid_cell_size == cell_size;
+}
+
+void IcpCorrespondenceStatsWorkspace::markTargetSpatialGridCache(
+    const void* target_points,
+    int target_count,
+    double cell_size,
+    int cell_count)
+{
+    _target_spatial_grid_cache_valid = true;
+    _target_spatial_grid_points = target_points;
+    _target_spatial_grid_point_count = target_count;
+    _target_spatial_grid_cell_size = cell_size;
+    _target_spatial_grid_cell_count = cell_count;
 }
 
 void IcpStepTransformWorkspace::reserve()
