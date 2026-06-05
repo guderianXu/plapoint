@@ -470,8 +470,45 @@
 - [x] Keep `setComputeFinalMetrics(false)` behavior unchanged.
 - [x] Run targeted final-metrics tests, full CPU/CUDA tests, and the 100k finite-radius GPU ICP benchmark.
 
+### Task 35: Fused Terminal Residual Output And Exact-Match Grid Early Exit
+
+**Files:**
+- Modify: `include/plapoint/gpu/icp.h`
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `src/icp_gpu.cu`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `docs/superpowers/plans/2026-06-05-plapoint-gpu-icp.md`
+
+- [x] Add a fused GPU helper that applies the terminal ICP step transform into caller-owned output storage and
+  computes final residual metrics in the same source scan.
+- [x] Route terminal default final metrics through the fused helper while keeping the opt-in skip-final-metrics
+  path on the transform-only fast path.
+- [x] Add test-only transform-kernel call counting to prove terminal default final metrics no longer launch the
+  standalone point-transform helper.
+- [x] Stop finite-radius residual spatial-grid lookup after an exact zero-distance match, avoiding the remaining
+  neighboring `(x, y)` cell lookups for already aligned points.
+- [x] Run targeted final-metrics/residual tests, full CPU/CUDA tests, and the 100k finite-radius GPU ICP benchmark.
+
 Verification evidence:
 
+- `git diff --check && cmake --build build-codex-cuda -j$(nproc)`:
+  CUDA test build passed after adding fused terminal residual output and exact-match residual grid early exit.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.ResidualStatsStopsSpatialGridLookupsAfterExactMatch:ICPGpuPathTest.AlignUsesResidualStatsForTerminalFinalMetrics:ICPGpuPathTest.AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled:ICPGpuPathTest.AlignWritesTerminalGpuTransformDirectlyToReusableOutput:ICPGpuPathTest.AlignUsesScratchForTerminalTransformWhenOutputAliasesSource`:
+  5 targeted residual/final-output tests passed. The new residual test proves exact-match final residual scans stop
+  after one spatial-grid lookup per source point.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+  ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 2 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`:
+  large finite-radius GPU ICP benchmark rows included
+  `gpu_icp_finite_radius_translation_reuse_output,100000,2,3.09521`,
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,2,2.62227`,
+  `gpu_icp_stats_step_finite_radius_translation_cached_grid,100000,2,1.35625`, and
+  `gpu_icp_stats_finite_radius_translation_cached_grid,100000,2,1.31944`.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  38 targeted ICP GPU/stats/validation tests passed.
+- `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
+  143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda -j$(nproc) && ctest --test-dir build-codex-cuda --output-on-failure`:
+  215 tests, 0 failed.
 - `git diff --check && cmake --build build-codex-cuda -j$(nproc) &&
   ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignUsesResidualStatsForTerminalFinalMetrics:ICPGpuPathTest.AlignSkipsFinalStatsForNonTerminalGpuIterations:ICPGpuPathTest.AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled`:
   3 targeted final-metrics tests passed. The new test confirms terminal default metrics use one residual-stats scan,

@@ -215,6 +215,30 @@ IcpResidualStats<double> computeIcpResidualStatsColumnMajor(
     IcpCorrespondenceStatsWorkspace& workspace,
     cudaStream_t stream = 0);
 
+/// Transform points into caller-owned output storage and compute final residual metrics in one GPU pass.
+IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsColumnMajor(
+    const float* d_transform,
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    float* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream = 0);
+
+/// Transform points into caller-owned output storage and compute final residual metrics in one GPU pass.
+IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsColumnMajor(
+    const double* d_transform,
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    double* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream = 0);
+
 /// Compute the 4x4 ICP step transform from correspondence stats and write it to device memory.
 /// The returned delta is copied to host after synchronizing the supplied stream.
 IcpStepTransformResult<float> computeIcpStepTransformFromStats(

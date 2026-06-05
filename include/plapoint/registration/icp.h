@@ -421,28 +421,19 @@ private:
                 _gpu_next_T_acc->data(),
                 0);
             std::swap(_gpu_T_acc, _gpu_next_T_acc);
-            gpu::transformPointsColumnMajorAsync(
-                _gpu_T_step->data(),
-                cur_points,
-                source_count,
-                transform_output_points,
-                0);
-            cur_points = transform_output_points;
-            if (!terminal_iteration)
-            {
-                next_points_in_a = !next_points_in_a;
-                next_points = next_points_in_a ? _gpu_points_a->data() : _gpu_points_b->data();
-            }
 
             if (terminal_iteration && _compute_final_metrics)
             {
-                auto final_stats = gpu::computeIcpResidualStatsColumnMajor(
+                auto final_stats = gpu::transformPointsAndComputeIcpResidualStatsColumnMajor(
+                    _gpu_T_step->data(),
                     cur_points,
                     source_count,
                     _target->points().data(),
                     target_count,
                     _max_corr_dist,
+                    transform_output_points,
                     _gpu_stats_workspace);
+                cur_points = transform_output_points;
                 if (final_stats.invalid_source_count > 0)
                 {
                     throw std::invalid_argument("ICP: transformed source contains non-finite point");
@@ -463,7 +454,23 @@ private:
                     break;
                 }
             }
-            else if (terminal_iteration && step_result.delta < _eps)
+            else
+            {
+                gpu::transformPointsColumnMajorAsync(
+                    _gpu_T_step->data(),
+                    cur_points,
+                    source_count,
+                    transform_output_points,
+                    0);
+                cur_points = transform_output_points;
+            }
+
+            if (!terminal_iteration)
+            {
+                next_points_in_a = !next_points_in_a;
+                next_points = next_points_in_a ? _gpu_points_a->data() : _gpu_points_b->data();
+            }
+            else if (step_result.delta < _eps)
             {
                 _converged = stats.active_count >= 3 && _fitness_score >= _min_fitness_score;
                 break;

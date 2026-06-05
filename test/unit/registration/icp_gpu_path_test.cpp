@@ -152,6 +152,8 @@ void resetIcpGridCellLookupCountForTesting();
 unsigned long long icpGridCellLookupCountForTesting();
 void resetIcpLastTransformOutputPointerForTesting();
 const void* icpLastTransformOutputPointerForTesting();
+void resetIcpTransformPointsCallCountForTesting();
+int icpTransformPointsCallCountForTesting();
 
 } // namespace gpu
 } // namespace plapoint
@@ -762,6 +764,32 @@ TEST(ICPGpuPathTest, CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDista
 
     EXPECT_EQ(stats.active_count, 1);
     EXPECT_LE(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 2ull);
+}
+
+TEST(ICPGpuPathTest, ResidualStatsStopsSpatialGridLookupsAfterExactMatch)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto source = makeNonCollinearPoints().toGpu();
+    auto target = makeNonCollinearPoints().toGpu();
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    const auto stats = plapoint::gpu::computeIcpResidualStatsColumnMajor(
+        source.data(),
+        static_cast<int>(source.rows()),
+        target.data(),
+        static_cast<int>(target.rows()),
+        2.0f,
+        workspace);
+
+    EXPECT_EQ(stats.active_count, static_cast<int>(source.rows()));
+    EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-8);
+    EXPECT_LE(plapoint::gpu::icpGridCellLookupCountForTesting(),
+              static_cast<unsigned long long>(source.rows()));
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsSpatialGridTieKeepsLowerTargetIndex)
@@ -1401,11 +1429,13 @@ TEST(ICPGpuPathTest, AlignUsesResidualStatsForTerminalFinalMetrics)
 
     plapoint::gpu::resetIcpCorrespondenceStatsCallCountForTesting();
     plapoint::gpu::resetIcpResidualStatsCallCountForTesting();
+    plapoint::gpu::resetIcpTransformPointsCallCountForTesting();
     GpuCloud output;
     icp.align(output);
 
     EXPECT_EQ(plapoint::gpu::icpCorrespondenceStatsCallCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 0);
     EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-6f);
     EXPECT_EQ(output.size(), source->size());
 }
@@ -1433,10 +1463,12 @@ TEST(ICPGpuPathTest, AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled)
     icp.setComputeFinalMetrics(false);
 
     plapoint::gpu::resetIcpCorrespondenceStatsCallCountForTesting();
+    plapoint::gpu::resetIcpTransformPointsCallCountForTesting();
     GpuCloud output;
     icp.align(output);
 
     EXPECT_EQ(plapoint::gpu::icpCorrespondenceStatsCallCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 1);
     EXPECT_EQ(output.size(), source->size());
 }
 

@@ -119,6 +119,7 @@ std::atomic<int> g_icp_step_transform_input_copy_count{0};
 std::atomic<int> g_icp_host_synchronization_count{0};
 std::atomic<int> g_icp_target_spatial_grid_build_count{0};
 std::atomic<std::uintptr_t> g_icp_last_transform_output_pointer{0};
+std::atomic<int> g_icp_transform_points_call_count{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
 __device__ unsigned long long g_icp_target_candidate_visit_count;
 __device__ unsigned long long g_icp_target_tile_bound_computation_count;
@@ -910,7 +911,8 @@ __global__ void collectResidualStatsSpatialGridKernel(
         }
 
         const int offset_order[3]{0, -1, 1};
-        for (int dx_offset_idx = 0; dx_offset_idx < 3; ++dx_offset_idx)
+        bool stop_cell_scan = false;
+        for (int dx_offset_idx = 0; dx_offset_idx < 3 && !stop_cell_scan; ++dx_offset_idx)
         {
             int query_x = 0;
             const int dx_cell = offset_order[dx_offset_idx];
@@ -918,7 +920,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
             {
                 continue;
             }
-            for (int dy_offset_idx = 0; dy_offset_idx < 3; ++dy_offset_idx)
+            for (int dy_offset_idx = 0; dy_offset_idx < 3 && !stop_cell_scan; ++dy_offset_idx)
             {
                 int query_y = 0;
                 const int dy_cell = offset_order[dy_offset_idx];
@@ -982,6 +984,341 @@ __global__ void collectResidualStatsSpatialGridKernel(
                         if (isfinite(dist_sq) && dist_sq < best_dist_sq)
                         {
                             best_dist_sq = dist_sq;
+                            if (dist_sq <= 0.0)
+                            {
+                                stop_cell_scan = true;
+                                break;
+                            }
+                        }
+                    }
+                    ++cell_idx;
+                }
+            }
+        }
+    }
+
+    if (source_valid && isfinite(best_dist_sq) && best_dist_sq <= max_dist_sq)
+    {
+        local.active_count = 1;
+        local.residual_sq_sum = best_dist_sq;
+    }
+
+    __shared__ RawIcpResidualStats shared_stats[kIcpStatsBlockSize];
+    shared_stats[local_idx] = local;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            addRawIcpResidualStats(shared_stats[local_idx], shared_stats[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (local_idx == 0)
+    {
+        partial_stats[blockIdx.x] = shared_stats[0];
+    }
+}
+
+template <typename Scalar>
+__global__ void transformAndCollectResidualStatsKernel(
+    const Scalar* transform,
+    const Scalar* source_points,
+    int source_count,
+    const Scalar* target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    Scalar* output_points,
+    const IcpTargetTileBounds* target_tile_bounds,
+    RawIcpResidualStats* partial_stats)
+{
+    const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int local_idx = threadIdx.x;
+    RawIcpResidualStats local{};
+    bool source_valid = false;
+    double sx = 0.0;
+    double sy = 0.0;
+    double sz = 0.0;
+
+    if (source_idx < source_count)
+    {
+        const Scalar px = source_points[source_idx];
+        const Scalar py = source_points[source_count + source_idx];
+        const Scalar pz = source_points[2 * source_count + source_idx];
+
+        const Scalar ox = transform[0] * px + transform[4] * py + transform[8] * pz + transform[12];
+        const Scalar oy = transform[1] * px + transform[5] * py + transform[9] * pz + transform[13];
+        const Scalar oz = transform[2] * px + transform[6] * py + transform[10] * pz + transform[14];
+        output_points[source_idx] = ox;
+        output_points[source_count + source_idx] = oy;
+        output_points[2 * source_count + source_idx] = oz;
+
+        sx = static_cast<double>(ox);
+        sy = static_cast<double>(oy);
+        sz = static_cast<double>(oz);
+        if (!isfinite(sx) || !isfinite(sy) || !isfinite(sz))
+        {
+            local.invalid_source_count = 1;
+        }
+        else
+        {
+            source_valid = true;
+        }
+    }
+
+    double best_dist_sq = INFINITY;
+    const double max_dist = static_cast<double>(max_correspondence_distance);
+    const bool can_prune_by_radius = isfinite(max_dist) && max_dist >= 0.0;
+    __shared__ double target_tile_x[kIcpStatsBlockSize];
+    __shared__ double target_tile_y[kIcpStatsBlockSize];
+    __shared__ double target_tile_z[kIcpStatsBlockSize];
+    __shared__ int target_tile_valid[kIcpStatsBlockSize];
+
+    for (int tile_start = 0; tile_start < target_count; tile_start += kIcpStatsBlockSize)
+    {
+        const int tile_idx = tile_start / kIcpStatsBlockSize;
+        const int target_idx = tile_start + local_idx;
+        double tx = 0.0;
+        double ty = 0.0;
+        double tz = 0.0;
+        const bool target_valid = target_idx < target_count &&
+            loadFiniteColumnMajorPoint(target_points, target_count, target_idx, tx, ty, tz);
+        target_tile_x[local_idx] = tx;
+        target_tile_y[local_idx] = ty;
+        target_tile_z[local_idx] = tz;
+        target_tile_valid[local_idx] = target_valid ? 1 : 0;
+        __syncthreads();
+
+        bool tile_relevant = true;
+        if (source_valid && can_prune_by_radius && target_tile_bounds)
+        {
+            const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
+            tile_relevant =
+                bounds.has_valid_point &&
+                sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&
+                sy >= bounds.min_y - max_dist && sy <= bounds.max_y + max_dist &&
+                sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
+        }
+
+        if (source_valid && tile_relevant)
+        {
+            const int tile_count = min(kIcpStatsBlockSize, target_count - tile_start);
+            for (int tile_offset = 0; tile_offset < tile_count; ++tile_offset)
+            {
+                if (!target_tile_valid[tile_offset])
+                {
+                    continue;
+                }
+
+                const double dx = sx - target_tile_x[tile_offset];
+                if (can_prune_by_radius && fabs(dx) > max_dist)
+                {
+                    continue;
+                }
+                const double dy = sy - target_tile_y[tile_offset];
+                if (can_prune_by_radius && fabs(dy) > max_dist)
+                {
+                    continue;
+                }
+                const double dz = sz - target_tile_z[tile_offset];
+                if (can_prune_by_radius && fabs(dz) > max_dist)
+                {
+                    continue;
+                }
+
+                const double dist_sq = dx * dx + dy * dy + dz * dz;
+                if (isfinite(dist_sq) && dist_sq < best_dist_sq)
+                {
+                    best_dist_sq = dist_sq;
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    if (source_valid)
+    {
+        bool accepted = isfinite(best_dist_sq);
+        if (accepted && isfinite(max_dist))
+        {
+            accepted = best_dist_sq <= max_dist * max_dist;
+        }
+        if (accepted)
+        {
+            local.active_count = 1;
+            local.residual_sq_sum = best_dist_sq;
+        }
+    }
+
+    __shared__ RawIcpResidualStats shared_stats[kIcpStatsBlockSize];
+    shared_stats[local_idx] = local;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            addRawIcpResidualStats(shared_stats[local_idx], shared_stats[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (local_idx == 0)
+    {
+        partial_stats[blockIdx.x] = shared_stats[0];
+    }
+}
+
+template <typename Scalar>
+__global__ void transformAndCollectResidualStatsSpatialGridKernel(
+    const Scalar* transform,
+    const Scalar* source_points,
+    int source_count,
+    const Scalar* target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    Scalar* output_points,
+    IcpTargetSpatialGrid target_grid,
+    RawIcpResidualStats* partial_stats)
+{
+    const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int local_idx = threadIdx.x;
+    RawIcpResidualStats local{};
+    bool source_valid = false;
+    double sx = 0.0;
+    double sy = 0.0;
+    double sz = 0.0;
+
+    if (source_idx < source_count)
+    {
+        const Scalar px = source_points[source_idx];
+        const Scalar py = source_points[source_count + source_idx];
+        const Scalar pz = source_points[2 * source_count + source_idx];
+
+        const Scalar ox = transform[0] * px + transform[4] * py + transform[8] * pz + transform[12];
+        const Scalar oy = transform[1] * px + transform[5] * py + transform[9] * pz + transform[13];
+        const Scalar oz = transform[2] * px + transform[6] * py + transform[10] * pz + transform[14];
+        output_points[source_idx] = ox;
+        output_points[source_count + source_idx] = oy;
+        output_points[2 * source_count + source_idx] = oz;
+
+        sx = static_cast<double>(ox);
+        sy = static_cast<double>(oy);
+        sz = static_cast<double>(oz);
+        if (!isfinite(sx) || !isfinite(sy) || !isfinite(sz))
+        {
+            local.invalid_source_count = 1;
+        }
+        else
+        {
+            source_valid = true;
+        }
+    }
+
+    double best_dist_sq = INFINITY;
+    const double max_dist = static_cast<double>(max_correspondence_distance);
+    const double max_dist_sq = max_dist * max_dist;
+
+    if (source_valid && target_grid.active)
+    {
+        const IcpGridCellKey source_key{
+            icpGridCellCoordinate(sx, target_grid.cell_size),
+            icpGridCellCoordinate(sy, target_grid.cell_size),
+            icpGridCellCoordinate(sz, target_grid.cell_size)
+        };
+
+        int min_z = source_key.z;
+        int max_z = source_key.z;
+        if (!offsetGridCellCoordinate(source_key.z, -1, min_z))
+        {
+            min_z = source_key.z;
+        }
+        if (!offsetGridCellCoordinate(source_key.z, 1, max_z))
+        {
+            max_z = source_key.z;
+        }
+
+        const int offset_order[3]{0, -1, 1};
+        bool stop_cell_scan = false;
+        for (int dx_offset_idx = 0; dx_offset_idx < 3 && !stop_cell_scan; ++dx_offset_idx)
+        {
+            int query_x = 0;
+            const int dx_cell = offset_order[dx_offset_idx];
+            if (!offsetGridCellCoordinate(source_key.x, dx_cell, query_x))
+            {
+                continue;
+            }
+            for (int dy_offset_idx = 0; dy_offset_idx < 3 && !stop_cell_scan; ++dy_offset_idx)
+            {
+                int query_y = 0;
+                const int dy_cell = offset_order[dy_offset_idx];
+                if (!offsetGridCellCoordinate(source_key.y, dy_cell, query_y))
+                {
+                    continue;
+                }
+
+                IcpGridCellKey query_key{query_x, query_y, min_z};
+                int cell_idx = lowerBoundIcpGridCell(target_grid.cell_keys, target_grid.cell_count, query_key);
+                while (cell_idx < target_grid.cell_count)
+                {
+                    const IcpGridCellKey cell_key = target_grid.cell_keys[cell_idx];
+                    if (cell_key.x != query_x || cell_key.y != query_y || cell_key.z > max_z)
+                    {
+                        break;
+                    }
+
+                    const double min_cell_dist_sq = minDistanceSqToIcpGridCell(
+                        sx,
+                        sy,
+                        sz,
+                        cell_key,
+                        target_grid.cell_size);
+                    if (min_cell_dist_sq > max_dist_sq || min_cell_dist_sq >= best_dist_sq)
+                    {
+                        ++cell_idx;
+                        continue;
+                    }
+
+                    const int start = target_grid.cell_starts[cell_idx];
+                    const int count = target_grid.cell_counts[cell_idx];
+                    for (int offset = 0; offset < count; ++offset)
+                    {
+                        const int target_idx = target_grid.sorted_target_indices[start + offset];
+                        double tx = 0.0;
+                        double ty = 0.0;
+                        double tz = 0.0;
+                        if (!loadFiniteColumnMajorPoint(target_points, target_count, target_idx, tx, ty, tz))
+                        {
+                            continue;
+                        }
+
+                        const double dx = sx - tx;
+                        if (fabs(dx) > max_dist)
+                        {
+                            continue;
+                        }
+                        const double dy = sy - ty;
+                        if (fabs(dy) > max_dist)
+                        {
+                            continue;
+                        }
+                        const double dz = sz - tz;
+                        if (fabs(dz) > max_dist)
+                        {
+                            continue;
+                        }
+
+                        const double dist_sq = dx * dx + dy * dy + dz * dz;
+                        if (isfinite(dist_sq) && dist_sq < best_dist_sq)
+                        {
+                            best_dist_sq = dist_sq;
+                            if (dist_sq <= 0.0)
+                            {
+                                stop_cell_scan = true;
+                                break;
+                            }
                         }
                     }
                     ++cell_idx;
@@ -1750,6 +2087,99 @@ IcpResidualStats<Scalar> computeIcpResidualStatsColumnMajorImpl(
 }
 
 template <typename Scalar>
+IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImpl(
+    const Scalar* d_transform,
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    Scalar* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_residual_stats_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_last_transform_output_pointer.store(
+        reinterpret_cast<std::uintptr_t>(d_output_points),
+        std::memory_order_relaxed);
+#endif
+
+    if (source_count <= 0 || target_count <= 0)
+    {
+        return {};
+    }
+    if (!d_transform || !d_source_points || !d_target_points || !d_output_points)
+    {
+        throw std::invalid_argument("ICP GPU: device pointers must not be null");
+    }
+
+    workspace.reserve(source_count);
+
+    constexpr int block_size = kIcpStatsBlockSize;
+    const int grid_size = icpStatsPartialCount(source_count);
+    auto* d_partials = reinterpret_cast<RawIcpResidualStats*>(workspace.partialStorage());
+    auto* d_stats = reinterpret_cast<RawIcpResidualStats*>(workspace.statsStorage());
+    const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        workspace,
+        stream);
+
+    if (target_grid.active)
+    {
+        transformAndCollectResidualStatsSpatialGridKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+            d_transform,
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            d_output_points,
+            target_grid,
+            d_partials);
+    }
+    else
+    {
+        const IcpTargetTileBounds* d_target_tile_bounds = prepareTargetTileBounds(
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            workspace,
+            stream);
+
+        transformAndCollectResidualStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+            d_transform,
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            d_output_points,
+            d_target_tile_bounds,
+            d_partials);
+    }
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    reduceRawIcpResidualStatsKernel<<<1, block_size, 0, stream>>>(
+        d_partials,
+        grid_size,
+        d_stats);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    RawIcpResidualStats raw{};
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpResidualStats),
+                                        cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    return makeHostResidualStats<Scalar>(raw);
+}
+
+template <typename Scalar>
 void setIdentityTransform4x4Impl(Scalar* d_transform, cudaStream_t stream)
 {
     if (!d_transform)
@@ -1799,6 +2229,7 @@ void transformPointsColumnMajorImpl(
     }
 
 #ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_transform_points_call_count.fetch_add(1, std::memory_order_relaxed);
     g_icp_last_transform_output_pointer.store(
         reinterpret_cast<std::uintptr_t>(d_output_points),
         std::memory_order_relaxed);
@@ -2179,6 +2610,16 @@ const void* icpLastTransformOutputPointerForTesting()
     return reinterpret_cast<const void*>(
         g_icp_last_transform_output_pointer.load(std::memory_order_relaxed));
 }
+
+void resetIcpTransformPointsCallCountForTesting()
+{
+    g_icp_transform_points_call_count.store(0, std::memory_order_relaxed);
+}
+
+int icpTransformPointsCallCountForTesting()
+{
+    return g_icp_transform_points_call_count.load(std::memory_order_relaxed);
+}
 #endif
 
 void IcpCorrespondenceStatsWorkspace::reserve(int source_count)
@@ -2413,6 +2854,52 @@ IcpResidualStats<double> computeIcpResidualStatsColumnMajor(
         d_target_points,
         target_count,
         max_correspondence_distance,
+        workspace,
+        stream);
+}
+
+IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsColumnMajor(
+    const float* d_transform,
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    float* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+    return transformPointsAndComputeIcpResidualStatsColumnMajorImpl(
+        d_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        d_output_points,
+        workspace,
+        stream);
+}
+
+IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsColumnMajor(
+    const double* d_transform,
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    double* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+    return transformPointsAndComputeIcpResidualStatsColumnMajorImpl(
+        d_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        d_output_points,
         workspace,
         stream);
 }
