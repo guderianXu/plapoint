@@ -439,8 +439,42 @@
 - [x] Preserve candidate visit and correspondence semantics for the cached finite-radius spatial-grid path.
 - [x] Run targeted spatial-grid tests, full CPU/CUDA tests, and the 100k finite-radius GPU ICP benchmark.
 
+### Task 33: Spatial-Grid Cell Distance Pruning
+
+**Files:**
+- Modify: `src/icp_gpu.cu`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `docs/superpowers/plans/2026-06-05-plapoint-gpu-icp.md`
+
+- [x] Add a CUDA-only candidate-visit counter test showing the cached spatial-grid path still scans all 27
+  neighboring cell candidates when a same-cell exact match already proves the best distance.
+- [x] Visit the same `(x,y)` cell group first, then prune cells whose cell AABB lower-bound distance cannot beat
+  the current best correspondence distance or fit inside the max correspondence radius.
+- [x] Keep equal-distance cells conservative and make finite-grid ties choose the lower target index.
+- [x] Run targeted spatial-grid tests, full CPU/CUDA tests, and the 100k finite-radius GPU ICP benchmark.
+
 Verification evidence:
 
+- `cmake --build build-codex-cuda -j$(nproc) &&
+  ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance`
+  before cell-distance pruning:
+  failed as expected with 27 target candidate visits instead of the expected at most 2.
+- `git diff --check && cmake --build build-codex-cuda -j$(nproc) &&
+  ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.CorrespondenceStatsSpatialGridTieKeepsLowerTargetIndex:ICPGpuPathTest.CorrespondenceStatsBatchesSpatialGridNeighborLookupsByXY:ICPGpuPathTest.CorrespondenceStatsUsesFiniteRadiusSpatialGridCandidates:ICPGpuPathTest.CorrespondenceStatsReusesFiniteRadiusSpatialGridForSameTarget:ICPGpuPathTest.AlignReusesFiniteRadiusSpatialGridAcrossStatsCalls`:
+  6 targeted spatial-grid tests passed after adding cell AABB pruning and deterministic finite-grid tie handling.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  36 targeted ICP GPU/stats/validation tests passed.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+  ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 2 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`:
+  large finite-radius GPU ICP benchmark rows included
+  `gpu_icp_finite_radius_translation_reuse_output,100000,2,3.81614`,
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,2,2.60521`,
+  `gpu_icp_stats_step_finite_radius_translation_cached_grid,100000,2,1.34839`, and
+  `gpu_icp_stats_finite_radius_translation_cached_grid,100000,2,1.31845`.
+- `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
+  143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda -j$(nproc) && ctest --test-dir build-codex-cuda --output-on-failure`:
+  213 tests, 0 failed.
 - `cmake --build build-codex-cuda -j$(nproc) &&
   ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsBatchesSpatialGridNeighborLookupsByXY`
   before batching spatial-grid lookups:

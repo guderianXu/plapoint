@@ -226,6 +226,38 @@ __device__ int lowerBoundIcpGridCell(const IcpGridCellKey* cell_keys, int cell_c
     return first;
 }
 
+__device__ double distanceOutsideIcpGridCellAxis(double value, int cell_coordinate, double cell_size)
+{
+    const double cell_min = static_cast<double>(cell_coordinate) * cell_size;
+    const double cell_max = cell_min + cell_size;
+    if (!isfinite(cell_min) || !isfinite(cell_max))
+    {
+        return 0.0;
+    }
+    if (value < cell_min)
+    {
+        return cell_min - value;
+    }
+    if (value > cell_max)
+    {
+        return value - cell_max;
+    }
+    return 0.0;
+}
+
+__device__ double minDistanceSqToIcpGridCell(
+    double x,
+    double y,
+    double z,
+    const IcpGridCellKey& cell_key,
+    double cell_size)
+{
+    const double dx = distanceOutsideIcpGridCellAxis(x, cell_key.x, cell_size);
+    const double dy = distanceOutsideIcpGridCellAxis(y, cell_key.y, cell_size);
+    const double dz = distanceOutsideIcpGridCellAxis(z, cell_key.z, cell_size);
+    return dx * dx + dy * dy + dz * dz;
+}
+
 __device__ void recordAcceptedCorrespondence(
     RawIcpStats& local,
     double sx,
@@ -519,6 +551,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
     double best_ty = 0.0;
     double best_tz = 0.0;
     const double max_dist = static_cast<double>(max_correspondence_distance);
+    const double max_dist_sq = max_dist * max_dist;
 
     if (source_valid && target_grid.active)
     {
@@ -539,16 +572,19 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
             max_z = source_key.z;
         }
 
-        for (int dx_cell = -1; dx_cell <= 1; ++dx_cell)
+        const int offset_order[3]{0, -1, 1};
+        for (int dx_offset_idx = 0; dx_offset_idx < 3; ++dx_offset_idx)
         {
             int query_x = 0;
+            const int dx_cell = offset_order[dx_offset_idx];
             if (!offsetGridCellCoordinate(source_key.x, dx_cell, query_x))
             {
                 continue;
             }
-            for (int dy_cell = -1; dy_cell <= 1; ++dy_cell)
+            for (int dy_offset_idx = 0; dy_offset_idx < 3; ++dy_offset_idx)
             {
                 int query_y = 0;
+                const int dy_cell = offset_order[dy_offset_idx];
                 if (!offsetGridCellCoordinate(source_key.y, dy_cell, query_y))
                 {
                     continue;
@@ -562,6 +598,18 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                     if (cell_key.x != query_x || cell_key.y != query_y || cell_key.z > max_z)
                     {
                         break;
+                    }
+
+                    const double min_cell_dist_sq = minDistanceSqToIcpGridCell(
+                        sx,
+                        sy,
+                        sz,
+                        cell_key,
+                        target_grid.cell_size);
+                    if (min_cell_dist_sq > max_dist_sq || min_cell_dist_sq > best_dist_sq)
+                    {
+                        ++cell_idx;
+                        continue;
                     }
 
                     const int start = target_grid.cell_starts[cell_idx];
@@ -599,7 +647,9 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                         atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
 #endif
                         const double dist_sq = dx * dx + dy * dy + dz * dz;
-                        if (isfinite(dist_sq) && dist_sq < best_dist_sq)
+                        if (isfinite(dist_sq) &&
+                            (dist_sq < best_dist_sq ||
+                             (dist_sq == best_dist_sq && (best_idx < 0 || target_idx < best_idx))))
                         {
                             best_dist_sq = dist_sq;
                             best_idx = target_idx;
@@ -619,7 +669,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
         bool accepted = best_idx >= 0;
         if (accepted)
         {
-            accepted = best_dist_sq <= max_dist * max_dist;
+            accepted = best_dist_sq <= max_dist_sq;
         }
 
         if (!accepted)
