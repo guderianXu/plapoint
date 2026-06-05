@@ -1,6 +1,10 @@
 #pragma once
 
 #include <plapoint/core/point_cloud.h>
+#ifdef PLAPOINT_WITH_CUDA
+#include <plapoint/gpu/cuda_check.h>
+#include <plapoint/gpu/icp.h>
+#endif
 #include <plapoint/search/kdtree.h>
 #include <plamatrix/dense/dense_matrix.h>
 #include <plamatrix/ops/point_cloud.h>
@@ -72,6 +76,16 @@ public:
         if (!_target) throw std::runtime_error("ICP: target cloud not set");
         if (_source->size() == 0) throw std::invalid_argument("ICP: source cloud must not be empty");
         if (_target->size() == 0) throw std::invalid_argument("ICP: target cloud must not be empty");
+
+        if constexpr (Dev == plamatrix::Device::GPU)
+        {
+#ifndef PLAPOINT_WITH_CUDA
+            throw std::runtime_error("PlaPoint was built without CUDA support");
+#else
+            alignGpu(output);
+            return;
+#endif
+        }
 
         // Build KD-tree on target
         auto tree = std::make_shared<search::KdTree<Scalar, Dev>>();
@@ -276,6 +290,222 @@ public:
     Scalar getFinalRmse() const { return _final_rmse; }
 
 private:
+#ifdef PLAPOINT_WITH_CUDA
+    template <plamatrix::Device D = Dev>
+    std::enable_if_t<D == plamatrix::Device::GPU, void>
+    alignGpu(PointCloudType& output)
+    {
+        const int source_count = checkedInt(_source->size(), "ICP: source point count exceeds int range");
+        const int target_count = checkedInt(_target->size(), "ICP: target point count exceeds int range");
+
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> cur(source_count, 3);
+        PLAPOINT_CHECK_CUDA(cudaMemcpy(cur.data(), _source->points().data(),
+                                       static_cast<std::size_t>(source_count) * 3u * sizeof(Scalar),
+                                       cudaMemcpyDeviceToDevice));
+
+        gpu::DeviceBuffer<int> d_corr(static_cast<std::size_t>(source_count));
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> T_acc = identity4x4();
+
+        _converged = false;
+        _fitness_score = Scalar(0);
+        _final_rmse = std::numeric_limits<Scalar>::infinity();
+
+        for (int iter = 0; iter < _max_iter; ++iter)
+        {
+            auto stats = gpu::computeIcpCorrespondenceStatsColumnMajor(
+                cur.data(),
+                source_count,
+                _target->points().data(),
+                target_count,
+                _max_corr_dist,
+                d_corr.get());
+            if (stats.invalid_source_count > 0)
+            {
+                throw std::invalid_argument(iter == 0
+                    ? "ICP: source cloud contains non-finite point"
+                    : "ICP: transformed source contains non-finite point");
+            }
+            if (stats.active_count < 3)
+            {
+                throw std::runtime_error("ICP: fewer than 3 correspondences within max distance");
+            }
+            if (!hasNonCollinearCovariance(stats.src_covariance))
+            {
+                throw std::runtime_error("ICP: correspondence geometry is degenerate");
+            }
+            if (!hasNonCollinearCovariance(stats.tgt_covariance))
+            {
+                throw std::runtime_error("ICP: target correspondence geometry is degenerate");
+            }
+
+            updateResidualMetricsFromGpuStats(stats, source_count);
+            auto T_step = computeStepTransformFromGpuStats(stats);
+            T_acc = multiply4x4(T_step, T_acc);
+            auto T_step_gpu = T_step.toGpu();
+            cur = plamatrix::transformPoints(T_step_gpu, cur);
+
+            auto final_stats = gpu::computeIcpCorrespondenceStatsColumnMajor(
+                cur.data(),
+                source_count,
+                _target->points().data(),
+                target_count,
+                _max_corr_dist,
+                d_corr.get());
+            if (final_stats.invalid_source_count > 0)
+            {
+                throw std::invalid_argument("ICP: transformed source contains non-finite point");
+            }
+            if (final_stats.active_count == 0)
+            {
+                _fitness_score = Scalar(0);
+                _final_rmse = std::numeric_limits<Scalar>::infinity();
+            }
+            else
+            {
+                updateResidualMetricsFromGpuStats(final_stats, source_count);
+            }
+
+            const Scalar r00 = T_step.getValue(0, 0);
+            const Scalar r01 = T_step.getValue(0, 1);
+            const Scalar r02 = T_step.getValue(0, 2);
+            const Scalar r10 = T_step.getValue(1, 0);
+            const Scalar r11 = T_step.getValue(1, 1);
+            const Scalar r12 = T_step.getValue(1, 2);
+            const Scalar r20 = T_step.getValue(2, 0);
+            const Scalar r21 = T_step.getValue(2, 1);
+            const Scalar r22 = T_step.getValue(2, 2);
+            const Scalar tx = T_step.getValue(0, 3);
+            const Scalar ty = T_step.getValue(1, 3);
+            const Scalar tz = T_step.getValue(2, 3);
+            const Scalar delta = std::abs(r00 - 1) + std::abs(r11 - 1) + std::abs(r22 - 1)
+                               + std::abs(r01) + std::abs(r02) + std::abs(r10)
+                               + std::abs(r12) + std::abs(r20) + std::abs(r21)
+                               + std::abs(tx) + std::abs(ty) + std::abs(tz);
+            if (delta < _eps)
+            {
+                _converged = final_stats.active_count >= 3 && _fitness_score >= _min_fitness_score;
+                break;
+            }
+        }
+
+        _final_T = std::move(T_acc);
+        output = PointCloudType(std::move(cur));
+    }
+
+    static bool hasNonCollinearCovariance(const double covariance[9])
+    {
+        const double trace = covariance[0] + covariance[4] + covariance[8];
+        if (!std::isfinite(trace) || trace <= 0.0)
+        {
+            return false;
+        }
+
+        plamatrix::DenseMatrix<double, plamatrix::Device::CPU> matrix(3, 3);
+        for (int r = 0; r < 3; ++r)
+        {
+            for (int c = 0; c < 3; ++c)
+            {
+                matrix(r, c) = covariance[r * 3 + c];
+            }
+        }
+        auto [U, S, Vt] = plamatrix::svd(matrix);
+        (void)U;
+        (void)Vt;
+        const double second_singular_value = S.getValue(1, 0);
+        return std::isfinite(second_singular_value) &&
+               second_singular_value > std::max(trace * 1.0e-12, 1.0e-30);
+    }
+
+    void updateResidualMetricsFromGpuStats(
+        const gpu::IcpCorrespondenceStats<Scalar>& stats,
+        int source_count)
+    {
+        if (stats.active_count <= 0)
+        {
+            _fitness_score = Scalar(0);
+            _final_rmse = std::numeric_limits<Scalar>::infinity();
+            return;
+        }
+        if (!std::isfinite(stats.residual_sq_sum))
+        {
+            throw std::runtime_error("ICP: residual distance is not finite");
+        }
+
+        const double rmse = std::sqrt(stats.residual_sq_sum / static_cast<double>(stats.active_count));
+        _fitness_score = static_cast<Scalar>(stats.active_count) / static_cast<Scalar>(source_count);
+        _final_rmse = metricScalarFromDouble(rmse);
+    }
+
+    static plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> computeStepTransformFromGpuStats(
+        const gpu::IcpCorrespondenceStats<Scalar>& stats)
+    {
+        for (int c = 0; c < 3; ++c)
+        {
+            (void)finiteScalarFromDouble(stats.src_centroid[c], "ICP: correspondence centroid is not representable");
+            (void)finiteScalarFromDouble(stats.tgt_centroid[c], "ICP: correspondence centroid is not representable");
+        }
+
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> H(3, 3);
+        for (int r = 0; r < 3; ++r)
+        {
+            for (int c = 0; c < 3; ++c)
+            {
+                H(r, c) = finiteScalarFromDouble(
+                    stats.cross_covariance[r * 3 + c],
+                    "ICP: cross-covariance is not representable");
+            }
+        }
+
+        auto [U, S, Vt] = plamatrix::svd(H);
+        (void)S;
+
+        Scalar r00 = Vt.getValue(0,0)*U.getValue(0,0) + Vt.getValue(1,0)*U.getValue(0,1) + Vt.getValue(2,0)*U.getValue(0,2);
+        Scalar r01 = Vt.getValue(0,0)*U.getValue(1,0) + Vt.getValue(1,0)*U.getValue(1,1) + Vt.getValue(2,0)*U.getValue(1,2);
+        Scalar r02 = Vt.getValue(0,0)*U.getValue(2,0) + Vt.getValue(1,0)*U.getValue(2,1) + Vt.getValue(2,0)*U.getValue(2,2);
+        Scalar r10 = Vt.getValue(0,1)*U.getValue(0,0) + Vt.getValue(1,1)*U.getValue(0,1) + Vt.getValue(2,1)*U.getValue(0,2);
+        Scalar r11 = Vt.getValue(0,1)*U.getValue(1,0) + Vt.getValue(1,1)*U.getValue(1,1) + Vt.getValue(2,1)*U.getValue(1,2);
+        Scalar r12 = Vt.getValue(0,1)*U.getValue(2,0) + Vt.getValue(1,1)*U.getValue(2,1) + Vt.getValue(2,1)*U.getValue(2,2);
+        Scalar r20 = Vt.getValue(0,2)*U.getValue(0,0) + Vt.getValue(1,2)*U.getValue(0,1) + Vt.getValue(2,2)*U.getValue(0,2);
+        Scalar r21 = Vt.getValue(0,2)*U.getValue(1,0) + Vt.getValue(1,2)*U.getValue(1,1) + Vt.getValue(2,2)*U.getValue(1,2);
+        Scalar r22 = Vt.getValue(0,2)*U.getValue(2,0) + Vt.getValue(1,2)*U.getValue(2,1) + Vt.getValue(2,2)*U.getValue(2,2);
+
+        Scalar det = r00*(r11*r22 - r12*r21) - r01*(r10*r22 - r12*r20) + r02*(r10*r21 - r11*r20);
+        if (det < 0)
+        {
+            r00 = Vt.getValue(0,0)*U.getValue(0,0) + Vt.getValue(1,0)*U.getValue(0,1) - Vt.getValue(2,0)*U.getValue(0,2);
+            r01 = Vt.getValue(0,0)*U.getValue(1,0) + Vt.getValue(1,0)*U.getValue(1,1) - Vt.getValue(2,0)*U.getValue(1,2);
+            r02 = Vt.getValue(0,0)*U.getValue(2,0) + Vt.getValue(1,0)*U.getValue(2,1) - Vt.getValue(2,0)*U.getValue(2,2);
+            r10 = Vt.getValue(0,1)*U.getValue(0,0) + Vt.getValue(1,1)*U.getValue(0,1) - Vt.getValue(2,1)*U.getValue(0,2);
+            r11 = Vt.getValue(0,1)*U.getValue(1,0) + Vt.getValue(1,1)*U.getValue(1,1) - Vt.getValue(2,1)*U.getValue(1,2);
+            r12 = Vt.getValue(0,1)*U.getValue(2,0) + Vt.getValue(1,1)*U.getValue(2,1) - Vt.getValue(2,1)*U.getValue(2,2);
+            r20 = Vt.getValue(0,2)*U.getValue(0,0) + Vt.getValue(1,2)*U.getValue(0,1) - Vt.getValue(2,2)*U.getValue(0,2);
+            r21 = Vt.getValue(0,2)*U.getValue(1,0) + Vt.getValue(1,2)*U.getValue(1,1) - Vt.getValue(2,2)*U.getValue(1,2);
+            r22 = Vt.getValue(0,2)*U.getValue(2,0) + Vt.getValue(1,2)*U.getValue(2,1) - Vt.getValue(2,2)*U.getValue(2,2);
+        }
+
+        const double tx_d = stats.tgt_centroid[0] - (static_cast<double>(r00) * stats.src_centroid[0]
+                                                   + static_cast<double>(r01) * stats.src_centroid[1]
+                                                   + static_cast<double>(r02) * stats.src_centroid[2]);
+        const double ty_d = stats.tgt_centroid[1] - (static_cast<double>(r10) * stats.src_centroid[0]
+                                                   + static_cast<double>(r11) * stats.src_centroid[1]
+                                                   + static_cast<double>(r12) * stats.src_centroid[2]);
+        const double tz_d = stats.tgt_centroid[2] - (static_cast<double>(r20) * stats.src_centroid[0]
+                                                   + static_cast<double>(r21) * stats.src_centroid[1]
+                                                   + static_cast<double>(r22) * stats.src_centroid[2]);
+        Scalar tx = finiteScalarFromDouble(tx_d, "ICP: transform step is not representable");
+        Scalar ty = finiteScalarFromDouble(ty_d, "ICP: transform step is not representable");
+        Scalar tz = finiteScalarFromDouble(tz_d, "ICP: transform step is not representable");
+
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> T_step(4, 4);
+        T_step.fill(0);
+        T_step.setValue(0, 0, r00); T_step.setValue(0, 1, r01); T_step.setValue(0, 2, r02); T_step.setValue(0, 3, tx);
+        T_step.setValue(1, 0, r10); T_step.setValue(1, 1, r11); T_step.setValue(1, 2, r12); T_step.setValue(1, 3, ty);
+        T_step.setValue(2, 0, r20); T_step.setValue(2, 1, r21); T_step.setValue(2, 2, r22); T_step.setValue(2, 3, tz);
+        T_step.setValue(3, 0, 0);   T_step.setValue(3, 1, 0);   T_step.setValue(3, 2, 0);   T_step.setValue(3, 3, 1);
+        return T_step;
+    }
+#endif
+
     static plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> identity4x4()
     {
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> I(4, 4);

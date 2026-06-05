@@ -260,6 +260,36 @@ void benchmarkGpuVoxelGrid(int points, int iterations)
         std::cerr << "gpu_voxel_grid produced no centroids\n";
     }
 }
+
+void benchmarkGpuIcp(int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped("gpu_icp_identity", "no_usable_cuda_device");
+        return;
+    }
+
+    constexpr int icp_points = 512;
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+        icp.setInputSource(source);
+        icp.setInputTarget(target);
+        icp.setMaxIterations(3);
+        Cloud<plamatrix::Device::GPU> output;
+        icp.align(output);
+        sink += output.size();
+    });
+    printResult("gpu_icp_identity", icp_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << "gpu_icp_identity produced no aligned points\n";
+    }
+}
 #endif
 
 } // namespace
@@ -275,6 +305,7 @@ int main(int argc, char** argv)
 #ifdef PLAPOINT_WITH_CUDA
     benchmarkGpuKnn(options.points, options.iterations);
     benchmarkGpuVoxelGrid(options.points, options.iterations);
+    benchmarkGpuIcp(options.iterations);
 #endif
     return 0;
 }

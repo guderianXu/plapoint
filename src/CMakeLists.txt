@@ -9,5 +9,6 @@ if(PLAPOINT_WITH_CUDA)
         knn_gpu.cu
         batch_knn_gpu.cu
         voxel_grid_gpu.cu
+        icp_gpu.cu
     )
 endif()

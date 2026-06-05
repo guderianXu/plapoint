@@ -39,7 +39,8 @@ was built with CUDA support:
 - **Brute-force KNN** (`src/knn_gpu.cu`) — batched K-nearest neighbor search with one CUDA block per query point, shared memory top-K reduction. `KdTree<Scalar, GPU>::batchNearestKSearch()` reads PlaMatrix column-major device buffers directly.
 - **Stream-aware device KNN** — `gpu::batchKnnDeviceAsync()` and `gpu::batchKnnDeviceColumnMajorAsync()` launch on a caller-provided `cudaStream_t`; existing non-async overloads preserve synchronous behavior.
 - **VoxelGrid CUDA downsampling** (`src/voxel_grid_gpu.cu`) — GPU path computes voxel keys, sorts them, reduces centroids, and preserves deterministic sorted voxel-key output.
-- **CPU-staged GPU fallbacks** — remaining filters, normal estimation/refinement, and ICP preserve GPU input/output types but stage data through CPU for algorithms that do not yet have production CUDA kernels. GPU point staging is cached by `PointCloud::pointsCpu()` and invalidated when mutable `points()` is requested.
+- **ICP GPU path** (`src/icp_gpu.cu`) — `IterativeClosestPoint<Scalar, GPU>` keeps source/target point buffers on GPU, computes correspondences, centroid/covariance/residual stats, and applies point transforms on GPU. The small 3x3 SVD and 4x4 transform accumulation remain CPU-side.
+- **CPU-staged GPU fallbacks** — remaining filters and normal estimation/refinement preserve GPU input/output types but stage data through CPU for algorithms that do not yet have production CUDA kernels. GPU point staging is cached by `PointCloud::pointsCpu()` and invalidated when mutable `points()` is requested.
 - **VoxelGrid CPU hot path** — CPU path uses hash aggregation and sorted voxel keys to keep deterministic centroid order.
 - Explicit template instantiations in `src/plapoint.cpp` reduce downstream compile times
 
