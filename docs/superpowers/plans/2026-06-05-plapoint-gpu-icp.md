@@ -389,6 +389,22 @@
 - [x] Run targeted GPU ICP tests and benchmark smoke.
 - [x] Run full CPU/CUDA tests.
 
+### Task 30: Scalable GPU ICP Benchmark Controls
+
+**Files:**
+- Modify: `benchmarks/plapoint_benchmarks.cpp`
+- Modify: `README.md`
+- Modify: `docs/superpowers/plans/2026-06-05-plapoint-gpu-icp.md`
+
+- [x] Add `--icp-points` so ICP benchmark rows can scale independently from the general KNN/voxel/normal rows.
+- [x] Add `--icp-max-iterations` so GPU ICP iteration count is explicit in scaling experiments.
+- [x] Add `--skip-cpu-icp` so large GPU ICP runs are not dominated by CPU ICP baselines.
+- [x] Add `--skip-icp-identity` so large finite-radius GPU ICP runs can avoid the infinite-radius identity baseline.
+- [x] Preserve the existing default 512-point, 3-ICP-iteration benchmark behavior.
+- [x] Run CPU/CUDA benchmark smoke with default settings.
+- [x] Run a larger GPU ICP benchmark smoke with CPU ICP skipped.
+- [x] Run full CPU/CUDA tests.
+
 Verification evidence:
 
 - `git diff --check`: clean.
@@ -591,6 +607,27 @@ Verification evidence:
   CUDA benchmark rows included `gpu_icp_finite_radius_translation,512,5,0.357869`,
   `gpu_icp_finite_radius_translation_reuse,512,5,0.260998`, and
   `gpu_icp_finite_radius_translation_reuse_output,512,5,0.260873`.
+- `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+  142 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:
+  208 tests, 0 failed.
+- `cmake --build build-codex-cpu-bench -j$(nproc)` and
+  `./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1` after scalable
+  ICP benchmark controls:
+  CPU benchmark rows still used the default ICP size, including
+  `cpu_icp_identity,512,1,28.9231` and `cpu_icp_finite_radius_translation_reuse,512,1,27.4772`.
+- `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --help` after scalable ICP benchmark controls:
+  help output included `--icp-points`, `--icp-max-iterations`, `--skip-cpu-icp`, and `--skip-icp-identity`.
+- `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1` after scalable
+  ICP benchmark controls:
+  CUDA benchmark rows still used the default ICP size, including
+  `gpu_icp_finite_radius_translation_reuse_output,512,1,0.262835`.
+- `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 2 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`:
+  large finite-radius GPU ICP benchmark rows included
+  `gpu_icp_finite_radius,100000,2,6.59437`,
+  `gpu_icp_finite_radius_translation,100000,2,9.4794`,
+  `gpu_icp_finite_radius_translation_reuse,100000,2,8.8691`, and
+  `gpu_icp_finite_radius_translation_reuse_output,100000,2,8.79715`.
 - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
 - `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:

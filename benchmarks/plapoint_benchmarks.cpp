@@ -27,6 +27,10 @@ struct Options
 {
     int points = 20000;
     int iterations = 3;
+    int icp_points = 512;
+    int icp_max_iterations = 3;
+    bool skip_cpu_icp = false;
+    bool skip_icp_identity = false;
 };
 
 Options parseOptions(int argc, char** argv)
@@ -43,9 +47,28 @@ Options parseOptions(int argc, char** argv)
         {
             options.iterations = std::max(1, std::atoi(argv[++i]));
         }
+        else if (arg == "--icp-points" && i + 1 < argc)
+        {
+            options.icp_points = std::max(3, std::atoi(argv[++i]));
+        }
+        else if (arg == "--icp-max-iterations" && i + 1 < argc)
+        {
+            options.icp_max_iterations = std::max(1, std::atoi(argv[++i]));
+        }
+        else if (arg == "--skip-cpu-icp")
+        {
+            options.skip_cpu_icp = true;
+        }
+        else if (arg == "--skip-icp-identity")
+        {
+            options.skip_icp_identity = true;
+        }
         else if (arg == "--help")
         {
-            std::cout << "Usage: plapoint_benchmarks [--points N] [--iterations N]\n";
+            std::cout
+                << "Usage: plapoint_benchmarks [--points N] [--iterations N]\n"
+                << "                           [--icp-points N] [--icp-max-iterations N]\n"
+                << "                           [--skip-cpu-icp] [--skip-icp-identity]\n";
             std::exit(0);
         }
     }
@@ -199,9 +222,8 @@ void benchmarkCpuNormalEstimation(int points, int iterations)
     }
 }
 
-void benchmarkCpuIcp(int iterations)
+void benchmarkCpuIcp(int icp_points, int icp_max_iterations, int iterations)
 {
-    constexpr int icp_points = 512;
     auto source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
     auto target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
     std::size_t sink = 0;
@@ -209,7 +231,7 @@ void benchmarkCpuIcp(int iterations)
         plapoint::IterativeClosestPoint<float, plamatrix::Device::CPU> icp;
         icp.setInputSource(source);
         icp.setInputTarget(target);
-        icp.setMaxIterations(3);
+        icp.setMaxIterations(icp_max_iterations);
         Cloud<plamatrix::Device::CPU> output;
         icp.align(output);
         sink += output.size();
@@ -221,9 +243,8 @@ void benchmarkCpuIcp(int iterations)
     }
 }
 
-void benchmarkCpuIcpFiniteRadius(int iterations)
+void benchmarkCpuIcpFiniteRadius(int icp_points, int icp_max_iterations, int iterations)
 {
-    constexpr int icp_points = 512;
     auto source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
     auto target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
     std::size_t sink = 0;
@@ -232,7 +253,7 @@ void benchmarkCpuIcpFiniteRadius(int iterations)
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxCorrespondenceDistance(0.02f);
-        icp.setMaxIterations(3);
+        icp.setMaxIterations(icp_max_iterations);
         Cloud<plamatrix::Device::CPU> output;
         icp.align(output);
         sink += output.size();
@@ -244,9 +265,8 @@ void benchmarkCpuIcpFiniteRadius(int iterations)
     }
 }
 
-void benchmarkCpuIcpFiniteRadiusTranslation(int iterations)
+void benchmarkCpuIcpFiniteRadiusTranslation(int icp_points, int icp_max_iterations, int iterations)
 {
-    constexpr int icp_points = 512;
     auto source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
     auto target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
@@ -256,7 +276,7 @@ void benchmarkCpuIcpFiniteRadiusTranslation(int iterations)
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxCorrespondenceDistance(0.02f);
-        icp.setMaxIterations(3);
+        icp.setMaxIterations(icp_max_iterations);
         Cloud<plamatrix::Device::CPU> output;
         icp.align(output);
         sink += output.size();
@@ -268,9 +288,8 @@ void benchmarkCpuIcpFiniteRadiusTranslation(int iterations)
     }
 }
 
-void benchmarkCpuIcpFiniteRadiusTranslationReuse(int iterations)
+void benchmarkCpuIcpFiniteRadiusTranslationReuse(int icp_points, int icp_max_iterations, int iterations)
 {
-    constexpr int icp_points = 512;
     auto source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
     auto target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
@@ -278,7 +297,7 @@ void benchmarkCpuIcpFiniteRadiusTranslationReuse(int iterations)
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
-    icp.setMaxIterations(3);
+    icp.setMaxIterations(icp_max_iterations);
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -350,7 +369,7 @@ void benchmarkGpuVoxelGrid(int points, int iterations)
     }
 }
 
-void benchmarkGpuIcp(int iterations)
+void benchmarkGpuIcp(int icp_points, int icp_max_iterations, int iterations)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -358,7 +377,6 @@ void benchmarkGpuIcp(int iterations)
         return;
     }
 
-    constexpr int icp_points = 512;
     auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
     auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
     auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
@@ -368,7 +386,7 @@ void benchmarkGpuIcp(int iterations)
         plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
         icp.setInputSource(source);
         icp.setInputTarget(target);
-        icp.setMaxIterations(3);
+        icp.setMaxIterations(icp_max_iterations);
         Cloud<plamatrix::Device::GPU> output;
         icp.align(output);
         sink += output.size();
@@ -380,7 +398,7 @@ void benchmarkGpuIcp(int iterations)
     }
 }
 
-void benchmarkGpuIcpFiniteRadius(int iterations)
+void benchmarkGpuIcpFiniteRadius(int icp_points, int icp_max_iterations, int iterations)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -388,7 +406,6 @@ void benchmarkGpuIcpFiniteRadius(int iterations)
         return;
     }
 
-    constexpr int icp_points = 512;
     auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
     auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
     auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
@@ -399,7 +416,7 @@ void benchmarkGpuIcpFiniteRadius(int iterations)
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxCorrespondenceDistance(0.02f);
-        icp.setMaxIterations(3);
+        icp.setMaxIterations(icp_max_iterations);
         Cloud<plamatrix::Device::GPU> output;
         icp.align(output);
         sink += output.size();
@@ -411,7 +428,7 @@ void benchmarkGpuIcpFiniteRadius(int iterations)
     }
 }
 
-void benchmarkGpuIcpFiniteRadiusTranslation(int iterations)
+void benchmarkGpuIcpFiniteRadiusTranslation(int icp_points, int icp_max_iterations, int iterations)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -419,7 +436,6 @@ void benchmarkGpuIcpFiniteRadiusTranslation(int iterations)
         return;
     }
 
-    constexpr int icp_points = 512;
     auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
     auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
@@ -431,7 +447,7 @@ void benchmarkGpuIcpFiniteRadiusTranslation(int iterations)
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxCorrespondenceDistance(0.02f);
-        icp.setMaxIterations(3);
+        icp.setMaxIterations(icp_max_iterations);
         Cloud<plamatrix::Device::GPU> output;
         icp.align(output);
         sink += output.size();
@@ -443,7 +459,7 @@ void benchmarkGpuIcpFiniteRadiusTranslation(int iterations)
     }
 }
 
-void benchmarkGpuIcpFiniteRadiusTranslationReuse(int iterations)
+void benchmarkGpuIcpFiniteRadiusTranslationReuse(int icp_points, int icp_max_iterations, int iterations)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -451,7 +467,6 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuse(int iterations)
         return;
     }
 
-    constexpr int icp_points = 512;
     auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
     auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
@@ -461,7 +476,7 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuse(int iterations)
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
-    icp.setMaxIterations(3);
+    icp.setMaxIterations(icp_max_iterations);
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -476,7 +491,7 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuse(int iterations)
     }
 }
 
-void benchmarkGpuIcpFiniteRadiusTranslationReuseOutput(int iterations)
+void benchmarkGpuIcpFiniteRadiusTranslationReuseOutput(int icp_points, int icp_max_iterations, int iterations)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -484,7 +499,6 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuseOutput(int iterations)
         return;
     }
 
-    constexpr int icp_points = 512;
     auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
     auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
@@ -494,7 +508,7 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuseOutput(int iterations)
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
-    icp.setMaxIterations(3);
+    icp.setMaxIterations(icp_max_iterations);
 
     Cloud<plamatrix::Device::GPU> output;
     std::size_t sink = 0;
@@ -519,18 +533,48 @@ int main(int argc, char** argv)
     benchmarkCpuKnn(options.points, options.iterations);
     benchmarkCpuVoxelGrid(options.points, options.iterations);
     benchmarkCpuNormalEstimation(options.points, options.iterations);
-    benchmarkCpuIcp(options.iterations);
-    benchmarkCpuIcpFiniteRadius(options.iterations);
-    benchmarkCpuIcpFiniteRadiusTranslation(options.iterations);
-    benchmarkCpuIcpFiniteRadiusTranslationReuse(options.iterations);
+    if (options.skip_cpu_icp)
+    {
+        printSkipped("cpu_icp_identity", "disabled");
+        printSkipped("cpu_icp_finite_radius", "disabled");
+        printSkipped("cpu_icp_finite_radius_translation", "disabled");
+        printSkipped("cpu_icp_finite_radius_translation_reuse", "disabled");
+    }
+    else
+    {
+        if (options.skip_icp_identity)
+        {
+            printSkipped("cpu_icp_identity", "disabled");
+        }
+        else
+        {
+            benchmarkCpuIcp(options.icp_points, options.icp_max_iterations, options.iterations);
+        }
+        benchmarkCpuIcpFiniteRadius(options.icp_points, options.icp_max_iterations, options.iterations);
+        benchmarkCpuIcpFiniteRadiusTranslation(options.icp_points, options.icp_max_iterations, options.iterations);
+        benchmarkCpuIcpFiniteRadiusTranslationReuse(
+            options.icp_points,
+            options.icp_max_iterations,
+            options.iterations);
+    }
 #ifdef PLAPOINT_WITH_CUDA
     benchmarkGpuKnn(options.points, options.iterations);
     benchmarkGpuVoxelGrid(options.points, options.iterations);
-    benchmarkGpuIcp(options.iterations);
-    benchmarkGpuIcpFiniteRadius(options.iterations);
-    benchmarkGpuIcpFiniteRadiusTranslation(options.iterations);
-    benchmarkGpuIcpFiniteRadiusTranslationReuse(options.iterations);
-    benchmarkGpuIcpFiniteRadiusTranslationReuseOutput(options.iterations);
+    if (options.skip_icp_identity)
+    {
+        printSkipped("gpu_icp_identity", "disabled");
+    }
+    else
+    {
+        benchmarkGpuIcp(options.icp_points, options.icp_max_iterations, options.iterations);
+    }
+    benchmarkGpuIcpFiniteRadius(options.icp_points, options.icp_max_iterations, options.iterations);
+    benchmarkGpuIcpFiniteRadiusTranslation(options.icp_points, options.icp_max_iterations, options.iterations);
+    benchmarkGpuIcpFiniteRadiusTranslationReuse(options.icp_points, options.icp_max_iterations, options.iterations);
+    benchmarkGpuIcpFiniteRadiusTranslationReuseOutput(
+        options.icp_points,
+        options.icp_max_iterations,
+        options.iterations);
 #endif
     return 0;
 }

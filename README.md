@@ -81,6 +81,21 @@ cmake --build build-bench -j$(nproc)
 ./build-bench/benchmarks/plapoint_benchmarks --points 20000 --iterations 3
 ```
 
+ICP benchmark rows use 512 points and 3 ICP iterations by default. Use `--icp-points`,
+`--icp-max-iterations`, `--skip-cpu-icp`, and `--skip-icp-identity` to stress larger
+finite-radius GPU ICP cases without waiting on CPU ICP or the infinite-radius identity
+baseline:
+
+```bash
+./build-bench/benchmarks/plapoint_benchmarks \
+  --points 1000 \
+  --iterations 3 \
+  --icp-points 10000 \
+  --icp-max-iterations 3 \
+  --skip-cpu-icp \
+  --skip-icp-identity
+```
+
 The benchmark prints CSV columns:
 
 ```text
