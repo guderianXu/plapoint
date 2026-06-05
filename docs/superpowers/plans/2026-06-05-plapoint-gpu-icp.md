@@ -103,6 +103,20 @@
 - [x] Run benchmark smoke for CPU/CUDA builds.
 - [x] Commit and push to `origin master`.
 
+### Task 9: Preallocated Transform Buffers
+
+**Files:**
+- Modify: `include/plapoint/gpu/icp.h`
+- Modify: `src/icp_gpu.cu`
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `README.md`
+
+- [x] Add a CUDA-only test requiring `transformPointsColumnMajor()` to write into caller-owned GPU output storage.
+- [x] Implement the float/double caller-owned column-major point transform helper, with synchronous and async entry points.
+- [x] Preallocate `alignGpu()` step-transform, accumulated-transform, and next-point buffers once before the ICP loop.
+- [x] Swap preallocated GPU buffers inside the loop instead of allocating new point and transform matrices per iteration.
+
 Verification evidence:
 
 - `git diff --check`: clean.
@@ -116,11 +130,15 @@ Verification evidence:
   8 targeted ICP GPU/stats tests passed after block-reduction, target-tiling, and reusable workspace implementation.
 - `cmake --build build-codex-cuda -j$(nproc)` after adding `CorrespondenceStatsWorkspaceReusesDeviceStorage`:
   failed as expected because `plapoint::gpu::IcpCorrespondenceStatsWorkspace` did not exist yet.
+- `cmake --build build-codex-cuda -j$(nproc)` after adding `TransformPointsColumnMajorWritesCallerOwnedOutput`:
+  failed as expected because `plapoint::gpu::transformPointsColumnMajor` did not exist yet.
+- `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformPointsColumnMajorWritesCallerOwnedOutput:ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment`:
+  9 targeted ICP GPU/stats tests passed after adding caller-owned point transform output and `alignGpu()` double buffering.
 - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
 - `ctest --test-dir build-codex-cuda --output-on-failure`:
-  186 tests, 0 failed.
+  187 tests, 0 failed.
 - `./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CPU benchmark rows emitted through `cpu_icp_identity,512,1,32.7031`.
+  CPU benchmark rows emitted through `cpu_icp_identity,512,1,32.1706`.
 - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CUDA benchmark rows included `gpu_icp_identity,512,1,1.05141`.
+  CUDA benchmark rows included `gpu_icp_identity,512,1,1.00398`.

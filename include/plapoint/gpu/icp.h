@@ -109,6 +109,44 @@ void multiplyTransform4x4(
     double* d_C,
     cudaStream_t stream = 0);
 
+/// Apply a 4x4 column-major device transform to an Nx3 column-major device point array.
+/// d_output_points must have capacity for point_count x 3 Scalars. In-place output is allowed.
+/// Synchronizes the supplied stream before returning.
+void transformPointsColumnMajor(
+    const float* d_transform,
+    const float* d_points,
+    int point_count,
+    float* d_output_points,
+    cudaStream_t stream = 0);
+
+/// Apply a 4x4 column-major device transform to an Nx3 column-major device point array.
+/// d_output_points must have capacity for point_count x 3 Scalars. In-place output is allowed.
+/// Synchronizes the supplied stream before returning.
+void transformPointsColumnMajor(
+    const double* d_transform,
+    const double* d_points,
+    int point_count,
+    double* d_output_points,
+    cudaStream_t stream = 0);
+
+/// Async column-major point transform on the caller-provided CUDA stream.
+/// The caller owns stream synchronization before reading output buffers.
+void transformPointsColumnMajorAsync(
+    const float* d_transform,
+    const float* d_points,
+    int point_count,
+    float* d_output_points,
+    cudaStream_t stream);
+
+/// Async column-major point transform on the caller-provided CUDA stream.
+/// The caller owns stream synchronization before reading output buffers.
+void transformPointsColumnMajorAsync(
+    const double* d_transform,
+    const double* d_points,
+    int point_count,
+    double* d_output_points,
+    cudaStream_t stream);
+
 } // namespace gpu
 } // namespace plapoint
 

@@ -96,6 +96,42 @@ TEST(ICPGpuPathTest, MultiplyTransform4x4UsesColumnMajorTransformComposition)
     }
 }
 
+TEST(ICPGpuPathTest, TransformPointsColumnMajorWritesCallerOwnedOutput)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto points_cpu = makeNonCollinearPoints();
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> T(4, 4);
+    T.fill(0.0f);
+    T.setValue(0, 0, 0.0f);  T.setValue(0, 1, -1.0f); T.setValue(0, 2, 0.0f); T.setValue(0, 3, 2.0f);
+    T.setValue(1, 0, 1.0f);  T.setValue(1, 1, 0.0f);  T.setValue(1, 2, 0.0f); T.setValue(1, 3, -1.0f);
+    T.setValue(2, 0, 0.0f);  T.setValue(2, 1, 0.0f);  T.setValue(2, 2, 1.0f); T.setValue(2, 3, 0.5f);
+    T.setValue(3, 0, 0.0f);  T.setValue(3, 1, 0.0f);  T.setValue(3, 2, 0.0f); T.setValue(3, 3, 1.0f);
+
+    auto points_gpu = points_cpu.toGpu();
+    auto T_gpu = T.toGpu();
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> transformed_gpu(points_cpu.rows(), 3);
+
+    plapoint::gpu::transformPointsColumnMajor(
+        T_gpu.data(),
+        points_gpu.data(),
+        static_cast<int>(points_cpu.rows()),
+        transformed_gpu.data());
+
+    auto transformed = transformed_gpu.toCpu();
+    auto expected = plamatrix::transformPoints(T, points_cpu);
+    for (plamatrix::Index row = 0; row < points_cpu.rows(); ++row)
+    {
+        for (int col = 0; col < 3; ++col)
+        {
+            EXPECT_NEAR(transformed.getValue(row, col), expected.getValue(row, col), 1.0e-6f);
+        }
+    }
+}
+
 TEST(ICPGpuPathTest, CorrespondenceStatsAllowOmittedIndexOutput)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

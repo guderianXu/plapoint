@@ -257,6 +257,28 @@ __global__ void multiplyTransform4x4Kernel(const Scalar* A, const Scalar* B, Sca
 }
 
 template <typename Scalar>
+__global__ void transformPointsColumnMajorKernel(
+    const Scalar* transform,
+    const Scalar* points,
+    int point_count,
+    Scalar* output_points)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= point_count)
+    {
+        return;
+    }
+
+    const Scalar px = points[idx];
+    const Scalar py = points[point_count + idx];
+    const Scalar pz = points[2 * point_count + idx];
+
+    output_points[idx] = transform[0] * px + transform[4] * py + transform[8] * pz + transform[12];
+    output_points[point_count + idx] = transform[1] * px + transform[5] * py + transform[9] * pz + transform[13];
+    output_points[2 * point_count + idx] = transform[2] * px + transform[6] * py + transform[10] * pz + transform[14];
+}
+
+template <typename Scalar>
 IcpCorrespondenceStats<Scalar> makeHostStats(const RawIcpStats& raw)
 {
     IcpCorrespondenceStats<Scalar> stats;
@@ -359,6 +381,37 @@ void multiplyTransform4x4Impl(
     multiplyTransform4x4Kernel<Scalar><<<1, 16, 0, stream>>>(d_A, d_B, d_C);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+}
+
+template <typename Scalar>
+void transformPointsColumnMajorImpl(
+    const Scalar* d_transform,
+    const Scalar* d_points,
+    int point_count,
+    Scalar* d_output_points,
+    cudaStream_t stream)
+{
+    if (point_count < 0)
+    {
+        throw std::invalid_argument("ICP GPU: point count must not be negative");
+    }
+    if (point_count == 0)
+    {
+        return;
+    }
+    if (!d_transform || !d_points || !d_output_points)
+    {
+        throw std::invalid_argument("ICP GPU: transform point pointers must not be null");
+    }
+
+    constexpr int block_size = 256;
+    const int grid_size = (point_count + block_size - 1) / block_size;
+    transformPointsColumnMajorKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+        d_transform,
+        d_points,
+        point_count,
+        d_output_points);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
 }
 
 } // namespace
@@ -484,6 +537,48 @@ void multiplyTransform4x4(
     cudaStream_t stream)
 {
     multiplyTransform4x4Impl(d_A, d_B, d_C, stream);
+}
+
+void transformPointsColumnMajor(
+    const float* d_transform,
+    const float* d_points,
+    int point_count,
+    float* d_output_points,
+    cudaStream_t stream)
+{
+    transformPointsColumnMajorImpl(d_transform, d_points, point_count, d_output_points, stream);
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+}
+
+void transformPointsColumnMajor(
+    const double* d_transform,
+    const double* d_points,
+    int point_count,
+    double* d_output_points,
+    cudaStream_t stream)
+{
+    transformPointsColumnMajorImpl(d_transform, d_points, point_count, d_output_points, stream);
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+}
+
+void transformPointsColumnMajorAsync(
+    const float* d_transform,
+    const float* d_points,
+    int point_count,
+    float* d_output_points,
+    cudaStream_t stream)
+{
+    transformPointsColumnMajorImpl(d_transform, d_points, point_count, d_output_points, stream);
+}
+
+void transformPointsColumnMajorAsync(
+    const double* d_transform,
+    const double* d_points,
+    int point_count,
+    double* d_output_points,
+    cudaStream_t stream)
+{
+    transformPointsColumnMajorImpl(d_transform, d_points, point_count, d_output_points, stream);
 }
 
 } // namespace gpu

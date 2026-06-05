@@ -319,7 +319,10 @@ private:
                                        static_cast<std::size_t>(source_count) * 3u * sizeof(Scalar),
                                        cudaMemcpyDeviceToDevice));
 
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> next_cur(source_count, 3);
         auto T_acc_gpu = identity4x4().toGpu();
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> next_T_acc_gpu(4, 4);
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> T_step_gpu(4, 4);
         gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
         stats_workspace.reserve(source_count);
 
@@ -359,11 +362,13 @@ private:
 
             updateResidualMetricsFromGpuStats(stats, source_count);
             auto T_step = computeStepTransformFromGpuStats(stats);
-            auto T_step_gpu = T_step.toGpu();
-            plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> next_T_acc_gpu(4, 4);
+            PLAPOINT_CHECK_CUDA(cudaMemcpy(T_step_gpu.data(), T_step.data(),
+                                           static_cast<std::size_t>(16) * sizeof(Scalar),
+                                           cudaMemcpyHostToDevice));
             gpu::multiplyTransform4x4(T_step_gpu.data(), T_acc_gpu.data(), next_T_acc_gpu.data());
-            T_acc_gpu = std::move(next_T_acc_gpu);
-            cur = plamatrix::transformPoints(T_step_gpu, cur);
+            std::swap(T_acc_gpu, next_T_acc_gpu);
+            gpu::transformPointsColumnMajorAsync(T_step_gpu.data(), cur.data(), source_count, next_cur.data(), 0);
+            std::swap(cur, next_cur);
 
             auto final_stats = gpu::computeIcpCorrespondenceStatsColumnMajor(
                 cur.data(),
