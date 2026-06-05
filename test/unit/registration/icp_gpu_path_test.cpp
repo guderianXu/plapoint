@@ -508,6 +508,42 @@ TEST(ICPGpuPathTest, FinalTransformationDeviceIsAvailableAfterGpuAlign)
     EXPECT_NEAR(transform_cpu.getValue(2, 3), 0.0f, 1.0e-5f);
 }
 
+TEST(ICPGpuPathTest, GpuAlignMaterializesCpuFinalTransformLazily)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto target_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxIterations(3);
+
+    GpuCloud output;
+    icp.align(output);
+
+    EXPECT_NE(icp._final_T_gpu.get(), nullptr);
+    EXPECT_FALSE(icp._final_T_cpu_valid);
+
+    const auto& transform_cpu = icp.getFinalTransformation();
+    EXPECT_TRUE(icp._final_T_cpu_valid);
+    ASSERT_EQ(transform_cpu.rows(), 4);
+    ASSERT_EQ(transform_cpu.cols(), 4);
+    EXPECT_NEAR(transform_cpu.getValue(0, 0), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.getValue(1, 1), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.getValue(2, 2), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.getValue(3, 3), 1.0f, 1.0e-5f);
+}
+
 TEST(ICPGpuPathTest, AlignSkipsFinalStatsForNonTerminalGpuIterations)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

@@ -110,6 +110,7 @@ public:
         _converged = false;
         _fitness_score = Scalar(0);
         _final_rmse = std::numeric_limits<Scalar>::infinity();
+        _final_T_cpu_valid = false;
 
         for (int iter = 0; iter < _max_iter; ++iter)
         {
@@ -266,6 +267,7 @@ public:
         }
 
         _final_T = std::move(T_acc);
+        _final_T_cpu_valid = true;
         auto aligned = plamatrix::transformPoints(_final_T, src);
         validateFinitePointMatrix(aligned, "ICP: aligned output contains non-finite point");
         if constexpr (Dev == plamatrix::Device::CPU)
@@ -279,7 +281,24 @@ public:
     }
 
     /// Return the final 4x4 source-to-target transform on CPU.
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& getFinalTransformation() const { return _final_T; }
+    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& getFinalTransformation() const
+    {
+#ifdef PLAPOINT_WITH_CUDA
+        if constexpr (Dev == plamatrix::Device::GPU)
+        {
+            if (!_final_T_cpu_valid)
+            {
+                if (!_final_T_gpu)
+                {
+                    throw std::runtime_error("ICP: final transformation is not available");
+                }
+                _final_T = _final_T_gpu->toCpu();
+                _final_T_cpu_valid = true;
+            }
+        }
+#endif
+        return _final_T;
+    }
 
 #ifdef PLAPOINT_WITH_CUDA
     /// Return the final 4x4 source-to-target transform on GPU after GPU align().
@@ -331,6 +350,7 @@ private:
         _converged = false;
         _fitness_score = Scalar(0);
         _final_rmse = std::numeric_limits<Scalar>::infinity();
+        _final_T_cpu_valid = false;
         _final_T_gpu.reset();
 
         for (int iter = 0; iter < _max_iter; ++iter)
@@ -405,7 +425,6 @@ private:
             }
         }
 
-        _final_T = T_acc_gpu.toCpu();
         _final_T_gpu =
             std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(std::move(T_acc_gpu));
         output = PointCloudType(std::move(cur));
@@ -701,7 +720,8 @@ private:
     Scalar _min_fitness_score = Scalar(0);
     Scalar _fitness_score = Scalar(0);
     Scalar _final_rmse = std::numeric_limits<Scalar>::infinity();
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> _final_T;
+    mutable plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> _final_T;
+    mutable bool _final_T_cpu_valid = false;
 #ifdef PLAPOINT_WITH_CUDA
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _final_T_gpu;
 #endif

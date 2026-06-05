@@ -4,7 +4,7 @@
 
 **Goal:** Move `IterativeClosestPoint<Scalar, GPU>` away from full CPU-staged point processing and keep the per-point ICP workload on GPU.
 
-**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences with shared-memory target tiling, accumulate centroid/covariance/residual stats on device with block-level reductions, compute the rigid step transform with a GPU quaternion/Jacobi solver, update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. Reduced stats and small metric checks still synchronize to CPU while current points, step transforms, degeneracy flags, and transform accumulation stay GPU-resident. The GPU align loop skips transformed final-stats scans on non-terminal iterations and computes final metrics only when convergence or the final iteration requires them.
+**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences with shared-memory target tiling, accumulate centroid/covariance/residual stats on device with block-level reductions, compute the rigid step transform with a GPU quaternion/Jacobi solver, update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. Reduced stats and small metric checks still synchronize to CPU while current points, step transforms, degeneracy flags, and transform accumulation stay GPU-resident. The GPU align loop skips transformed final-stats scans on non-terminal iterations and computes final metrics only when convergence or the final iteration requires them. The legacy CPU final transform is copied from the GPU lazily only when `getFinalTransformation()` is called.
 
 **Tech Stack:** C++17, CUDA runtime, PlaMatrix GPU `DenseMatrix`, Google Test, PlaPoint benchmark executable.
 
@@ -159,6 +159,18 @@
 - [x] Skip transformed final-stats scans on non-terminal iterations.
 - [x] Still compute final metrics for convergence and max-iteration exit cases.
 
+### Task 13: Lazy CPU Final Transform
+
+**Files:**
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `README.md`
+
+- [x] Add a CUDA-only test requiring GPU align to leave the CPU final transform cache invalid.
+- [x] Keep `getFinalTransformationDevice()` available immediately after GPU align.
+- [x] Materialize the CPU final transform lazily when `getFinalTransformation()` is called.
+- [x] Preserve the CPU ICP path's eager CPU final transform behavior.
+
 Verification evidence:
 
 - `git diff --check`: clean.
@@ -192,11 +204,17 @@ Verification evidence:
   1 targeted test passed after skipping transformed final-stats scans on non-terminal iterations.
 - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
   14 targeted ICP GPU/stats/validation tests passed after the conditional final-stats change.
+- `cmake --build build-codex-cuda -j$(nproc)` after adding `GpuAlignMaterializesCpuFinalTransformLazily`:
+  failed as expected because `_final_T_cpu_valid` did not exist yet.
+- `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.GpuAlignMaterializesCpuFinalTransformLazily`:
+  1 targeted test passed after making the legacy CPU final transform copy lazy for GPU align.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  15 targeted ICP GPU/stats/validation tests passed after lazy CPU final transform materialization.
 - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
 - `ctest --test-dir build-codex-cuda --output-on-failure`:
-  190 tests, 0 failed.
+  191 tests, 0 failed.
 - `./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CPU benchmark rows emitted through `cpu_icp_identity,512,1,30.2468`.
+  CPU benchmark rows emitted through `cpu_icp_identity,512,1,29.6817`.
 - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CUDA benchmark rows included `gpu_icp_identity,512,1,0.398064`.
+  CUDA benchmark rows included `gpu_icp_identity,512,1,0.405071`.
