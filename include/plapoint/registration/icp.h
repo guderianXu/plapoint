@@ -325,6 +325,8 @@ private:
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> T_step_gpu(4, 4);
         gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
         stats_workspace.reserve(source_count);
+        gpu::IcpStepTransformWorkspace step_workspace;
+        step_workspace.reserve();
 
         _converged = false;
         _fitness_score = Scalar(0);
@@ -361,10 +363,10 @@ private:
             }
 
             updateResidualMetricsFromGpuStats(stats, source_count);
-            auto T_step = computeStepTransformFromGpuStats(stats);
-            PLAPOINT_CHECK_CUDA(cudaMemcpy(T_step_gpu.data(), T_step.data(),
-                                           static_cast<std::size_t>(16) * sizeof(Scalar),
-                                           cudaMemcpyHostToDevice));
+            const auto step_result = gpu::computeIcpStepTransformFromStats(
+                stats,
+                T_step_gpu.data(),
+                step_workspace);
             gpu::multiplyTransform4x4(T_step_gpu.data(), T_acc_gpu.data(), next_T_acc_gpu.data());
             std::swap(T_acc_gpu, next_T_acc_gpu);
             gpu::transformPointsColumnMajorAsync(T_step_gpu.data(), cur.data(), source_count, next_cur.data(), 0);
@@ -392,23 +394,7 @@ private:
                 updateResidualMetricsFromGpuStats(final_stats, source_count);
             }
 
-            const Scalar r00 = T_step.getValue(0, 0);
-            const Scalar r01 = T_step.getValue(0, 1);
-            const Scalar r02 = T_step.getValue(0, 2);
-            const Scalar r10 = T_step.getValue(1, 0);
-            const Scalar r11 = T_step.getValue(1, 1);
-            const Scalar r12 = T_step.getValue(1, 2);
-            const Scalar r20 = T_step.getValue(2, 0);
-            const Scalar r21 = T_step.getValue(2, 1);
-            const Scalar r22 = T_step.getValue(2, 2);
-            const Scalar tx = T_step.getValue(0, 3);
-            const Scalar ty = T_step.getValue(1, 3);
-            const Scalar tz = T_step.getValue(2, 3);
-            const Scalar delta = std::abs(r00 - 1) + std::abs(r11 - 1) + std::abs(r22 - 1)
-                               + std::abs(r01) + std::abs(r02) + std::abs(r10)
-                               + std::abs(r12) + std::abs(r20) + std::abs(r21)
-                               + std::abs(tx) + std::abs(ty) + std::abs(tz);
-            if (delta < _eps)
+            if (step_result.delta < _eps)
             {
                 _converged = final_stats.active_count >= 3 && _fitness_score >= _min_fitness_score;
                 break;
@@ -465,74 +451,6 @@ private:
         _final_rmse = metricScalarFromDouble(rmse);
     }
 
-    static plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> computeStepTransformFromGpuStats(
-        const gpu::IcpCorrespondenceStats<Scalar>& stats)
-    {
-        for (int c = 0; c < 3; ++c)
-        {
-            (void)finiteScalarFromDouble(stats.src_centroid[c], "ICP: correspondence centroid is not representable");
-            (void)finiteScalarFromDouble(stats.tgt_centroid[c], "ICP: correspondence centroid is not representable");
-        }
-
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> H(3, 3);
-        for (int r = 0; r < 3; ++r)
-        {
-            for (int c = 0; c < 3; ++c)
-            {
-                H(r, c) = finiteScalarFromDouble(
-                    stats.cross_covariance[r * 3 + c],
-                    "ICP: cross-covariance is not representable");
-            }
-        }
-
-        auto [U, S, Vt] = plamatrix::svd(H);
-        (void)S;
-
-        Scalar r00 = Vt.getValue(0,0)*U.getValue(0,0) + Vt.getValue(1,0)*U.getValue(0,1) + Vt.getValue(2,0)*U.getValue(0,2);
-        Scalar r01 = Vt.getValue(0,0)*U.getValue(1,0) + Vt.getValue(1,0)*U.getValue(1,1) + Vt.getValue(2,0)*U.getValue(1,2);
-        Scalar r02 = Vt.getValue(0,0)*U.getValue(2,0) + Vt.getValue(1,0)*U.getValue(2,1) + Vt.getValue(2,0)*U.getValue(2,2);
-        Scalar r10 = Vt.getValue(0,1)*U.getValue(0,0) + Vt.getValue(1,1)*U.getValue(0,1) + Vt.getValue(2,1)*U.getValue(0,2);
-        Scalar r11 = Vt.getValue(0,1)*U.getValue(1,0) + Vt.getValue(1,1)*U.getValue(1,1) + Vt.getValue(2,1)*U.getValue(1,2);
-        Scalar r12 = Vt.getValue(0,1)*U.getValue(2,0) + Vt.getValue(1,1)*U.getValue(2,1) + Vt.getValue(2,1)*U.getValue(2,2);
-        Scalar r20 = Vt.getValue(0,2)*U.getValue(0,0) + Vt.getValue(1,2)*U.getValue(0,1) + Vt.getValue(2,2)*U.getValue(0,2);
-        Scalar r21 = Vt.getValue(0,2)*U.getValue(1,0) + Vt.getValue(1,2)*U.getValue(1,1) + Vt.getValue(2,2)*U.getValue(1,2);
-        Scalar r22 = Vt.getValue(0,2)*U.getValue(2,0) + Vt.getValue(1,2)*U.getValue(2,1) + Vt.getValue(2,2)*U.getValue(2,2);
-
-        Scalar det = r00*(r11*r22 - r12*r21) - r01*(r10*r22 - r12*r20) + r02*(r10*r21 - r11*r20);
-        if (det < 0)
-        {
-            r00 = Vt.getValue(0,0)*U.getValue(0,0) + Vt.getValue(1,0)*U.getValue(0,1) - Vt.getValue(2,0)*U.getValue(0,2);
-            r01 = Vt.getValue(0,0)*U.getValue(1,0) + Vt.getValue(1,0)*U.getValue(1,1) - Vt.getValue(2,0)*U.getValue(1,2);
-            r02 = Vt.getValue(0,0)*U.getValue(2,0) + Vt.getValue(1,0)*U.getValue(2,1) - Vt.getValue(2,0)*U.getValue(2,2);
-            r10 = Vt.getValue(0,1)*U.getValue(0,0) + Vt.getValue(1,1)*U.getValue(0,1) - Vt.getValue(2,1)*U.getValue(0,2);
-            r11 = Vt.getValue(0,1)*U.getValue(1,0) + Vt.getValue(1,1)*U.getValue(1,1) - Vt.getValue(2,1)*U.getValue(1,2);
-            r12 = Vt.getValue(0,1)*U.getValue(2,0) + Vt.getValue(1,1)*U.getValue(2,1) - Vt.getValue(2,1)*U.getValue(2,2);
-            r20 = Vt.getValue(0,2)*U.getValue(0,0) + Vt.getValue(1,2)*U.getValue(0,1) - Vt.getValue(2,2)*U.getValue(0,2);
-            r21 = Vt.getValue(0,2)*U.getValue(1,0) + Vt.getValue(1,2)*U.getValue(1,1) - Vt.getValue(2,2)*U.getValue(1,2);
-            r22 = Vt.getValue(0,2)*U.getValue(2,0) + Vt.getValue(1,2)*U.getValue(2,1) - Vt.getValue(2,2)*U.getValue(2,2);
-        }
-
-        const double tx_d = stats.tgt_centroid[0] - (static_cast<double>(r00) * stats.src_centroid[0]
-                                                   + static_cast<double>(r01) * stats.src_centroid[1]
-                                                   + static_cast<double>(r02) * stats.src_centroid[2]);
-        const double ty_d = stats.tgt_centroid[1] - (static_cast<double>(r10) * stats.src_centroid[0]
-                                                   + static_cast<double>(r11) * stats.src_centroid[1]
-                                                   + static_cast<double>(r12) * stats.src_centroid[2]);
-        const double tz_d = stats.tgt_centroid[2] - (static_cast<double>(r20) * stats.src_centroid[0]
-                                                   + static_cast<double>(r21) * stats.src_centroid[1]
-                                                   + static_cast<double>(r22) * stats.src_centroid[2]);
-        Scalar tx = finiteScalarFromDouble(tx_d, "ICP: transform step is not representable");
-        Scalar ty = finiteScalarFromDouble(ty_d, "ICP: transform step is not representable");
-        Scalar tz = finiteScalarFromDouble(tz_d, "ICP: transform step is not representable");
-
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> T_step(4, 4);
-        T_step.fill(0);
-        T_step.setValue(0, 0, r00); T_step.setValue(0, 1, r01); T_step.setValue(0, 2, r02); T_step.setValue(0, 3, tx);
-        T_step.setValue(1, 0, r10); T_step.setValue(1, 1, r11); T_step.setValue(1, 2, r12); T_step.setValue(1, 3, ty);
-        T_step.setValue(2, 0, r20); T_step.setValue(2, 1, r21); T_step.setValue(2, 2, r22); T_step.setValue(2, 3, tz);
-        T_step.setValue(3, 0, 0);   T_step.setValue(3, 1, 0);   T_step.setValue(3, 2, 0);   T_step.setValue(3, 3, 1);
-        return T_step;
-    }
 #endif
 
     static plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> identity4x4()

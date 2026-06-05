@@ -1,5 +1,8 @@
+#include <cfloat>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
+#include <type_traits>
 
 #include <cuda_runtime.h>
 
@@ -24,6 +27,19 @@ struct RawIcpStats
     double src_outer_sum[9];
     double tgt_outer_sum[9];
     double residual_sq_sum;
+};
+
+struct IcpStepTransformInput
+{
+    double src_centroid[3];
+    double tgt_centroid[3];
+    double cross_covariance[9];
+};
+
+struct IcpStepTransformRawResult
+{
+    double delta;
+    int valid;
 };
 
 constexpr int kIcpStatsBlockSize = 128;
@@ -278,6 +294,209 @@ __global__ void transformPointsColumnMajorKernel(
     output_points[2 * point_count + idx] = transform[2] * px + transform[6] * py + transform[10] * pz + transform[14];
 }
 
+__device__ void jacobiRotate4x4(double A[16], double V[16], int p, int q)
+{
+    const double apq = A[p * 4 + q];
+    const double app = A[p * 4 + p];
+    const double aqq = A[q * 4 + q];
+    if (fabs(apq) <= 1.0e-15 * (fabs(app) + fabs(aqq) + 1.0))
+    {
+        return;
+    }
+
+    const double tau = (aqq - app) / (2.0 * apq);
+    const double tau_sign = tau >= 0.0 ? 1.0 : -1.0;
+    const double t = tau_sign / (fabs(tau) + sqrt(1.0 + tau * tau));
+    const double c = 1.0 / sqrt(1.0 + t * t);
+    const double s = t * c;
+
+    for (int k = 0; k < 4; ++k)
+    {
+        if (k == p || k == q)
+        {
+            continue;
+        }
+        const double akp = A[k * 4 + p];
+        const double akq = A[k * 4 + q];
+        const double new_akp = c * akp - s * akq;
+        const double new_akq = s * akp + c * akq;
+        A[k * 4 + p] = new_akp;
+        A[p * 4 + k] = new_akp;
+        A[k * 4 + q] = new_akq;
+        A[q * 4 + k] = new_akq;
+    }
+
+    A[p * 4 + p] = app - t * apq;
+    A[q * 4 + q] = aqq + t * apq;
+    A[p * 4 + q] = 0.0;
+    A[q * 4 + p] = 0.0;
+
+    for (int k = 0; k < 4; ++k)
+    {
+        const double vkp = V[k * 4 + p];
+        const double vkq = V[k * 4 + q];
+        V[k * 4 + p] = c * vkp - s * vkq;
+        V[k * 4 + q] = s * vkp + c * vkq;
+    }
+}
+
+__device__ void largestEigenvectorSymmetric4x4(const double A_in[16], double eigenvector[4])
+{
+    double A[16];
+    double V[16];
+    for (int idx = 0; idx < 16; ++idx)
+    {
+        A[idx] = A_in[idx];
+        V[idx] = 0.0;
+    }
+    for (int i = 0; i < 4; ++i)
+    {
+        V[i * 4 + i] = 1.0;
+    }
+
+    for (int sweep = 0; sweep < 32; ++sweep)
+    {
+        jacobiRotate4x4(A, V, 0, 1);
+        jacobiRotate4x4(A, V, 0, 2);
+        jacobiRotate4x4(A, V, 0, 3);
+        jacobiRotate4x4(A, V, 1, 2);
+        jacobiRotate4x4(A, V, 1, 3);
+        jacobiRotate4x4(A, V, 2, 3);
+    }
+
+    int best = 0;
+    for (int i = 1; i < 4; ++i)
+    {
+        if (A[i * 4 + i] > A[best * 4 + best])
+        {
+            best = i;
+        }
+    }
+    for (int i = 0; i < 4; ++i)
+    {
+        eigenvector[i] = V[i * 4 + best];
+    }
+}
+
+template <typename Scalar>
+__device__ bool scalarRepresentable(double value)
+{
+    if (!isfinite(value))
+    {
+        return false;
+    }
+    if constexpr (std::is_same_v<Scalar, float>)
+    {
+        return fabs(value) <= static_cast<double>(FLT_MAX);
+    }
+    else
+    {
+        return true;
+    }
+}
+
+template <typename Scalar>
+__device__ Scalar checkedDeviceScalar(double value, int& valid)
+{
+    if (!scalarRepresentable<Scalar>(value))
+    {
+        valid = 0;
+    }
+    return static_cast<Scalar>(value);
+}
+
+template <typename Scalar>
+__global__ void computeStepTransformFromStatsKernel(
+    const IcpStepTransformInput* input,
+    Scalar* step_transform,
+    IcpStepTransformRawResult* result)
+{
+    if (threadIdx.x != 0 || blockIdx.x != 0)
+    {
+        return;
+    }
+
+    const double* h = input->cross_covariance;
+    double N[16];
+    N[0] = h[0] + h[4] + h[8];
+    N[1] = h[5] - h[7];
+    N[2] = h[6] - h[2];
+    N[3] = h[1] - h[3];
+
+    N[4] = h[5] - h[7];
+    N[5] = h[0] - h[4] - h[8];
+    N[6] = h[1] + h[3];
+    N[7] = h[6] + h[2];
+
+    N[8] = h[6] - h[2];
+    N[9] = h[1] + h[3];
+    N[10] = -h[0] + h[4] - h[8];
+    N[11] = h[5] + h[7];
+
+    N[12] = h[1] - h[3];
+    N[13] = h[6] + h[2];
+    N[14] = h[5] + h[7];
+    N[15] = -h[0] - h[4] + h[8];
+
+    double q[4];
+    largestEigenvectorSymmetric4x4(N, q);
+    if (q[0] < 0.0)
+    {
+        for (double& value : q)
+        {
+            value = -value;
+        }
+    }
+
+    const double norm = sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    int valid = norm > 0.0 && isfinite(norm) ? 1 : 0;
+    const double inv_norm = valid ? 1.0 / norm : 1.0;
+    const double w = q[0] * inv_norm;
+    const double x = q[1] * inv_norm;
+    const double y = q[2] * inv_norm;
+    const double z = q[3] * inv_norm;
+
+    const double r00 = 1.0 - 2.0 * (y * y + z * z);
+    const double r01 = 2.0 * (x * y - w * z);
+    const double r02 = 2.0 * (x * z + w * y);
+    const double r10 = 2.0 * (x * y + w * z);
+    const double r11 = 1.0 - 2.0 * (x * x + z * z);
+    const double r12 = 2.0 * (y * z - w * x);
+    const double r20 = 2.0 * (x * z - w * y);
+    const double r21 = 2.0 * (y * z + w * x);
+    const double r22 = 1.0 - 2.0 * (x * x + y * y);
+
+    const double tx = input->tgt_centroid[0] -
+        (r00 * input->src_centroid[0] + r01 * input->src_centroid[1] + r02 * input->src_centroid[2]);
+    const double ty = input->tgt_centroid[1] -
+        (r10 * input->src_centroid[0] + r11 * input->src_centroid[1] + r12 * input->src_centroid[2]);
+    const double tz = input->tgt_centroid[2] -
+        (r20 * input->src_centroid[0] + r21 * input->src_centroid[1] + r22 * input->src_centroid[2]);
+
+    step_transform[0] = checkedDeviceScalar<Scalar>(r00, valid);
+    step_transform[1] = checkedDeviceScalar<Scalar>(r10, valid);
+    step_transform[2] = checkedDeviceScalar<Scalar>(r20, valid);
+    step_transform[3] = Scalar(0);
+    step_transform[4] = checkedDeviceScalar<Scalar>(r01, valid);
+    step_transform[5] = checkedDeviceScalar<Scalar>(r11, valid);
+    step_transform[6] = checkedDeviceScalar<Scalar>(r21, valid);
+    step_transform[7] = Scalar(0);
+    step_transform[8] = checkedDeviceScalar<Scalar>(r02, valid);
+    step_transform[9] = checkedDeviceScalar<Scalar>(r12, valid);
+    step_transform[10] = checkedDeviceScalar<Scalar>(r22, valid);
+    step_transform[11] = Scalar(0);
+    step_transform[12] = checkedDeviceScalar<Scalar>(tx, valid);
+    step_transform[13] = checkedDeviceScalar<Scalar>(ty, valid);
+    step_transform[14] = checkedDeviceScalar<Scalar>(tz, valid);
+    step_transform[15] = Scalar(1);
+
+    result->delta = fabs(r00 - 1.0) + fabs(r11 - 1.0) + fabs(r22 - 1.0)
+                  + fabs(r01) + fabs(r02) + fabs(r10)
+                  + fabs(r12) + fabs(r20) + fabs(r21)
+                  + fabs(tx) + fabs(ty) + fabs(tz);
+    result->valid = valid;
+}
+
 template <typename Scalar>
 IcpCorrespondenceStats<Scalar> makeHostStats(const RawIcpStats& raw)
 {
@@ -414,6 +633,85 @@ void transformPointsColumnMajorImpl(
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 }
 
+template <typename Scalar>
+void validateStepTransformStatsInput(const IcpCorrespondenceStats<Scalar>& stats)
+{
+    if (stats.active_count <= 0)
+    {
+        throw std::invalid_argument("ICP GPU: step stats must contain correspondences");
+    }
+
+    const double max_scalar = static_cast<double>(std::numeric_limits<Scalar>::max());
+    for (int c = 0; c < 3; ++c)
+    {
+        if (!std::isfinite(stats.src_centroid[c]) || std::abs(stats.src_centroid[c]) > max_scalar ||
+            !std::isfinite(stats.tgt_centroid[c]) || std::abs(stats.tgt_centroid[c]) > max_scalar)
+        {
+            throw std::runtime_error("ICP: correspondence centroid is not representable");
+        }
+    }
+    for (int idx = 0; idx < 9; ++idx)
+    {
+        if (!std::isfinite(stats.cross_covariance[idx]) ||
+            std::abs(stats.cross_covariance[idx]) > max_scalar)
+        {
+            throw std::runtime_error("ICP: cross-covariance is not representable");
+        }
+    }
+}
+
+template <typename Scalar>
+IcpStepTransformResult<Scalar> computeIcpStepTransformFromStatsImpl(
+    const IcpCorrespondenceStats<Scalar>& stats,
+    Scalar* d_step_transform,
+    IcpStepTransformWorkspace* workspace,
+    cudaStream_t stream)
+{
+    if (!d_step_transform)
+    {
+        throw std::invalid_argument("ICP GPU: step transform pointer must not be null");
+    }
+    validateStepTransformStatsInput(stats);
+
+    IcpStepTransformWorkspace local_workspace;
+    IcpStepTransformWorkspace& active_workspace = workspace ? *workspace : local_workspace;
+    active_workspace.reserve();
+
+    IcpStepTransformInput input{};
+    for (int c = 0; c < 3; ++c)
+    {
+        input.src_centroid[c] = stats.src_centroid[c];
+        input.tgt_centroid[c] = stats.tgt_centroid[c];
+    }
+    for (int idx = 0; idx < 9; ++idx)
+    {
+        input.cross_covariance[idx] = stats.cross_covariance[idx];
+    }
+
+    auto* d_input = reinterpret_cast<IcpStepTransformInput*>(active_workspace.inputStorage());
+    auto* d_result = reinterpret_cast<IcpStepTransformRawResult*>(active_workspace.resultStorage());
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(d_input, &input, sizeof(IcpStepTransformInput),
+                                        cudaMemcpyHostToDevice, stream));
+    computeStepTransformFromStatsKernel<Scalar><<<1, 1, 0, stream>>>(
+        d_input,
+        d_step_transform,
+        d_result);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    IcpStepTransformRawResult raw_result{};
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpStepTransformRawResult),
+                                        cudaMemcpyDeviceToHost, stream));
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    if (!raw_result.valid)
+    {
+        throw std::runtime_error("ICP: transform step is not representable");
+    }
+
+    IcpStepTransformResult<Scalar> result;
+    result.delta = static_cast<Scalar>(raw_result.delta);
+    return result;
+}
+
 } // namespace
 
 void IcpCorrespondenceStatsWorkspace::reserve(int source_count)
@@ -439,6 +737,18 @@ void IcpCorrespondenceStatsWorkspace::reserve(int source_count)
     }
 }
 
+void IcpStepTransformWorkspace::reserve()
+{
+    if (_input_storage.size() < sizeof(IcpStepTransformInput))
+    {
+        _input_storage.allocate(sizeof(IcpStepTransformInput));
+    }
+    if (_result_storage.size() < sizeof(IcpStepTransformRawResult))
+    {
+        _result_storage.allocate(sizeof(IcpStepTransformRawResult));
+    }
+}
+
 IcpCorrespondenceStats<float> computeIcpCorrespondenceStatsColumnMajor(
     const float* d_source_points,
     int source_count,
@@ -519,6 +829,40 @@ IcpCorrespondenceStats<double> computeIcpCorrespondenceStatsColumnMajor(
         d_correspondence_indices,
         &workspace,
         stream);
+}
+
+IcpStepTransformResult<float> computeIcpStepTransformFromStats(
+    const IcpCorrespondenceStats<float>& stats,
+    float* d_step_transform,
+    cudaStream_t stream)
+{
+    return computeIcpStepTransformFromStatsImpl(stats, d_step_transform, nullptr, stream);
+}
+
+IcpStepTransformResult<float> computeIcpStepTransformFromStats(
+    const IcpCorrespondenceStats<float>& stats,
+    float* d_step_transform,
+    IcpStepTransformWorkspace& workspace,
+    cudaStream_t stream)
+{
+    return computeIcpStepTransformFromStatsImpl(stats, d_step_transform, &workspace, stream);
+}
+
+IcpStepTransformResult<double> computeIcpStepTransformFromStats(
+    const IcpCorrespondenceStats<double>& stats,
+    double* d_step_transform,
+    cudaStream_t stream)
+{
+    return computeIcpStepTransformFromStatsImpl(stats, d_step_transform, nullptr, stream);
+}
+
+IcpStepTransformResult<double> computeIcpStepTransformFromStats(
+    const IcpCorrespondenceStats<double>& stats,
+    double* d_step_transform,
+    IcpStepTransformWorkspace& workspace,
+    cudaStream_t stream)
+{
+    return computeIcpStepTransformFromStatsImpl(stats, d_step_transform, &workspace, stream);
 }
 
 void multiplyTransform4x4(

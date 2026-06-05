@@ -4,7 +4,7 @@
 
 **Goal:** Move `IterativeClosestPoint<Scalar, GPU>` away from full CPU-staged point processing and keep the per-point ICP workload on GPU.
 
-**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences with shared-memory target tiling, accumulate centroid/covariance/residual stats on device with block-level reductions, update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. The small Kabsch SVD remains CPU-side while current points and transform accumulation stay GPU-resident.
+**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences with shared-memory target tiling, accumulate centroid/covariance/residual stats on device with block-level reductions, compute the rigid step transform with a GPU quaternion/Jacobi solver, update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. Reduced stats and small degeneracy/metric checks still synchronize to CPU while current points, step transforms, and transform accumulation stay GPU-resident.
 
 **Tech Stack:** C++17, CUDA runtime, PlaMatrix GPU `DenseMatrix`, Google Test, PlaPoint benchmark executable.
 
@@ -117,6 +117,20 @@
 - [x] Preallocate `alignGpu()` step-transform, accumulated-transform, and next-point buffers once before the ICP loop.
 - [x] Swap preallocated GPU buffers inside the loop instead of allocating new point and transform matrices per iteration.
 
+### Task 10: GPU Step Transform Solver
+
+**Files:**
+- Modify: `include/plapoint/gpu/icp.h`
+- Modify: `src/icp_gpu.cu`
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `README.md`
+
+- [x] Add a CUDA-only test requiring `computeIcpStepTransformFromStats()` to write a known rigid step transform to GPU memory.
+- [x] Implement reusable step-solver workspace and float/double API overloads.
+- [x] Compute the point-to-point ICP step rotation in CUDA with a Davenport quaternion matrix and 4x4 Jacobi eigen solve.
+- [x] Make `alignGpu()` use the GPU step solver and remove the private CPU Kabsch/SVD step helper.
+
 Verification evidence:
 
 - `git diff --check`: clean.
@@ -134,11 +148,15 @@ Verification evidence:
   failed as expected because `plapoint::gpu::transformPointsColumnMajor` did not exist yet.
 - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformPointsColumnMajorWritesCallerOwnedOutput:ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment`:
   9 targeted ICP GPU/stats tests passed after adding caller-owned point transform output and `alignGpu()` double buffering.
+- `cmake --build build-codex-cuda -j$(nproc)` after adding `StepTransformFromStatsWritesDeviceTransform`:
+  failed as expected because `plapoint::gpu::computeIcpStepTransformFromStats` did not exist yet.
+- `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPValidation.RecoversKnownTransform`:
+  11 targeted ICP GPU/stats/validation tests passed after switching `alignGpu()` to the GPU step solver.
 - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
 - `ctest --test-dir build-codex-cuda --output-on-failure`:
-  187 tests, 0 failed.
+  188 tests, 0 failed.
 - `./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CPU benchmark rows emitted through `cpu_icp_identity,512,1,32.1706`.
+  CPU benchmark rows emitted through `cpu_icp_identity,512,1,30.9959`.
 - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CUDA benchmark rows included `gpu_icp_identity,512,1,1.00398`.
+  CUDA benchmark rows included `gpu_icp_identity,512,1,0.40855`.

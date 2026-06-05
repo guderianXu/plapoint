@@ -55,6 +55,64 @@ plamatrix::DenseMatrix<float, plamatrix::Device::CPU> multiplyCpu4x4(
     return C;
 }
 
+plapoint::gpu::IcpCorrespondenceStats<float> makeMatchedStats(
+    const plamatrix::DenseMatrix<float, plamatrix::Device::CPU>& source,
+    const plamatrix::DenseMatrix<float, plamatrix::Device::CPU>& target)
+{
+    plapoint::gpu::IcpCorrespondenceStats<float> stats;
+    stats.active_count = static_cast<int>(source.rows());
+
+    double src_sum[3]{};
+    double tgt_sum[3]{};
+    double cross_sum[9]{};
+    double src_outer_sum[9]{};
+    double tgt_outer_sum[9]{};
+
+    for (plamatrix::Index row = 0; row < source.rows(); ++row)
+    {
+        const double src_values[3]{
+            static_cast<double>(source.getValue(row, 0)),
+            static_cast<double>(source.getValue(row, 1)),
+            static_cast<double>(source.getValue(row, 2))};
+        const double tgt_values[3]{
+            static_cast<double>(target.getValue(row, 0)),
+            static_cast<double>(target.getValue(row, 1)),
+            static_cast<double>(target.getValue(row, 2))};
+
+        for (int r = 0; r < 3; ++r)
+        {
+            src_sum[r] += src_values[r];
+            tgt_sum[r] += tgt_values[r];
+            const double residual = src_values[r] - tgt_values[r];
+            stats.residual_sq_sum += residual * residual;
+            for (int c = 0; c < 3; ++c)
+            {
+                cross_sum[r * 3 + c] += src_values[r] * tgt_values[c];
+                src_outer_sum[r * 3 + c] += src_values[r] * src_values[c];
+                tgt_outer_sum[r * 3 + c] += tgt_values[r] * tgt_values[c];
+            }
+        }
+    }
+
+    const double inv_count = 1.0 / static_cast<double>(stats.active_count);
+    for (int c = 0; c < 3; ++c)
+    {
+        stats.src_centroid[c] = src_sum[c] * inv_count;
+        stats.tgt_centroid[c] = tgt_sum[c] * inv_count;
+    }
+    for (int r = 0; r < 3; ++r)
+    {
+        for (int c = 0; c < 3; ++c)
+        {
+            const int idx = r * 3 + c;
+            stats.cross_covariance[idx] = cross_sum[idx] - src_sum[r] * tgt_sum[c] * inv_count;
+            stats.src_covariance[idx] = src_outer_sum[idx] - src_sum[r] * src_sum[c] * inv_count;
+            stats.tgt_covariance[idx] = tgt_outer_sum[idx] - tgt_sum[r] * tgt_sum[c] * inv_count;
+        }
+    }
+    return stats;
+}
+
 } // namespace
 
 TEST(ICPGpuPathTest, MultiplyTransform4x4UsesColumnMajorTransformComposition)
@@ -92,6 +150,48 @@ TEST(ICPGpuPathTest, MultiplyTransform4x4UsesColumnMajorTransformComposition)
         for (int col = 0; col < 4; ++col)
         {
             EXPECT_NEAR(C.getValue(row, col), expected.getValue(row, col), 1.0e-6f);
+        }
+    }
+}
+
+TEST(ICPGpuPathTest, StepTransformFromStatsWritesDeviceTransform)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto source = makeNonCollinearPoints();
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> expected(4, 4);
+    expected.fill(0.0f);
+    expected.setValue(0, 0, 0.0f);  expected.setValue(0, 1, -1.0f); expected.setValue(0, 2, 0.0f); expected.setValue(0, 3, 2.0f);
+    expected.setValue(1, 0, 1.0f);  expected.setValue(1, 1, 0.0f);  expected.setValue(1, 2, 0.0f); expected.setValue(1, 3, -1.0f);
+    expected.setValue(2, 0, 0.0f);  expected.setValue(2, 1, 0.0f);  expected.setValue(2, 2, 1.0f); expected.setValue(2, 3, 0.5f);
+    expected.setValue(3, 0, 0.0f);  expected.setValue(3, 1, 0.0f);  expected.setValue(3, 2, 0.0f); expected.setValue(3, 3, 1.0f);
+
+    auto target = plamatrix::transformPoints(expected, source);
+    const auto stats = makeMatchedStats(source, target);
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+
+    const auto result = plapoint::gpu::computeIcpStepTransformFromStats(stats, step_gpu.data());
+    auto step = step_gpu.toCpu();
+
+    float expected_delta = 0.0f;
+    for (int row = 0; row < 3; ++row)
+    {
+        for (int col = 0; col < 3; ++col)
+        {
+            expected_delta += std::abs(expected.getValue(row, col) - (row == col ? 1.0f : 0.0f));
+        }
+        expected_delta += std::abs(expected.getValue(row, 3));
+    }
+
+    EXPECT_NEAR(result.delta, expected_delta, 1.0e-5f);
+    for (int row = 0; row < 4; ++row)
+    {
+        for (int col = 0; col < 4; ++col)
+        {
+            EXPECT_NEAR(step.getValue(row, col), expected.getValue(row, col), 1.0e-5f);
         }
     }
 }

@@ -25,6 +25,13 @@ struct IcpCorrespondenceStats
     double residual_sq_sum = 0.0;
 };
 
+/// Small host-side result from the GPU ICP step-transform solver.
+template <typename Scalar>
+struct IcpStepTransformResult
+{
+    Scalar delta = Scalar(0);
+};
+
 /// Reusable device storage for ICP correspondence stats reductions.
 /// Reserve it once for a source size and pass it to repeated stats calls to avoid repeated allocations.
 class IcpCorrespondenceStatsWorkspace
@@ -48,6 +55,26 @@ private:
     DeviceBuffer<unsigned char> _partial_storage;
     DeviceBuffer<unsigned char> _stats_storage;
     int _partial_capacity = 0;
+};
+
+/// Reusable device storage for converting ICP correspondence stats into a 4x4 step transform.
+class IcpStepTransformWorkspace
+{
+public:
+    IcpStepTransformWorkspace() = default;
+
+    /// Reserve the fixed-size input and result buffers used by the GPU step solver.
+    void reserve();
+
+    /// Return the reusable step input storage pointer, or null before reserve().
+    unsigned char* inputStorage() { return _input_storage.get(); }
+
+    /// Return the reusable step result storage pointer, or null before reserve().
+    unsigned char* resultStorage() { return _result_storage.get(); }
+
+private:
+    DeviceBuffer<unsigned char> _input_storage;
+    DeviceBuffer<unsigned char> _result_storage;
 };
 
 /// Compute nearest-neighbor ICP correspondences for PlaMatrix column-major Nx3 device point arrays.
@@ -91,6 +118,34 @@ IcpCorrespondenceStats<double> computeIcpCorrespondenceStatsColumnMajor(
     double max_correspondence_distance,
     int* d_correspondence_indices,
     IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream = 0);
+
+/// Compute the 4x4 ICP step transform from correspondence stats and write it to device memory.
+/// The returned delta is copied to host after synchronizing the supplied stream.
+IcpStepTransformResult<float> computeIcpStepTransformFromStats(
+    const IcpCorrespondenceStats<float>& stats,
+    float* d_step_transform,
+    cudaStream_t stream = 0);
+
+/// Compute the 4x4 ICP step transform from correspondence stats using caller-owned reusable workspace.
+IcpStepTransformResult<float> computeIcpStepTransformFromStats(
+    const IcpCorrespondenceStats<float>& stats,
+    float* d_step_transform,
+    IcpStepTransformWorkspace& workspace,
+    cudaStream_t stream = 0);
+
+/// Compute the 4x4 ICP step transform from correspondence stats and write it to device memory.
+/// The returned delta is copied to host after synchronizing the supplied stream.
+IcpStepTransformResult<double> computeIcpStepTransformFromStats(
+    const IcpCorrespondenceStats<double>& stats,
+    double* d_step_transform,
+    cudaStream_t stream = 0);
+
+/// Compute the 4x4 ICP step transform from correspondence stats using caller-owned reusable workspace.
+IcpStepTransformResult<double> computeIcpStepTransformFromStats(
+    const IcpCorrespondenceStats<double>& stats,
+    double* d_step_transform,
+    IcpStepTransformWorkspace& workspace,
     cudaStream_t stream = 0);
 
 /// Multiply two 4x4 column-major device transforms and write C = A * B.
