@@ -116,6 +116,7 @@ std::atomic<int> g_icp_correspondence_stats_call_count{0};
 std::atomic<int> g_icp_residual_stats_call_count{0};
 std::atomic<std::uintptr_t> g_icp_first_stats_source_pointer{0};
 std::atomic<int> g_icp_step_transform_input_copy_count{0};
+std::atomic<int> g_icp_exact_pointwise_step_call_count{0};
 std::atomic<int> g_icp_host_synchronization_count{0};
 std::atomic<int> g_icp_target_spatial_grid_build_count{0};
 std::atomic<std::uintptr_t> g_icp_last_transform_output_pointer{0};
@@ -1496,6 +1497,27 @@ __global__ void setIdentityTransform4x4Kernel(Scalar* transform)
 }
 
 template <typename Scalar>
+__global__ void setExactPointwiseIdentityStepKernel(
+    const RawIcpStats* raw_stats,
+    Scalar* step_transform,
+    IcpStepTransformRawResult* result)
+{
+    const int idx = threadIdx.x;
+    if (idx < 16)
+    {
+        const int row = idx & 3;
+        const int col = idx >> 2;
+        step_transform[idx] = row == col ? Scalar(1) : Scalar(0);
+    }
+
+    if (idx == 0)
+    {
+        result->delta = 0.0;
+        result->valid = raw_stats->active_count > 0 && isfinite(raw_stats->residual_sq_sum) ? 1 : 0;
+    }
+}
+
+template <typename Scalar>
 __global__ void multiplyTransform4x4Kernel(const Scalar* A, const Scalar* B, Scalar* C)
 {
     const int idx = threadIdx.x;
@@ -1861,6 +1883,23 @@ bool launchExactPointwiseStats(
         d_stats);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
     return true;
+}
+
+template <typename Scalar>
+void launchExactPointwiseIdentityStep(
+    const RawIcpStats* d_stats,
+    Scalar* d_step_transform,
+    IcpStepTransformRawResult* d_result,
+    cudaStream_t stream)
+{
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_exact_pointwise_step_call_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    setExactPointwiseIdentityStepKernel<Scalar><<<1, 16, 0, stream>>>(
+        d_stats,
+        d_step_transform,
+        d_result);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
 }
 
 template <typename Scalar>
@@ -2616,11 +2655,11 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
 
     if (exact_pointwise_stats)
     {
-        computeStepTransformFromRawStatsKernel<Scalar><<<1, 1, 0, stream>>>(
+        launchExactPointwiseIdentityStep<Scalar>(
             d_stats,
             d_step_transform,
-            d_result);
-        PLAPOINT_CHECK_CUDA(cudaGetLastError());
+            d_result,
+            stream);
 
         PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
                                             cudaMemcpyDeviceToHost, stream));
@@ -2778,6 +2817,16 @@ void resetIcpStepTransformInputCopyCountForTesting()
 int icpStepTransformInputCopyCountForTesting()
 {
     return g_icp_step_transform_input_copy_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpExactPointwiseStepCallCountForTesting()
+{
+    g_icp_exact_pointwise_step_call_count.store(0, std::memory_order_relaxed);
+}
+
+int icpExactPointwiseStepCallCountForTesting()
+{
+    return g_icp_exact_pointwise_step_call_count.load(std::memory_order_relaxed);
 }
 
 void resetIcpHostSynchronizationCountForTesting()

@@ -1084,3 +1084,42 @@ Verification evidence:
   `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,5,2.42251`,
   `gpu_icp_stats_step_finite_radius_translation_cached_grid,100000,5,1.36473`, and
   `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,1.33488`.
+
+## Task 42: Exact Pointwise Identity Step Kernel
+
+- Goal: remove the generic raw-stats-to-step solver from the exact pointwise identity path. The previous Task 41
+  path already avoided the nearest-neighbor scan and used one host synchronization, but it still launched the
+  full Jacobi/quaternion step solver even though exact pointwise correspondences imply identity transform and
+  zero delta.
+- Implementation:
+  - Added `setExactPointwiseIdentityStepKernel`, which writes a column-major identity transform and reports
+    `delta = 0` directly from the exact raw stats validity.
+  - Added a launch helper so testing builds can count this fast-path step launch.
+  - Switched only `computeIcpStatsAndStepTransformColumnMajorImpl`'s exact pointwise branch to the identity-step
+    helper. The stats-only path and the normal nearest-neighbor/fallback step solver are unchanged.
+  - Extended `AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs` to assert the identity-step fast path is
+    used once, while full distance evaluations, target visits, and grid lookups remain zero.
+- `git diff --check` after the identity-step specialization:
+  clean.
+- `cmake --build build-codex-cuda -j$(nproc)` and
+  `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs:ICPGpuPathTest.CorrespondenceStatsAllowOmittedIndexOutput:ICPGpuPathTest.CorrespondenceStatsStillWriteRequestedIndexOutput:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPGpuPathTest.AlignSkipsFinalStatsForNonTerminalGpuIterations:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics`:
+  6 targeted exact/fallback/index/host-sync tests passed.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  41 targeted ICP GPU/stats/validation tests passed.
+- `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+  143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `ctest --test-dir build-codex-cuda --output-on-failure`:
+  218 tests, 0 failed.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+  `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+  rows included
+  `gpu_icp_identity,100000,5,0.280924`,
+  `gpu_icp_finite_radius,100000,5,1.01802`,
+  `gpu_icp_finite_radius_translation,100000,5,3.57185`,
+  `gpu_icp_finite_radius_translation_reuse,100000,5,2.95562`,
+  `gpu_icp_finite_radius_translation_reuse_output,100000,5,2.90308`,
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,5,2.4269`,
+  `gpu_icp_stats_step_finite_radius_translation_cached_grid,100000,5,1.37322`, and
+  `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,1.3357`.
+  The identity path improved from the previous 0.305878 ms record to 0.280924 ms on this run; the remaining cost is
+  now mostly exact stats scan/reduction, kernel launch overhead, and the required final host copy/synchronization.
