@@ -879,6 +879,8 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     auto* first_step_transform = icp._gpu_T_step->data();
     auto* first_acc_transform = icp._gpu_T_acc->data();
     auto* first_next_acc_transform = icp._gpu_next_T_acc->data();
+    auto* first_points_a = icp._gpu_points_a->data();
+    auto* first_points_b = icp._gpu_points_b->data();
     const int first_partial_capacity = icp._gpu_stats_workspace.partialCapacity();
 
     GpuCloud second_output;
@@ -894,6 +896,8 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     EXPECT_NE(first_step_transform, nullptr);
     EXPECT_NE(first_acc_transform, nullptr);
     EXPECT_NE(first_next_acc_transform, nullptr);
+    EXPECT_NE(first_points_a, nullptr);
+    EXPECT_NE(first_points_b, nullptr);
     EXPECT_EQ(icp._gpu_stats_workspace.partialStorage(), first_partial_storage);
     EXPECT_EQ(icp._gpu_stats_workspace.statsStorage(), first_stats_storage);
     EXPECT_EQ(icp._gpu_stats_workspace.targetSpatialGridKeysStorage(), first_grid_keys);
@@ -906,6 +910,12 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
         (icp._gpu_T_acc->data() == first_next_acc_transform &&
          icp._gpu_next_T_acc->data() == first_acc_transform);
     EXPECT_TRUE(transform_buffers_match);
+    EXPECT_EQ(icp._gpu_points_a->data(), first_points_a);
+    EXPECT_EQ(icp._gpu_points_b->data(), first_points_b);
+    EXPECT_NE(first_output.points().data(), first_points_a);
+    EXPECT_NE(first_output.points().data(), first_points_b);
+    EXPECT_NE(second_output.points().data(), first_points_a);
+    EXPECT_NE(second_output.points().data(), first_points_b);
     EXPECT_EQ(icp._gpu_stats_workspace.partialCapacity(), first_partial_capacity);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
 }

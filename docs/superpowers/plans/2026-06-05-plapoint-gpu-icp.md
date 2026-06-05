@@ -337,6 +337,20 @@
 - [x] Run targeted GPU ICP tests and benchmark smoke.
 - [x] Run full CPU/CUDA tests.
 
+### Task 27: Persistent GPU ICP Point Scratch Buffers
+
+**Files:**
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `README.md`
+- Modify: `docs/superpowers/plans/2026-06-05-plapoint-gpu-icp.md`
+
+- [x] Extend repeated-`align()` CUDA-only coverage to require reusable transformed-source point scratch buffers.
+- [x] Persist the two GPU transformed-source scratch matrices on the ICP object.
+- [x] Copy final aligned GPU points into an independent output cloud so output ownership remains stable while scratch buffers are reused.
+- [x] Run targeted GPU ICP tests and benchmark smoke.
+- [x] Run full CPU/CUDA tests.
+
 Verification evidence:
 
 - `git diff --check`: clean.
@@ -508,6 +522,28 @@ Verification evidence:
   CUDA benchmark rows included `gpu_icp_finite_radius_translation,512,1,0.363721` and
   `gpu_icp_finite_radius_translation_reuse,512,1,0.27001`.
 - `git diff --check` after persistent GPU ICP transform buffers:
+  clean.
+- `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+  142 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:
+  204 tests, 0 failed.
+- `cmake --build build-codex-cuda -j$(nproc)` after extending `AlignReusesGpuWorkspacesAcrossRepeatedCalls`
+  to check transformed-source point scratch buffers:
+  failed as expected because `IterativeClosestPoint<float, GPU>` had no persistent `_gpu_points_a`
+  or `_gpu_points_b` members.
+- `cmake --build build-codex-cuda -j$(nproc) &&
+  ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesGpuWorkspacesAcrossRepeatedCalls:ICPGpuPathTest.FinalTransformationDeviceIsAvailableAfterGpuAlign:ICPGpuPathTest.GpuAlignMaterializesCpuFinalTransformLazily:ICPGpuPathTest.AlignDoesNotPopulateGpuPointCpuCaches`:
+  4 targeted persistent point-scratch/final-transform tests passed after persisting GPU ICP point scratch buffers.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  28 targeted ICP GPU/stats/validation tests passed after persistent GPU ICP point scratch buffers.
+- `cmake --build build-codex-cpu-bench -j$(nproc)` and
+  `./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1` after persistent GPU ICP point scratch buffers:
+  CPU benchmark rows included `cpu_icp_finite_radius_translation_reuse,512,1,31.0539`.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+  `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1` after persistent GPU ICP point scratch buffers:
+  CUDA benchmark rows included `gpu_icp_finite_radius_translation,512,1,0.365436` and
+  `gpu_icp_finite_radius_translation_reuse,512,1,0.266467`.
+- `git diff --check` after persistent GPU ICP point scratch buffers:
   clean.
 - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.

@@ -344,10 +344,8 @@ private:
         const int target_count = checkedInt(_target->size(), "ICP: target point count exceeds int range");
 
         const Scalar* cur_points = _source->points().data();
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> buffer_a(source_count, 3);
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> buffer_b(source_count, 3);
-        Scalar* next_points = buffer_a.data();
-        bool current_points_in_a = false;
+        reserveGpuPointBuffers(source_count);
+        Scalar* next_points = _gpu_points_a->data();
         bool next_points_in_a = true;
 
         reserveGpuTransformBuffers();
@@ -407,9 +405,8 @@ private:
             std::swap(_gpu_T_acc, _gpu_next_T_acc);
             gpu::transformPointsColumnMajorAsync(_gpu_T_step->data(), cur_points, source_count, next_points, 0);
             cur_points = next_points;
-            current_points_in_a = next_points_in_a;
-            next_points_in_a = !current_points_in_a;
-            next_points = next_points_in_a ? buffer_a.data() : buffer_b.data();
+            next_points_in_a = !next_points_in_a;
+            next_points = next_points_in_a ? _gpu_points_a->data() : _gpu_points_b->data();
 
             const bool needs_final_stats = step_result.delta < _eps || iter + 1 == _max_iter;
             if (needs_final_stats)
@@ -445,9 +442,27 @@ private:
         }
 
         _final_T_gpu_valid = true;
-        output = current_points_in_a
-            ? PointCloudType(std::move(buffer_a))
-            : PointCloudType(std::move(buffer_b));
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> aligned_points(source_count, 3);
+        PLAPOINT_CHECK_CUDA(cudaMemcpy(
+            aligned_points.data(),
+            cur_points,
+            static_cast<std::size_t>(source_count) * 3u * sizeof(Scalar),
+            cudaMemcpyDeviceToDevice));
+        output = PointCloudType(std::move(aligned_points));
+    }
+
+    void reserveGpuPointBuffers(int point_count)
+    {
+        if (!_gpu_points_a || _gpu_points_a->rows() != point_count || _gpu_points_a->cols() != 3)
+        {
+            _gpu_points_a =
+                std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(point_count, 3);
+        }
+        if (!_gpu_points_b || _gpu_points_b->rows() != point_count || _gpu_points_b->cols() != 3)
+        {
+            _gpu_points_b =
+                std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(point_count, 3);
+        }
     }
 
     void reserveGpuTransformBuffers()
@@ -786,6 +801,8 @@ private:
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_T_acc;
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_next_T_acc;
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_T_step;
+    std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_points_a;
+    std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_points_b;
     bool _final_T_gpu_valid = false;
 #endif
     bool _converged = false;
