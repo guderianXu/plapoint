@@ -96,6 +96,7 @@ struct IcpTargetSpatialGrid
     const int* cell_counts = nullptr;
     int cell_count = 0;
     double cell_size = 0.0;
+    bool finite_cell_bounds = false;
     bool active = false;
 };
 
@@ -172,6 +173,14 @@ int icpStatsPartialCount(int source_count)
 int icpTargetTileCount(int target_count)
 {
     return (target_count + kIcpStatsBlockSize - 1) / kIcpStatsBlockSize;
+}
+
+bool icpGridCellBoundsAreFinite(double cell_size)
+{
+    constexpr double max_abs_grid_coordinate = static_cast<double>(INT_MAX) + 2.0;
+    return std::isfinite(cell_size) &&
+        cell_size > 0.0 &&
+        cell_size <= std::numeric_limits<double>::max() / max_abs_grid_coordinate;
 }
 
 __device__ void addRawIcpStats(RawIcpStats& dst, const RawIcpStats& src)
@@ -320,6 +329,21 @@ __device__ double distanceOutsideIcpGridCellAxis(double value, int cell_coordina
     return 0.0;
 }
 
+__device__ double distanceOutsideFiniteIcpGridCellAxis(double value, int cell_coordinate, double cell_size)
+{
+    const double cell_min = static_cast<double>(cell_coordinate) * cell_size;
+    const double cell_max = cell_min + cell_size;
+    if (value < cell_min)
+    {
+        return cell_min - value;
+    }
+    if (value > cell_max)
+    {
+        return value - cell_max;
+    }
+    return 0.0;
+}
+
 __device__ double minDistanceSqToIcpGridCell(
     double x,
     double y,
@@ -333,6 +357,32 @@ __device__ double minDistanceSqToIcpGridCell(
     return dx * dx + dy * dy + dz * dz;
 }
 
+__device__ double minDistanceSqToFiniteIcpGridCell(
+    double x,
+    double y,
+    double z,
+    const IcpGridCellKey& cell_key,
+    double cell_size)
+{
+    const double dx = distanceOutsideFiniteIcpGridCellAxis(x, cell_key.x, cell_size);
+    const double dy = distanceOutsideFiniteIcpGridCellAxis(y, cell_key.y, cell_size);
+    const double dz = distanceOutsideFiniteIcpGridCellAxis(z, cell_key.z, cell_size);
+    return dx * dx + dy * dy + dz * dz;
+}
+
+__device__ double minDistanceSqToIcpGridCell(
+    double x,
+    double y,
+    double z,
+    const IcpGridCellKey& cell_key,
+    double cell_size,
+    bool finite_cell_bounds)
+{
+    return finite_cell_bounds ?
+        minDistanceSqToFiniteIcpGridCell(x, y, z, cell_key, cell_size) :
+        minDistanceSqToIcpGridCell(x, y, z, cell_key, cell_size);
+}
+
 __device__ double minDistanceSqToIcpGridCellXY(
     double x,
     double y,
@@ -343,6 +393,31 @@ __device__ double minDistanceSqToIcpGridCellXY(
     const double dx = distanceOutsideIcpGridCellAxis(x, cell_x, cell_size);
     const double dy = distanceOutsideIcpGridCellAxis(y, cell_y, cell_size);
     return dx * dx + dy * dy;
+}
+
+__device__ double minDistanceSqToFiniteIcpGridCellXY(
+    double x,
+    double y,
+    int cell_x,
+    int cell_y,
+    double cell_size)
+{
+    const double dx = distanceOutsideFiniteIcpGridCellAxis(x, cell_x, cell_size);
+    const double dy = distanceOutsideFiniteIcpGridCellAxis(y, cell_y, cell_size);
+    return dx * dx + dy * dy;
+}
+
+__device__ double minDistanceSqToIcpGridCellXY(
+    double x,
+    double y,
+    int cell_x,
+    int cell_y,
+    double cell_size,
+    bool finite_cell_bounds)
+{
+    return finite_cell_bounds ?
+        minDistanceSqToFiniteIcpGridCellXY(x, y, cell_x, cell_y, cell_size) :
+        minDistanceSqToIcpGridCellXY(x, y, cell_x, cell_y, cell_size);
 }
 
 __device__ void recordAcceptedCorrespondence(
@@ -682,7 +757,8 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                     sy,
                     query_x,
                     query_y,
-                    target_grid.cell_size);
+                    target_grid.cell_size,
+                    target_grid.finite_cell_bounds);
                 if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq > best_dist_sq)
                 {
                     continue;
@@ -703,7 +779,8 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                         sy,
                         sz,
                         cell_key,
-                        target_grid.cell_size);
+                        target_grid.cell_size,
+                        target_grid.finite_cell_bounds);
                     if (min_cell_dist_sq > max_dist_sq || min_cell_dist_sq > best_dist_sq)
                     {
                         ++cell_idx;
@@ -1079,7 +1156,8 @@ __global__ void collectResidualStatsSpatialGridKernel(
                     sy,
                     query_x,
                     query_y,
-                    target_grid.cell_size);
+                    target_grid.cell_size,
+                    target_grid.finite_cell_bounds);
                 if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq >= best_dist_sq)
                 {
                     continue;
@@ -1100,7 +1178,8 @@ __global__ void collectResidualStatsSpatialGridKernel(
                         sy,
                         sz,
                         cell_key,
-                        target_grid.cell_size);
+                        target_grid.cell_size,
+                        target_grid.finite_cell_bounds);
                     if (min_cell_dist_sq > max_dist_sq || min_cell_dist_sq >= best_dist_sq)
                     {
                         ++cell_idx;
@@ -1414,7 +1493,8 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                     sy,
                     query_x,
                     query_y,
-                    target_grid.cell_size);
+                    target_grid.cell_size,
+                    target_grid.finite_cell_bounds);
                 if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq >= best_dist_sq)
                 {
                     continue;
@@ -1435,7 +1515,8 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                         sy,
                         sz,
                         cell_key,
-                        target_grid.cell_size);
+                        target_grid.cell_size,
+                        target_grid.finite_cell_bounds);
                     if (min_cell_dist_sq > max_dist_sq || min_cell_dist_sq >= best_dist_sq)
                     {
                         ++cell_idx;
@@ -2344,6 +2425,7 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     }
 
     const double cell_size = static_cast<double>(max_correspondence_distance);
+    const bool finite_cell_bounds = icpGridCellBoundsAreFinite(cell_size);
     workspace.reserveTargetSpatialGrid(target_count);
     auto* d_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridKeysStorage());
     auto* d_unique_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridUniqueKeysStorage());
@@ -2362,6 +2444,7 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     grid.cell_starts = d_cell_starts;
     grid.cell_counts = d_cell_counts;
     grid.cell_size = cell_size;
+    grid.finite_cell_bounds = finite_cell_bounds;
 
     if (workspace.targetSpatialGridCacheMatches(d_target_points, target_count, cell_size))
     {

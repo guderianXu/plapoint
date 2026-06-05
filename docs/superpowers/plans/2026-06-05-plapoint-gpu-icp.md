@@ -1411,3 +1411,43 @@ Verification evidence:
   `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,0.933812`.
   Compared with Task 48 on this machine, cached-grid stats+step improved from 1.00432 ms to 0.970505 ms, stats-only
   cached-grid improved from 0.97373 ms to 0.933812 ms, and the alignment reuse rows improved again.
+
+## Task 50: Use Fast Finite Cell-Bound Distance In Spatial Grid
+
+- Goal: reduce fixed per-cell pruning cost in the finite-radius spatial-grid ICP hot path. The previous
+  `distanceOutsideIcpGridCellAxis` guarded every cell-bound computation with `isfinite(cell_min/cell_max)`, which is
+  necessary only for extreme correspondence radii.
+- Implementation:
+  - Added `icpGridCellBoundsAreFinite(cell_size)` on the host side and stored the result in `IcpTargetSpatialGrid`.
+  - Added finite-bound distance helpers that skip repeated `isfinite` checks when all possible int cell bounds are
+    representable for the current radius.
+  - Routed correspondence, residual, and transform+residual spatial-grid pruning through the fast helpers for normal
+    finite radii, while retaining the old guarded path for extreme radii.
+  - Kept target-grid cache semantics unchanged; the fast/safe flag is derived from the current cell size when the
+    grid wrapper is prepared.
+- `git diff --check` after the finite cell-bound fast path:
+  clean.
+- `cmake --build build-codex-cuda -j$(nproc)` and
+  `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridXYLookupsBeforeSearch:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.ResidualStatsStopsSpatialGridLookupsAfterExactMatch:ICPGpuPathTest.CorrespondenceStatsLoadsSpatialGridTargetIndexOnlyForCompetitiveCandidates:ICPTest.CollectCorrespondencesKeepsFloatDistancesThatOverflowScalarDifference:ICPTest.AlignReportsUnrepresentableFloatStateInsteadOfProducingNonFiniteTransform:ICPTest.NonCollinearGeometryHandlesNearDoubleMaxFiniteScale`:
+  7 targeted spatial-grid/extreme-value tests passed.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  45 targeted ICP GPU/spatial-grid/validation tests passed.
+- `ctest --test-dir build-codex-cuda --output-on-failure`:
+  222 tests, 0 failed.
+- `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+  143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+  `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+  rows included
+  `gpu_icp_identity,100000,5,0.272964`,
+  `gpu_icp_finite_radius,100000,5,1.0101`,
+  `gpu_icp_finite_radius_translation,100000,5,2.78807`,
+  `gpu_icp_finite_radius_translation_reuse,100000,5,2.16523`,
+  `gpu_icp_finite_radius_translation_reuse_output,100000,5,2.12461`,
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,5,1.72318`,
+  `gpu_icp_stats_step_finite_radius_translation_new_workspace,100000,5,1.4626`,
+  `gpu_icp_stats_step_finite_radius_translation_cached_grid,100000,5,0.94603`, and
+  `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,0.91683`.
+  Compared with Task 49 on this machine, cached-grid stats+step improved from 0.970505 ms to 0.94603 ms, stats-only
+  cached-grid improved from 0.933812 ms to 0.91683 ms, and alignment reuse rows improved from 2.20899 ms to
+  2.16523 ms.
