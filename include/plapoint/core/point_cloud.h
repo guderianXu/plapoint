@@ -100,7 +100,29 @@ public:
 
     const MatrixType& points() const { return _points; }
 
-    MatrixType& points() { return _points; }
+    MatrixType& points()
+    {
+        invalidateCpuMirror();
+        return _points;
+    }
+
+    /// Return a CPU-readable view of points. GPU clouds cache the transfer until mutable points() is requested.
+    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& pointsCpu() const
+    {
+        if constexpr (Dev == plamatrix::Device::CPU)
+        {
+            return _points;
+        }
+        else
+        {
+            if (!_points_cpu_cache)
+            {
+                _points_cpu_cache = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(
+                    _points.toCpu());
+            }
+            return *_points_cpu_cache;
+        }
+    }
 
     template <plamatrix::Device D = Dev>
     std::enable_if_t<D == plamatrix::Device::CPU, PointCloud<Scalar, plamatrix::Device::GPU>>
@@ -287,6 +309,14 @@ private:
             return m.getValue(r, c);
     }
 
+    void invalidateCpuMirror()
+    {
+        if constexpr (Dev == plamatrix::Device::GPU)
+        {
+            _points_cpu_cache.reset();
+        }
+    }
+
     static void validateIndexMatrix(const plamatrix::DenseMatrix<int, Dev>& m,
                                     plamatrix::Index exclusive_limit,
                                     const char* label)
@@ -403,6 +433,7 @@ private:
     std::unique_ptr<plamatrix::DenseMatrix<int, Dev>> _faceTextureIndices;
     std::string _materialLibraryFile;
     std::string _textureImageFile;
+    mutable std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>> _points_cpu_cache;
 };
 
 } // namespace plapoint

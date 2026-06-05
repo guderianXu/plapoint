@@ -88,7 +88,7 @@ public:
         if constexpr (Dev == plamatrix::Device::GPU)
         {
             _host_points = std::make_shared<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(
-                _cloud->points().toCpu());
+                copyCpuMatrix(_cloud->pointsCpu()));
         }
         std::vector<int> indices(static_cast<std::size_t>(_cloud->size()));
         for (std::size_t i = 0; i < indices.size(); ++i)
@@ -207,9 +207,7 @@ public:
             const std::size_t dist_bytes =
                 detail::checkedByteCount<Scalar>(result_count, "KdTree: distance buffer");
 
-            gpu::DeviceBuffer<Scalar> d_queries(query_scalars);
-            gpu::DeviceBuffer<int> d_indices(result_count);
-            gpu::DeviceBuffer<Scalar> d_dists(result_count);
+            ensureGpuBatchWorkspace(query_scalars, result_count);
 
             // Copy host queries to GPU
             std::vector<Scalar> h_queries(query_scalars);
@@ -220,15 +218,15 @@ public:
                 h_queries[row_offset + 1] = queries(i, 1);
                 h_queries[row_offset + 2] = queries(i, 2);
             }
-            PLAPOINT_CHECK_CUDA(cudaMemcpy(d_queries.get(), h_queries.data(), query_bytes, cudaMemcpyHostToDevice));
+            PLAPOINT_CHECK_CUDA(cudaMemcpy(_gpu_queries.get(), h_queries.data(), query_bytes, cudaMemcpyHostToDevice));
 
             gpu::batchKnnDeviceColumnMajor(
-                d_queries.get(), M, _cloud->points().data(), N, K_use, d_indices.get(), d_dists.get());
+                _gpu_queries.get(), M, _cloud->points().data(), N, K_use, _gpu_indices.get(), _gpu_dists.get());
 
             std::vector<int>    flat_idx(result_count);
             std::vector<Scalar> flat_dst(result_count);
-            PLAPOINT_CHECK_CUDA(cudaMemcpy(flat_idx.data(), d_indices.get(), index_bytes, cudaMemcpyDeviceToHost));
-            PLAPOINT_CHECK_CUDA(cudaMemcpy(flat_dst.data(),  d_dists.get(),  dist_bytes, cudaMemcpyDeviceToHost));
+            PLAPOINT_CHECK_CUDA(cudaMemcpy(flat_idx.data(), _gpu_indices.get(), index_bytes, cudaMemcpyDeviceToHost));
+            PLAPOINT_CHECK_CUDA(cudaMemcpy(flat_dst.data(),  _gpu_dists.get(),  dist_bytes, cudaMemcpyDeviceToHost));
 
             for (int i = 0; i < M; ++i)
             {
@@ -431,9 +429,42 @@ private:
         return static_cast<int>(value);
     }
 
+#ifdef PLAPOINT_WITH_CUDA
+    void ensureGpuBatchWorkspace(std::size_t query_scalars, std::size_t result_count) const
+    {
+        if (_gpu_queries.size() < query_scalars)
+        {
+            _gpu_queries.allocate(query_scalars);
+        }
+        if (_gpu_indices.size() < result_count)
+        {
+            _gpu_indices.allocate(result_count);
+        }
+        if (_gpu_dists.size() < result_count)
+        {
+            _gpu_dists.allocate(result_count);
+        }
+    }
+#endif
+
+    static plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> copyCpuMatrix(
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& matrix)
+    {
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> copy(matrix.rows(), matrix.cols());
+        for (plamatrix::Index r = 0; r < matrix.rows(); ++r)
+            for (plamatrix::Index c = 0; c < matrix.cols(); ++c)
+                copy(r, c) = matrix(r, c);
+        return copy;
+    }
+
     std::shared_ptr<const PointCloudType> _cloud;
     std::shared_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>> _host_points;
     std::vector<KdTreeNode<Scalar>> _nodes;
+#ifdef PLAPOINT_WITH_CUDA
+    mutable gpu::DeviceBuffer<Scalar> _gpu_queries;
+    mutable gpu::DeviceBuffer<int> _gpu_indices;
+    mutable gpu::DeviceBuffer<Scalar> _gpu_dists;
+#endif
 };
 
 } // namespace search

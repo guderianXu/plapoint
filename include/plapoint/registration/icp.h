@@ -79,8 +79,8 @@ public:
         tree->build();
 
         int n = checkedInt(_source->size(), "ICP: source point count exceeds int range");
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> src = toCpuCopy(_source->points());
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> tgt = toCpuCopy(_target->points());
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> src = copyCpuMatrix(_source->pointsCpu());
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> tgt = copyCpuMatrix(_target->pointsCpu());
         validateFinitePointMatrix(src, "ICP: source cloud contains non-finite point");
 
         // Accumulate transform as 4x4 identity
@@ -284,21 +284,14 @@ private:
         return I;
     }
 
-    static plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> toCpuCopy(
-        const plamatrix::DenseMatrix<Scalar, Dev>& m)
+    static plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> copyCpuMatrix(
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& matrix)
     {
-        if constexpr (Dev == plamatrix::Device::CPU)
-        {
-            plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> copy(m.rows(), m.cols());
-            for (plamatrix::Index i = 0; i < m.rows(); ++i)
-                for (plamatrix::Index j = 0; j < m.cols(); ++j)
-                    copy(i, j) = m(i, j);
-            return copy;
-        }
-        else
-        {
-            return m.toCpu();
-        }
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> copy(matrix.rows(), matrix.cols());
+        for (plamatrix::Index i = 0; i < matrix.rows(); ++i)
+            for (plamatrix::Index j = 0; j < matrix.cols(); ++j)
+                copy(i, j) = matrix(i, j);
+        return copy;
     }
 
     static plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> multiply4x4(

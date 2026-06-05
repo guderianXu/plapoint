@@ -13,6 +13,7 @@ if(DEFINED PLAPOINT_BUILD_TESTS)
     set(_PLAPOINT_BUILD_TESTS_USER_DEFINED ON)
 endif()
 option(PLAPOINT_BUILD_TESTS "Build PlaPoint unit tests" OFF)
+option(PLAPOINT_BUILD_BENCHMARKS "Build PlaPoint benchmark executable" OFF)
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR
         AND DEFINED BUILD_TESTS
         AND NOT _PLAPOINT_BUILD_TESTS_USER_DEFINED)
@@ -107,6 +108,10 @@ if(PLAPOINT_BUILD_TESTS)
     add_subdirectory(test)
 endif()
 
+if(PLAPOINT_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
+endif()
+
 # Install
 include(GNUInstallDirs)
 install(TARGETS plapoint
@@ -144,3 +149,4 @@ if(PLAPOINT_WITH_CUDA)
     message(STATUS "  CUDA arch:    ${PLAPOINT_CUDA_ARCHITECTURES}")
 endif()
 message(STATUS "  Build tests:  ${PLAPOINT_BUILD_TESTS}")
+message(STATUS "  Benchmarks:   ${PLAPOINT_BUILD_BENCHMARKS}")

@@ -36,6 +36,40 @@ TEST(PointCloudTest, GpuTransfer)
     EXPECT_FLOAT_EQ(cpu_cloud_back.points().getValue(0, 0), 1.0f);
 }
 
+TEST(PointCloudTest, PointsCpuReturnsCpuPointStorage)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(2);
+    cloud.points().setValue(0, 0, 1.0f);
+    cloud.points().setValue(1, 0, 2.0f);
+
+    const auto& points = cloud.pointsCpu();
+    ASSERT_EQ(points.rows(), 2);
+    ASSERT_EQ(points.cols(), 3);
+    EXPECT_FLOAT_EQ(points.getValue(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(points.getValue(1, 0), 2.0f);
+}
+
+#ifdef PLAPOINT_WITH_CUDA
+TEST(PointCloudTest, GpuPointsCpuCachesAndInvalidatesOnMutablePointAccess)
+{
+    if (!hasCudaDevice()) { GTEST_SKIP() << "No CUDA device, skipping GPU point CPU cache test"; }
+
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cpu_cloud(2);
+    cpu_cloud.points().setValue(0, 0, 1.0f);
+    cpu_cloud.points().setValue(1, 0, 2.0f);
+    auto gpu_cloud = cpu_cloud.toGpu();
+
+    const auto& first = gpu_cloud.pointsCpu();
+    const auto& second = gpu_cloud.pointsCpu();
+    EXPECT_EQ(first.data(), second.data());
+    EXPECT_FLOAT_EQ(second.getValue(1, 0), 2.0f);
+
+    gpu_cloud.points().setValue(1, 0, 9.0f);
+    const auto& refreshed = gpu_cloud.pointsCpu();
+    EXPECT_FLOAT_EQ(refreshed.getValue(1, 0), 9.0f);
+}
+#endif
+
 TEST(PointCloudTest, MoveFromMatrix)
 {
     plamatrix::DenseMatrix<float, plamatrix::Device::CPU> mat(50, 3);

@@ -20,25 +20,16 @@ protected:
     {
         std::size_t n = this->_input->size();
         std::size_t out_n = (n + static_cast<std::size_t>(_step) - 1) / static_cast<std::size_t>(_step);
-        const auto* cpu_points = static_cast<const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>*>(nullptr);
-        auto staged_points = stagePointsIfNeeded();
-        if constexpr (Dev == plamatrix::Device::CPU)
-        {
-            cpu_points = &this->_input->points();
-        }
-        else
-        {
-            cpu_points = &staged_points;
-        }
+        const auto& cpu_points = this->_input->pointsCpu();
 
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(
             static_cast<plamatrix::Index>(out_n), 3);
         std::size_t out_idx = 0;
         for (std::size_t i = 0; i < n; i += static_cast<std::size_t>(_step))
         {
-            pts(static_cast<plamatrix::Index>(out_idx), 0) = (*cpu_points)(static_cast<plamatrix::Index>(i), 0);
-            pts(static_cast<plamatrix::Index>(out_idx), 1) = (*cpu_points)(static_cast<plamatrix::Index>(i), 1);
-            pts(static_cast<plamatrix::Index>(out_idx), 2) = (*cpu_points)(static_cast<plamatrix::Index>(i), 2);
+            pts(static_cast<plamatrix::Index>(out_idx), 0) = cpu_points(static_cast<plamatrix::Index>(i), 0);
+            pts(static_cast<plamatrix::Index>(out_idx), 1) = cpu_points(static_cast<plamatrix::Index>(i), 1);
+            pts(static_cast<plamatrix::Index>(out_idx), 2) = cpu_points(static_cast<plamatrix::Index>(i), 2);
             ++out_idx;
         }
         output = this->makeOutputCloud(std::move(pts));
@@ -51,14 +42,6 @@ protected:
     }
 
 private:
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> stagePointsIfNeeded() const
-    {
-        if constexpr (Dev == plamatrix::Device::CPU)
-            return plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(0, 3);
-        else
-            return this->_input->points().toCpu();
-    }
-
     int _step = 2;
 };
 

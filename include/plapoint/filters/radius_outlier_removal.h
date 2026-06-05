@@ -45,21 +45,12 @@ protected:
 
         std::size_t n = this->_input->size();
         std::vector<int> inliers;
-        const auto* cpu_points = static_cast<const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>*>(nullptr);
-        auto staged_points = stagePointsIfNeeded();
-        if constexpr (Dev == plamatrix::Device::CPU)
-        {
-            cpu_points = &this->_input->points();
-        }
-        else
-        {
-            cpu_points = &staged_points;
-        }
+        const auto& cpu_points = this->_input->pointsCpu();
         auto make_point = [&](int idx) -> plamatrix::Vec3<Scalar> {
             return {
-                (*cpu_points)(idx, 0),
-                (*cpu_points)(idx, 1),
-                (*cpu_points)(idx, 2)
+                cpu_points(idx, 0),
+                cpu_points(idx, 1),
+                cpu_points(idx, 2)
             };
         };
 
@@ -76,23 +67,15 @@ protected:
         for (std::size_t i = 0; i < inliers.size(); ++i)
         {
             int src = inliers[i];
-            pts(static_cast<plamatrix::Index>(i), 0) = (*cpu_points)(src, 0);
-            pts(static_cast<plamatrix::Index>(i), 1) = (*cpu_points)(src, 1);
-            pts(static_cast<plamatrix::Index>(i), 2) = (*cpu_points)(src, 2);
+            pts(static_cast<plamatrix::Index>(i), 0) = cpu_points(src, 0);
+            pts(static_cast<plamatrix::Index>(i), 1) = cpu_points(src, 1);
+            pts(static_cast<plamatrix::Index>(i), 2) = cpu_points(src, 2);
         }
         output = this->makeOutputCloud(std::move(pts));
         this->copyNormalsForIndices(inliers, output);
     }
 
 private:
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> stagePointsIfNeeded() const
-    {
-        if constexpr (Dev == plamatrix::Device::CPU)
-            return plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(0, 3);
-        else
-            return this->_input->points().toCpu();
-    }
-
     Scalar _radius = 0.1;
     int _min_pts = 2;
 };

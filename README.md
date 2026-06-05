@@ -5,7 +5,7 @@ GPU-accelerated point cloud processing library built on [PlaMatrix](https://gith
 ## Features
 
 ### Core
-- **PointCloud\<Scalar, Dev\>** — Nx3 point cloud with optional normals, GPU/CPU transfer via `toGpu()`/`toCpu()`
+- **PointCloud\<Scalar, Dev\>** — Nx3 point cloud with optional normals, GPU/CPU transfer via `toGpu()`/`toCpu()`, and cached CPU point views via `pointsCpu()`
 
 ### Spatial Indexing
 - **KdTree\<Scalar, Dev\>** — 3D kd-tree with KNN search (priority queue) and radius search
@@ -37,7 +37,10 @@ When `PLAPOINT_WITH_CUDA=ON`, CUDA Toolkit is available, and `plamatrix::plamatr
 was built with CUDA support:
 
 - **Brute-force KNN** (`src/knn_gpu.cu`) — batched K-nearest neighbor search with one CUDA block per query point, shared memory top-K reduction. `KdTree<Scalar, GPU>::batchNearestKSearch()` reads PlaMatrix column-major device buffers directly.
-- **CPU-staged GPU fallbacks** — filters, normal estimation/refinement, and ICP preserve GPU input/output types but stage data through CPU for algorithms that do not yet have production CUDA kernels.
+- **Stream-aware device KNN** — `gpu::batchKnnDeviceAsync()` and `gpu::batchKnnDeviceColumnMajorAsync()` launch on a caller-provided `cudaStream_t`; existing non-async overloads preserve synchronous behavior.
+- **VoxelGrid CUDA downsampling** (`src/voxel_grid_gpu.cu`) — GPU path computes voxel keys, sorts them, reduces centroids, and preserves deterministic sorted voxel-key output.
+- **CPU-staged GPU fallbacks** — remaining filters, normal estimation/refinement, and ICP preserve GPU input/output types but stage data through CPU for algorithms that do not yet have production CUDA kernels. GPU point staging is cached by `PointCloud::pointsCpu()` and invalidated when mutable `points()` is requested.
+- **VoxelGrid CPU hot path** — CPU path uses hash aggregation and sorted voxel keys to keep deterministic centroid order.
 - Explicit template instantiations in `src/plapoint.cpp` reduce downstream compile times
 
 ## Requirements
@@ -63,6 +66,28 @@ cmake .. -DBUILD_TESTS=ON -DCMAKE_PREFIX_PATH=/path/to/plamatrix/install
 cmake --build . -j$(nproc)
 ./test/plapoint_tests
 ```
+
+## Benchmarks
+
+PlaPoint includes a dependency-free benchmark executable for local performance baselines:
+
+```bash
+cmake -S . -B build-bench \
+  -DPLAPOINT_BUILD_BENCHMARKS=ON \
+  -DPLAPOINT_BUILD_TESTS=ON \
+  -DCMAKE_PREFIX_PATH=/path/to/plamatrix/install
+cmake --build build-bench -j$(nproc)
+./build-bench/benchmarks/plapoint_benchmarks --points 20000 --iterations 3
+```
+
+The benchmark prints CSV columns:
+
+```text
+benchmark,points,iterations,best_ms
+```
+
+Each benchmark case runs one unmeasured warm-up before reporting the best timed iteration.
+CUDA benchmark rows are emitted only when PlaPoint is built with `PLAPOINT_WITH_CUDA=ON` and a usable CUDA device is available.
 
 ## API Overview
 

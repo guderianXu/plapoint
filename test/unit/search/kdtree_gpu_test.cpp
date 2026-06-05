@@ -160,6 +160,55 @@ TEST(KdTreeGpuTest, BatchKnnDeviceColumnMajor)
     EXPECT_EQ(actual_dists, expected_dists);
 }
 
+TEST(KdTreeGpuTest, BatchKnnDeviceColumnMajorAsyncUsesCallerStream)
+{
+    SKIP_IF_NO_GPU();
+
+    using Scalar = float;
+    const int M = 2;
+    const int N = 4;
+    const int K = 2;
+
+    std::vector<Scalar> h_queries{
+        0.0f, 0.0f, 0.0f,
+        3.0f, 0.0f, 0.0f,
+    };
+    std::vector<Scalar> h_data_col_major{
+        0.0f, 1.0f, 2.0f, 3.0f,
+        0.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 0.0f,
+    };
+
+    plapoint::gpu::DeviceBuffer<Scalar> d_queries(static_cast<std::size_t>(M * 3));
+    plapoint::gpu::DeviceBuffer<Scalar> d_data(static_cast<std::size_t>(N * 3));
+    plapoint::gpu::DeviceBuffer<int> d_indices(static_cast<std::size_t>(M * K));
+    plapoint::gpu::DeviceBuffer<Scalar> d_dists(static_cast<std::size_t>(M * K));
+
+    cudaStream_t stream{};
+    PLAPOINT_CHECK_CUDA(cudaStreamCreate(&stream));
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+        d_queries.get(), h_queries.data(), M * 3 * sizeof(Scalar), cudaMemcpyHostToDevice, stream));
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+        d_data.get(), h_data_col_major.data(), N * 3 * sizeof(Scalar), cudaMemcpyHostToDevice, stream));
+
+    EXPECT_NO_THROW(plapoint::gpu::batchKnnDeviceColumnMajorAsync(
+        d_queries.get(), M, d_data.get(), N, K, d_indices.get(), d_dists.get(), stream));
+
+    std::vector<int> actual_indices(static_cast<std::size_t>(M * K));
+    std::vector<Scalar> actual_dists(static_cast<std::size_t>(M * K));
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+        actual_indices.data(), d_indices.get(), M * K * sizeof(int), cudaMemcpyDeviceToHost, stream));
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+        actual_dists.data(), d_dists.get(), M * K * sizeof(Scalar), cudaMemcpyDeviceToHost, stream));
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    PLAPOINT_CHECK_CUDA(cudaStreamDestroy(stream));
+
+    EXPECT_EQ(actual_indices[0], 0);
+    EXPECT_EQ(actual_indices[2], 3);
+    EXPECT_FLOAT_EQ(actual_dists[0], 0.0f);
+    EXPECT_FLOAT_EQ(actual_dists[2], 0.0f);
+}
+
 // ---- KdTree batchNearestKSearch with GPU-resident data ----
 TEST(KdTreeGpuTest, BatchKnnOnGpuCloud)
 {
@@ -201,6 +250,53 @@ TEST(KdTreeGpuTest, BatchKnnOnGpuCloud)
     for (int idx : results[0])
         if (idx == 0) { found_zero = true; break; }
     EXPECT_TRUE(found_zero);
+}
+
+TEST(KdTreeGpuTest, BatchNearestKSearchHandlesWorkspaceReuseAndGrowth)
+{
+    SKIP_IF_NO_GPU();
+
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> cpu_pts(16, 3);
+    for (int i = 0; i < 16; ++i)
+    {
+        cpu_pts.setValue(i, 0, Scalar(i));
+        cpu_pts.setValue(i, 1, 0);
+        cpu_pts.setValue(i, 2, 0);
+    }
+    Cloud cpu_cloud(std::move(cpu_pts));
+    auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
+
+    plapoint::search::KdTree<Scalar, plamatrix::Device::GPU> tree;
+    tree.setInputCloud(gpu_cloud);
+    tree.build();
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> small_queries(1, 3);
+    small_queries.setValue(0, 0, 0);
+    small_queries.setValue(0, 1, 0);
+    small_queries.setValue(0, 2, 0);
+    auto small_result = tree.batchNearestKSearch(small_queries, 1);
+    ASSERT_EQ(small_result.size(), 1u);
+    ASSERT_EQ(small_result[0].size(), 1u);
+    EXPECT_EQ(small_result[0][0], 0);
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> large_queries(8, 3);
+    for (int i = 0; i < 8; ++i)
+    {
+        large_queries.setValue(i, 0, Scalar(i * 2));
+        large_queries.setValue(i, 1, 0);
+        large_queries.setValue(i, 2, 0);
+    }
+    auto large_result = tree.batchNearestKSearch(large_queries, 1);
+    ASSERT_EQ(large_result.size(), 8u);
+    for (int i = 0; i < 8; ++i)
+    {
+        ASSERT_EQ(large_result[static_cast<std::size_t>(i)].size(), 1u);
+        EXPECT_EQ(large_result[static_cast<std::size_t>(i)][0], i * 2);
+    }
 }
 
 // ---- GPU-to-CPU result consistency ----

@@ -30,7 +30,7 @@ public:
         if (k <= 0) throw std::invalid_argument("NormalRefinement: k must be positive");
 
         int n = static_cast<int>(_cloud->size());
-        auto points_cpu = toCpuCopy(_cloud->points());
+        const auto& points_cpu = _cloud->pointsCpu();
         auto normals_cpu = toCpuCopy(*_cloud->normals());
 
         std::vector<plamatrix::Vec3<Scalar>> temp(static_cast<std::size_t>(n));
@@ -68,7 +68,7 @@ public:
     {
         if (!_cloud || !_cloud->hasNormals()) return;
         int n = static_cast<int>(_cloud->size());
-        auto points_cpu = toCpuCopy(_cloud->points());
+        const auto& points_cpu = _cloud->pointsCpu();
         auto normals_cpu = toCpuCopy(*_cloud->normals());
         for (int i = 0; i < n; ++i)
         {

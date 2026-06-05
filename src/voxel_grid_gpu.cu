@@ -1,131 +1,213 @@
-// Experimental CUDA kernel for voxel grid downsampling.
-//
-// This file is intentionally not part of the production plapoint target.
-// The reduction path below assumes keys and points have already been sorted
-// by voxel key; keep it out of src/CMakeLists.txt until a complete sort/reduce
-// pipeline is wired and covered by tests.
+#include <cmath>
+#include <stdexcept>
+#include <string>
 
 #include <cuda_runtime.h>
-#include <cfloat>
-#include <cstdint>
+#include <thrust/device_vector.h>
+#include <thrust/execution_policy.h>
+#include <thrust/functional.h>
+#include <thrust/iterator/constant_iterator.h>
+#include <thrust/iterator/discard_iterator.h>
+#include <thrust/iterator/transform_iterator.h>
+#include <thrust/reduce.h>
+#include <thrust/sequence.h>
+#include <thrust/sort.h>
+#include <thrust/transform.h>
 
-namespace plapoint {
-namespace gpu {
+#include <plapoint/gpu/cuda_check.h>
+#include <plapoint/gpu/voxel_grid.h>
 
-// Hash point to a linear voxel index based on leaf size
-template <typename Scalar>
-__device__ int64_t voxelIndex(Scalar x, Scalar y, Scalar z,
-                                Scalar lx, Scalar ly, Scalar lz,
-                                Scalar min_x, Scalar min_y, Scalar min_z)
+namespace plapoint
 {
-    int ix = static_cast<int>(floorf((x - min_x) / lx));
-    int iy = static_cast<int>(floorf((y - min_y) / ly));
-    int iz = static_cast<int>(floorf((z - min_z) / lz));
-    // Simple hash: combine with prime multipliers (fits in 64-bit)
-    return (static_cast<int64_t>(ix) * 73856093) ^
-           (static_cast<int64_t>(iy) * 19349663) ^
-           (static_cast<int64_t>(iz) * 83492791);
-}
-
-// Phase 1: compute voxel key for each point and find unique voxels
-template <typename Scalar>
-__global__ void computeVoxelKeys(
-    const Scalar* __restrict__ points,     // N x 3
-    int N,
-    Scalar lx, Scalar ly, Scalar lz,
-    Scalar min_x, Scalar min_y, Scalar min_z,
-    int64_t* __restrict__ keys)             // N
+namespace gpu
 {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= N) return;
 
-    Scalar x = points[i * 3];
-    Scalar y = points[i * 3 + 1];
-    Scalar z = points[i * 3 + 2];
-
-    keys[i] = voxelIndex(x, y, z, lx, ly, lz, min_x, min_y, min_z);
-}
-
-// Phase 2: accumulate centroids per voxel key using a two-pass approach
-// First, sort by key (uses thrust::sort_by_key, called from host)
-// Then, reduce by key to compute centroids
-
-template <typename Scalar>
-__global__ void reduceVoxelCentroids(
-    const Scalar* __restrict__ points,      // N x 3 (sorted by key)
-    const int64_t* __restrict__ keys,       // N (sorted)
-    int N,
-    Scalar* __restrict__ out_centroids,     // max_voxels x 3
-    int* __restrict__ out_counts,           // max_voxels
-    int* __restrict__ out_nvoxels)          // 1
+namespace
 {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= N) return;
 
-    // Each thread checks if its key differs from previous
-    bool is_first = (i == 0) || (keys[i] != keys[i - 1]);
+struct VoxelKey
+{
+    int x;
+    int y;
+    int z;
+};
 
-    if (is_first)
+struct VoxelKeyLess
+{
+    __host__ __device__ bool operator()(const VoxelKey& lhs, const VoxelKey& rhs) const
     {
-        // Start a new voxel: accumulate all points with this key
-        Scalar sum_x = 0, sum_y = 0, sum_z = 0;
-        int count = 0;
-        int64_t this_key = keys[i];
-        int j = i;
-        while (j < N && keys[j] == this_key)
-        {
-            sum_x += points[j * 3];
-            sum_y += points[j * 3 + 1];
-            sum_z += points[j * 3 + 2];
-            ++count;
-            ++j;
-        }
-
-        // Write centroid (use atomic to reserve output slot)
-        int slot = atomicAdd(out_nvoxels, 1);
-        out_centroids[slot * 3]     = sum_x / Scalar(count);
-        out_centroids[slot * 3 + 1] = sum_y / Scalar(count);
-        out_centroids[slot * 3 + 2] = sum_z / Scalar(count);
-        out_counts[slot] = count;
+        if (lhs.x != rhs.x) return lhs.x < rhs.x;
+        if (lhs.y != rhs.y) return lhs.y < rhs.y;
+        return lhs.z < rhs.z;
     }
-}
+};
 
-// Host launch function
-template <typename Scalar>
-cudaError_t voxelDownsample(
-    const Scalar* d_points, int N,
-    Scalar lx, Scalar ly, Scalar lz,
-    Scalar min_x, Scalar min_y, Scalar min_z,
-    Scalar* d_out_centroids, int* d_out_counts,
-    int* d_out_nvoxels,
-    int64_t* d_keys,
-    cudaStream_t stream)
+struct VoxelKeyEqual
 {
-    int block = 256;
-    int grid = (N + block - 1) / block;
+    __host__ __device__ bool operator()(const VoxelKey& lhs, const VoxelKey& rhs) const
+    {
+        return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
+    }
+};
 
-    // Phase 1: compute keys
-    computeVoxelKeys<<<grid, block, 0, stream>>>(
-        d_points, N, lx, ly, lz, min_x, min_y, min_z, d_keys);
+template <typename Scalar>
+struct ComputeVoxelKey
+{
+    const Scalar* points;
+    int point_count;
+    Scalar leaf_x;
+    Scalar leaf_y;
+    Scalar leaf_z;
 
-    // Phase 2: reduce by key (requires sorted keys)
-    // Note: caller must sort by key first (use thrust::sort_by_key or cub)
-    // For now, this assumes keys are already sorted (for simplicity)
-    cudaMemsetAsync(d_out_nvoxels, 0, sizeof(int), stream);
-    reduceVoxelCentroids<<<grid, block, 0, stream>>>(
-        d_points, d_keys, N, d_out_centroids, d_out_counts, d_out_nvoxels);
+    __host__ __device__ VoxelKey operator()(int idx) const
+    {
+        const Scalar x = points[idx];
+        const Scalar y = points[point_count + idx];
+        const Scalar z = points[2 * point_count + idx];
+        return {
+            static_cast<int>(floor(static_cast<double>(x / leaf_x))),
+            static_cast<int>(floor(static_cast<double>(y / leaf_y))),
+            static_cast<int>(floor(static_cast<double>(z / leaf_z)))
+        };
+    }
+};
 
-    return cudaGetLastError();
+template <typename Scalar, int Dim>
+struct GatherCoordinate
+{
+    const Scalar* points;
+    int point_count;
+
+    __host__ __device__ Scalar operator()(int idx) const
+    {
+        return points[static_cast<int>(Dim) * point_count + idx];
+    }
+};
+
+template <typename Scalar>
+__global__ void writeCentroidsColumnMajor(
+    const Scalar* sum_x,
+    const Scalar* sum_y,
+    const Scalar* sum_z,
+    const int* counts,
+    int voxel_count,
+    Scalar* out_points)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= voxel_count)
+    {
+        return;
+    }
+
+    const Scalar inv_count = Scalar(1) / static_cast<Scalar>(counts[idx]);
+    out_points[idx] = sum_x[idx] * inv_count;
+    out_points[voxel_count + idx] = sum_y[idx] * inv_count;
+    out_points[2 * voxel_count + idx] = sum_z[idx] * inv_count;
 }
 
-// Explicit instantiations
-template cudaError_t voxelDownsample<float>(
-    const float*, int, float, float, float, float, float, float,
-    float*, int*, int*, int64_t*, cudaStream_t);
+template <typename Scalar>
+int voxelGridDownsampleColumnMajorImpl(const Scalar* d_points, int N,
+                                       Scalar leaf_x, Scalar leaf_y, Scalar leaf_z,
+                                       Scalar* d_out_points,
+                                       cudaStream_t stream)
+{
+    if (N <= 0)
+    {
+        return 0;
+    }
+    if (!d_points || !d_out_points)
+    {
+        throw std::invalid_argument("VoxelGrid GPU: device pointers must not be null");
+    }
+    if (!std::isfinite(leaf_x) || !std::isfinite(leaf_y) || !std::isfinite(leaf_z) ||
+        leaf_x <= Scalar(0) || leaf_y <= Scalar(0) || leaf_z <= Scalar(0))
+    {
+        throw std::invalid_argument("VoxelGrid GPU: leaf size must be positive");
+    }
 
-template cudaError_t voxelDownsample<double>(
-    const double*, int, double, double, double, double, double, double,
-    double*, int*, int*, int64_t*, cudaStream_t);
+    auto policy = thrust::cuda::par.on(stream);
+    thrust::device_vector<int> indices(static_cast<std::size_t>(N));
+    thrust::device_vector<VoxelKey> keys(static_cast<std::size_t>(N));
+    thrust::sequence(policy, indices.begin(), indices.end(), 0);
+    thrust::transform(policy, indices.begin(), indices.end(), keys.begin(),
+                      ComputeVoxelKey<Scalar>{d_points, N, leaf_x, leaf_y, leaf_z});
+    thrust::sort_by_key(policy, keys.begin(), keys.end(), indices.begin(), VoxelKeyLess{});
+
+    thrust::device_vector<VoxelKey> unique_keys(static_cast<std::size_t>(N));
+    thrust::device_vector<Scalar> sum_x(static_cast<std::size_t>(N));
+    thrust::device_vector<Scalar> sum_y(static_cast<std::size_t>(N));
+    thrust::device_vector<Scalar> sum_z(static_cast<std::size_t>(N));
+    thrust::device_vector<int> counts(static_cast<std::size_t>(N));
+
+    auto x_values = thrust::make_transform_iterator(
+        indices.begin(), GatherCoordinate<Scalar, 0>{d_points, N});
+    auto y_values = thrust::make_transform_iterator(
+        indices.begin(), GatherCoordinate<Scalar, 1>{d_points, N});
+    auto z_values = thrust::make_transform_iterator(
+        indices.begin(), GatherCoordinate<Scalar, 2>{d_points, N});
+
+    auto reduced_x = thrust::reduce_by_key(policy,
+                                           keys.begin(), keys.end(),
+                                           x_values,
+                                           unique_keys.begin(),
+                                           sum_x.begin(),
+                                           VoxelKeyEqual{},
+                                           thrust::plus<Scalar>{});
+    const int voxel_count = static_cast<int>(reduced_x.first - unique_keys.begin());
+
+    thrust::reduce_by_key(policy,
+                          keys.begin(), keys.end(),
+                          y_values,
+                          thrust::make_discard_iterator(),
+                          sum_y.begin(),
+                          VoxelKeyEqual{},
+                          thrust::plus<Scalar>{});
+    thrust::reduce_by_key(policy,
+                          keys.begin(), keys.end(),
+                          z_values,
+                          thrust::make_discard_iterator(),
+                          sum_z.begin(),
+                          VoxelKeyEqual{},
+                          thrust::plus<Scalar>{});
+    thrust::reduce_by_key(policy,
+                          keys.begin(), keys.end(),
+                          thrust::make_constant_iterator(1),
+                          thrust::make_discard_iterator(),
+                          counts.begin(),
+                          VoxelKeyEqual{},
+                          thrust::plus<int>{});
+
+    constexpr int block_size = 256;
+    const int grid_size = (voxel_count + block_size - 1) / block_size;
+    writeCentroidsColumnMajor<Scalar><<<grid_size, block_size, 0, stream>>>(
+        thrust::raw_pointer_cast(sum_x.data()),
+        thrust::raw_pointer_cast(sum_y.data()),
+        thrust::raw_pointer_cast(sum_z.data()),
+        thrust::raw_pointer_cast(counts.data()),
+        voxel_count,
+        d_out_points);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    return voxel_count;
+}
+
+} // namespace
+
+int voxelGridDownsampleColumnMajor(const float* d_points, int N,
+                                   float leaf_x, float leaf_y, float leaf_z,
+                                   float* d_out_points,
+                                   cudaStream_t stream)
+{
+    return voxelGridDownsampleColumnMajorImpl<float>(d_points, N, leaf_x, leaf_y, leaf_z, d_out_points, stream);
+}
+
+int voxelGridDownsampleColumnMajor(const double* d_points, int N,
+                                   double leaf_x, double leaf_y, double leaf_z,
+                                   double* d_out_points,
+                                   cudaStream_t stream)
+{
+    return voxelGridDownsampleColumnMajorImpl<double>(d_points, N, leaf_x, leaf_y, leaf_z, d_out_points, stream);
+}
 
 } // namespace gpu
 } // namespace plapoint

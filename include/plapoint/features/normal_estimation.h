@@ -39,16 +39,15 @@ public:
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(n, 3);
         normals.fill(0);
 
-        std::vector<Scalar> pts_host(static_cast<std::size_t>(n * 3));
-        copyPointsToHost(pts_host);
+        const auto& points_cpu = _cloud->pointsCpu();
 
         // Build queries for batch KNN
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(n, 3);
         for (int i = 0; i < n; ++i)
         {
-            queries(i, 0) = pts_host[static_cast<std::size_t>(i * 3)];
-            queries(i, 1) = pts_host[static_cast<std::size_t>(i * 3 + 1)];
-            queries(i, 2) = pts_host[static_cast<std::size_t>(i * 3 + 2)];
+            queries(i, 0) = points_cpu(i, 0);
+            queries(i, 1) = points_cpu(i, 1);
+            queries(i, 2) = points_cpu(i, 2);
         }
 
         // Batch KNN (uses GPU brute-force when Dev == GPU)
@@ -65,9 +64,9 @@ public:
             for (int j = 0; j < nn; ++j)
             {
                 int idx = neighbors[static_cast<std::size_t>(j)];
-                nb(j, 0) = pts_host[static_cast<std::size_t>(idx * 3)];
-                nb(j, 1) = pts_host[static_cast<std::size_t>(idx * 3 + 1)];
-                nb(j, 2) = pts_host[static_cast<std::size_t>(idx * 3 + 2)];
+                nb(j, 0) = points_cpu(idx, 0);
+                nb(j, 1) = points_cpu(idx, 1);
+                nb(j, 2) = points_cpu(idx, 2);
             }
 
             auto cov = plamatrix::covarianceMatrix(nb);
@@ -92,38 +91,6 @@ public:
     }
 
 private:
-    void copyPointsToHost(std::vector<Scalar>& host) const
-    {
-        if constexpr (Dev == plamatrix::Device::CPU)
-        {
-            int n = static_cast<int>(_cloud->size());
-            for (int i = 0; i < n; ++i)
-            {
-                host[static_cast<std::size_t>(i * 3)]     = _cloud->points()(i, 0);
-                host[static_cast<std::size_t>(i * 3 + 1)] = _cloud->points()(i, 1);
-                host[static_cast<std::size_t>(i * 3 + 2)] = _cloud->points()(i, 2);
-            }
-        }
-        else
-        {
-#ifndef PLAPOINT_WITH_CUDA
-            throw std::runtime_error("PlaPoint was built without CUDA support");
-#else
-            const int n = static_cast<int>(_cloud->size());
-            std::vector<Scalar> col_major(static_cast<std::size_t>(n * 3));
-            PLAPOINT_CHECK_CUDA(cudaMemcpy(col_major.data(), _cloud->points().data(),
-                                           static_cast<std::size_t>(n * 3) * sizeof(Scalar),
-                                           cudaMemcpyDeviceToHost));
-            for (int i = 0; i < n; ++i)
-            {
-                host[static_cast<std::size_t>(i * 3)]     = col_major[static_cast<std::size_t>(i)];
-                host[static_cast<std::size_t>(i * 3 + 1)] = col_major[static_cast<std::size_t>(n + i)];
-                host[static_cast<std::size_t>(i * 3 + 2)] = col_major[static_cast<std::size_t>(2 * n + i)];
-            }
-#endif
-        }
-    }
-
     std::shared_ptr<const PointCloudType> _cloud;
     std::shared_ptr<search::KdTree<Scalar, Dev>> _tree;
     int _k = 10;

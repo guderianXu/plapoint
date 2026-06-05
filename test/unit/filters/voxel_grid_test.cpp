@@ -12,6 +12,22 @@ static bool hasCudaDeviceForVoxelGrid()
 }
 #endif
 
+namespace
+{
+
+plamatrix::DenseMatrix<float, plamatrix::Device::CPU> makeSignedVoxelPoints()
+{
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> points(5, 3);
+    points.setValue(0, 0, 1.2f); points.setValue(0, 1, 0.0f); points.setValue(0, 2, 0.0f);
+    points.setValue(1, 0, -0.8f); points.setValue(1, 1, 0.0f); points.setValue(1, 2, 0.0f);
+    points.setValue(2, 0, 0.2f); points.setValue(2, 1, 0.0f); points.setValue(2, 2, 0.0f);
+    points.setValue(3, 0, -1.2f); points.setValue(3, 1, 0.0f); points.setValue(3, 2, 0.0f);
+    points.setValue(4, 0, 1.8f); points.setValue(4, 1, 0.0f); points.setValue(4, 2, 0.0f);
+    return points;
+}
+
+} // namespace
+
 TEST(VoxelGridTest, DownsamplesUniformGrid)
 {
     using Scalar = float;
@@ -61,6 +77,28 @@ TEST(VoxelGridTest, PreservesSinglePoint)
     EXPECT_EQ(output.size(), 1u);
 }
 
+TEST(VoxelGridTest, OutputsCentroidsInDeterministicVoxelKeyOrder)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto mat = makeSignedVoxelPoints();
+    auto cloud = std::make_shared<Cloud>(std::move(mat));
+
+    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> vg;
+    vg.setInputCloud(cloud);
+    vg.setLeafSize(1.0f, 1.0f, 1.0f);
+
+    Cloud output;
+    vg.filter(output);
+
+    ASSERT_EQ(output.size(), 4u);
+    EXPECT_FLOAT_EQ(output.points().getValue(0, 0), -1.2f);
+    EXPECT_FLOAT_EQ(output.points().getValue(1, 0), -0.8f);
+    EXPECT_FLOAT_EQ(output.points().getValue(2, 0), 0.2f);
+    EXPECT_FLOAT_EQ(output.points().getValue(3, 0), 1.5f);
+}
+
 TEST(VoxelGridTest, ThrowsOnZeroLeafSize)
 {
     plapoint::VoxelGrid<float, plamatrix::Device::CPU> vg;
@@ -98,5 +136,44 @@ TEST(VoxelGridTest, GpuInputProducesGpuOutput)
     ASSERT_EQ(cpu_output.size(), 2u);
     EXPECT_FLOAT_EQ(cpu_output.points().getValue(0, 0), 0.1f);
     EXPECT_FLOAT_EQ(cpu_output.points().getValue(1, 0), 2.0f);
+}
+
+TEST(VoxelGridTest, GpuMatchesCpuForNegativeCoordinatesAndSortedOutput)
+{
+    if (!hasCudaDeviceForVoxelGrid())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU voxel grid test";
+    }
+
+    using Scalar = float;
+    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+
+    auto cpu_cloud = std::make_shared<CpuCloud>(makeSignedVoxelPoints());
+    auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud->toGpu());
+
+    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> cpu_vg;
+    cpu_vg.setInputCloud(cpu_cloud);
+    cpu_vg.setLeafSize(1.0f, 1.0f, 1.0f);
+    CpuCloud cpu_output;
+    cpu_vg.filter(cpu_output);
+
+    plapoint::VoxelGrid<Scalar, plamatrix::Device::GPU> gpu_vg;
+    gpu_vg.setInputCloud(gpu_cloud);
+    gpu_vg.setLeafSize(1.0f, 1.0f, 1.0f);
+    GpuCloud gpu_output;
+    gpu_vg.filter(gpu_output);
+    auto gpu_output_cpu = gpu_output.toCpu();
+
+    ASSERT_EQ(gpu_output_cpu.size(), cpu_output.size());
+    for (std::size_t i = 0; i < cpu_output.size(); ++i)
+    {
+        EXPECT_FLOAT_EQ(gpu_output_cpu.points().getValue(static_cast<plamatrix::Index>(i), 0),
+                        cpu_output.points().getValue(static_cast<plamatrix::Index>(i), 0));
+        EXPECT_FLOAT_EQ(gpu_output_cpu.points().getValue(static_cast<plamatrix::Index>(i), 1),
+                        cpu_output.points().getValue(static_cast<plamatrix::Index>(i), 1));
+        EXPECT_FLOAT_EQ(gpu_output_cpu.points().getValue(static_cast<plamatrix::Index>(i), 2),
+                        cpu_output.points().getValue(static_cast<plamatrix::Index>(i), 2));
+    }
 }
 #endif
