@@ -298,11 +298,11 @@ public:
         {
             if (!_final_T_cpu_valid)
             {
-                if (!_final_T_gpu)
+                if (!_final_T_gpu_valid || !_gpu_T_acc)
                 {
                     throw std::runtime_error("ICP: final transformation is not available");
                 }
-                _final_T = _final_T_gpu->toCpu();
+                _final_T = _gpu_T_acc->toCpu();
                 _final_T_cpu_valid = true;
             }
         }
@@ -317,11 +317,11 @@ public:
     std::enable_if_t<D == plamatrix::Device::GPU, const plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>&>
     getFinalTransformationDevice() const
     {
-        if (!_final_T_gpu)
+        if (!_final_T_gpu_valid || !_gpu_T_acc)
         {
             throw std::runtime_error("ICP: GPU final transformation is not available");
         }
-        return *_final_T_gpu;
+        return *_gpu_T_acc;
     }
 #endif
 
@@ -350,10 +350,8 @@ private:
         bool current_points_in_a = false;
         bool next_points_in_a = true;
 
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> T_acc_gpu(4, 4);
-        gpu::setIdentityTransform4x4Async(T_acc_gpu.data(), 0);
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> next_T_acc_gpu(4, 4);
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> T_step_gpu(4, 4);
+        reserveGpuTransformBuffers();
+        gpu::setIdentityTransform4x4Async(_gpu_T_acc->data(), 0);
         _gpu_stats_workspace.reserve(source_count);
         _gpu_step_workspace.reserve();
 
@@ -361,7 +359,7 @@ private:
         _fitness_score = Scalar(0);
         _final_rmse = std::numeric_limits<Scalar>::infinity();
         _final_T_cpu_valid = false;
-        _final_T_gpu.reset();
+        _final_T_gpu_valid = false;
 
         for (int iter = 0; iter < _max_iter; ++iter)
         {
@@ -372,7 +370,7 @@ private:
                 target_count,
                 _max_corr_dist,
                 _gpu_stats_workspace,
-                T_step_gpu.data(),
+                _gpu_T_step->data(),
                 _gpu_step_workspace);
             const auto& stats = stats_and_step.stats;
             if (stats.invalid_source_count > 0)
@@ -401,9 +399,13 @@ private:
                 throw std::runtime_error("ICP: transform step is not representable");
             }
             const auto step_result = stats_and_step.step;
-            gpu::multiplyTransform4x4Async(T_step_gpu.data(), T_acc_gpu.data(), next_T_acc_gpu.data(), 0);
-            std::swap(T_acc_gpu, next_T_acc_gpu);
-            gpu::transformPointsColumnMajorAsync(T_step_gpu.data(), cur_points, source_count, next_points, 0);
+            gpu::multiplyTransform4x4Async(
+                _gpu_T_step->data(),
+                _gpu_T_acc->data(),
+                _gpu_next_T_acc->data(),
+                0);
+            std::swap(_gpu_T_acc, _gpu_next_T_acc);
+            gpu::transformPointsColumnMajorAsync(_gpu_T_step->data(), cur_points, source_count, next_points, 0);
             cur_points = next_points;
             current_points_in_a = next_points_in_a;
             next_points_in_a = !current_points_in_a;
@@ -442,11 +444,26 @@ private:
             }
         }
 
-        _final_T_gpu =
-            std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(std::move(T_acc_gpu));
+        _final_T_gpu_valid = true;
         output = current_points_in_a
             ? PointCloudType(std::move(buffer_a))
             : PointCloudType(std::move(buffer_b));
+    }
+
+    void reserveGpuTransformBuffers()
+    {
+        if (!_gpu_T_acc || _gpu_T_acc->rows() != 4 || _gpu_T_acc->cols() != 4)
+        {
+            _gpu_T_acc = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
+        }
+        if (!_gpu_next_T_acc || _gpu_next_T_acc->rows() != 4 || _gpu_next_T_acc->cols() != 4)
+        {
+            _gpu_next_T_acc = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
+        }
+        if (!_gpu_T_step || _gpu_T_step->rows() != 4 || _gpu_T_step->cols() != 4)
+        {
+            _gpu_T_step = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
+        }
     }
 
     void updateResidualMetricsFromGpuStats(
@@ -766,7 +783,10 @@ private:
 #ifdef PLAPOINT_WITH_CUDA
     gpu::IcpCorrespondenceStatsWorkspace _gpu_stats_workspace;
     gpu::IcpStepTransformWorkspace _gpu_step_workspace;
-    std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _final_T_gpu;
+    std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_T_acc;
+    std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_next_T_acc;
+    std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_T_step;
+    bool _final_T_gpu_valid = false;
 #endif
     bool _converged = false;
 };

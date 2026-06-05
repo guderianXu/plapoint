@@ -876,6 +876,9 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     auto* first_grid_keys = icp._gpu_stats_workspace.targetSpatialGridKeysStorage();
     auto* first_grid_indices = icp._gpu_stats_workspace.targetSpatialGridIndicesStorage();
     auto* first_step_result = icp._gpu_step_workspace.resultStorage();
+    auto* first_step_transform = icp._gpu_T_step->data();
+    auto* first_acc_transform = icp._gpu_T_acc->data();
+    auto* first_next_acc_transform = icp._gpu_next_T_acc->data();
     const int first_partial_capacity = icp._gpu_stats_workspace.partialCapacity();
 
     GpuCloud second_output;
@@ -888,11 +891,21 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     EXPECT_NE(first_grid_keys, nullptr);
     EXPECT_NE(first_grid_indices, nullptr);
     EXPECT_NE(first_step_result, nullptr);
+    EXPECT_NE(first_step_transform, nullptr);
+    EXPECT_NE(first_acc_transform, nullptr);
+    EXPECT_NE(first_next_acc_transform, nullptr);
     EXPECT_EQ(icp._gpu_stats_workspace.partialStorage(), first_partial_storage);
     EXPECT_EQ(icp._gpu_stats_workspace.statsStorage(), first_stats_storage);
     EXPECT_EQ(icp._gpu_stats_workspace.targetSpatialGridKeysStorage(), first_grid_keys);
     EXPECT_EQ(icp._gpu_stats_workspace.targetSpatialGridIndicesStorage(), first_grid_indices);
     EXPECT_EQ(icp._gpu_step_workspace.resultStorage(), first_step_result);
+    EXPECT_EQ(icp._gpu_T_step->data(), first_step_transform);
+    const bool transform_buffers_match =
+        (icp._gpu_T_acc->data() == first_acc_transform &&
+         icp._gpu_next_T_acc->data() == first_next_acc_transform) ||
+        (icp._gpu_T_acc->data() == first_next_acc_transform &&
+         icp._gpu_next_T_acc->data() == first_acc_transform);
+    EXPECT_TRUE(transform_buffers_match);
     EXPECT_EQ(icp._gpu_stats_workspace.partialCapacity(), first_partial_capacity);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
 }
@@ -1021,7 +1034,8 @@ TEST(ICPGpuPathTest, GpuAlignMaterializesCpuFinalTransformLazily)
     GpuCloud output;
     icp.align(output);
 
-    EXPECT_NE(icp._final_T_gpu.get(), nullptr);
+    EXPECT_TRUE(icp._final_T_gpu_valid);
+    EXPECT_NE(icp._gpu_T_acc.get(), nullptr);
     EXPECT_FALSE(icp._final_T_cpu_valid);
 
     const auto& transform_cpu = icp.getFinalTransformation();
