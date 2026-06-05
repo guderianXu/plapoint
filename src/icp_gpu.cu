@@ -2,6 +2,7 @@
 #include <atomic>
 #include <cfloat>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
@@ -48,6 +49,7 @@ constexpr int kIcpStatsBlockSize = 128;
 
 #ifdef PLAPOINT_ENABLE_TESTING
 std::atomic<int> g_icp_correspondence_stats_call_count{0};
+std::atomic<std::uintptr_t> g_icp_first_stats_source_pointer{0};
 #endif
 
 int icpStatsPartialCount(int source_count)
@@ -595,6 +597,12 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
 {
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
+    std::uintptr_t empty = 0;
+    g_icp_first_stats_source_pointer.compare_exchange_strong(
+        empty,
+        reinterpret_cast<std::uintptr_t>(d_source_points),
+        std::memory_order_relaxed,
+        std::memory_order_relaxed);
 #endif
 
     if (source_count <= 0 || target_count <= 0)
@@ -787,6 +795,17 @@ void resetIcpCorrespondenceStatsCallCountForTesting()
 int icpCorrespondenceStatsCallCountForTesting()
 {
     return g_icp_correspondence_stats_call_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpFirstStatsSourcePointerForTesting()
+{
+    g_icp_first_stats_source_pointer.store(0, std::memory_order_relaxed);
+}
+
+const void* icpFirstStatsSourcePointerForTesting()
+{
+    return reinterpret_cast<const void*>(
+        g_icp_first_stats_source_pointer.load(std::memory_order_relaxed));
 }
 #endif
 

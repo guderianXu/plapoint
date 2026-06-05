@@ -333,12 +333,13 @@ private:
         const int source_count = checkedInt(_source->size(), "ICP: source point count exceeds int range");
         const int target_count = checkedInt(_target->size(), "ICP: target point count exceeds int range");
 
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> cur(source_count, 3);
-        PLAPOINT_CHECK_CUDA(cudaMemcpy(cur.data(), _source->points().data(),
-                                       static_cast<std::size_t>(source_count) * 3u * sizeof(Scalar),
-                                       cudaMemcpyDeviceToDevice));
+        const Scalar* cur_points = _source->points().data();
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> buffer_a(source_count, 3);
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> buffer_b(source_count, 3);
+        Scalar* next_points = buffer_a.data();
+        bool current_points_in_a = false;
+        bool next_points_in_a = true;
 
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> next_cur(source_count, 3);
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> T_acc_gpu(4, 4);
         gpu::setIdentityTransform4x4Async(T_acc_gpu.data(), 0);
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> next_T_acc_gpu(4, 4);
@@ -357,7 +358,7 @@ private:
         for (int iter = 0; iter < _max_iter; ++iter)
         {
             auto stats = gpu::computeIcpCorrespondenceStatsColumnMajor(
-                cur.data(),
+                cur_points,
                 source_count,
                 _target->points().data(),
                 target_count,
@@ -390,14 +391,17 @@ private:
                 step_workspace);
             gpu::multiplyTransform4x4Async(T_step_gpu.data(), T_acc_gpu.data(), next_T_acc_gpu.data(), 0);
             std::swap(T_acc_gpu, next_T_acc_gpu);
-            gpu::transformPointsColumnMajorAsync(T_step_gpu.data(), cur.data(), source_count, next_cur.data(), 0);
-            std::swap(cur, next_cur);
+            gpu::transformPointsColumnMajorAsync(T_step_gpu.data(), cur_points, source_count, next_points, 0);
+            cur_points = next_points;
+            current_points_in_a = next_points_in_a;
+            next_points_in_a = !current_points_in_a;
+            next_points = next_points_in_a ? buffer_a.data() : buffer_b.data();
 
             const bool needs_final_stats = step_result.delta < _eps || iter + 1 == _max_iter;
             if (needs_final_stats)
             {
                 auto final_stats = gpu::computeIcpCorrespondenceStatsColumnMajor(
-                    cur.data(),
+                    cur_points,
                     source_count,
                     _target->points().data(),
                     target_count,
@@ -428,7 +432,9 @@ private:
 
         _final_T_gpu =
             std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(std::move(T_acc_gpu));
-        output = PointCloudType(std::move(cur));
+        output = current_points_in_a
+            ? PointCloudType(std::move(buffer_a))
+            : PointCloudType(std::move(buffer_b));
     }
 
     void updateResidualMetricsFromGpuStats(
