@@ -136,6 +136,8 @@ void resetIcpFirstStatsSourcePointerForTesting();
 const void* icpFirstStatsSourcePointerForTesting();
 void resetIcpFullDistanceEvaluationCountForTesting();
 unsigned long long icpFullDistanceEvaluationCountForTesting();
+void resetIcpTargetCandidateVisitCountForTesting();
+unsigned long long icpTargetCandidateVisitCountForTesting();
 
 } // namespace gpu
 } // namespace plapoint
@@ -498,6 +500,46 @@ TEST(ICPGpuPathTest, CorrespondenceStatsPrunesFarTargetsBeforeFullDistanceEvalua
 
     EXPECT_EQ(stats.active_count, 1);
     EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 1ull);
+}
+
+TEST(ICPGpuPathTest, CorrespondenceStatsSkipsFarTargetTilesBeforeCandidateLoop)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source(1, 3);
+    source.setValue(0, 0, 0.0f);
+    source.setValue(0, 1, 0.0f);
+    source.setValue(0, 2, 0.0f);
+
+    constexpr int target_count = 257;
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(target_count, 3);
+    for (int i = 0; i < target_count; ++i)
+    {
+        target.setValue(i, 0, 1000.0f + static_cast<float>(i));
+        target.setValue(i, 1, 1000.0f);
+        target.setValue(i, 2, 1000.0f);
+    }
+    target.setValue(0, 0, 0.5f);
+    target.setValue(0, 1, 0.0f);
+    target.setValue(0, 2, 0.0f);
+
+    auto source_gpu = source.toGpu();
+    auto target_gpu = target.toGpu();
+
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        nullptr);
+
+    EXPECT_EQ(stats.active_count, 1);
+    EXPECT_LE(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 128ull);
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsWorkspaceReusesDeviceStorage)

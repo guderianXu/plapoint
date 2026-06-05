@@ -51,6 +51,7 @@ constexpr int kIcpStatsBlockSize = 128;
 std::atomic<int> g_icp_correspondence_stats_call_count{0};
 std::atomic<std::uintptr_t> g_icp_first_stats_source_pointer{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
+__device__ unsigned long long g_icp_target_candidate_visit_count;
 #endif
 
 int icpStatsPartialCount(int source_count)
@@ -130,6 +131,12 @@ __global__ void collectCorrespondenceStatsKernel(
     __shared__ double target_tile_x[kIcpStatsBlockSize];
     __shared__ double target_tile_y[kIcpStatsBlockSize];
     __shared__ double target_tile_z[kIcpStatsBlockSize];
+    __shared__ double target_tile_min_x[kIcpStatsBlockSize];
+    __shared__ double target_tile_min_y[kIcpStatsBlockSize];
+    __shared__ double target_tile_min_z[kIcpStatsBlockSize];
+    __shared__ double target_tile_max_x[kIcpStatsBlockSize];
+    __shared__ double target_tile_max_y[kIcpStatsBlockSize];
+    __shared__ double target_tile_max_z[kIcpStatsBlockSize];
     __shared__ int target_tile_valid[kIcpStatsBlockSize];
 
     for (int tile_start = 0; tile_start < target_count; tile_start += kIcpStatsBlockSize)
@@ -144,13 +151,58 @@ __global__ void collectCorrespondenceStatsKernel(
         target_tile_y[local_idx] = ty;
         target_tile_z[local_idx] = tz;
         target_tile_valid[local_idx] = target_valid ? 1 : 0;
+        if (can_prune_by_radius)
+        {
+            target_tile_min_x[local_idx] = target_valid ? tx : INFINITY;
+            target_tile_min_y[local_idx] = target_valid ? ty : INFINITY;
+            target_tile_min_z[local_idx] = target_valid ? tz : INFINITY;
+            target_tile_max_x[local_idx] = target_valid ? tx : -INFINITY;
+            target_tile_max_y[local_idx] = target_valid ? ty : -INFINITY;
+            target_tile_max_z[local_idx] = target_valid ? tz : -INFINITY;
+        }
         __syncthreads();
 
-        if (source_valid)
+        if (can_prune_by_radius)
+        {
+            for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+            {
+                if (local_idx < stride)
+                {
+                    target_tile_min_x[local_idx] =
+                        fmin(target_tile_min_x[local_idx], target_tile_min_x[local_idx + stride]);
+                    target_tile_min_y[local_idx] =
+                        fmin(target_tile_min_y[local_idx], target_tile_min_y[local_idx + stride]);
+                    target_tile_min_z[local_idx] =
+                        fmin(target_tile_min_z[local_idx], target_tile_min_z[local_idx + stride]);
+                    target_tile_max_x[local_idx] =
+                        fmax(target_tile_max_x[local_idx], target_tile_max_x[local_idx + stride]);
+                    target_tile_max_y[local_idx] =
+                        fmax(target_tile_max_y[local_idx], target_tile_max_y[local_idx + stride]);
+                    target_tile_max_z[local_idx] =
+                        fmax(target_tile_max_z[local_idx], target_tile_max_z[local_idx + stride]);
+                }
+                __syncthreads();
+            }
+        }
+
+        bool tile_relevant = true;
+        if (source_valid && can_prune_by_radius)
+        {
+            tile_relevant =
+                isfinite(target_tile_min_x[0]) &&
+                sx >= target_tile_min_x[0] - max_dist && sx <= target_tile_max_x[0] + max_dist &&
+                sy >= target_tile_min_y[0] - max_dist && sy <= target_tile_max_y[0] + max_dist &&
+                sz >= target_tile_min_z[0] - max_dist && sz <= target_tile_max_z[0] + max_dist;
+        }
+
+        if (source_valid && tile_relevant)
         {
             const int tile_count = min(kIcpStatsBlockSize, target_count - tile_start);
             for (int tile_offset = 0; tile_offset < tile_count; ++tile_offset)
             {
+#ifdef PLAPOINT_ENABLE_TESTING
+                atomicAdd(&g_icp_target_candidate_visit_count, 1ull);
+#endif
                 if (!target_tile_valid[tile_offset])
                 {
                     continue;
@@ -835,6 +887,19 @@ unsigned long long icpFullDistanceEvaluationCountForTesting()
 {
     unsigned long long count = 0;
     PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_full_distance_evaluation_count, sizeof(count)));
+    return count;
+}
+
+void resetIcpTargetCandidateVisitCountForTesting()
+{
+    const unsigned long long zero = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyToSymbol(g_icp_target_candidate_visit_count, &zero, sizeof(zero)));
+}
+
+unsigned long long icpTargetCandidateVisitCountForTesting()
+{
+    unsigned long long count = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_target_candidate_visit_count, sizeof(count)));
     return count;
 }
 #endif

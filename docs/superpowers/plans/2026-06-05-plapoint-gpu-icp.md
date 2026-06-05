@@ -4,7 +4,7 @@
 
 **Goal:** Move `IterativeClosestPoint<Scalar, GPU>` away from full CPU-staged point processing and keep the per-point ICP workload on GPU.
 
-**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences with shared-memory target tiling and finite-radius axis pruning, accumulate centroid/covariance/residual stats on device with block-level reductions, compute the rigid step transform with a GPU quaternion/Jacobi solver, initialize and asynchronously update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. Reduced stats and small metric checks still synchronize to CPU while current points, step transforms, degeneracy flags, and transform accumulation stay GPU-resident. The GPU align loop reads the initial source buffer directly, skips transformed final-stats scans on non-terminal iterations, and computes final metrics only when convergence or the final iteration requires them. The legacy CPU final transform is copied from the GPU lazily only when `getFinalTransformation()` is called.
+**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences with shared-memory target tiling, finite-radius target tile bounding-box skips, and per-candidate axis pruning, accumulate centroid/covariance/residual stats on device with block-level reductions, compute the rigid step transform with a GPU quaternion/Jacobi solver, initialize and asynchronously update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. Reduced stats and small metric checks still synchronize to CPU while current points, step transforms, degeneracy flags, and transform accumulation stay GPU-resident. The GPU align loop reads the initial source buffer directly, skips transformed final-stats scans on non-terminal iterations, and computes final metrics only when convergence or the final iteration requires them. The legacy CPU final transform is copied from the GPU lazily only when `getFinalTransformation()` is called.
 
 **Tech Stack:** C++17, CUDA runtime, PlaMatrix GPU `DenseMatrix`, Google Test, PlaPoint benchmark executable.
 
@@ -220,6 +220,17 @@
 - [x] Prune candidates by axis deltas when `max_correspondence_distance` is finite.
 - [x] Preserve exact nearest-neighbor and final max-distance acceptance semantics.
 
+### Task 18: Finite-Radius Target Tile Skipping
+
+**Files:**
+- Modify: `src/icp_gpu.cu`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `README.md`
+
+- [x] Add a CUDA-only test counter requiring far target tiles to be skipped before the per-candidate loop.
+- [x] Compute per-tile target bounding boxes when finite-radius pruning is enabled.
+- [x] Skip per-source scans of target tiles outside the expanded correspondence radius.
+
 Verification evidence:
 
 - `git diff --check`: clean.
@@ -285,11 +296,19 @@ Verification evidence:
   1 targeted test passed after adding finite-radius axis pruning.
 - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
   19 targeted ICP GPU/stats/validation tests passed after pruning far target candidates before full distance evaluation.
+- `cmake --build build-codex-cuda -j$(nproc)` after adding `CorrespondenceStatsSkipsFarTargetTilesBeforeCandidateLoop`:
+  failed as expected because the test-only target candidate visit counter hooks did not exist yet.
+- `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsSkipsFarTargetTilesBeforeCandidateLoop` before tile skipping:
+  failed as expected with 257 target candidate visits instead of the expected at most 128.
+- `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsSkipsFarTargetTilesBeforeCandidateLoop`:
+  1 targeted test passed after skipping far target tiles.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  20 targeted ICP GPU/stats/validation tests passed after finite-radius target tile skipping.
 - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
 - `cmake --build build-codex-cuda -j$(nproc) && ctest --test-dir build-codex-cuda --output-on-failure`:
-  195 tests, 0 failed.
+  196 tests, 0 failed.
 - `cmake --build build-codex-cpu-bench -j$(nproc) && ./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CPU benchmark rows emitted through `cpu_icp_identity,512,1,32.7842`.
+  CPU benchmark rows emitted through `cpu_icp_identity,512,1,29.7157`.
 - `cmake --build build-codex-cuda-bench-only -j$(nproc) && ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CUDA benchmark rows included `gpu_icp_identity,512,1,0.380455`.
+  CUDA benchmark rows included `gpu_icp_identity,512,1,0.37371`.
