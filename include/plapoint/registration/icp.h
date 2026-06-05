@@ -14,6 +14,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 namespace plapoint {
@@ -280,6 +281,21 @@ public:
     /// Return the final 4x4 source-to-target transform on CPU.
     const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& getFinalTransformation() const { return _final_T; }
 
+#ifdef PLAPOINT_WITH_CUDA
+    /// Return the final 4x4 source-to-target transform on GPU after GPU align().
+    /// Throws if align() has not populated a GPU final transform.
+    template <plamatrix::Device D = Dev>
+    std::enable_if_t<D == plamatrix::Device::GPU, const plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>&>
+    getFinalTransformationDevice() const
+    {
+        if (!_final_T_gpu)
+        {
+            throw std::runtime_error("ICP: GPU final transformation is not available");
+        }
+        return *_final_T_gpu;
+    }
+#endif
+
     /// Return true only if the transform converged and the final fitness meets the configured minimum.
     bool hasConverged() const { return _converged; }
 
@@ -304,11 +320,12 @@ private:
                                        cudaMemcpyDeviceToDevice));
 
         gpu::DeviceBuffer<int> d_corr(static_cast<std::size_t>(source_count));
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> T_acc = identity4x4();
+        auto T_acc_gpu = identity4x4().toGpu();
 
         _converged = false;
         _fitness_score = Scalar(0);
         _final_rmse = std::numeric_limits<Scalar>::infinity();
+        _final_T_gpu.reset();
 
         for (int iter = 0; iter < _max_iter; ++iter)
         {
@@ -340,8 +357,10 @@ private:
 
             updateResidualMetricsFromGpuStats(stats, source_count);
             auto T_step = computeStepTransformFromGpuStats(stats);
-            T_acc = multiply4x4(T_step, T_acc);
             auto T_step_gpu = T_step.toGpu();
+            plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> next_T_acc_gpu(4, 4);
+            gpu::multiplyTransform4x4(T_step_gpu.data(), T_acc_gpu.data(), next_T_acc_gpu.data());
+            T_acc_gpu = std::move(next_T_acc_gpu);
             cur = plamatrix::transformPoints(T_step_gpu, cur);
 
             auto final_stats = gpu::computeIcpCorrespondenceStatsColumnMajor(
@@ -388,7 +407,9 @@ private:
             }
         }
 
-        _final_T = std::move(T_acc);
+        _final_T = T_acc_gpu.toCpu();
+        _final_T_gpu =
+            std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(std::move(T_acc_gpu));
         output = PointCloudType(std::move(cur));
     }
 
@@ -775,6 +796,9 @@ private:
     Scalar _fitness_score = Scalar(0);
     Scalar _final_rmse = std::numeric_limits<Scalar>::infinity();
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> _final_T;
+#ifdef PLAPOINT_WITH_CUDA
+    std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _final_T_gpu;
+#endif
     bool _converged = false;
 };
 

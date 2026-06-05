@@ -43,6 +43,22 @@ IcpCorrespondenceStats<double> computeIcpCorrespondenceStatsColumnMajor(
     int* d_correspondence_indices,
     cudaStream_t stream = 0);
 
+/// Multiply two 4x4 column-major device transforms and write C = A * B.
+/// Throws if any device pointer is null or the CUDA launch fails.
+void multiplyTransform4x4(
+    const float* d_A,
+    const float* d_B,
+    float* d_C,
+    cudaStream_t stream = 0);
+
+/// Multiply two 4x4 column-major device transforms and write C = A * B.
+/// Throws if any device pointer is null or the CUDA launch fails.
+void multiplyTransform4x4(
+    const double* d_A,
+    const double* d_B,
+    double* d_C,
+    cudaStream_t stream = 0);
+
 } // namespace gpu
 } // namespace plapoint
 

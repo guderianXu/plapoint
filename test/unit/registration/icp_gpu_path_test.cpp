@@ -35,7 +35,66 @@ plamatrix::DenseMatrix<float, plamatrix::Device::CPU> makeNonCollinearPoints()
     return points;
 }
 
+plamatrix::DenseMatrix<float, plamatrix::Device::CPU> multiplyCpu4x4(
+    const plamatrix::DenseMatrix<float, plamatrix::Device::CPU>& A,
+    const plamatrix::DenseMatrix<float, plamatrix::Device::CPU>& B)
+{
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> C(4, 4);
+    for (int row = 0; row < 4; ++row)
+    {
+        for (int col = 0; col < 4; ++col)
+        {
+            double sum = 0.0;
+            for (int k = 0; k < 4; ++k)
+            {
+                sum += static_cast<double>(A.getValue(row, k)) * static_cast<double>(B.getValue(k, col));
+            }
+            C.setValue(row, col, static_cast<float>(sum));
+        }
+    }
+    return C;
+}
+
 } // namespace
+
+TEST(ICPGpuPathTest, MultiplyTransform4x4UsesColumnMajorTransformComposition)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> A(4, 4);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> B(4, 4);
+    A.fill(0.0f);
+    B.fill(0.0f);
+
+    A.setValue(0, 0, 0.0f);  A.setValue(0, 1, -1.0f); A.setValue(0, 2, 0.0f); A.setValue(0, 3, 2.0f);
+    A.setValue(1, 0, 1.0f);  A.setValue(1, 1, 0.0f);  A.setValue(1, 2, 0.0f); A.setValue(1, 3, -1.0f);
+    A.setValue(2, 0, 0.0f);  A.setValue(2, 1, 0.0f);  A.setValue(2, 2, 1.0f); A.setValue(2, 3, 0.5f);
+    A.setValue(3, 0, 0.0f);  A.setValue(3, 1, 0.0f);  A.setValue(3, 2, 0.0f); A.setValue(3, 3, 1.0f);
+
+    B.setValue(0, 0, 1.0f);  B.setValue(0, 1, 0.0f);  B.setValue(0, 2, 0.0f); B.setValue(0, 3, -3.0f);
+    B.setValue(1, 0, 0.0f);  B.setValue(1, 1, 1.0f);  B.setValue(1, 2, 0.0f); B.setValue(1, 3, 4.0f);
+    B.setValue(2, 0, 0.0f);  B.setValue(2, 1, 0.0f);  B.setValue(2, 2, 1.0f); B.setValue(2, 3, 1.5f);
+    B.setValue(3, 0, 0.0f);  B.setValue(3, 1, 0.0f);  B.setValue(3, 2, 0.0f); B.setValue(3, 3, 1.0f);
+
+    auto A_gpu = A.toGpu();
+    auto B_gpu = B.toGpu();
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> C_gpu(4, 4);
+
+    plapoint::gpu::multiplyTransform4x4(A_gpu.data(), B_gpu.data(), C_gpu.data());
+    auto C = C_gpu.toCpu();
+    auto expected = multiplyCpu4x4(A, B);
+
+    for (int row = 0; row < 4; ++row)
+    {
+        for (int col = 0; col < 4; ++col)
+        {
+            EXPECT_NEAR(C.getValue(row, col), expected.getValue(row, col), 1.0e-6f);
+        }
+    }
+}
 
 TEST(ICPGpuPathTest, AlignDoesNotPopulateGpuPointCpuCaches)
 {
@@ -67,6 +126,43 @@ TEST(ICPGpuPathTest, AlignDoesNotPopulateGpuPointCpuCaches)
     EXPECT_EQ(output.size(), source->size());
     EXPECT_EQ(source->_points_cpu_cache.get(), nullptr);
     EXPECT_EQ(target->_points_cpu_cache.get(), nullptr);
+}
+
+TEST(ICPGpuPathTest, FinalTransformationDeviceIsAvailableAfterGpuAlign)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto target_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxIterations(3);
+
+    GpuCloud output;
+    icp.align(output);
+
+    const auto& transform_gpu = icp.getFinalTransformationDevice();
+    auto transform_cpu = transform_gpu.toCpu();
+
+    ASSERT_EQ(transform_cpu.rows(), 4);
+    ASSERT_EQ(transform_cpu.cols(), 4);
+    EXPECT_NEAR(transform_cpu.getValue(0, 0), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.getValue(1, 1), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.getValue(2, 2), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.getValue(3, 3), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.getValue(0, 3), 0.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.getValue(1, 3), 0.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.getValue(2, 3), 0.0f, 1.0e-5f);
 }
 
 #endif // PLAPOINT_WITH_CUDA

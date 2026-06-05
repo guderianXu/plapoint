@@ -4,7 +4,7 @@
 
 **Goal:** Move `IterativeClosestPoint<Scalar, GPU>` away from full CPU-staged point processing and keep the per-point ICP workload on GPU.
 
-**Architecture:** Keep the existing CPU ICP path unchanged. Add a CUDA helper that accepts PlaMatrix column-major GPU point buffers, computes nearest-neighbor correspondences, accumulates centroid/covariance/residual stats on device, and returns only small summary matrices to host. The small Kabsch SVD and 4x4 transform accumulation remain CPU-side while current points are transformed on GPU.
+**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences, accumulate centroid/covariance/residual stats on device, update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. The small Kabsch SVD remains CPU-side while current points and transform accumulation stay GPU-resident.
 
 **Tech Stack:** C++17, CUDA runtime, PlaMatrix GPU `DenseMatrix`, Google Test, PlaPoint benchmark executable.
 
@@ -41,7 +41,21 @@
 - [x] Keep CPU Kabsch SVD for the 3x3 step transform and apply the step transform with PlaMatrix GPU `transformPoints()`.
 - [x] Preserve CPU path behavior and error messages for missing input, empty clouds, too few correspondences, and non-finite source points.
 
-### Task 4: Documentation, Benchmark, And Verification
+### Task 4: Device-Side Final Transform Accumulation
+
+**Files:**
+- Modify: `include/plapoint/gpu/icp.h`
+- Modify: `src/icp_gpu.cu`
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+
+- [x] Add a CUDA-only failing test for `getFinalTransformationDevice()` after GPU ICP alignment.
+- [x] Add a direct CUDA test for non-trivial column-major 4x4 transform multiplication.
+- [x] Implement `gpu::multiplyTransform4x4()` for float and double device matrices.
+- [x] Keep `alignGpu()` transform accumulation in a GPU `DenseMatrix` and copy it to CPU only for the legacy `getFinalTransformation()` API.
+- [x] Expose `getFinalTransformationDevice()` for GPU ICP callers.
+
+### Task 5: Documentation, Benchmark, And Verification
 
 **Files:**
 - Modify: `README.md`
@@ -56,11 +70,15 @@
 Verification evidence:
 
 - `git diff --check`: clean.
+- `cmake --build build-codex-cuda -j$(nproc)` after adding `FinalTransformationDeviceIsAvailableAfterGpuAlign`:
+  failed as expected because `IterativeClosestPoint<float, GPU>` had no `getFinalTransformationDevice()` member.
+- `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*`:
+  3 targeted GPU ICP path tests passed.
 - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
 - `cmake --build build-codex-cuda -j$(nproc) && ctest --test-dir build-codex-cuda --output-on-failure`:
-  180 tests, 0 failed.
+  182 tests, 0 failed.
 - `./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CPU benchmark rows emitted through `cpu_icp_identity,512,1,30.2081`.
+  CPU benchmark rows emitted through `cpu_icp_identity,512,1,31.9915`.
 - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CUDA benchmark rows included `gpu_icp_identity,512,1,2.79312`.
+  CUDA benchmark rows included `gpu_icp_identity,512,1,2.8043`.

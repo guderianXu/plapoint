@@ -147,6 +147,25 @@ __global__ void collectCorrespondenceStatsKernel(
 }
 
 template <typename Scalar>
+__global__ void multiplyTransform4x4Kernel(const Scalar* A, const Scalar* B, Scalar* C)
+{
+    const int idx = threadIdx.x;
+    if (idx >= 16)
+    {
+        return;
+    }
+
+    const int row = idx & 3;
+    const int col = idx >> 2;
+    double sum = 0.0;
+    for (int k = 0; k < 4; ++k)
+    {
+        sum += static_cast<double>(A[row + k * 4]) * static_cast<double>(B[k + col * 4]);
+    }
+    C[row + col * 4] = static_cast<Scalar>(sum);
+}
+
+template <typename Scalar>
 IcpCorrespondenceStats<Scalar> makeHostStats(const RawIcpStats& raw)
 {
     IcpCorrespondenceStats<Scalar> stats;
@@ -223,6 +242,23 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
     return makeHostStats<Scalar>(raw);
 }
 
+template <typename Scalar>
+void multiplyTransform4x4Impl(
+    const Scalar* d_A,
+    const Scalar* d_B,
+    Scalar* d_C,
+    cudaStream_t stream)
+{
+    if (!d_A || !d_B || !d_C)
+    {
+        throw std::invalid_argument("ICP GPU: transform pointers must not be null");
+    }
+
+    multiplyTransform4x4Kernel<Scalar><<<1, 16, 0, stream>>>(d_A, d_B, d_C);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+}
+
 } // namespace
 
 IcpCorrespondenceStats<float> computeIcpCorrespondenceStatsColumnMajor(
@@ -261,6 +297,24 @@ IcpCorrespondenceStats<double> computeIcpCorrespondenceStatsColumnMajor(
         max_correspondence_distance,
         d_correspondence_indices,
         stream);
+}
+
+void multiplyTransform4x4(
+    const float* d_A,
+    const float* d_B,
+    float* d_C,
+    cudaStream_t stream)
+{
+    multiplyTransform4x4Impl(d_A, d_B, d_C, stream);
+}
+
+void multiplyTransform4x4(
+    const double* d_A,
+    const double* d_B,
+    double* d_C,
+    cudaStream_t stream)
+{
+    multiplyTransform4x4Impl(d_A, d_B, d_C, stream);
 }
 
 } // namespace gpu
