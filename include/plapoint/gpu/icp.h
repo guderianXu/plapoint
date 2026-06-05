@@ -34,6 +34,15 @@ struct IcpStepTransformResult
     Scalar delta = Scalar(0);
 };
 
+/// Host-side result from a fused GPU ICP stats reduction and step-transform solve.
+template <typename Scalar>
+struct IcpStatsAndStepTransformResult
+{
+    IcpCorrespondenceStats<Scalar> stats;
+    IcpStepTransformResult<Scalar> step;
+    bool step_valid = false;
+};
+
 /// Reusable device storage for ICP correspondence stats reductions.
 /// Reserve it once for a source size and pass it to repeated stats calls to avoid repeated allocations.
 class IcpCorrespondenceStatsWorkspace
@@ -163,6 +172,32 @@ IcpStepTransformResult<float> computeIcpStepTransformFromDeviceStats(
 /// stats must be the host summary returned by the most recent stats call that used stats_workspace.
 IcpStepTransformResult<double> computeIcpStepTransformFromDeviceStats(
     const IcpCorrespondenceStats<double>& stats,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    IcpStepTransformWorkspace& step_workspace,
+    cudaStream_t stream = 0);
+
+/// Compute ICP correspondence stats and the step transform from one device-side reduction sequence.
+/// Copies the reduced stats and step delta back to host with a single stream synchronization.
+IcpStatsAndStepTransformResult<float> computeIcpStatsAndStepTransformColumnMajor(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    IcpStepTransformWorkspace& step_workspace,
+    cudaStream_t stream = 0);
+
+/// Compute ICP correspondence stats and the step transform from one device-side reduction sequence.
+/// Copies the reduced stats and step delta back to host with a single stream synchronization.
+IcpStatsAndStepTransformResult<double> computeIcpStatsAndStepTransformColumnMajor(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     double* d_step_transform,
     IcpStepTransformWorkspace& step_workspace,

@@ -140,6 +140,8 @@ void resetIcpTargetCandidateVisitCountForTesting();
 unsigned long long icpTargetCandidateVisitCountForTesting();
 void resetIcpStepTransformInputCopyCountForTesting();
 int icpStepTransformInputCopyCountForTesting();
+void resetIcpHostSynchronizationCountForTesting();
+int icpHostSynchronizationCountForTesting();
 
 } // namespace gpu
 } // namespace plapoint
@@ -786,6 +788,47 @@ TEST(ICPGpuPathTest, AlignComputesStepFromDeviceStatsWithoutHostInputCopy)
     icp.align(output);
 
     EXPECT_EQ(plapoint::gpu::icpStepTransformInputCopyCountForTesting(), 0);
+    EXPECT_EQ(output.size(), source->size());
+}
+
+TEST(ICPGpuPathTest, AlignFusesStatsAndStepToAvoidExtraHostSynchronization)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_points = makeNonCollinearPoints();
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> transform(4, 4);
+    transform.fill(0.0f);
+    transform.setValue(0, 0, 1.0f);
+    transform.setValue(1, 1, 1.0f);
+    transform.setValue(2, 2, 1.0f);
+    transform.setValue(3, 3, 1.0f);
+    transform.setValue(0, 3, 0.2f);
+    transform.setValue(1, 3, -0.1f);
+    transform.setValue(2, 3, 0.05f);
+    auto target_points = plamatrix::transformPoints(transform, source_points);
+
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxIterations(1);
+    icp.setTransformationEpsilon(1.0e-8f);
+
+    plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
+    GpuCloud output;
+    icp.align(output);
+
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 2);
     EXPECT_EQ(output.size(), source->size());
 }
 

@@ -357,14 +357,16 @@ private:
 
         for (int iter = 0; iter < _max_iter; ++iter)
         {
-            auto stats = gpu::computeIcpCorrespondenceStatsColumnMajor(
+            const auto stats_and_step = gpu::computeIcpStatsAndStepTransformColumnMajor(
                 cur_points,
                 source_count,
                 _target->points().data(),
                 target_count,
                 _max_corr_dist,
-                nullptr,
-                stats_workspace);
+                stats_workspace,
+                T_step_gpu.data(),
+                step_workspace);
+            const auto& stats = stats_and_step.stats;
             if (stats.invalid_source_count > 0)
             {
                 throw std::invalid_argument(iter == 0
@@ -385,11 +387,12 @@ private:
             }
 
             updateResidualMetricsFromGpuStats(stats, source_count);
-            const auto step_result = gpu::computeIcpStepTransformFromDeviceStats(
-                stats,
-                stats_workspace,
-                T_step_gpu.data(),
-                step_workspace);
+            validateGpuStepTransformStatsInput(stats);
+            if (!stats_and_step.step_valid)
+            {
+                throw std::runtime_error("ICP: transform step is not representable");
+            }
+            const auto step_result = stats_and_step.step;
             gpu::multiplyTransform4x4Async(T_step_gpu.data(), T_acc_gpu.data(), next_T_acc_gpu.data(), 0);
             std::swap(T_acc_gpu, next_T_acc_gpu);
             gpu::transformPointsColumnMajorAsync(T_step_gpu.data(), cur_points, source_count, next_points, 0);
@@ -456,6 +459,28 @@ private:
         const double rmse = std::sqrt(stats.residual_sq_sum / static_cast<double>(stats.active_count));
         _fitness_score = static_cast<Scalar>(stats.active_count) / static_cast<Scalar>(source_count);
         _final_rmse = metricScalarFromDouble(rmse);
+    }
+
+    static void validateGpuStepTransformStatsInput(
+        const gpu::IcpCorrespondenceStats<Scalar>& stats)
+    {
+        const double max_scalar = static_cast<double>(std::numeric_limits<Scalar>::max());
+        for (int c = 0; c < 3; ++c)
+        {
+            if (!std::isfinite(stats.src_centroid[c]) || std::abs(stats.src_centroid[c]) > max_scalar ||
+                !std::isfinite(stats.tgt_centroid[c]) || std::abs(stats.tgt_centroid[c]) > max_scalar)
+            {
+                throw std::runtime_error("ICP: correspondence centroid is not representable");
+            }
+        }
+        for (int idx = 0; idx < 9; ++idx)
+        {
+            if (!std::isfinite(stats.cross_covariance[idx]) ||
+                std::abs(stats.cross_covariance[idx]) > max_scalar)
+            {
+                throw std::runtime_error("ICP: cross-covariance is not representable");
+            }
+        }
     }
 
 #endif

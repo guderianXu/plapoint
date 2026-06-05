@@ -51,6 +51,7 @@ constexpr int kIcpStatsBlockSize = 128;
 std::atomic<int> g_icp_correspondence_stats_call_count{0};
 std::atomic<std::uintptr_t> g_icp_first_stats_source_pointer{0};
 std::atomic<int> g_icp_step_transform_input_copy_count{0};
+std::atomic<int> g_icp_host_synchronization_count{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
 __device__ unsigned long long g_icp_target_candidate_visit_count;
 #endif
@@ -759,6 +760,9 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
     RawIcpStats raw{};
     PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
                                         cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
     return makeHostStats<Scalar>(raw);
 }
@@ -893,6 +897,9 @@ IcpStepTransformResult<Scalar> computeIcpStepTransformFromStatsImpl(
     IcpStepTransformRawResult raw_result{};
     PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpStepTransformRawResult),
                                         cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
     if (!raw_result.valid)
     {
@@ -935,6 +942,9 @@ IcpStepTransformResult<Scalar> computeIcpStepTransformFromDeviceStatsImpl(
     IcpStepTransformRawResult raw_result{};
     PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpStepTransformRawResult),
                                         cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
     if (!raw_result.valid)
     {
@@ -943,6 +953,86 @@ IcpStepTransformResult<Scalar> computeIcpStepTransformFromDeviceStatsImpl(
 
     IcpStepTransformResult<Scalar> result;
     result.delta = static_cast<Scalar>(raw_result.delta);
+    return result;
+}
+
+template <typename Scalar>
+IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajorImpl(
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    Scalar* d_step_transform,
+    IcpStepTransformWorkspace& step_workspace,
+    cudaStream_t stream)
+{
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
+    std::uintptr_t empty = 0;
+    g_icp_first_stats_source_pointer.compare_exchange_strong(
+        empty,
+        reinterpret_cast<std::uintptr_t>(d_source_points),
+        std::memory_order_relaxed,
+        std::memory_order_relaxed);
+#endif
+
+    if (source_count <= 0 || target_count <= 0)
+    {
+        return {};
+    }
+    if (!d_source_points || !d_target_points || !d_step_transform)
+    {
+        throw std::invalid_argument("ICP GPU: device pointers must not be null");
+    }
+
+    stats_workspace.reserve(source_count);
+    step_workspace.reserve();
+
+    constexpr int block_size = kIcpStatsBlockSize;
+    const int grid_size = icpStatsPartialCount(source_count);
+    auto* d_partials = reinterpret_cast<RawIcpStats*>(stats_workspace.partialStorage());
+    auto* d_stats = reinterpret_cast<RawIcpStats*>(stats_workspace.statsStorage());
+    auto* d_result = reinterpret_cast<IcpStepTransformRawResult*>(step_workspace.resultStorage());
+
+    collectCorrespondenceStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        nullptr,
+        d_partials);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    reduceRawIcpStatsKernel<<<1, block_size, 0, stream>>>(
+        d_partials,
+        grid_size,
+        d_stats);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    computeStepTransformFromRawStatsKernel<Scalar><<<1, 1, 0, stream>>>(
+        d_stats,
+        d_step_transform,
+        d_result);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    RawIcpStats raw{};
+    IcpStepTransformRawResult raw_result{};
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
+                                        cudaMemcpyDeviceToHost, stream));
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpStepTransformRawResult),
+                                        cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+
+    IcpStatsAndStepTransformResult<Scalar> result;
+    result.stats = makeHostStats<Scalar>(raw);
+    result.step.delta = static_cast<Scalar>(raw_result.delta);
+    result.step_valid = raw_result.valid != 0;
     return result;
 }
 
@@ -1004,6 +1094,16 @@ void resetIcpStepTransformInputCopyCountForTesting()
 int icpStepTransformInputCopyCountForTesting()
 {
     return g_icp_step_transform_input_copy_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpHostSynchronizationCountForTesting()
+{
+    g_icp_host_synchronization_count.store(0, std::memory_order_relaxed);
+}
+
+int icpHostSynchronizationCountForTesting()
+{
+    return g_icp_host_synchronization_count.load(std::memory_order_relaxed);
 }
 #endif
 
@@ -1182,6 +1282,52 @@ IcpStepTransformResult<double> computeIcpStepTransformFromDeviceStats(
 {
     return computeIcpStepTransformFromDeviceStatsImpl(
         stats,
+        stats_workspace,
+        d_step_transform,
+        step_workspace,
+        stream);
+}
+
+IcpStatsAndStepTransformResult<float> computeIcpStatsAndStepTransformColumnMajor(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    IcpStepTransformWorkspace& step_workspace,
+    cudaStream_t stream)
+{
+    return computeIcpStatsAndStepTransformColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        d_step_transform,
+        step_workspace,
+        stream);
+}
+
+IcpStatsAndStepTransformResult<double> computeIcpStatsAndStepTransformColumnMajor(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    IcpStepTransformWorkspace& step_workspace,
+    cudaStream_t stream)
+{
+    return computeIcpStatsAndStepTransformColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
         stats_workspace,
         d_step_transform,
         step_workspace,
