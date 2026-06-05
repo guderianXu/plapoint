@@ -307,6 +307,22 @@
 - [x] Add CPU and CUDA finite-radius translation ICP benchmark rows.
 - [x] Run CPU/CUDA benchmark smoke and record the new rows.
 
+### Task 25: Persistent GPU ICP Workspaces Across Align Calls
+
+**Files:**
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `benchmarks/plapoint_benchmarks.cpp`
+- Modify: `README.md`
+- Modify: `docs/superpowers/plans/2026-06-05-plapoint-gpu-icp.md`
+
+- [x] Add CUDA-only repeated-`align()` coverage requiring GPU stats, target spatial-grid, and step workspaces to persist on the ICP object.
+- [x] Reuse `IcpCorrespondenceStatsWorkspace` and `IcpStepTransformWorkspace` across repeated GPU `align()` calls.
+- [x] Invalidate the persistent finite-radius target spatial-grid cache when `setInputTarget()` is called.
+- [x] Add repeated-object CPU/CUDA finite-radius translation benchmark rows.
+- [x] Run targeted GPU ICP tests and benchmark smoke.
+- [x] Run full CPU/CUDA tests.
+
 Verification evidence:
 
 - `git diff --check`: clean.
@@ -440,3 +456,24 @@ Verification evidence:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
 - `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:
   202 tests, 0 failed.
+- `cmake --build build-codex-cuda -j$(nproc)` after adding `AlignReusesGpuWorkspacesAcrossRepeatedCalls`:
+  failed as expected because `IterativeClosestPoint<float, GPU>` had no persistent `_gpu_stats_workspace`
+  or `_gpu_step_workspace` members.
+- `cmake --build build-codex-cuda -j$(nproc) &&
+  ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesGpuWorkspacesAcrossRepeatedCalls:ICPGpuPathTest.SetInputTargetInvalidatesPersistentGpuTargetSpatialGridCache`:
+  2 targeted persistent workspace/cache tests passed after moving GPU ICP workspaces onto the ICP object.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  28 targeted ICP GPU/stats/validation tests passed after persistent GPU ICP workspaces.
+- `cmake --build build-codex-cpu-bench -j$(nproc)` and
+  `./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1` after adding repeated-object finite-radius translation benchmark coverage:
+  CPU benchmark rows included `cpu_icp_finite_radius_translation_reuse,512,1,28.8398`.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+  `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1` after adding repeated-object finite-radius translation benchmark coverage:
+  CUDA benchmark rows included `gpu_icp_finite_radius_translation,512,1,0.364015` and
+  `gpu_icp_finite_radius_translation_reuse,512,1,0.282149`.
+- `git diff --check` after persistent GPU ICP workspaces:
+  clean.
+- `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+  142 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:
+  204 tests, 0 failed.

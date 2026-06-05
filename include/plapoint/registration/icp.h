@@ -27,7 +27,17 @@ public:
     using Matrix4 = plamatrix::DenseMatrix<Scalar, Dev>;
 
     void setInputSource(const std::shared_ptr<const PointCloudType>& cloud) { _source = cloud; }
-    void setInputTarget(const std::shared_ptr<const PointCloudType>& cloud) { _target = cloud; }
+
+    void setInputTarget(const std::shared_ptr<const PointCloudType>& cloud)
+    {
+        _target = cloud;
+#ifdef PLAPOINT_WITH_CUDA
+        if constexpr (Dev == plamatrix::Device::GPU)
+        {
+            _gpu_stats_workspace.invalidateTargetSpatialGridCache();
+        }
+#endif
+    }
 
     /// Set the maximum number of ICP iterations. Throws if n is not positive.
     void setMaxIterations(int n)
@@ -344,10 +354,8 @@ private:
         gpu::setIdentityTransform4x4Async(T_acc_gpu.data(), 0);
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> next_T_acc_gpu(4, 4);
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> T_step_gpu(4, 4);
-        gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-        stats_workspace.reserve(source_count);
-        gpu::IcpStepTransformWorkspace step_workspace;
-        step_workspace.reserve();
+        _gpu_stats_workspace.reserve(source_count);
+        _gpu_step_workspace.reserve();
 
         _converged = false;
         _fitness_score = Scalar(0);
@@ -363,9 +371,9 @@ private:
                 _target->points().data(),
                 target_count,
                 _max_corr_dist,
-                stats_workspace,
+                _gpu_stats_workspace,
                 T_step_gpu.data(),
-                step_workspace);
+                _gpu_step_workspace);
             const auto& stats = stats_and_step.stats;
             if (stats.invalid_source_count > 0)
             {
@@ -411,7 +419,7 @@ private:
                     target_count,
                     _max_corr_dist,
                     nullptr,
-                    stats_workspace);
+                    _gpu_stats_workspace);
                 if (final_stats.invalid_source_count > 0)
                 {
                     throw std::invalid_argument("ICP: transformed source contains non-finite point");
@@ -756,6 +764,8 @@ private:
     mutable plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> _final_T;
     mutable bool _final_T_cpu_valid = false;
 #ifdef PLAPOINT_WITH_CUDA
+    gpu::IcpCorrespondenceStatsWorkspace _gpu_stats_workspace;
+    gpu::IcpStepTransformWorkspace _gpu_step_workspace;
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _final_T_gpu;
 #endif
     bool _converged = false;
