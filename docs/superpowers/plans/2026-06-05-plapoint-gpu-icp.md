@@ -351,6 +351,26 @@
 - [x] Run targeted GPU ICP tests and benchmark smoke.
 - [x] Run full CPU/CUDA tests.
 
+### Task 28: Reuse Caller-Owned GPU ICP Output Buffers
+
+**Files:**
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `benchmarks/plapoint_benchmarks.cpp`
+- Modify: `README.md`
+- Modify: `docs/superpowers/plans/2026-06-05-plapoint-gpu-icp.md`
+
+- [x] Add CUDA-only coverage requiring repeated `align()` calls into the same plain same-shaped output cloud
+  to reuse caller-owned GPU point storage.
+- [x] Preserve old output semantics for attributed or metadata-bearing output clouds by replacing them instead of
+  reusing storage that would retain stale normals, colors, mesh, material, or texture data.
+- [x] Reuse caller-owned GPU output point storage at the final copy step when the output cloud is plain and
+  shape-compatible.
+- [x] Add a CUDA benchmark row for repeated finite-radius translation ICP with both the ICP object and caller
+  output object reused.
+- [x] Run targeted GPU ICP tests and benchmark smoke.
+- [x] Run full CPU/CUDA tests.
+
 Verification evidence:
 
 - `git diff --check`: clean.
@@ -505,6 +525,34 @@ Verification evidence:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
 - `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:
   204 tests, 0 failed.
+- `cmake --build build-codex-cuda -j$(nproc) &&
+  ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesCallerGpuOutputStorageWhenShapeMatches:ICPGpuPathTest.AlignReplacesAttributedGpuOutputInsteadOfKeepingStaleMetadata`
+  after adding output-storage reuse tests:
+  `AlignReusesCallerGpuOutputStorageWhenShapeMatches` failed as expected because `alignGpu()` still allocated a
+  fresh output point matrix on each call, while the attributed-output replacement test passed under the old behavior.
+- `cmake --build build-codex-cuda -j$(nproc)` after first implementing the output-buffer helper:
+  failed because the non-SFINAE helper was explicitly instantiated for CPU ICP types; constraining the helper to
+  `Device::GPU` fixed the build.
+- `cmake --build build-codex-cuda -j$(nproc) &&
+  ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesCallerGpuOutputStorageWhenShapeMatches:ICPGpuPathTest.AlignReplacesAttributedGpuOutputInsteadOfKeepingStaleMetadata`:
+  2 targeted GPU output-storage tests passed after adding safe caller-owned output reuse.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  30 targeted ICP GPU/stats/validation tests passed after caller-owned output reuse.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+  `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1` after caller-owned
+  output reuse:
+  CUDA benchmark rows included `gpu_icp_finite_radius_translation,512,1,0.367608`,
+  `gpu_icp_finite_radius_translation_reuse,512,1,0.26877`, and
+  `gpu_icp_finite_radius_translation_reuse_output,512,1,0.264002`.
+- `cmake --build build-codex-cpu-bench -j$(nproc)` and
+  `./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1` after caller-owned
+  output reuse:
+  CPU benchmark rows included `cpu_icp_finite_radius_translation,512,1,31.0323` and
+  `cpu_icp_finite_radius_translation_reuse,512,1,31.5042`.
+- `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+  142 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:
+  206 tests, 0 failed.
 - `cmake --build build-codex-cuda -j$(nproc)` after extending `AlignReusesGpuWorkspacesAcrossRepeatedCalls`
   to check 4x4 transform buffers:
   failed as expected because `IterativeClosestPoint<float, GPU>` had no persistent `_gpu_T_step`, `_gpu_T_acc`,

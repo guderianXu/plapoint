@@ -442,13 +442,40 @@ private:
         }
 
         _final_T_gpu_valid = true;
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> aligned_points(source_count, 3);
+        Scalar* output_points = prepareGpuOutputPointBuffer(output, source_count);
         PLAPOINT_CHECK_CUDA(cudaMemcpy(
-            aligned_points.data(),
+            output_points,
             cur_points,
             static_cast<std::size_t>(source_count) * 3u * sizeof(Scalar),
             cudaMemcpyDeviceToDevice));
-        output = PointCloudType(std::move(aligned_points));
+    }
+
+    template <plamatrix::Device D = Dev>
+    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    canReuseGpuOutputPointBuffer(const PointCloudType& output, int point_count) const
+    {
+        const auto& output_points = output.points();
+        return output_points.rows() == point_count &&
+               output_points.cols() == 3 &&
+               !output.hasNormals() &&
+               !output.hasColors() &&
+               !output.hasTextureCoords() &&
+               !output.hasFaces() &&
+               !output.hasFaceTextureIndices() &&
+               output.materialLibraryFile().empty() &&
+               output.textureImageFile().empty();
+    }
+
+    template <plamatrix::Device D = Dev>
+    std::enable_if_t<D == plamatrix::Device::GPU, Scalar*>
+    prepareGpuOutputPointBuffer(PointCloudType& output, int point_count)
+    {
+        if (!canReuseGpuOutputPointBuffer(output, point_count))
+        {
+            plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> points(point_count, 3);
+            output = PointCloudType(std::move(points));
+        }
+        return output.points().data();
     }
 
     void reserveGpuPointBuffers(int point_count)
