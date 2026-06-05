@@ -297,6 +297,16 @@
 - [x] Reuse cached cell keys, sorted indices, cell starts, and counts when the target grid identity is unchanged.
 - [x] Invalidate the cache on spatial-grid workspace growth or explicit `invalidateTargetSpatialGridCache()`.
 
+### Task 24: Finite-Radius Translation ICP Benchmark
+
+**Files:**
+- Modify: `benchmarks/plapoint_benchmarks.cpp`
+- Modify: `docs/superpowers/plans/2026-06-05-plapoint-gpu-icp.md`
+
+- [x] Add deterministic translated-source grid data for non-identity ICP benchmark coverage.
+- [x] Add CPU and CUDA finite-radius translation ICP benchmark rows.
+- [x] Run CPU/CUDA benchmark smoke and record the new rows.
+
 Verification evidence:
 
 - `git diff --check`: clean.
@@ -418,3 +428,15 @@ Verification evidence:
   CPU benchmark rows emitted through `cpu_icp_identity,512,1,58.2848` and `cpu_icp_finite_radius,512,1,56.3166`.
 - `cmake --build build-codex-cuda-bench-only -j$(nproc) && ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
   CUDA benchmark rows included `gpu_icp_identity,512,1,0.378443` and `gpu_icp_finite_radius,512,1,0.265103`.
+- `cmake --build build-codex-cpu-bench -j$(nproc)` and
+  `./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1` after adding finite-radius translation benchmark coverage:
+  CPU benchmark rows included `cpu_icp_finite_radius_translation,512,1,30.5572`.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+  `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1` after adding finite-radius translation benchmark coverage:
+  CUDA benchmark rows included `gpu_icp_finite_radius_translation,512,1,0.360243`.
+- `git diff --check` after adding finite-radius translation benchmark coverage:
+  clean.
+- `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+  142 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:
+  202 tests, 0 failed.

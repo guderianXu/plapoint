@@ -69,6 +69,23 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeGridPoints(int count)
 }
 
 template <typename Scalar>
+plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslatedGridPoints(
+    int count,
+    Scalar tx,
+    Scalar ty,
+    Scalar tz)
+{
+    auto points = makeGridPoints<Scalar>(count);
+    for (int i = 0; i < count; ++i)
+    {
+        points(i, 0) += tx;
+        points(i, 1) += ty;
+        points(i, 2) += tz;
+    }
+    return points;
+}
+
+template <typename Scalar>
 plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeQueries(int count)
 {
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(count, 3);
@@ -227,6 +244,30 @@ void benchmarkCpuIcpFiniteRadius(int iterations)
     }
 }
 
+void benchmarkCpuIcpFiniteRadiusTranslation(int iterations)
+{
+    constexpr int icp_points = 512;
+    auto source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
+    auto target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        plapoint::IterativeClosestPoint<float, plamatrix::Device::CPU> icp;
+        icp.setInputSource(source);
+        icp.setInputTarget(target);
+        icp.setMaxCorrespondenceDistance(0.02f);
+        icp.setMaxIterations(3);
+        Cloud<plamatrix::Device::CPU> output;
+        icp.align(output);
+        sink += output.size();
+    });
+    printResult("cpu_icp_finite_radius_translation", icp_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << "cpu_icp_finite_radius_translation produced no aligned points\n";
+    }
+}
+
 #ifdef PLAPOINT_WITH_CUDA
 void benchmarkGpuKnn(int points, int iterations)
 {
@@ -344,6 +385,38 @@ void benchmarkGpuIcpFiniteRadius(int iterations)
         std::cerr << "gpu_icp_finite_radius produced no aligned points\n";
     }
 }
+
+void benchmarkGpuIcpFiniteRadiusTranslation(int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped("gpu_icp_finite_radius_translation", "no_usable_cuda_device");
+        return;
+    }
+
+    constexpr int icp_points = 512;
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+        icp.setInputSource(source);
+        icp.setInputTarget(target);
+        icp.setMaxCorrespondenceDistance(0.02f);
+        icp.setMaxIterations(3);
+        Cloud<plamatrix::Device::GPU> output;
+        icp.align(output);
+        sink += output.size();
+    });
+    printResult("gpu_icp_finite_radius_translation", icp_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << "gpu_icp_finite_radius_translation produced no aligned points\n";
+    }
+}
 #endif
 
 } // namespace
@@ -357,11 +430,13 @@ int main(int argc, char** argv)
     benchmarkCpuNormalEstimation(options.points, options.iterations);
     benchmarkCpuIcp(options.iterations);
     benchmarkCpuIcpFiniteRadius(options.iterations);
+    benchmarkCpuIcpFiniteRadiusTranslation(options.iterations);
 #ifdef PLAPOINT_WITH_CUDA
     benchmarkGpuKnn(options.points, options.iterations);
     benchmarkGpuVoxelGrid(options.points, options.iterations);
     benchmarkGpuIcp(options.iterations);
     benchmarkGpuIcpFiniteRadius(options.iterations);
+    benchmarkGpuIcpFiniteRadiusTranslation(options.iterations);
 #endif
     return 0;
 }
