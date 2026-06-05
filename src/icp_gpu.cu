@@ -159,6 +159,7 @@ std::atomic<int> g_icp_transform_points_call_count{0};
 std::atomic<int> g_icp_transform_multiply_call_count{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
 __device__ unsigned long long g_icp_target_candidate_visit_count;
+__device__ unsigned long long g_icp_target_index_load_count;
 __device__ unsigned long long g_icp_target_tile_bound_computation_count;
 __device__ unsigned long long g_icp_grid_cell_lookup_count;
 #endif
@@ -714,7 +715,6 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                     for (int offset = 0; offset < count; ++offset)
                     {
                         const int sorted_offset = start + offset;
-                        const int target_idx = target_grid.sorted_target_indices[sorted_offset];
 #ifdef PLAPOINT_ENABLE_TESTING
                         atomicAdd(&g_icp_target_candidate_visit_count, 1ull);
 #endif
@@ -741,19 +741,24 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                         atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
 #endif
                         const double dist_sq = dx * dx + dy * dy + dz * dz;
-                        if (isfinite(dist_sq) &&
-                            (dist_sq < best_dist_sq ||
-                             (dist_sq == best_dist_sq && (best_idx < 0 || target_idx < best_idx))))
+                        if (isfinite(dist_sq) && dist_sq <= best_dist_sq)
                         {
-                            best_dist_sq = dist_sq;
-                            best_idx = target_idx;
-                            best_tx = tx;
-                            best_ty = ty;
-                            best_tz = tz;
-                            if (can_stop_after_exact_match && dist_sq <= 0.0)
+                            const int target_idx = target_grid.sorted_target_indices[sorted_offset];
+#ifdef PLAPOINT_ENABLE_TESTING
+                            atomicAdd(&g_icp_target_index_load_count, 1ull);
+#endif
+                            if (dist_sq < best_dist_sq || best_idx < 0 || target_idx < best_idx)
                             {
-                                stop_cell_scan = true;
-                                break;
+                                best_dist_sq = dist_sq;
+                                best_idx = target_idx;
+                                best_tx = tx;
+                                best_ty = ty;
+                                best_tz = tz;
+                                if (can_stop_after_exact_match && dist_sq <= 0.0)
+                                {
+                                    stop_cell_scan = true;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -3305,6 +3310,19 @@ unsigned long long icpTargetCandidateVisitCountForTesting()
 {
     unsigned long long count = 0;
     PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_target_candidate_visit_count, sizeof(count)));
+    return count;
+}
+
+void resetIcpTargetIndexLoadCountForTesting()
+{
+    const unsigned long long zero = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyToSymbol(g_icp_target_index_load_count, &zero, sizeof(zero)));
+}
+
+unsigned long long icpTargetIndexLoadCountForTesting()
+{
+    unsigned long long count = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_target_index_load_count, sizeof(count)));
     return count;
 }
 
