@@ -388,7 +388,7 @@ private:
                 stats,
                 T_step_gpu.data(),
                 step_workspace);
-            gpu::multiplyTransform4x4(T_step_gpu.data(), T_acc_gpu.data(), next_T_acc_gpu.data());
+            gpu::multiplyTransform4x4Async(T_step_gpu.data(), T_acc_gpu.data(), next_T_acc_gpu.data(), 0);
             std::swap(T_acc_gpu, next_T_acc_gpu);
             gpu::transformPointsColumnMajorAsync(T_step_gpu.data(), cur.data(), source_count, next_cur.data(), 0);
             std::swap(cur, next_cur);

@@ -4,7 +4,7 @@
 
 **Goal:** Move `IterativeClosestPoint<Scalar, GPU>` away from full CPU-staged point processing and keep the per-point ICP workload on GPU.
 
-**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences with shared-memory target tiling, accumulate centroid/covariance/residual stats on device with block-level reductions, compute the rigid step transform with a GPU quaternion/Jacobi solver, initialize and update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. Reduced stats and small metric checks still synchronize to CPU while current points, step transforms, degeneracy flags, and transform accumulation stay GPU-resident. The GPU align loop skips transformed final-stats scans on non-terminal iterations and computes final metrics only when convergence or the final iteration requires them. The legacy CPU final transform is copied from the GPU lazily only when `getFinalTransformation()` is called.
+**Architecture:** Keep the existing CPU ICP path unchanged. Add CUDA helpers that accept PlaMatrix column-major GPU buffers, compute nearest-neighbor correspondences with shared-memory target tiling, accumulate centroid/covariance/residual stats on device with block-level reductions, compute the rigid step transform with a GPU quaternion/Jacobi solver, initialize and asynchronously update the 4x4 accumulated transform on device, and expose the GPU final transform to callers. Reduced stats and small metric checks still synchronize to CPU while current points, step transforms, degeneracy flags, and transform accumulation stay GPU-resident. The GPU align loop skips transformed final-stats scans on non-terminal iterations and computes final metrics only when convergence or the final iteration requires them. The legacy CPU final transform is copied from the GPU lazily only when `getFinalTransformation()` is called.
 
 **Tech Stack:** C++17, CUDA runtime, PlaMatrix GPU `DenseMatrix`, Google Test, PlaPoint benchmark executable.
 
@@ -184,6 +184,19 @@
 - [x] Implement synchronous and async float/double identity-transform write helpers.
 - [x] Initialize `alignGpu()` accumulated transform on GPU instead of using `identity4x4().toGpu()`.
 
+### Task 15: Async Transform Accumulation
+
+**Files:**
+- Modify: `include/plapoint/gpu/icp.h`
+- Modify: `src/icp_gpu.cu`
+- Modify: `include/plapoint/registration/icp.h`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `README.md`
+
+- [x] Add a CUDA-only test requiring async 4x4 transform multiplication on a caller-provided stream.
+- [x] Keep the existing synchronous `multiplyTransform4x4()` API behavior unchanged.
+- [x] Make `alignGpu()` queue transform accumulation asynchronously on stream 0.
+
 Verification evidence:
 
 - `git diff --check`: clean.
@@ -229,11 +242,17 @@ Verification evidence:
   1 targeted test passed after adding the GPU identity-transform helper.
 - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
   16 targeted ICP GPU/stats/validation tests passed after using GPU identity initialization in `alignGpu()`.
+- `cmake --build build-codex-cuda -j$(nproc)` after adding `MultiplyTransform4x4AsyncUsesCallerStream`:
+  failed as expected because `plapoint::gpu::multiplyTransform4x4Async` did not exist yet.
+- `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.MultiplyTransform4x4AsyncUsesCallerStream`:
+  1 targeted test passed after adding async transform multiplication.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  17 targeted ICP GPU/stats/validation tests passed after queueing transform accumulation asynchronously in `alignGpu()`.
 - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
   142 tests, 0 failed, 1 skipped CUDA-only transfer case.
 - `cmake --build build-codex-cuda -j$(nproc) && ctest --test-dir build-codex-cuda --output-on-failure`:
-  192 tests, 0 failed.
+  193 tests, 0 failed.
 - `cmake --build build-codex-cpu-bench -j$(nproc) && ./build-codex-cpu-bench/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CPU benchmark rows emitted through `cpu_icp_identity,512,1,34.0872`.
+  CPU benchmark rows emitted through `cpu_icp_identity,512,1,30.127`.
 - `cmake --build build-codex-cuda-bench-only -j$(nproc) && ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1`:
-  CUDA benchmark rows included `gpu_icp_identity,512,1,0.39288`.
+  CUDA benchmark rows included `gpu_icp_identity,512,1,0.388126`.

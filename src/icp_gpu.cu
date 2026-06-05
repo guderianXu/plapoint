@@ -664,7 +664,6 @@ void multiplyTransform4x4Impl(
 
     multiplyTransform4x4Kernel<Scalar><<<1, 16, 0, stream>>>(d_A, d_B, d_C);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
-    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
 }
 
 template <typename Scalar>
@@ -949,9 +948,29 @@ void multiplyTransform4x4(
     cudaStream_t stream)
 {
     multiplyTransform4x4Impl(d_A, d_B, d_C, stream);
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
 }
 
 void multiplyTransform4x4(
+    const double* d_A,
+    const double* d_B,
+    double* d_C,
+    cudaStream_t stream)
+{
+    multiplyTransform4x4Impl(d_A, d_B, d_C, stream);
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+}
+
+void multiplyTransform4x4Async(
+    const float* d_A,
+    const float* d_B,
+    float* d_C,
+    cudaStream_t stream)
+{
+    multiplyTransform4x4Impl(d_A, d_B, d_C, stream);
+}
+
+void multiplyTransform4x4Async(
     const double* d_A,
     const double* d_B,
     double* d_C,

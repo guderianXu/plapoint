@@ -175,6 +175,50 @@ TEST(ICPGpuPathTest, MultiplyTransform4x4UsesColumnMajorTransformComposition)
     }
 }
 
+TEST(ICPGpuPathTest, MultiplyTransform4x4AsyncUsesCallerStream)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> A(4, 4);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> B(4, 4);
+    A.fill(0.0f);
+    B.fill(0.0f);
+
+    A.setValue(0, 0, 1.0f); A.setValue(0, 3, 1.5f);
+    A.setValue(1, 1, 1.0f); A.setValue(1, 3, -2.0f);
+    A.setValue(2, 2, 1.0f); A.setValue(2, 3, 0.25f);
+    A.setValue(3, 3, 1.0f);
+
+    B.setValue(0, 0, 0.0f);  B.setValue(0, 1, -1.0f); B.setValue(0, 3, 3.0f);
+    B.setValue(1, 0, 1.0f);  B.setValue(1, 1, 0.0f);  B.setValue(1, 3, 4.0f);
+    B.setValue(2, 2, 1.0f);  B.setValue(2, 3, -1.0f);
+    B.setValue(3, 3, 1.0f);
+
+    auto A_gpu = A.toGpu();
+    auto B_gpu = B.toGpu();
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> C_gpu(4, 4);
+
+    cudaStream_t stream{};
+    PLAPOINT_CHECK_CUDA(cudaStreamCreate(&stream));
+    plapoint::gpu::multiplyTransform4x4Async(A_gpu.data(), B_gpu.data(), C_gpu.data(), stream);
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    PLAPOINT_CHECK_CUDA(cudaStreamDestroy(stream));
+
+    auto C = C_gpu.toCpu();
+    auto expected = multiplyCpu4x4(A, B);
+
+    for (int row = 0; row < 4; ++row)
+    {
+        for (int col = 0; col < 4; ++col)
+        {
+            EXPECT_NEAR(C.getValue(row, col), expected.getValue(row, col), 1.0e-6f);
+        }
+    }
+}
+
 TEST(ICPGpuPathTest, SetIdentityTransform4x4WritesColumnMajorIdentity)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
