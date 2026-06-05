@@ -1824,7 +1824,7 @@ bool shouldTryExactPointwiseStats(
 }
 
 template <typename Scalar>
-bool tryComputeExactPointwiseStats(
+bool launchExactPointwiseStats(
     const Scalar* d_source_points,
     int source_count,
     const Scalar* d_target_points,
@@ -1834,7 +1834,6 @@ bool tryComputeExactPointwiseStats(
     RawIcpStats* d_partials,
     int partial_count,
     RawIcpStats* d_stats,
-    RawIcpStats& raw,
     cudaStream_t stream)
 {
     if (!shouldTryExactPointwiseStats(
@@ -1861,6 +1860,37 @@ bool tryComputeExactPointwiseStats(
         partial_count,
         d_stats);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    return true;
+}
+
+template <typename Scalar>
+bool tryComputeExactPointwiseStats(
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    const int* d_correspondence_indices,
+    RawIcpStats* d_partials,
+    int partial_count,
+    RawIcpStats* d_stats,
+    RawIcpStats& raw,
+    cudaStream_t stream)
+{
+    if (!launchExactPointwiseStats(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            d_correspondence_indices,
+            d_partials,
+            partial_count,
+            d_stats,
+            stream))
+    {
+        return false;
+    }
 
     PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
                                         cudaMemcpyDeviceToHost, stream));
@@ -2571,7 +2601,8 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
     auto* d_stats = reinterpret_cast<RawIcpStats*>(stats_workspace.statsStorage());
     auto* d_result = reinterpret_cast<IcpStepTransformRawResult*>(step_workspace.resultStorage());
     RawIcpStats raw{};
-    const bool exact_pointwise_stats = tryComputeExactPointwiseStats(
+    IcpStepTransformRawResult raw_result{};
+    const bool exact_pointwise_stats = launchExactPointwiseStats(
         d_source_points,
         source_count,
         d_target_points,
@@ -2581,10 +2612,34 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
         d_partials,
         grid_size,
         d_stats,
-        raw,
         stream);
 
-    if (!exact_pointwise_stats)
+    if (exact_pointwise_stats)
+    {
+        computeStepTransformFromRawStatsKernel<Scalar><<<1, 1, 0, stream>>>(
+            d_stats,
+            d_step_transform,
+            d_result);
+        PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
+                                            cudaMemcpyDeviceToHost, stream));
+        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpStepTransformRawResult),
+                                            cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+        g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+        PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+        if (std::isfinite(raw.residual_sq_sum))
+        {
+            IcpStatsAndStepTransformResult<Scalar> result;
+            result.stats = makeHostStats<Scalar>(raw);
+            result.step.delta = static_cast<Scalar>(raw_result.delta);
+            result.step_valid = raw_result.valid != 0;
+            return result;
+        }
+    }
+
     {
         const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
             d_target_points,
@@ -2639,7 +2694,6 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
         d_result);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    IcpStepTransformRawResult raw_result{};
     PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
                                         cudaMemcpyDeviceToHost, stream));
     PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpStepTransformRawResult),

@@ -1540,6 +1540,7 @@ TEST(ICPGpuPathTest, AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs)
     plapoint::gpu::resetIcpFullDistanceEvaluationCountForTesting();
     plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
     plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     GpuCloud output;
     icp.align(output);
 
@@ -1549,6 +1550,7 @@ TEST(ICPGpuPathTest, AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs)
     EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
     EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 0ull);
     EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
 }
 
 TEST(ICPGpuPathTest, AlignReusesIterationStatsForExactIdentityTerminalMetrics)

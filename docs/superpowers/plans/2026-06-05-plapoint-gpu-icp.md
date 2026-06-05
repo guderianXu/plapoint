@@ -1048,3 +1048,39 @@ Verification evidence:
   `gpu_icp_stats_step_finite_radius_translation_cached_grid,100000,5,1.36599`, and
   `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,1.33416`.
   The identity benchmark dropped from the previous 691 ms scale to sub-millisecond on this machine.
+
+## Task 41: Single-Sync Exact Pointwise Stats+Step
+
+- Goal: remove the extra host synchronization introduced by the exact pointwise identity probe in the fused
+  stats+step path. After Task 40, exact infinite-radius identity avoided the O(NxM) scan but still synchronized once
+  to validate the equality probe and again to read the step result.
+- Implementation:
+  - Split exact pointwise stats into a launch-only helper and the existing stats-only sync helper.
+  - In `computeIcpStatsAndStepTransformColumnMajorImpl`, launch exact pointwise stats, reduce raw stats, compute the
+    step transform from that raw stats buffer, then copy raw stats and step result back with one stream
+    synchronization.
+  - Preserve fallback behavior: if the pointwise probe reports a mismatch, run the existing nearest-neighbor
+    correspondence path and compute the step normally.
+  - Added a host-sync assertion to the exact infinite-radius identity align test, requiring one stats synchronization.
+- `git diff --check` after the single-sync exact path:
+  clean.
+- `cmake --build build-codex-cuda -j$(nproc)` and
+  `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs:ICPGpuPathTest.CorrespondenceStatsAllowOmittedIndexOutput:ICPGpuPathTest.CorrespondenceStatsStillWriteRequestedIndexOutput:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPGpuPathTest.AlignSkipsFinalStatsForNonTerminalGpuIterations:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics`:
+  6 targeted exact/fallback/index/host-sync tests passed.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  41 targeted ICP GPU/stats/validation tests passed.
+- `ctest --test-dir build-codex-cpu --output-on-failure`:
+  143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `ctest --test-dir build-codex-cuda --output-on-failure`:
+  218 tests, 0 failed.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+  `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+  rows included
+  `gpu_icp_identity,100000,5,0.305878`,
+  `gpu_icp_finite_radius,100000,5,1.01823`,
+  `gpu_icp_finite_radius_translation,100000,5,3.57709`,
+  `gpu_icp_finite_radius_translation_reuse,100000,5,2.96364`,
+  `gpu_icp_finite_radius_translation_reuse_output,100000,5,2.90675`,
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,5,2.42251`,
+  `gpu_icp_stats_step_finite_radius_translation_cached_grid,100000,5,1.36473`, and
+  `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,1.33488`.
