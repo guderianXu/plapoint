@@ -146,6 +146,8 @@ void resetIcpTargetTileBoundComputationCountForTesting();
 unsigned long long icpTargetTileBoundComputationCountForTesting();
 void resetIcpTargetSpatialGridBuildCountForTesting();
 int icpTargetSpatialGridBuildCountForTesting();
+void resetIcpGridCellLookupCountForTesting();
+unsigned long long icpGridCellLookupCountForTesting();
 void resetIcpLastTransformOutputPointerForTesting();
 const void* icpLastTransformOutputPointerForTesting();
 
@@ -664,6 +666,53 @@ TEST(ICPGpuPathTest, CorrespondenceStatsUsesFiniteRadiusSpatialGridCandidates)
     EXPECT_EQ(workspace.targetSpatialGridIndicesStorage(), first_grid_indices);
     EXPECT_EQ(workspace.targetSpatialGridCellStartsStorage(), first_grid_cell_starts);
     EXPECT_EQ(workspace.targetSpatialGridCellCountsStorage(), first_grid_cell_counts);
+}
+
+TEST(ICPGpuPathTest, CorrespondenceStatsBatchesSpatialGridNeighborLookupsByXY)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source(1, 3);
+    source.setValue(0, 0, 0.0f);
+    source.setValue(0, 1, 0.0f);
+    source.setValue(0, 2, 0.0f);
+
+    constexpr int target_count = 27;
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(target_count, 3);
+    int idx = 0;
+    for (int x = -1; x <= 1; ++x)
+    {
+        for (int y = -1; y <= 1; ++y)
+        {
+            for (int z = -1; z <= 1; ++z)
+            {
+                target.setValue(idx, 0, x == 0 ? 0.0f : static_cast<float>(x));
+                target.setValue(idx, 1, y == 0 ? 0.0f : static_cast<float>(y));
+                target.setValue(idx, 2, z == 0 ? 0.0f : static_cast<float>(z));
+                ++idx;
+            }
+        }
+    }
+
+    auto source_gpu = source.toGpu();
+    auto target_gpu = target.toGpu();
+
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        nullptr,
+        workspace);
+
+    EXPECT_EQ(stats.active_count, 1);
+    EXPECT_LE(plapoint::gpu::icpGridCellLookupCountForTesting(), 9ull);
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsReusesFiniteRadiusSpatialGridForSameTarget)

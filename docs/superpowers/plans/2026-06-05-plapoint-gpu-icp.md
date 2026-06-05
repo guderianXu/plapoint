@@ -425,8 +425,42 @@
   cached-grid stats+step, and cached-grid stats-only.
 - [x] Run targeted ICP tests, full CPU/CUDA tests, and benchmark smoke after the final documentation update.
 
+### Task 32: Batched Spatial-Grid Neighbor Cell Lookups
+
+**Files:**
+- Modify: `src/icp_gpu.cu`
+- Modify: `test/unit/registration/icp_gpu_path_test.cpp`
+- Modify: `docs/superpowers/plans/2026-06-05-plapoint-gpu-icp.md`
+
+- [x] Add a CUDA-only test counter proving the old finite-radius spatial-grid path performs 27 cell lookups per
+  source point.
+- [x] Replace per-neighbor exact-cell binary searches with one lower-bound lookup per `(x,y)` neighbor pair and
+  a short sequential scan across adjacent `z` cells.
+- [x] Preserve candidate visit and correspondence semantics for the cached finite-radius spatial-grid path.
+- [x] Run targeted spatial-grid tests, full CPU/CUDA tests, and the 100k finite-radius GPU ICP benchmark.
+
 Verification evidence:
 
+- `cmake --build build-codex-cuda -j$(nproc) &&
+  ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsBatchesSpatialGridNeighborLookupsByXY`
+  before batching spatial-grid lookups:
+  failed as expected with 27 grid cell lookups instead of the expected at most 9.
+- `git diff --check && cmake --build build-codex-cuda -j$(nproc) &&
+  ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsUsesFiniteRadiusSpatialGridCandidates:ICPGpuPathTest.CorrespondenceStatsBatchesSpatialGridNeighborLookupsByXY:ICPGpuPathTest.CorrespondenceStatsReusesFiniteRadiusSpatialGridForSameTarget:ICPGpuPathTest.AlignReusesFiniteRadiusSpatialGridAcrossStatsCalls:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization`:
+  5 targeted spatial-grid/fused-step tests passed.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  34 targeted ICP GPU/stats/validation tests passed after batching spatial-grid neighbor lookups.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+  ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 2 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`:
+  large finite-radius GPU ICP benchmark rows included
+  `gpu_icp_finite_radius_translation_reuse_output,100000,2,5.85697`,
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,2,3.91724`,
+  `gpu_icp_stats_step_finite_radius_translation_cached_grid,100000,2,1.93988`, and
+  `gpu_icp_stats_finite_radius_translation_cached_grid,100000,2,1.89291`.
+- `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`:
+  143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda -j$(nproc) && ctest --test-dir build-codex-cuda --output-on-failure`:
+  211 tests, 0 failed.
 - `cmake --build build-codex-cuda -j$(nproc)` after adding the CPU/GPU final-metrics opt-out tests:
   failed as expected because `IterativeClosestPoint<..., CPU/GPU>` had no `setComputeFinalMetrics()` member.
 - `git diff --check && cmake --build build-codex-cuda -j$(nproc) &&

@@ -114,6 +114,7 @@ std::atomic<std::uintptr_t> g_icp_last_transform_output_pointer{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
 __device__ unsigned long long g_icp_target_candidate_visit_count;
 __device__ unsigned long long g_icp_target_tile_bound_computation_count;
+__device__ unsigned long long g_icp_grid_cell_lookup_count;
 #endif
 
 int icpStatsPartialCount(int source_count)
@@ -202,12 +203,14 @@ struct ComputeIcpTargetGridCellKey
     }
 };
 
-__device__ int findIcpGridCell(const IcpGridCellKey* cell_keys, int cell_count, const IcpGridCellKey& query)
+__device__ int lowerBoundIcpGridCell(const IcpGridCellKey* cell_keys, int cell_count, const IcpGridCellKey& query)
 {
+#ifdef PLAPOINT_ENABLE_TESTING
+    atomicAdd(&g_icp_grid_cell_lookup_count, 1ull);
+#endif
     int first = 0;
     int last = cell_count;
     const IcpGridCellKeyLess less{};
-    const IcpGridCellKeyEqual equal{};
     while (first < last)
     {
         const int mid = first + (last - first) / 2;
@@ -220,7 +223,7 @@ __device__ int findIcpGridCell(const IcpGridCellKey* cell_keys, int cell_count, 
             last = mid;
         }
     }
-    return first < cell_count && equal(cell_keys[first], query) ? first : -1;
+    return first;
 }
 
 __device__ void recordAcceptedCorrespondence(
@@ -525,30 +528,40 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
             icpGridCellCoordinate(sz, target_grid.cell_size)
         };
 
+        int min_z = source_key.z;
+        int max_z = source_key.z;
+        if (!offsetGridCellCoordinate(source_key.z, -1, min_z))
+        {
+            min_z = source_key.z;
+        }
+        if (!offsetGridCellCoordinate(source_key.z, 1, max_z))
+        {
+            max_z = source_key.z;
+        }
+
         for (int dx_cell = -1; dx_cell <= 1; ++dx_cell)
         {
-            IcpGridCellKey query_key{};
-            if (!offsetGridCellCoordinate(source_key.x, dx_cell, query_key.x))
+            int query_x = 0;
+            if (!offsetGridCellCoordinate(source_key.x, dx_cell, query_x))
             {
                 continue;
             }
             for (int dy_cell = -1; dy_cell <= 1; ++dy_cell)
             {
-                if (!offsetGridCellCoordinate(source_key.y, dy_cell, query_key.y))
+                int query_y = 0;
+                if (!offsetGridCellCoordinate(source_key.y, dy_cell, query_y))
                 {
                     continue;
                 }
-                for (int dz_cell = -1; dz_cell <= 1; ++dz_cell)
-                {
-                    if (!offsetGridCellCoordinate(source_key.z, dz_cell, query_key.z))
-                    {
-                        continue;
-                    }
 
-                    const int cell_idx = findIcpGridCell(target_grid.cell_keys, target_grid.cell_count, query_key);
-                    if (cell_idx < 0)
+                IcpGridCellKey query_key{query_x, query_y, min_z};
+                int cell_idx = lowerBoundIcpGridCell(target_grid.cell_keys, target_grid.cell_count, query_key);
+                while (cell_idx < target_grid.cell_count)
+                {
+                    const IcpGridCellKey cell_key = target_grid.cell_keys[cell_idx];
+                    if (cell_key.x != query_x || cell_key.y != query_y || cell_key.z > max_z)
                     {
-                        continue;
+                        break;
                     }
 
                     const int start = target_grid.cell_starts[cell_idx];
@@ -595,6 +608,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                             best_tz = tz;
                         }
                     }
+                    ++cell_idx;
                 }
             }
         }
@@ -1648,6 +1662,19 @@ void resetIcpTargetSpatialGridBuildCountForTesting()
 int icpTargetSpatialGridBuildCountForTesting()
 {
     return g_icp_target_spatial_grid_build_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpGridCellLookupCountForTesting()
+{
+    const unsigned long long zero = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyToSymbol(g_icp_grid_cell_lookup_count, &zero, sizeof(zero)));
+}
+
+unsigned long long icpGridCellLookupCountForTesting()
+{
+    unsigned long long count = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_grid_cell_lookup_count, sizeof(count)));
+    return count;
 }
 
 void resetIcpLastTransformOutputPointerForTesting()
