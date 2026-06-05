@@ -1451,6 +1451,50 @@ __global__ void reduceRawIcpStatsKernel(
     }
 }
 
+template <typename Scalar>
+__global__ void reduceRawIcpStatsAndSetExactPointwiseIdentityStepKernel(
+    const RawIcpStats* partial_stats,
+    int partial_count,
+    RawIcpStats* stats,
+    Scalar* step_transform,
+    IcpStepTransformRawResult* result)
+{
+    const int local_idx = threadIdx.x;
+    RawIcpStats local{};
+    for (int idx = local_idx; idx < partial_count; idx += blockDim.x)
+    {
+        addRawIcpStats(local, partial_stats[idx]);
+    }
+
+    __shared__ RawIcpStats shared_stats[kIcpStatsBlockSize];
+    shared_stats[local_idx] = local;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            addRawIcpStats(shared_stats[local_idx], shared_stats[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (local_idx < 16)
+    {
+        const int row = local_idx & 3;
+        const int col = local_idx >> 2;
+        step_transform[local_idx] = row == col ? Scalar(1) : Scalar(0);
+    }
+
+    if (local_idx == 0)
+    {
+        const RawIcpStats reduced = shared_stats[0];
+        *stats = reduced;
+        result->delta = 0.0;
+        result->valid = reduced.active_count > 0 && isfinite(reduced.residual_sq_sum) ? 1 : 0;
+    }
+}
+
 __global__ void reduceRawIcpResidualStatsKernel(
     const RawIcpResidualStats* partial_stats,
     int partial_count,
@@ -1494,27 +1538,6 @@ __global__ void setIdentityTransform4x4Kernel(Scalar* transform)
     const int row = idx & 3;
     const int col = idx >> 2;
     transform[idx] = row == col ? Scalar(1) : Scalar(0);
-}
-
-template <typename Scalar>
-__global__ void setExactPointwiseIdentityStepKernel(
-    const RawIcpStats* raw_stats,
-    Scalar* step_transform,
-    IcpStepTransformRawResult* result)
-{
-    const int idx = threadIdx.x;
-    if (idx < 16)
-    {
-        const int row = idx & 3;
-        const int col = idx >> 2;
-        step_transform[idx] = row == col ? Scalar(1) : Scalar(0);
-    }
-
-    if (idx == 0)
-    {
-        result->delta = 0.0;
-        result->valid = raw_stats->active_count > 0 && isfinite(raw_stats->residual_sq_sum) ? 1 : 0;
-    }
 }
 
 template <typename Scalar>
@@ -1886,20 +1909,50 @@ bool launchExactPointwiseStats(
 }
 
 template <typename Scalar>
-void launchExactPointwiseIdentityStep(
-    const RawIcpStats* d_stats,
+bool launchExactPointwiseStatsAndIdentityStep(
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    const int* d_correspondence_indices,
+    RawIcpStats* d_partials,
+    int partial_count,
+    RawIcpStats* d_stats,
     Scalar* d_step_transform,
     IcpStepTransformRawResult* d_result,
     cudaStream_t stream)
 {
+    if (!shouldTryExactPointwiseStats(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            d_correspondence_indices))
+    {
+        return false;
+    }
+
+    constexpr int block_size = kIcpStatsBlockSize;
+    collectExactPointwiseCorrespondenceStatsKernel<Scalar><<<partial_count, block_size, 0, stream>>>(
+        d_source_points,
+        d_target_points,
+        source_count,
+        d_partials);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_exact_pointwise_step_call_count.fetch_add(1, std::memory_order_relaxed);
 #endif
-    setExactPointwiseIdentityStepKernel<Scalar><<<1, 16, 0, stream>>>(
+    reduceRawIcpStatsAndSetExactPointwiseIdentityStepKernel<Scalar><<<1, block_size, 0, stream>>>(
+        d_partials,
+        partial_count,
         d_stats,
         d_step_transform,
         d_result);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    return true;
 }
 
 template <typename Scalar>
@@ -2641,7 +2694,7 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
     auto* d_result = reinterpret_cast<IcpStepTransformRawResult*>(step_workspace.resultStorage());
     RawIcpStats raw{};
     IcpStepTransformRawResult raw_result{};
-    const bool exact_pointwise_stats = launchExactPointwiseStats(
+    const bool exact_pointwise_stats = launchExactPointwiseStatsAndIdentityStep(
         d_source_points,
         source_count,
         d_target_points,
@@ -2651,16 +2704,12 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
         d_partials,
         grid_size,
         d_stats,
+        d_step_transform,
+        d_result,
         stream);
 
     if (exact_pointwise_stats)
     {
-        launchExactPointwiseIdentityStep<Scalar>(
-            d_stats,
-            d_step_transform,
-            d_result,
-            stream);
-
         PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
                                             cudaMemcpyDeviceToHost, stream));
         PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpStepTransformRawResult),
