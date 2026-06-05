@@ -590,7 +590,9 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
         }
 
         const int offset_order[3]{0, -1, 1};
-        for (int dx_offset_idx = 0; dx_offset_idx < 3; ++dx_offset_idx)
+        const bool can_stop_after_exact_match = correspondence_indices == nullptr;
+        bool stop_cell_scan = false;
+        for (int dx_offset_idx = 0; dx_offset_idx < 3 && !stop_cell_scan; ++dx_offset_idx)
         {
             int query_x = 0;
             const int dx_cell = offset_order[dx_offset_idx];
@@ -598,7 +600,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
             {
                 continue;
             }
-            for (int dy_offset_idx = 0; dy_offset_idx < 3; ++dy_offset_idx)
+            for (int dy_offset_idx = 0; dy_offset_idx < 3 && !stop_cell_scan; ++dy_offset_idx)
             {
                 int query_y = 0;
                 const int dy_cell = offset_order[dy_offset_idx];
@@ -609,7 +611,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
 
                 IcpGridCellKey query_key{query_x, query_y, min_z};
                 int cell_idx = lowerBoundIcpGridCell(target_grid.cell_keys, target_grid.cell_count, query_key);
-                while (cell_idx < target_grid.cell_count)
+                while (cell_idx < target_grid.cell_count && !stop_cell_scan)
                 {
                     const IcpGridCellKey cell_key = target_grid.cell_keys[cell_idx];
                     if (cell_key.x != query_x || cell_key.y != query_y || cell_key.z > max_z)
@@ -673,6 +675,11 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                             best_tx = tx;
                             best_ty = ty;
                             best_tz = tz;
+                            if (can_stop_after_exact_match && dist_sq <= 0.0)
+                            {
+                                stop_cell_scan = true;
+                                break;
+                            }
                         }
                     }
                     ++cell_idx;
@@ -932,7 +939,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
 
                 IcpGridCellKey query_key{query_x, query_y, min_z};
                 int cell_idx = lowerBoundIcpGridCell(target_grid.cell_keys, target_grid.cell_count, query_key);
-                while (cell_idx < target_grid.cell_count)
+                while (cell_idx < target_grid.cell_count && !stop_cell_scan)
                 {
                     const IcpGridCellKey cell_key = target_grid.cell_keys[cell_idx];
                     if (cell_key.x != query_x || cell_key.y != query_y || cell_key.z > max_z)
@@ -1262,7 +1269,7 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
 
                 IcpGridCellKey query_key{query_x, query_y, min_z};
                 int cell_idx = lowerBoundIcpGridCell(target_grid.cell_keys, target_grid.cell_count, query_key);
-                while (cell_idx < target_grid.cell_count)
+                while (cell_idx < target_grid.cell_count && !stop_cell_scan)
                 {
                     const IcpGridCellKey cell_key = target_grid.cell_keys[cell_idx];
                     if (cell_key.x != query_x || cell_key.y != query_y || cell_key.z > max_z)

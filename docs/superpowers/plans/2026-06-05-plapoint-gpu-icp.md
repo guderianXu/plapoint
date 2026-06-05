@@ -964,3 +964,47 @@ Verification evidence:
   `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,1.31061`.
   The 4x4 multiply skip removes one small launch in one-iteration paths; measured end-to-end speed is within run-to-run
   noise because nearest-neighbor/grid work remains dominant at this scale.
+
+## Task 39: Omitted-Index Correspondence Exact-Match Grid Early Exit
+
+- Goal: reduce finite-radius spatial-grid correspondence work for already-aligned or exact-match points. When
+  `correspondence_indices` is null, the stats path does not need deterministic target-index tie resolution; once an
+  exact zero-distance correspondence is found, further cell/candidate scans cannot change the accumulated ICP stats.
+- Implementation:
+  - Added exact-match early exit to `collectCorrespondenceStatsSpatialGridKernel` only when
+    `correspondence_indices == nullptr`.
+  - Left index-writing calls on the full scan path so equal-distance ties still choose the lower target index.
+  - Tightened existing residual exact-match early exits by making the active z-cell `while` loops honor
+    `stop_cell_scan`, not only the outer xy loops.
+  - Added CUDA test coverage proving omitted-index correspondence visits one exact candidate and performs one grid
+    lookup, while the indexed call still scans additional candidates and writes the expected target index.
+- `git diff --check` after the fast path:
+  clean.
+- `cmake --build build-codex-cuda -j$(nproc)` and
+  `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsStopsSpatialGridAfterExactMatchWhenIndicesOmitted:ICPGpuPathTest.CorrespondenceStatsSpatialGridTieKeepsLowerTargetIndex:ICPGpuPathTest.ResidualStatsStopsSpatialGridLookupsAfterExactMatch:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.CorrespondenceStatsBatchesSpatialGridNeighborLookupsByXY`:
+  5 targeted finite-radius grid/exact-match tests passed.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  40 targeted ICP GPU/stats/validation tests passed.
+- `ctest --test-dir build-codex-cpu --output-on-failure`:
+  143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `ctest --test-dir build-codex-cuda --output-on-failure`:
+  217 tests, 0 failed.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+  `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`:
+  large finite-radius GPU ICP benchmark rows included
+  `gpu_icp_finite_radius,100000,5,1.02394`,
+  `gpu_icp_finite_radius_translation,100000,5,3.58469`,
+  `gpu_icp_finite_radius_translation_reuse,100000,5,2.96396`,
+  `gpu_icp_finite_radius_translation_reuse_output,100000,5,2.90484`,
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,5,2.42765`,
+  `gpu_icp_stats_step_finite_radius_translation_cached_grid,100000,5,1.37249`, and
+  `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,1.33395`.
+- `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+  with `gpu_icp_identity` enabled, rows included
+  `gpu_icp_identity,100000,5,691.875`,
+  `gpu_icp_finite_radius,100000,5,0.93941`,
+  `gpu_icp_finite_radius_translation,100000,5,3.26018`,
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,5,2.17734`, and
+  `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,1.19467`.
+  The finite-radius exact-match path improved substantially; the infinite-radius identity benchmark remains a separate
+  full-scan bottleneck.
