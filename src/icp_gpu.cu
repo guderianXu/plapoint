@@ -89,6 +89,9 @@ struct IcpTargetSpatialGrid
 {
     const IcpGridCellKey* cell_keys = nullptr;
     const int* sorted_target_indices = nullptr;
+    const double* sorted_target_x = nullptr;
+    const double* sorted_target_y = nullptr;
+    const double* sorted_target_z = nullptr;
     const int* cell_starts = nullptr;
     const int* cell_counts = nullptr;
     int cell_count = 0;
@@ -205,15 +208,6 @@ __device__ bool loadFiniteColumnMajorPoint(const Scalar* points, int point_count
     return isfinite(x) && isfinite(y) && isfinite(z);
 }
 
-template <typename Scalar>
-__device__ void loadColumnMajorPoint(const Scalar* points, int point_count, int idx,
-                                     double& x, double& y, double& z)
-{
-    x = static_cast<double>(points[idx]);
-    y = static_cast<double>(points[point_count + idx]);
-    z = static_cast<double>(points[2 * point_count + idx]);
-}
-
 __host__ __device__ int icpGridCellCoordinate(double value, double cell_size)
 {
     const double coordinate = floor(value / cell_size);
@@ -261,6 +255,27 @@ struct ComputeIcpTargetGridCellKey
         };
     }
 };
+
+template <typename Scalar>
+__global__ void gatherSortedIcpTargetPointsKernel(
+    const Scalar* target_points,
+    int target_count,
+    const int* sorted_target_indices,
+    double* sorted_x,
+    double* sorted_y,
+    double* sorted_z)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= target_count)
+    {
+        return;
+    }
+
+    const int target_idx = sorted_target_indices[idx];
+    sorted_x[idx] = static_cast<double>(target_points[target_idx]);
+    sorted_y[idx] = static_cast<double>(target_points[target_count + target_idx]);
+    sorted_z[idx] = static_cast<double>(target_points[2 * target_count + target_idx]);
+}
 
 __device__ int lowerBoundIcpGridCell(const IcpGridCellKey* cell_keys, int cell_count, const IcpGridCellKey& query)
 {
@@ -585,8 +600,6 @@ template <typename Scalar>
 __global__ void collectCorrespondenceStatsSpatialGridKernel(
     const Scalar* source_points,
     int source_count,
-    const Scalar* target_points,
-    int target_count,
     Scalar max_correspondence_distance,
     int* correspondence_indices,
     IcpTargetSpatialGrid target_grid,
@@ -700,14 +713,14 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                     const int count = target_grid.cell_counts[cell_idx];
                     for (int offset = 0; offset < count; ++offset)
                     {
-                        const int target_idx = target_grid.sorted_target_indices[start + offset];
+                        const int sorted_offset = start + offset;
+                        const int target_idx = target_grid.sorted_target_indices[sorted_offset];
 #ifdef PLAPOINT_ENABLE_TESTING
                         atomicAdd(&g_icp_target_candidate_visit_count, 1ull);
 #endif
-                        double tx = 0.0;
-                        double ty = 0.0;
-                        double tz = 0.0;
-                        loadColumnMajorPoint(target_points, target_count, target_idx, tx, ty, tz);
+                        const double tx = target_grid.sorted_target_x[sorted_offset];
+                        const double ty = target_grid.sorted_target_y[sorted_offset];
+                        const double tz = target_grid.sorted_target_z[sorted_offset];
 
                         const double dx = sx - tx;
                         if (fabs(dx) > max_dist)
@@ -990,8 +1003,6 @@ template <typename Scalar>
 __global__ void collectResidualStatsSpatialGridKernel(
     const Scalar* source_points,
     int source_count,
-    const Scalar* target_points,
-    int target_count,
     Scalar max_correspondence_distance,
     IcpTargetSpatialGrid target_grid,
     RawIcpResidualStats* partial_stats)
@@ -1095,11 +1106,10 @@ __global__ void collectResidualStatsSpatialGridKernel(
                     const int count = target_grid.cell_counts[cell_idx];
                     for (int offset = 0; offset < count; ++offset)
                     {
-                        const int target_idx = target_grid.sorted_target_indices[start + offset];
-                        double tx = 0.0;
-                        double ty = 0.0;
-                        double tz = 0.0;
-                        loadColumnMajorPoint(target_points, target_count, target_idx, tx, ty, tz);
+                        const int sorted_offset = start + offset;
+                        const double tx = target_grid.sorted_target_x[sorted_offset];
+                        const double ty = target_grid.sorted_target_y[sorted_offset];
+                        const double tz = target_grid.sorted_target_z[sorted_offset];
 
                         const double dx = sx - tx;
                         if (fabs(dx) > max_dist)
@@ -1313,8 +1323,6 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
     const Scalar* transform,
     const Scalar* source_points,
     int source_count,
-    const Scalar* target_points,
-    int target_count,
     Scalar max_correspondence_distance,
     Scalar* output_points,
     IcpTargetSpatialGrid target_grid,
@@ -1433,11 +1441,10 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                     const int count = target_grid.cell_counts[cell_idx];
                     for (int offset = 0; offset < count; ++offset)
                     {
-                        const int target_idx = target_grid.sorted_target_indices[start + offset];
-                        double tx = 0.0;
-                        double ty = 0.0;
-                        double tz = 0.0;
-                        loadColumnMajorPoint(target_points, target_count, target_idx, tx, ty, tz);
+                        const int sorted_offset = start + offset;
+                        const double tx = target_grid.sorted_target_x[sorted_offset];
+                        const double ty = target_grid.sorted_target_y[sorted_offset];
+                        const double tz = target_grid.sorted_target_z[sorted_offset];
 
                         const double dx = sx - tx;
                         if (fabs(dx) > max_dist)
@@ -2336,11 +2343,17 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     auto* d_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridKeysStorage());
     auto* d_unique_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridUniqueKeysStorage());
     auto* d_indices = reinterpret_cast<int*>(workspace.targetSpatialGridIndicesStorage());
+    auto* d_sorted_x = reinterpret_cast<double*>(workspace.targetSpatialGridSortedXStorage());
+    auto* d_sorted_y = reinterpret_cast<double*>(workspace.targetSpatialGridSortedYStorage());
+    auto* d_sorted_z = reinterpret_cast<double*>(workspace.targetSpatialGridSortedZStorage());
     auto* d_cell_starts = reinterpret_cast<int*>(workspace.targetSpatialGridCellStartsStorage());
     auto* d_cell_counts = reinterpret_cast<int*>(workspace.targetSpatialGridCellCountsStorage());
 
     grid.cell_keys = d_unique_keys;
     grid.sorted_target_indices = d_indices;
+    grid.sorted_target_x = d_sorted_x;
+    grid.sorted_target_y = d_sorted_y;
+    grid.sorted_target_z = d_sorted_z;
     grid.cell_starts = d_cell_starts;
     grid.cell_counts = d_cell_counts;
     grid.cell_size = cell_size;
@@ -2371,6 +2384,17 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
             cell_size
         });
     thrust::sort_by_key(policy, keys, keys + target_count, indices, IcpGridCellKeyLess{});
+    const int gather_block_size = kIcpStatsBlockSize;
+    const int gather_grid_size = icpStatsPartialCount(target_count);
+    gatherSortedIcpTargetPointsKernel<Scalar><<<gather_grid_size, gather_block_size, 0, stream>>>(
+        d_target_points,
+        target_count,
+        d_indices,
+        d_sorted_x,
+        d_sorted_y,
+        d_sorted_z);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
     const auto reduced = thrust::reduce_by_key(
         policy,
         keys,
@@ -2547,8 +2571,6 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
         collectCorrespondenceStatsSpatialGridKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
             d_source_points,
             source_count,
-            d_target_points,
-            target_count,
             max_correspondence_distance,
             d_correspondence_indices,
             target_grid,
@@ -2632,8 +2654,6 @@ IcpResidualStats<Scalar> computeIcpResidualStatsColumnMajorImpl(
         collectResidualStatsSpatialGridKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
             d_source_points,
             source_count,
-            d_target_points,
-            target_count,
             max_correspondence_distance,
             target_grid,
             d_partials);
@@ -2722,8 +2742,6 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
             d_transform,
             d_source_points,
             source_count,
-            d_target_points,
-            target_count,
             max_correspondence_distance,
             d_output_points,
             target_grid,
@@ -3058,8 +3076,6 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
             collectCorrespondenceStatsSpatialGridKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
                 d_source_points,
                 source_count,
-                d_target_points,
-                target_count,
                 max_correspondence_distance,
                 nullptr,
                 target_grid,
@@ -3189,8 +3205,6 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
             collectCorrespondenceStatsSpatialGridKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
                 d_source_points,
                 source_count,
-                d_target_points,
-                target_count,
                 max_correspondence_distance,
                 nullptr,
                 target_grid,
@@ -3475,6 +3489,12 @@ void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGrid(int target_count)
             static_cast<std::size_t>(target_count) * sizeof(IcpGridCellKey));
         _target_spatial_grid_indices_storage.allocate(
             static_cast<std::size_t>(target_count) * sizeof(int));
+        _target_spatial_grid_sorted_x_storage.allocate(
+            static_cast<std::size_t>(target_count) * sizeof(double));
+        _target_spatial_grid_sorted_y_storage.allocate(
+            static_cast<std::size_t>(target_count) * sizeof(double));
+        _target_spatial_grid_sorted_z_storage.allocate(
+            static_cast<std::size_t>(target_count) * sizeof(double));
         _target_spatial_grid_cell_starts_storage.allocate(
             static_cast<std::size_t>(target_count) * sizeof(int));
         _target_spatial_grid_cell_counts_storage.allocate(

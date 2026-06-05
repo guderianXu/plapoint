@@ -121,6 +121,15 @@ public:
     /// Return the reusable sorted target index storage pointer.
     unsigned char* targetSpatialGridIndicesStorage() { return _target_spatial_grid_indices_storage.get(); }
 
+    /// Return the reusable sorted target x-coordinate storage pointer.
+    unsigned char* targetSpatialGridSortedXStorage() { return _target_spatial_grid_sorted_x_storage.get(); }
+
+    /// Return the reusable sorted target y-coordinate storage pointer.
+    unsigned char* targetSpatialGridSortedYStorage() { return _target_spatial_grid_sorted_y_storage.get(); }
+
+    /// Return the reusable sorted target z-coordinate storage pointer.
+    unsigned char* targetSpatialGridSortedZStorage() { return _target_spatial_grid_sorted_z_storage.get(); }
+
     /// Return the reusable target-grid cell start storage pointer.
     unsigned char* targetSpatialGridCellStartsStorage() { return _target_spatial_grid_cell_starts_storage.get(); }
 
@@ -134,6 +143,9 @@ private:
     DeviceBuffer<unsigned char> _target_spatial_grid_keys_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_unique_keys_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_indices_storage;
+    DeviceBuffer<unsigned char> _target_spatial_grid_sorted_x_storage;
+    DeviceBuffer<unsigned char> _target_spatial_grid_sorted_y_storage;
+    DeviceBuffer<unsigned char> _target_spatial_grid_sorted_z_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_cell_starts_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_cell_counts_storage;
     int _partial_capacity = 0;

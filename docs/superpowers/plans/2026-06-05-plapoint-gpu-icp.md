@@ -1322,3 +1322,49 @@ Verification evidence:
   `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,1.0321`.
   Compared with Task 46 on this machine, the cached-grid stats+step row improved from 1.1019 ms to 1.06889 ms,
   and the stats-only cached-grid row improved from 1.07391 ms to 1.0321 ms on this benchmark run.
+
+## Task 48: Cache Sorted Target Coordinates For Spatial Grid
+
+- Goal: reduce indirect/random target coordinate loads in finite-radius spatial-grid ICP candidate loops. After grid
+  construction sorts target indices by cell, the hot correspondence and residual kernels can read sorted target
+  coordinates directly from contiguous arrays instead of loading each point through the original column-major target
+  buffer by index.
+- Implementation:
+  - Added reusable sorted target x/y/z storage to `IcpCorrespondenceStatsWorkspace`, with test accessors mirroring the
+    existing spatial-grid workspace buffers.
+  - Added `gatherSortedIcpTargetPointsKernel`, launched after `thrust::sort_by_key`, to materialize sorted target
+    coordinates beside the sorted target index array.
+  - Extended `IcpTargetSpatialGrid` with sorted x/y/z pointers.
+  - Switched the correspondence, residual, and transform+residual spatial-grid candidate loops to read coordinates
+    from the sorted arrays. The correspondence path still reads the sorted target index for output and tie-breaking;
+    residual-only paths no longer read target indices.
+  - Extended spatial-grid/workspace reuse tests to require the sorted coordinate buffers to be allocated and reused.
+- Tradeoff: target-grid rebuilds now pay one extra gather kernel and store three extra `double[target_count]` arrays.
+  This is worthwhile for cached-grid ICP iterations, but the new-workspace microbenchmark can move slightly depending
+  on the gather cost.
+- `git diff --check` after the sorted target coordinate cache:
+  clean.
+- `cmake --build build-codex-cuda -j$(nproc)` and
+  `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsUsesFiniteRadiusSpatialGridCandidates:ICPGpuPathTest.CorrespondenceStatsSpatialGridSkipsNonFiniteTargetInSaturatedCell:ICPGpuPathTest.CorrespondenceStatsSpatialGridTieKeepsLowerTargetIndex:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.AlignReusesGpuWorkspacesAcrossRepeatedCalls`:
+  5 targeted spatial-grid/workspace tests passed.
+- `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*:ICPTest.GpuRejectsNonFiniteSourcePointsBeforeAlignment:ICPTest.RejectsCollinearCorrespondenceGeometry:ICPValidation.RecoversKnownTransform`:
+  44 targeted ICP GPU/spatial-grid/validation tests passed.
+- `ctest --test-dir build-codex-cuda --output-on-failure`:
+  221 tests, 0 failed.
+- `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+  143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+- `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+  `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+  rows included
+  `gpu_icp_identity,100000,5,0.270874`,
+  `gpu_icp_finite_radius,100000,5,1.00409`,
+  `gpu_icp_finite_radius_translation,100000,5,2.88503`,
+  `gpu_icp_finite_radius_translation_reuse,100000,5,2.25452`,
+  `gpu_icp_finite_radius_translation_reuse_output,100000,5,2.214`,
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics,100000,5,1.80534`,
+  `gpu_icp_stats_step_finite_radius_translation_new_workspace,100000,5,1.50741`,
+  `gpu_icp_stats_step_finite_radius_translation_cached_grid,100000,5,1.00432`, and
+  `gpu_icp_stats_finite_radius_translation_cached_grid,100000,5,0.97373`.
+  Compared with Task 47 on this machine, cached-grid stats+step improved from 1.06889 ms to 1.00432 ms, stats-only
+  cached-grid improved from 1.0321 ms to 0.97373 ms, and the full alignment reuse rows also improved. The
+  new-workspace row moved from 1.48977 ms to 1.50741 ms, consistent with the added grid-build gather kernel.
