@@ -260,6 +260,20 @@ __global__ void reduceRawIcpStatsKernel(
 }
 
 template <typename Scalar>
+__global__ void setIdentityTransform4x4Kernel(Scalar* transform)
+{
+    const int idx = threadIdx.x;
+    if (idx >= 16)
+    {
+        return;
+    }
+
+    const int row = idx & 3;
+    const int col = idx >> 2;
+    transform[idx] = row == col ? Scalar(1) : Scalar(0);
+}
+
+template <typename Scalar>
 __global__ void multiplyTransform4x4Kernel(const Scalar* A, const Scalar* B, Scalar* C)
 {
     const int idx = threadIdx.x;
@@ -625,6 +639,18 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
 }
 
 template <typename Scalar>
+void setIdentityTransform4x4Impl(Scalar* d_transform, cudaStream_t stream)
+{
+    if (!d_transform)
+    {
+        throw std::invalid_argument("ICP GPU: transform pointer must not be null");
+    }
+
+    setIdentityTransform4x4Kernel<Scalar><<<1, 16, 0, stream>>>(d_transform);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+}
+
+template <typename Scalar>
 void multiplyTransform4x4Impl(
     const Scalar* d_A,
     const Scalar* d_B,
@@ -932,6 +958,28 @@ void multiplyTransform4x4(
     cudaStream_t stream)
 {
     multiplyTransform4x4Impl(d_A, d_B, d_C, stream);
+}
+
+void setIdentityTransform4x4(float* d_transform, cudaStream_t stream)
+{
+    setIdentityTransform4x4Impl(d_transform, stream);
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+}
+
+void setIdentityTransform4x4(double* d_transform, cudaStream_t stream)
+{
+    setIdentityTransform4x4Impl(d_transform, stream);
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+}
+
+void setIdentityTransform4x4Async(float* d_transform, cudaStream_t stream)
+{
+    setIdentityTransform4x4Impl(d_transform, stream);
+}
+
+void setIdentityTransform4x4Async(double* d_transform, cudaStream_t stream)
+{
+    setIdentityTransform4x4Impl(d_transform, stream);
 }
 
 void transformPointsColumnMajor(

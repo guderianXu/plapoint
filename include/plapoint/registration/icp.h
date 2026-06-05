@@ -339,7 +339,8 @@ private:
                                        cudaMemcpyDeviceToDevice));
 
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> next_cur(source_count, 3);
-        auto T_acc_gpu = identity4x4().toGpu();
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> T_acc_gpu(4, 4);
+        gpu::setIdentityTransform4x4Async(T_acc_gpu.data(), 0);
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> next_T_acc_gpu(4, 4);
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> T_step_gpu(4, 4);
         gpu::IcpCorrespondenceStatsWorkspace stats_workspace;

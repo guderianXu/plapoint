@@ -166,6 +166,20 @@ void multiplyTransform4x4(
     double* d_C,
     cudaStream_t stream = 0);
 
+/// Write a 4x4 column-major identity transform to device memory.
+/// Synchronizes the supplied stream before returning.
+void setIdentityTransform4x4(float* d_transform, cudaStream_t stream = 0);
+
+/// Write a 4x4 column-major identity transform to device memory.
+/// Synchronizes the supplied stream before returning.
+void setIdentityTransform4x4(double* d_transform, cudaStream_t stream = 0);
+
+/// Async 4x4 column-major identity transform write on the caller-provided CUDA stream.
+void setIdentityTransform4x4Async(float* d_transform, cudaStream_t stream);
+
+/// Async 4x4 column-major identity transform write on the caller-provided CUDA stream.
+void setIdentityTransform4x4Async(double* d_transform, cudaStream_t stream);
+
 /// Apply a 4x4 column-major device transform to an Nx3 column-major device point array.
 /// d_output_points must have capacity for point_count x 3 Scalars. In-place output is allowed.
 /// Synchronizes the supplied stream before returning.

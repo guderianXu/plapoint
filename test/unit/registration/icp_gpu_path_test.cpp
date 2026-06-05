@@ -175,6 +175,27 @@ TEST(ICPGpuPathTest, MultiplyTransform4x4UsesColumnMajorTransformComposition)
     }
 }
 
+TEST(ICPGpuPathTest, SetIdentityTransform4x4WritesColumnMajorIdentity)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> identity_gpu(4, 4);
+    plapoint::gpu::setIdentityTransform4x4(identity_gpu.data());
+    auto identity = identity_gpu.toCpu();
+
+    for (int row = 0; row < 4; ++row)
+    {
+        for (int col = 0; col < 4; ++col)
+        {
+            const float expected = row == col ? 1.0f : 0.0f;
+            EXPECT_NEAR(identity.getValue(row, col), expected, 1.0e-6f);
+        }
+    }
+}
+
 TEST(ICPGpuPathTest, StepTransformFromStatsWritesDeviceTransform)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
