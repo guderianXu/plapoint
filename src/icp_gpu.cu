@@ -276,6 +276,7 @@ __device__ unsigned long long g_icp_target_tile_bound_computation_count;
 __device__ unsigned long long g_icp_target_tile_load_count;
 __device__ unsigned long long g_icp_exact_pointwise_target_load_count;
 __device__ unsigned long long g_icp_grid_cell_lookup_count;
+__device__ unsigned long long g_icp_grid_cell_offset_count;
 #endif
 
 #ifdef PLAPOINT_ENABLE_TESTING
@@ -524,6 +525,9 @@ __host__ __device__ __forceinline__ int icpGridCellCoordinate(double value, doub
 
 __device__ __forceinline__ bool offsetGridCellCoordinate(int base, int offset, int& result)
 {
+#ifdef PLAPOINT_ENABLE_TESTING
+    atomicAdd(&g_icp_grid_cell_offset_count, 1ull);
+#endif
     if ((offset < 0 && base == INT_MIN) || (offset > 0 && base == INT_MAX))
     {
         return false;
@@ -1582,13 +1586,16 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
 
         int min_z = source_key.z;
         int max_z = source_key.z;
-        if (!offsetGridCellCoordinate(source_key.z, -1, min_z))
+        if (!target_grid.direct_lookup_active)
         {
-            min_z = source_key.z;
-        }
-        if (!offsetGridCellCoordinate(source_key.z, 1, max_z))
-        {
-            max_z = source_key.z;
+            if (!offsetGridCellCoordinate(source_key.z, -1, min_z))
+            {
+                min_z = source_key.z;
+            }
+            if (!offsetGridCellCoordinate(source_key.z, 1, max_z))
+            {
+                max_z = source_key.z;
+            }
         }
 
         constexpr bool can_stop_after_exact_match = !WriteCorrespondenceIndices;
@@ -2479,13 +2486,16 @@ __global__ void collectResidualStatsSpatialGridKernel(
 
         int min_z = source_key.z;
         int max_z = source_key.z;
-        if (!offsetGridCellCoordinate(source_key.z, -1, min_z))
+        if (!target_grid.direct_lookup_active)
         {
-            min_z = source_key.z;
-        }
-        if (!offsetGridCellCoordinate(source_key.z, 1, max_z))
-        {
-            max_z = source_key.z;
+            if (!offsetGridCellCoordinate(source_key.z, -1, min_z))
+            {
+                min_z = source_key.z;
+            }
+            if (!offsetGridCellCoordinate(source_key.z, 1, max_z))
+            {
+                max_z = source_key.z;
+            }
         }
 
         bool stop_cell_scan = false;
@@ -3010,13 +3020,16 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
 
         int min_z = source_key.z;
         int max_z = source_key.z;
-        if (!offsetGridCellCoordinate(source_key.z, -1, min_z))
+        if (!target_grid.direct_lookup_active)
         {
-            min_z = source_key.z;
-        }
-        if (!offsetGridCellCoordinate(source_key.z, 1, max_z))
-        {
-            max_z = source_key.z;
+            if (!offsetGridCellCoordinate(source_key.z, -1, min_z))
+            {
+                min_z = source_key.z;
+            }
+            if (!offsetGridCellCoordinate(source_key.z, 1, max_z))
+            {
+                max_z = source_key.z;
+            }
         }
 
         bool stop_cell_scan = false;
@@ -6979,6 +6992,19 @@ unsigned long long icpGridCellLookupCountForTesting()
 {
     unsigned long long count = 0;
     PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_grid_cell_lookup_count, sizeof(count)));
+    return count;
+}
+
+void resetIcpGridCellOffsetCountForTesting()
+{
+    const unsigned long long zero = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyToSymbol(g_icp_grid_cell_offset_count, &zero, sizeof(zero)));
+}
+
+unsigned long long icpGridCellOffsetCountForTesting()
+{
+    unsigned long long count = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_grid_cell_offset_count, sizeof(count)));
     return count;
 }
 
