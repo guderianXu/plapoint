@@ -233,7 +233,7 @@ __host__ __device__ int icpGridCellCoordinate(double value, double cell_size)
     return static_cast<int>(coordinate);
 }
 
-__device__ bool offsetGridCellCoordinate(int base, int offset, int& result)
+__device__ __forceinline__ bool offsetGridCellCoordinate(int base, int offset, int& result)
 {
     if ((offset < 0 && base == INT_MIN) || (offset > 0 && base == INT_MAX))
     {
@@ -288,7 +288,10 @@ __global__ void gatherSortedIcpTargetPointsKernel(
     sorted_z[idx] = static_cast<double>(target_points[2 * target_count + target_idx]);
 }
 
-__device__ int lowerBoundIcpGridCell(const IcpGridCellKey* cell_keys, int cell_count, const IcpGridCellKey& query)
+__device__ __forceinline__ int lowerBoundIcpGridCell(
+    const IcpGridCellKey* cell_keys,
+    int cell_count,
+    const IcpGridCellKey& query)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
     atomicAdd(&g_icp_grid_cell_lookup_count, 1ull);
@@ -335,7 +338,7 @@ __device__ __forceinline__ double loadSortedIcpTargetZ(const IcpTargetSpatialGri
     return target_grid.sorted_target_z[sorted_offset];
 }
 
-__device__ double distanceOutsideIcpGridCellAxis(double value, int cell_coordinate, double cell_size)
+__device__ __forceinline__ double distanceOutsideIcpGridCellAxis(double value, int cell_coordinate, double cell_size)
 {
     const double cell_min = static_cast<double>(cell_coordinate) * cell_size;
     const double cell_max = cell_min + cell_size;
@@ -354,7 +357,10 @@ __device__ double distanceOutsideIcpGridCellAxis(double value, int cell_coordina
     return 0.0;
 }
 
-__device__ double distanceOutsideFiniteIcpGridCellAxis(double value, int cell_coordinate, double cell_size)
+__device__ __forceinline__ double distanceOutsideFiniteIcpGridCellAxis(
+    double value,
+    int cell_coordinate,
+    double cell_size)
 {
     const double cell_min = static_cast<double>(cell_coordinate) * cell_size;
     const double cell_max = cell_min + cell_size;
@@ -369,7 +375,7 @@ __device__ double distanceOutsideFiniteIcpGridCellAxis(double value, int cell_co
     return 0.0;
 }
 
-__device__ double minDistanceSqToIcpGridCellXY(
+__device__ __forceinline__ double minDistanceSqToIcpGridCellXY(
     double x,
     double y,
     int cell_x,
@@ -381,7 +387,7 @@ __device__ double minDistanceSqToIcpGridCellXY(
     return dx * dx + dy * dy;
 }
 
-__device__ double minDistanceSqToFiniteIcpGridCellXY(
+__device__ __forceinline__ double minDistanceSqToFiniteIcpGridCellXY(
     double x,
     double y,
     int cell_x,
@@ -393,7 +399,7 @@ __device__ double minDistanceSqToFiniteIcpGridCellXY(
     return dx * dx + dy * dy;
 }
 
-__device__ double minDistanceSqToIcpGridCellXY(
+__device__ __forceinline__ double minDistanceSqToIcpGridCellXY(
     double x,
     double y,
     int cell_x,
@@ -406,7 +412,7 @@ __device__ double minDistanceSqToIcpGridCellXY(
         minDistanceSqToIcpGridCellXY(x, y, cell_x, cell_y, cell_size);
 }
 
-__device__ double minDistanceSqToIcpGridCellZ(
+__device__ __forceinline__ double minDistanceSqToIcpGridCellZ(
     double z,
     int cell_z,
     double cell_size)
@@ -415,7 +421,7 @@ __device__ double minDistanceSqToIcpGridCellZ(
     return dz * dz;
 }
 
-__device__ double minDistanceSqToFiniteIcpGridCellZ(
+__device__ __forceinline__ double minDistanceSqToFiniteIcpGridCellZ(
     double z,
     int cell_z,
     double cell_size)
@@ -424,7 +430,7 @@ __device__ double minDistanceSqToFiniteIcpGridCellZ(
     return dz * dz;
 }
 
-__device__ double minDistanceSqToIcpGridCellZ(
+__device__ __forceinline__ double minDistanceSqToIcpGridCellZ(
     double z,
     int cell_z,
     double cell_size,
@@ -435,7 +441,7 @@ __device__ double minDistanceSqToIcpGridCellZ(
         minDistanceSqToIcpGridCellZ(z, cell_z, cell_size);
 }
 
-__device__ void recordAcceptedCorrespondence(
+__device__ __forceinline__ void recordAcceptedCorrespondence(
     RawIcpStats& local,
     double sx,
     double sy,
