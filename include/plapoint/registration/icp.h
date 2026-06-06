@@ -410,8 +410,9 @@ private:
             const Scalar* step_transform = _gpu_T_step->data();
             const bool terminal_iteration = step_result.delta < _eps || iter + 1 == _max_iter;
             const bool terminal_identity_step = terminal_iteration && step_result.delta == Scalar(0);
+            const bool terminal_output_needs_target_points = output_aliases_target && _compute_final_metrics;
             Scalar* transform_output_points = nullptr;
-            if (terminal_iteration && !terminal_identity_step && !output_aliases_target)
+            if (terminal_iteration && !terminal_identity_step && !terminal_output_needs_target_points)
             {
                 transform_output_points = prepareGpuOutputPointBuffer(output, source_count);
                 final_points_written_to_output = true;

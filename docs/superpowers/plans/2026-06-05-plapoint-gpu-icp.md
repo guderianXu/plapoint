@@ -3446,3 +3446,43 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun the selected output-alias tests and compare one-iteration source-output GPU ICP with and without final metrics
   to quantify the avoided scratch allocation and final copy.
+
+## Task 106: Write Target-Aliased GPU ICP Output Directly Without Final Metrics
+
+- Goal: extend the terminal direct-output fast path to callers that pass the GPU target cloud as the output when final
+  residual metrics are disabled. With `setComputeFinalMetrics(false)`, the terminal transform no longer needs to read
+  target points after writing the aligned output, so it can skip the scratch transform buffer and final device-to-device
+  copy. The default final-metrics path still uses scratch to preserve target points for residual/stat collection.
+- RED check:
+  - Added `AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsDisabled`, expecting the terminal
+    transform output pointer to match the target point buffer and both point scratch buffers to remain unallocated.
+  - A static RED check against the terminal output decision failed before the implementation because the target-alias
+    path did not consult `_compute_final_metrics`.
+- Implementation:
+  - Added a `terminal_output_needs_target_points` guard in `alignGpu()` so target-alias output only forces scratch when
+    final metrics are requested.
+  - Kept source-alias and caller-owned-output direct terminal paths unchanged.
+- Verification performed in this session:
+  - Static RED check failed before the implementation and passed after the implementation.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignUsesScratchForTerminalTransformWhenOutputAliasesTarget:ICPGpuPathTest.AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsDisabled:ICPGpuPathTest.AlignWritesTerminalTransformDirectlyWhenOutputAliasesSource`:
+    3 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `git diff --check`:
+    clean before the plan update.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    243 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected target-alias test and benchmark target-output GPU ICP with `setComputeFinalMetrics(false)` to
+  quantify the avoided scratch allocation and final copy.
