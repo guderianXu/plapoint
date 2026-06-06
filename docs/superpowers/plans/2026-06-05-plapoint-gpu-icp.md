@@ -5409,3 +5409,39 @@ Verification evidence:
   cache-hit transformed exact alignment is only about 0.024 ms slower than the pre-grid preflight row at 100k points, so
   changing production cache-hit behavior to always run the preflight is not justified yet because it would add an O(N)
   probe before the normal grid path when same-count transformed cache-hit inputs are not exact.
+
+## Task 151: Add One-Iteration Full Align Benchmark Row
+
+- Goal: isolate the full `IterativeClosestPoint::align()` object/output overhead from the per-iteration GPU alignment
+  step cost by timing the finite-radius translated-cloud path with `max_iterations = 1` and final metrics disabled.
+- RED check:
+  - Added `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` to
+    `cmake/check_gpu_icp_benchmark_rows.cmake`.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint\\.benchmarks\\.gpu_icp_rows_registered --output-on-failure`:
+    failed with the expected missing-row error because `plapoint_benchmarks` did not yet emit the row.
+- Implementation:
+  - Added `benchmarkGpuIcpFiniteRadiusTranslationReuseOutputSkipFinalMetricsOneIteration()`. It uses the same
+    translated finite-radius source/target setup as the existing reuse-output skip-final-metrics benchmark, but fixes
+    `max_iterations` to 1 and keeps `compute_final_metrics` disabled.
+  - Registered the row next to `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` so benchmark CSV
+    output compares the one-iteration and configured-iteration paths directly.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint\\.benchmarks\\.gpu_icp_rows_registered --output-on-failure`:
+    passed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 8 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.66011 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.964592 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace` = 0.859206 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.211047 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.235444 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.531546 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.531543 ms.
+- Current conclusion:
+  one full finite-radius `align()` iteration costs about 0.105 ms more than the reserved-workspace cached-grid alignment
+  step at 100k points. The configured three-iteration full align row is consistent with one finite-radius cached-grid
+  iteration followed by cheaper transformed exact-pointwise iterations plus loop/output overhead. Further production
+  optimization should focus on reducing unnecessary iterations, host synchronizations around convergence checks, and
+  avoiding or specializing the final source-output transform when callers do not need materialized aligned points.

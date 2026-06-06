@@ -672,6 +672,49 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuseOutputSkipFinalMetrics(
     }
 }
 
+void benchmarkGpuIcpFiniteRadiusTranslationReuseOutputSkipFinalMetricsOneIteration(
+    int icp_points,
+    int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(
+            "gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration",
+            "no_usable_cuda_device");
+        return;
+    }
+
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.02f);
+    icp.setMaxIterations(1);
+    icp.setComputeFinalMetrics(false);
+
+    Cloud<plamatrix::Device::GPU> output;
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        icp.align(output);
+        sink += output.size();
+    });
+    printResult(
+        "gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration",
+        icp_points,
+        iterations,
+        elapsed);
+    if (sink == 0)
+    {
+        std::cerr
+            << "gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration"
+            << " produced no aligned points\n";
+    }
+}
+
 void benchmarkGpuIcpFiniteRadiusTranslationReuseTargetOutput(
     int icp_points,
     int icp_max_iterations,
@@ -1603,6 +1646,9 @@ int main(int argc, char** argv)
     benchmarkGpuIcpFiniteRadiusTranslationReuseOutputSkipFinalMetrics(
         options.icp_points,
         options.icp_max_iterations,
+        options.iterations);
+    benchmarkGpuIcpFiniteRadiusTranslationReuseOutputSkipFinalMetricsOneIteration(
+        options.icp_points,
         options.iterations);
     benchmarkGpuIcpFiniteRadiusTranslationReuseTargetOutput(
         options.icp_points,
