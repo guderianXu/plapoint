@@ -5381,3 +5381,31 @@ Verification evidence:
     `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.236204 ms.
   - `nvidia-smi`:
     detected NVIDIA driver 580.159.03, CUDA 13.0, and an RTX 4060 Laptop GPU after verification.
+
+## Task 150: Add Benchmark Row For Transformed Exact Cache-Hit Alignment
+
+- Goal: measure the transformed exact-pointwise alignment path when the target spatial grid cache already matches. Task
+  149 made cache-miss transformed exact alignment use a pre-grid exact preflight; this row keeps the cache-hit path
+  separately visible before deciding whether further production changes are worth the mismatch-case risk.
+- RED check:
+  - Added `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` to
+    `cmake/check_gpu_icp_benchmark_rows.cmake`.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint\\.benchmarks\\.gpu_icp_rows_registered --output-on-failure`:
+    failed with the expected missing-row error because `plapoint_benchmarks` did not yet emit the row.
+- Implementation:
+  - Added `benchmarkGpuIcpAlignmentStepTransformedExactPointwiseCacheHit()`. It uses the same binary-spaced exact
+    transformed source/target setup as the cache-miss row, reserves float alignment-step workspace, first builds the
+    finite-radius target spatial grid cache, then times
+    `detail::computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace()` against the cache-hit path.
+  - Registered the row next to the existing transformed exact-pointwise alignment-step benchmark.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) && ctest --test-dir build-codex-cuda-bench-only -R plapoint\\.benchmarks\\.gpu_icp_rows_registered --output-on-failure`:
+    passed after implementation.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 8 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.23605 ms and
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.259964 ms.
+- Current conclusion:
+  cache-hit transformed exact alignment is only about 0.024 ms slower than the pre-grid preflight row at 100k points, so
+  changing production cache-hit behavior to always run the preflight is not justified yet because it would add an O(N)
+  probe before the normal grid path when same-count transformed cache-hit inputs are not exact.
