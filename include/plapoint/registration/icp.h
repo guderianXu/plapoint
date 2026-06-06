@@ -363,14 +363,7 @@ private:
         bool final_points_written_to_output = false;
 
         reserveGpuStepTransformBuffer();
-        if constexpr (std::is_same_v<Scalar, float>)
-        {
-            _gpu_stats_workspace.reserveFloatAlignmentStep(source_count);
-        }
-        else
-        {
-            _gpu_stats_workspace.reserveDoubleAlignmentStep(source_count);
-        }
+        reserveGpuAlignmentStepWorkspace(source_count);
 
         const Scalar* source_points = _source->points().data();
         const Scalar* cur_points = source_points;
@@ -754,6 +747,28 @@ private:
         _gpu_T_step = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
     }
 
+    bool gpuAlignmentStepWorkspaceReservationMatches(int source_count) const
+    {
+        return _gpu_alignment_step_workspace_source_count == source_count;
+    }
+
+    void reserveGpuAlignmentStepWorkspace(int source_count)
+    {
+        if (gpuAlignmentStepWorkspaceReservationMatches(source_count))
+        {
+            return;
+        }
+        if constexpr (std::is_same_v<Scalar, float>)
+        {
+            _gpu_stats_workspace.reserveFloatAlignmentStep(source_count);
+        }
+        else
+        {
+            _gpu_stats_workspace.reserveDoubleAlignmentStep(source_count);
+        }
+        _gpu_alignment_step_workspace_source_count = source_count;
+    }
+
     void reserveGpuAccumulatedTransformBuffer()
     {
         if (_gpu_T_acc)
@@ -1104,6 +1119,7 @@ private:
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_points_b;
     int _gpu_points_a_point_count = 0;
     int _gpu_points_b_point_count = 0;
+    int _gpu_alignment_step_workspace_source_count = 0;
     const void* _gpu_target_cache_points = nullptr;
     std::uint64_t _gpu_target_cache_points_version = 0;
     bool _final_T_gpu_valid = false;

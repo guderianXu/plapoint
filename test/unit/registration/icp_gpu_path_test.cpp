@@ -3426,6 +3426,54 @@ TEST(ICPGpuPathTest, AlignChecksAlignmentStepWorkspaceOnceBeforeLoop)
     EXPECT_EQ(output.size(), source->size());
 }
 
+TEST(ICPGpuPathTest, AlignmentStepWorkspaceReservationCacheMatchesPointCount)
+{
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+
+    EXPECT_FALSE(icp.gpuAlignmentStepWorkspaceReservationMatches(4));
+
+    icp._gpu_alignment_step_workspace_source_count = 4;
+
+    EXPECT_TRUE(icp.gpuAlignmentStepWorkspaceReservationMatches(4));
+    EXPECT_FALSE(icp.gpuAlignmentStepWorkspaceReservationMatches(5));
+}
+
+TEST(ICPGpuPathTest, AlignReusesAlignmentStepWorkspaceAcrossRepeatedCalls)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_points = makeNonCollinearPoints();
+    auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.1f, -0.05f, 0.025f);
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(2.0f);
+    icp.setMaxIterations(1);
+
+    plapoint::gpu::resetIcpAlignmentStepReserveCountForTesting();
+    plapoint::gpu::resetIcpAlignmentStepReserveCheckCountForTesting();
+    GpuCloud first_output;
+    icp.align(first_output);
+    GpuCloud second_output;
+    icp.align(second_output);
+
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepReserveCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepReserveCheckCountForTesting(), 1);
+    EXPECT_EQ(first_output.size(), source->size());
+    EXPECT_EQ(second_output.size(), source->size());
+}
+
 TEST(ICPGpuPathTest, AlignChecksStepTransformBufferOnceBeforeLoop)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

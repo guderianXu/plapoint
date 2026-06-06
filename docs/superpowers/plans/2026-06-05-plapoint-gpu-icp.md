@@ -4798,3 +4798,46 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun the full transform+residual GPU path tests, including target-output alias cases that use cached spatial-grid
   snapshots from `alignGpu()`.
+
+## Task 138: Reuse GPU ICP Alignment-Step Workspace Across Repeated Align Calls
+
+- Goal: reduce host-side overhead in repeated `IterativeClosestPoint::align()` calls with the same source point count,
+  especially the GPU ICP reuse benchmark rows. The alignment-step workspace is already reusable; the ICP object now
+  skips re-entering the reserve check when it has already reserved the workspace for the current point count.
+- RED check:
+  - Added `AlignmentStepWorkspaceReservationCacheMatchesPointCount`, a no-device logic test that calls the new private
+    cache predicate through the existing `#define private public` test hook.
+  - Added `AlignReusesAlignmentStepWorkspaceAcrossRepeatedCalls`, which aligns twice with the same ICP object and
+    expects one alignment-step reserve check when a CUDA device is available.
+  - Before the implementation, `cmake --build build-codex-cuda -j$(nproc)` failed because
+    `gpuAlignmentStepWorkspaceReservationMatches()` and `_gpu_alignment_step_workspace_source_count` did not exist.
+- Implementation:
+  - Added `_gpu_alignment_step_workspace_source_count` to the GPU ICP state.
+  - Added `gpuAlignmentStepWorkspaceReservationMatches()` and `reserveGpuAlignmentStepWorkspace()` in `alignGpu()`'s
+    helper section.
+  - Replaced the unconditional top-of-`alignGpu()` float/double alignment-step reserve call with the cache-aware helper.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignmentStepWorkspaceReservationCacheMatchesPointCount:ICPGpuPathTest.AlignReusesAlignmentStepWorkspaceAcrossRepeatedCalls`:
+    1 test passed and 1 GPU-runtime test was skipped because no usable CUDA device is available in this session.
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    269 test entries, 0 failed. GPU-dependent tests were discovered and skipped because the current session cannot
+    communicate with a usable CUDA device; the no-device cache predicate test ran and passed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `AlignReusesAlignmentStepWorkspaceAcrossRepeatedCalls` on real GPU hardware and compare the
+  `gpu_icp_finite_radius_translation_reuse*` benchmark rows before/after this host-side reserve-cache optimization.
