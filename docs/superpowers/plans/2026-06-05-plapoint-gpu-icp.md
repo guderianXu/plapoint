@@ -7643,3 +7643,62 @@ Verification evidence:
   covariance payload is needed. On the 100k same-buffer alignment-step benchmark, this reduces exact/ordered same-buffer
   step time from roughly 0.12 ms to roughly 0.047 ms while leaving cached-grid stats/alignment timings essentially
   unchanged.
+
+## Task 199: Specialize Transformed Exact Identity Alignment Stats
+
+- Goal: speed up the transformed exact-pointwise alignment-step preflight path. When an input transform maps each
+  source point exactly onto the same-index target point, the alignment step is identity and only needs active/invalid
+  counts, transformed source geometry, and a zero/infinite residual sentinel. It does not need full source-target cross
+  covariance or target covariance partials.
+- RED check:
+  - Added `g_icp_transformed_identity_alignment_step_count` with reset/get helpers.
+  - Tightened `ICPGpuPathTest.TransformedAlignmentStepSkipsSpatialGridSearchForExactPointwiseMatches` and
+    `ICPGpuPathTest.TransformedAccumulatedAlignmentStepSkipsSpatialGridPrepareForExactPointwiseMatches` to require one
+    transformed identity alignment-step hit.
+  - Before implementation, both tests failed with transformed identity alignment-step count 0 instead of 1.
+- Implementation:
+  - Added `collectTransformedExactPointwiseIdentityAlignmentStatsKernel()`, using `RawIcpIdentityStats` after applying
+    the source transform and verifying same-index target equality.
+  - Added `reduceRawIcpIdentityStatsAndSetExactPointwiseIdentityAccumulatedAlignmentStepKernel()` for the accumulated
+    transform variant.
+  - Updated `launchTransformedExactPointwiseAlignmentStep()` to use the identity-specialized partial/reduce path for
+    both normal and accumulated transformed exact-pointwise probes. Fallback behavior is preserved by writing an
+    infinite residual sentinel on target mismatch.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformedAlignmentStepSkipsSpatialGridSearchForExactPointwiseMatches:ICPGpuPathTest.TransformedAccumulatedAlignmentStepSkipsSpatialGridPrepareForExactPointwiseMatches`:
+    failed before implementation with transformed identity alignment-step count 0, then passed after implementation.
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformedAlignmentStepSkipsSpatialGridSearchForExactPointwiseMatches:ICPGpuPathTest.TransformedAccumulatedAlignmentStepSkipsSpatialGridPrepareForExactPointwiseMatches:ICPGpuPathTest.TransformedExactPointwiseAlignmentStepFallsBackToSpatialGridOnMismatch:ICPGpuPathTest.TransformedExactPointwiseAccumulatedFallbackDoesNotWriteInvalidTransform:ICPGpuPathTest.AlignCanProbeTransformedExactPointwiseOnCacheHitWhenRequested`:
+    5 transformed exact-pointwise, fallback, accumulated, and cache-hit preflight tests passed.
+  - Baseline before this task, using the current pushed Task 198 code:
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.145026 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.161682 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit_preflight` = 0.140433 ms, and
+    `gpu_icp_transform_residual_stats_transformed_exact_pointwise_new_workspace` = 0.50379 ms.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 60 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_alignment_step_transformed_exact_pointwise_(cached_grid|cache_hit|cache_hit_preflight)|gpu_icp_transform_residual_stats_transformed_exact_pointwise_new_workspace|gpu_icp_finite_radius_(binary_translation_reuse_output_preflight|binary_translation_transform_only_preflight|nonrigid_transform_only_preflight)|gpu_icp_(stats_step|alignment_step)_finite_radius_translation_cached_grid|gpu_icp_alignment_step_exact_pointwise_same_buffer'`:
+    ran successfully on the RTX 4060 Laptop GPU after implementation.
+  - Relevant rows after implementation:
+    `gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations` = 1.69246 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_preflight_two_iterations` = 0.595954 ms,
+    `gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations` = 0.604836 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.605153 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.612303 ms,
+    `gpu_icp_alignment_step_exact_pointwise_same_buffer` = 0.046909 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.047839 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.158727 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit_preflight` = 0.047905 ms, and
+    `gpu_icp_transform_residual_stats_transformed_exact_pointwise_new_workspace` = 0.520615 ms.
+- Full verification after the transformed identity alignment specialization:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 319/319 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) &&
+    ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, with the expected CUDA-only
+    `PointCloudTest.GpuTransfer` skip in the CPU build.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+- Current conclusion:
+  transformed exact-pointwise preflight alignment now has the same lightweight stats footprint as same-buffer identity
+  alignment. On the 100k transformed exact-pointwise cached-grid benchmark, this reduces preflight alignment-step time
+  from roughly 0.14-0.15 ms to roughly 0.048 ms. The non-preflight cache-hit row still uses the cached spatial-grid
+  path by design, so it remains around 0.16 ms.
