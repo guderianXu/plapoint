@@ -158,6 +158,7 @@ std::atomic<int> g_icp_step_transform_input_copy_count{0};
 std::atomic<int> g_icp_exact_pointwise_step_call_count{0};
 std::atomic<int> g_icp_raw_stats_step_kernel_launch_count{0};
 std::atomic<int> g_icp_alignment_step_call_count{0};
+std::atomic<int> g_icp_alignment_step_reserve_count{0};
 std::atomic<int> g_icp_host_synchronization_count{0};
 std::atomic<int> g_icp_target_spatial_grid_build_count{0};
 std::atomic<int> g_icp_fallback_tile_bound_kernel_launch_count{0};
@@ -4446,6 +4447,16 @@ int icpAlignmentStepCallCountForTesting()
     return g_icp_alignment_step_call_count.load(std::memory_order_relaxed);
 }
 
+void resetIcpAlignmentStepReserveCountForTesting()
+{
+    g_icp_alignment_step_reserve_count.store(0, std::memory_order_relaxed);
+}
+
+int icpAlignmentStepReserveCountForTesting()
+{
+    return g_icp_alignment_step_reserve_count.load(std::memory_order_relaxed);
+}
+
 void resetIcpHostSynchronizationCountForTesting()
 {
     g_icp_host_synchronization_count.store(0, std::memory_order_relaxed);
@@ -4588,6 +4599,9 @@ void IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(int source_count)
     {
         throw std::invalid_argument("ICP GPU: source point count must not be negative");
     }
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_alignment_step_reserve_count.fetch_add(1, std::memory_order_relaxed);
+#endif
     if (source_count == 0)
     {
         return;

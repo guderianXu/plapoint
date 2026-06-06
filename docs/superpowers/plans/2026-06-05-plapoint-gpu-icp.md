@@ -3155,3 +3155,43 @@ Verification evidence:
     reported that it could not communicate with the NVIDIA driver.
 - Follow-up required when a CUDA device is available:
   rerun the selected GPU tests and 100k-point GPU ICP benchmark to quantify the launch-count and runtime impact.
+
+## Task 99: Avoid Duplicate GPU ICP Alignment-Step Workspace Reserve
+
+- Goal: remove a redundant host-side workspace reserve from `alignGpu()`. The alignment loop called
+  `reserveAlignmentStep()` before entering the loop, and `computeIcpAlignmentStepColumnMajor()` reserved the same
+  workspace again before launching kernels.
+- RED check:
+  - Added `AlignReservesAlignmentStepWorkspaceOncePerCall` and test-only alignment-step reserve counters.
+  - Before implementing the hooks and optimization, `cmake --build build-codex-cuda -j$(nproc)` failed at link time
+    with undefined references to `resetIcpAlignmentStepReserveCountForTesting()` and
+    `icpAlignmentStepReserveCountForTesting()`.
+- Implementation:
+  - Added a test-only counter inside `IcpCorrespondenceStatsWorkspace::reserveAlignmentStep()`.
+  - Removed the explicit `_gpu_stats_workspace.reserveAlignmentStep(source_count)` call from the start of `alignGpu()`.
+  - The stats helper remains responsible for reserving the workspace, preserving storage reuse and growth behavior.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed after adding the counter and deleting the duplicate reserve.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReservesAlignmentStepWorkspaceOncePerCall:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPGpuPathTest.AlignComputesStepFromDeviceStatsWithoutHostInputCopy`:
+    3 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - Static checks confirmed `alignGpu()` no longer calls `reserveAlignmentStep()` directly and the reserve counter is
+    wired through `IcpCorrespondenceStatsWorkspace::reserveAlignmentStep()`.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    239 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected GPU tests and 100k-point GPU ICP benchmark to confirm the counter and measure any host overhead
+  reduction.

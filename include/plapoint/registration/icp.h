@@ -359,7 +359,6 @@ private:
         bool next_points_in_a = true;
 
         reserveGpuTransformBuffers();
-        _gpu_stats_workspace.reserveAlignmentStep(source_count);
 
         _converged = false;
         _fitness_score = Scalar(0);
