@@ -1327,6 +1327,9 @@ __global__ void collectResidualStatsKernel(
             const int tile_count = min(kIcpStatsBlockSize, target_count - tile_start);
             for (int tile_offset = 0; tile_offset < tile_count; ++tile_offset)
             {
+#ifdef PLAPOINT_ENABLE_TESTING
+                atomicAdd(&g_icp_target_candidate_visit_count, 1ull);
+#endif
                 if (!target_tile_valid[tile_offset])
                 {
                     continue;
@@ -1527,6 +1530,9 @@ __global__ void collectResidualStatsSpatialGridKernel(
                     for (int offset = 0; offset < count; ++offset)
                     {
                         const int sorted_offset = start + offset;
+#ifdef PLAPOINT_ENABLE_TESTING
+                        atomicAdd(&g_icp_target_candidate_visit_count, 1ull);
+#endif
                         const double tx = loadSortedIcpTargetX(target_grid, sorted_offset);
                         const double dx = sx - tx;
                         const double dx_sq = dx * dx;
@@ -1561,6 +1567,9 @@ __global__ void collectResidualStatsSpatialGridKernel(
                             continue;
                         }
 
+#ifdef PLAPOINT_ENABLE_TESTING
+                        atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
+#endif
                         if (isfinite(dist_sq) && dist_sq < best_dist_sq)
                         {
                             best_dist_sq = dist_sq;
@@ -1626,9 +1635,9 @@ __global__ void transformAndCollectResidualStatsKernel(
 
     if (source_idx < source_count)
     {
-        const Scalar px = source_points[source_idx];
-        const Scalar py = source_points[source_count + source_idx];
-        const Scalar pz = source_points[2 * source_count + source_idx];
+        const Scalar px = loadReadOnlyIcpValue(source_points + source_idx);
+        const Scalar py = loadReadOnlyIcpValue(source_points + source_count + source_idx);
+        const Scalar pz = loadReadOnlyIcpValue(source_points + 2 * source_count + source_idx);
 
         Scalar ox = Scalar(0);
         Scalar oy = Scalar(0);
@@ -1707,6 +1716,9 @@ __global__ void transformAndCollectResidualStatsKernel(
             const int tile_count = min(kIcpStatsBlockSize, target_count - tile_start);
             for (int tile_offset = 0; tile_offset < tile_count; ++tile_offset)
             {
+#ifdef PLAPOINT_ENABLE_TESTING
+                atomicAdd(&g_icp_target_candidate_visit_count, 1ull);
+#endif
                 if (!target_tile_valid[tile_offset])
                 {
                     continue;
@@ -1814,9 +1826,9 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
 
     if (source_idx < source_count)
     {
-        const Scalar px = source_points[source_idx];
-        const Scalar py = source_points[source_count + source_idx];
-        const Scalar pz = source_points[2 * source_count + source_idx];
+        const Scalar px = loadReadOnlyIcpValue(source_points + source_idx);
+        const Scalar py = loadReadOnlyIcpValue(source_points + source_count + source_idx);
+        const Scalar pz = loadReadOnlyIcpValue(source_points + 2 * source_count + source_idx);
 
         Scalar ox = Scalar(0);
         Scalar oy = Scalar(0);
@@ -1926,6 +1938,9 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                     for (int offset = 0; offset < count; ++offset)
                     {
                         const int sorted_offset = start + offset;
+#ifdef PLAPOINT_ENABLE_TESTING
+                        atomicAdd(&g_icp_target_candidate_visit_count, 1ull);
+#endif
                         const double tx = loadSortedIcpTargetX(target_grid, sorted_offset);
                         const double dx = sx - tx;
                         const double dx_sq = dx * dx;
@@ -1960,6 +1975,9 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                             continue;
                         }
 
+#ifdef PLAPOINT_ENABLE_TESTING
+                        atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
+#endif
                         if (isfinite(dist_sq) && dist_sq < best_dist_sq)
                         {
                             best_dist_sq = dist_sq;
@@ -2544,9 +2562,9 @@ __global__ void transformPointsColumnMajorKernel(
         return;
     }
 
-    const Scalar px = points[idx];
-    const Scalar py = points[point_count + idx];
-    const Scalar pz = points[2 * point_count + idx];
+    const Scalar px = loadReadOnlyIcpValue(points + idx);
+    const Scalar py = loadReadOnlyIcpValue(points + point_count + idx);
+    const Scalar pz = loadReadOnlyIcpValue(points + 2 * point_count + idx);
 
     Scalar ox = Scalar(0);
     Scalar oy = Scalar(0);

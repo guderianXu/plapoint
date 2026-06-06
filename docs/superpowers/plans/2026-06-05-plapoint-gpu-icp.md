@@ -1991,6 +1991,45 @@ Verification evidence:
   - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
     143 tests, 0 failed, 1 skipped CUDA-only transfer case.
 
+## Task 83: Use Read-Only Source Loads In GPU ICP Transform Residual Paths
+
+- Goal: reduce global-memory pressure in GPU ICP transform and transform+residual paths. These kernels read source
+  point columns as immutable input, but still used normal global loads while nearby ICP kernels already route immutable
+  point loads through `loadReadOnlyIcpValue()`.
+- Test and instrumentation coverage:
+  - Extended the spatial-grid candidate pruning tests so residual-only stats also assert target-candidate visits and
+    full-distance evaluation counts, matching the correspondence-path pruning expectations.
+  - The current machine has no usable CUDA device, so these GPU assertions are compiled and discovered but skipped at
+    runtime until a CUDA-capable runner is available.
+- Implementation:
+  - Changed `transformAndCollectResidualStatsKernel()`,
+    `transformAndCollectResidualStatsSpatialGridKernel()`, and `transformPointsColumnMajorKernel()` to read source point
+    coordinates through `loadReadOnlyIcpValue()`.
+  - Added testing-only target-candidate visit counters to residual fallback, transform+residual fallback, residual
+    spatial-grid, and transform+residual spatial-grid candidate loops.
+  - Added testing-only full-distance evaluation counters to residual spatial-grid and transform+residual spatial-grid
+    loops after radius pruning, so future GPU runs can catch pruning regressions on residual paths.
+  - Kept output writes, alias-handling assumptions, residual acceptance, tie-breaking, and public APIs unchanged.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformPointsColumnMajorWritesCallerOwnedOutput:ICPGpuPathTest.FallbackStatsLaunchesTileBoundSpecializationsByRadius:ICPGpuPathTest.FallbackStatsStopsLoadingTargetTilesWhenBlockExactMatched:ICPGpuPathTest.SpatialGridCandidateLoadsYzCoordinatesOnlyAfterXPruning:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYExceedsRadius:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 7 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `git diff --check`:
+    clean.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    233 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran; GPU rows reported `skipped,no_usable_cuda_device`.
+- Follow-up required when a CUDA device is available:
+  rerun the selected spatial-grid/fallback GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to verify
+  runtime behavior and measure the read-only load impact.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell

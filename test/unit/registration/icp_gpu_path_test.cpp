@@ -1097,6 +1097,8 @@ TEST(ICPGpuPathTest, SpatialGridCandidateLoadsYzCoordinatesOnlyAfterXPruning)
     EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
     EXPECT_EQ(plapoint::gpu::icpSortedTargetCoordinateLoadCountForTesting(), 1ull);
 
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    plapoint::gpu::resetIcpFullDistanceEvaluationCountForTesting();
     plapoint::gpu::resetIcpSortedTargetCoordinateLoadCountForTesting();
     const auto residual_stats = plapoint::gpu::computeIcpResidualStatsColumnMajor(
         source_gpu.data(),
@@ -1107,6 +1109,8 @@ TEST(ICPGpuPathTest, SpatialGridCandidateLoadsYzCoordinatesOnlyAfterXPruning)
         workspace);
 
     EXPECT_EQ(residual_stats.active_count, 0);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 1ull);
+    EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
     EXPECT_EQ(plapoint::gpu::icpSortedTargetCoordinateLoadCountForTesting(), 1ull);
 }
 
@@ -1152,6 +1156,8 @@ TEST(ICPGpuPathTest, SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest)
     EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 1ull);
     EXPECT_EQ(plapoint::gpu::icpSortedTargetCoordinateLoadCountForTesting(), 5ull);
 
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    plapoint::gpu::resetIcpFullDistanceEvaluationCountForTesting();
     plapoint::gpu::resetIcpSortedTargetCoordinateLoadCountForTesting();
     const auto residual_stats = plapoint::gpu::computeIcpResidualStatsColumnMajor(
         source_gpu.data(),
@@ -1163,6 +1169,8 @@ TEST(ICPGpuPathTest, SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest)
 
     EXPECT_EQ(residual_stats.active_count, 1);
     EXPECT_NEAR(residual_stats.residual_sq_sum, 0.01, 1.0e-6);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 2ull);
+    EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 1ull);
     EXPECT_EQ(plapoint::gpu::icpSortedTargetCoordinateLoadCountForTesting(), 5ull);
 }
 
@@ -1204,6 +1212,8 @@ TEST(ICPGpuPathTest, SpatialGridCandidateSkipsZLoadWhenXYExceedsRadius)
     EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
     EXPECT_EQ(plapoint::gpu::icpSortedTargetCoordinateLoadCountForTesting(), 2ull);
 
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    plapoint::gpu::resetIcpFullDistanceEvaluationCountForTesting();
     plapoint::gpu::resetIcpSortedTargetCoordinateLoadCountForTesting();
     const auto residual_stats = plapoint::gpu::computeIcpResidualStatsColumnMajor(
         source_gpu.data(),
@@ -1214,6 +1224,8 @@ TEST(ICPGpuPathTest, SpatialGridCandidateSkipsZLoadWhenXYExceedsRadius)
         workspace);
 
     EXPECT_EQ(residual_stats.active_count, 0);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 1ull);
+    EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
     EXPECT_EQ(plapoint::gpu::icpSortedTargetCoordinateLoadCountForTesting(), 2ull);
 }
 
