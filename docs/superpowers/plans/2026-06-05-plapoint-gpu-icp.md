@@ -5213,3 +5213,63 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   run float finite-radius terminal final-metrics GPU tests and benchmark rows on hardware to quantify the avoided grid
   rebuild or fallback after float-width spatial-grid cache reuse.
+
+## Task 147: Skip Transformed Alignment Search For Exact Pointwise Matches
+
+- Goal: reduce work in transformed GPU ICP alignment steps when the accumulated transform already maps `source[i]`
+  exactly onto `target[i]`. In that case the transformed correspondence stats kernel can accept the same-index match
+  and skip spatial-grid or fallback nearest-neighbor search for that source point.
+- RED checks:
+  - `cmake --build build-codex-cuda -j$(nproc)` after adding
+    `TransformedExactPointwiseStatsPredicateRequiresSameCountAndNoIndexOutput`:
+    failed because `plapoint::gpu::detail::canProbeTransformedExactPointwiseStats()` did not exist.
+  - Added `TransformedAlignmentStepSkipsSpatialGridSearchForExactPointwiseMatches` for CUDA hardware. On a machine with
+    a usable CUDA device this test should fail before implementation because the transformed spatial-grid alignment
+    kernel still visits grid cells and candidates even when every transformed point exactly matches the same target row.
+- Implementation:
+  - Added `detail::canProbeTransformedExactPointwiseStats()` so host launch code enables this specialization only for
+    same-count transformed stats without requested correspondence-index output and with an available target pointer.
+  - Added `tryAcceptTransformedExactPointwiseCorrespondence()` in `src/icp_gpu.cu`. It loads the same-index target point,
+    compares it to the transformed source point, records a zero-residual correspondence when equal, and lets the existing
+    search path handle mismatches.
+  - Extended the transformed fallback and transformed spatial-grid correspondence kernels with a
+    `TryTransformedExactPointwise` template flag. Non-transformed kernels and index-output kernels instantiate the flag
+    as false, preserving their existing behavior.
+- Review:
+  - A read-only subagent review found no blocking issues or obvious semantic regressions. It confirmed that the fast path
+    is gated by the transformed kernel specialization and the host predicate, and that normal non-transformed and
+    index-output paths keep the flag disabled.
+  - The review noted the intended performance scope: this task skips per-source grid lookup, candidate visits, and full
+    distance evaluations after an exact same-index transformed match. It does not skip the host-side
+    `prepareTargetSpatialGrid()` call or target-grid build before launching the spatial-grid kernel.
+  - The review also noted that `g_icp_exact_pointwise_target_load_count` should be interpreted as exact-pointwise probe
+    target-coordinate loads, not as a global target-load counter.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformedExactPointwiseStatsPredicateRequiresSameCountAndNoIndexOutput:ICPGpuPathTest.TransformedAlignmentStepSkipsSpatialGridSearchForExactPointwiseMatches`:
+    2 tests discovered; the no-device predicate test passed and the CUDA hardware path skipped because this machine has
+    no usable CUDA device.
+- Full verification performed in this session:
+  - `git diff --check`:
+    clean before the documentation update.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    277 test entries, 0 failed. GPU-dependent tests were discovered and skipped because the current session cannot
+    communicate with a usable CUDA device.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`:
+    1 test, 0 failed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  run `TransformedAlignmentStepSkipsSpatialGridSearchForExactPointwiseMatches` and compare multi-iteration finite-radius
+  alignment-step benchmark rows to measure the saved grid lookups and candidate scans.

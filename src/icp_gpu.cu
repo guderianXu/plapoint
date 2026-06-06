@@ -772,6 +772,43 @@ __device__ __forceinline__ bool tryAcceptTransformedExactPointwiseResidual(
 }
 
 template <typename Scalar>
+__device__ __forceinline__ bool tryAcceptTransformedExactPointwiseCorrespondence(
+    int source_idx,
+    int source_count,
+    const void* target_points_raw,
+    int target_count,
+    double sx,
+    double sy,
+    double sz,
+    RawIcpStats& local)
+{
+    if (!target_points_raw || source_count != target_count)
+    {
+        return false;
+    }
+
+    const auto* target_points = static_cast<const Scalar*>(target_points_raw);
+    double tx = 0.0;
+    double ty = 0.0;
+    double tz = 0.0;
+    if (!loadFiniteColumnMajorPoint(target_points, target_count, source_idx, tx, ty, tz))
+    {
+        return false;
+    }
+#ifdef PLAPOINT_ENABLE_TESTING
+    atomicAdd(&g_icp_exact_pointwise_target_load_count, 3ull);
+#endif
+
+    if (sx != tx || sy != ty || sz != tz)
+    {
+        return false;
+    }
+
+    recordAcceptedCorrespondence(local, sx, sy, sz, tx, ty, tz, 0.0);
+    return true;
+}
+
+template <typename Scalar>
 __global__ void computeTargetTileBoundsKernel(
     const Scalar* __restrict__ target_points,
     int target_count,
@@ -833,7 +870,12 @@ __global__ void computeTargetTileBoundsKernel(
     }
 }
 
-template <typename Scalar, bool WriteCorrespondenceIndices, bool UseTargetTileBounds, bool TransformSource>
+template <
+    typename Scalar,
+    bool WriteCorrespondenceIndices,
+    bool UseTargetTileBounds,
+    bool TransformSource,
+    bool TryTransformedExactPointwise>
 __global__ void collectCorrespondenceStatsKernel(
     const Scalar* __restrict__ source_transform,
     const Scalar* source_points,
@@ -887,6 +929,21 @@ __global__ void collectCorrespondenceStatsKernel(
         else
         {
             source_valid = true;
+            if constexpr (TransformSource && TryTransformedExactPointwise)
+            {
+                if (tryAcceptTransformedExactPointwiseCorrespondence<Scalar>(
+                        source_idx,
+                        source_count,
+                        target_points,
+                        target_count,
+                        sx,
+                        sy,
+                        sz,
+                        local))
+                {
+                    source_valid = false;
+                }
+            }
         }
     }
 
@@ -1062,7 +1119,12 @@ __global__ void collectCorrespondenceStatsKernel(
     }
 }
 
-template <typename Scalar, bool FiniteCellBounds, bool WriteCorrespondenceIndices, bool TransformSource>
+template <
+    typename Scalar,
+    bool FiniteCellBounds,
+    bool WriteCorrespondenceIndices,
+    bool TransformSource,
+    bool TryTransformedExactPointwise>
 __global__ void collectCorrespondenceStatsSpatialGridKernel(
     const Scalar* __restrict__ source_transform,
     const Scalar* __restrict__ source_points,
@@ -1114,6 +1176,21 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
         else
         {
             source_valid = true;
+            if constexpr (TransformSource && TryTransformedExactPointwise)
+            {
+                if (tryAcceptTransformedExactPointwiseCorrespondence<Scalar>(
+                        source_idx,
+                        source_count,
+                        target_grid.target_points,
+                        target_grid.target_count,
+                        sx,
+                        sy,
+                        sz,
+                        local))
+                {
+                    source_valid = false;
+                }
+            }
         }
     }
 
@@ -2300,7 +2377,8 @@ void launchCollectCorrespondenceStatsKernel(
     {
         if (correspondence_indices)
         {
-            collectCorrespondenceStatsKernel<Scalar, true, true, false><<<grid_size, block_size, 0, stream>>>(
+            collectCorrespondenceStatsKernel<Scalar, true, true, false, false>
+                <<<grid_size, block_size, 0, stream>>>(
                 nullptr,
                 source_points,
                 source_count,
@@ -2313,7 +2391,8 @@ void launchCollectCorrespondenceStatsKernel(
             return;
         }
 
-        collectCorrespondenceStatsKernel<Scalar, false, true, false><<<grid_size, block_size, 0, stream>>>(
+        collectCorrespondenceStatsKernel<Scalar, false, true, false, false>
+            <<<grid_size, block_size, 0, stream>>>(
             nullptr,
             source_points,
             source_count,
@@ -2328,7 +2407,8 @@ void launchCollectCorrespondenceStatsKernel(
 
     if (correspondence_indices)
     {
-        collectCorrespondenceStatsKernel<Scalar, true, false, false><<<grid_size, block_size, 0, stream>>>(
+        collectCorrespondenceStatsKernel<Scalar, true, false, false, false>
+            <<<grid_size, block_size, 0, stream>>>(
             nullptr,
             source_points,
             source_count,
@@ -2341,7 +2421,8 @@ void launchCollectCorrespondenceStatsKernel(
         return;
     }
 
-    collectCorrespondenceStatsKernel<Scalar, false, false, false><<<grid_size, block_size, 0, stream>>>(
+    collectCorrespondenceStatsKernel<Scalar, false, false, false, false>
+        <<<grid_size, block_size, 0, stream>>>(
         nullptr,
         source_points,
         source_count,
@@ -2373,7 +2454,29 @@ void launchTransformAndCollectCorrespondenceStatsKernel(
 
     if (target_tile_bounds)
     {
-        collectCorrespondenceStatsKernel<Scalar, false, true, true><<<grid_size, block_size, 0, stream>>>(
+        const bool try_transformed_exact_pointwise =
+            detail::canProbeTransformedExactPointwiseStats(
+                source_count,
+                target_points,
+                target_count,
+                nullptr);
+        if (try_transformed_exact_pointwise)
+        {
+            collectCorrespondenceStatsKernel<Scalar, false, true, true, true>
+                <<<grid_size, block_size, 0, stream>>>(
+                source_transform,
+                source_points,
+                source_count,
+                target_points,
+                target_count,
+                max_correspondence_distance,
+                nullptr,
+                target_tile_bounds,
+                partial_stats);
+            return;
+        }
+        collectCorrespondenceStatsKernel<Scalar, false, true, true, false>
+            <<<grid_size, block_size, 0, stream>>>(
             source_transform,
             source_points,
             source_count,
@@ -2386,7 +2489,29 @@ void launchTransformAndCollectCorrespondenceStatsKernel(
         return;
     }
 
-    collectCorrespondenceStatsKernel<Scalar, false, false, true><<<grid_size, block_size, 0, stream>>>(
+    const bool try_transformed_exact_pointwise =
+        detail::canProbeTransformedExactPointwiseStats(
+            source_count,
+            target_points,
+            target_count,
+            nullptr);
+    if (try_transformed_exact_pointwise)
+    {
+        collectCorrespondenceStatsKernel<Scalar, false, false, true, true>
+            <<<grid_size, block_size, 0, stream>>>(
+            source_transform,
+            source_points,
+            source_count,
+            target_points,
+            target_count,
+            max_correspondence_distance,
+            nullptr,
+            target_tile_bounds,
+            partial_stats);
+        return;
+    }
+    collectCorrespondenceStatsKernel<Scalar, false, false, true, false>
+        <<<grid_size, block_size, 0, stream>>>(
         source_transform,
         source_points,
         source_count,
@@ -2501,7 +2626,8 @@ void launchCollectCorrespondenceStatsSpatialGridKernel(
     {
         if (correspondence_indices)
         {
-            collectCorrespondenceStatsSpatialGridKernel<Scalar, true, true, false><<<grid_size, block_size, 0, stream>>>(
+            collectCorrespondenceStatsSpatialGridKernel<Scalar, true, true, false, false>
+                <<<grid_size, block_size, 0, stream>>>(
                 nullptr,
                 source_points,
                 source_count,
@@ -2512,7 +2638,8 @@ void launchCollectCorrespondenceStatsSpatialGridKernel(
         }
         else
         {
-            collectCorrespondenceStatsSpatialGridKernel<Scalar, true, false, false><<<grid_size, block_size, 0, stream>>>(
+            collectCorrespondenceStatsSpatialGridKernel<Scalar, true, false, false, false>
+                <<<grid_size, block_size, 0, stream>>>(
                 nullptr,
                 source_points,
                 source_count,
@@ -2526,7 +2653,8 @@ void launchCollectCorrespondenceStatsSpatialGridKernel(
 
     if (correspondence_indices)
     {
-        collectCorrespondenceStatsSpatialGridKernel<Scalar, false, true, false><<<grid_size, block_size, 0, stream>>>(
+        collectCorrespondenceStatsSpatialGridKernel<Scalar, false, true, false, false>
+            <<<grid_size, block_size, 0, stream>>>(
             nullptr,
             source_points,
             source_count,
@@ -2537,7 +2665,8 @@ void launchCollectCorrespondenceStatsSpatialGridKernel(
     }
     else
     {
-        collectCorrespondenceStatsSpatialGridKernel<Scalar, false, false, false><<<grid_size, block_size, 0, stream>>>(
+        collectCorrespondenceStatsSpatialGridKernel<Scalar, false, false, false, false>
+            <<<grid_size, block_size, 0, stream>>>(
             nullptr,
             source_points,
             source_count,
@@ -2562,7 +2691,27 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
 {
     if (target_grid.finite_cell_bounds)
     {
-        collectCorrespondenceStatsSpatialGridKernel<Scalar, true, false, true><<<grid_size, block_size, 0, stream>>>(
+        const bool try_transformed_exact_pointwise =
+            detail::canProbeTransformedExactPointwiseStats(
+                source_count,
+                target_grid.target_points,
+                target_grid.target_count,
+                nullptr);
+        if (try_transformed_exact_pointwise)
+        {
+            collectCorrespondenceStatsSpatialGridKernel<Scalar, true, false, true, true>
+                <<<grid_size, block_size, 0, stream>>>(
+                source_transform,
+                source_points,
+                source_count,
+                max_correspondence_distance,
+                nullptr,
+                target_grid,
+                partial_stats);
+            return;
+        }
+        collectCorrespondenceStatsSpatialGridKernel<Scalar, true, false, true, false>
+            <<<grid_size, block_size, 0, stream>>>(
             source_transform,
             source_points,
             source_count,
@@ -2573,7 +2722,27 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
         return;
     }
 
-    collectCorrespondenceStatsSpatialGridKernel<Scalar, false, false, true><<<grid_size, block_size, 0, stream>>>(
+    const bool try_transformed_exact_pointwise =
+        detail::canProbeTransformedExactPointwiseStats(
+            source_count,
+            target_grid.target_points,
+            target_grid.target_count,
+            nullptr);
+    if (try_transformed_exact_pointwise)
+    {
+        collectCorrespondenceStatsSpatialGridKernel<Scalar, false, false, true, true>
+            <<<grid_size, block_size, 0, stream>>>(
+            source_transform,
+            source_points,
+            source_count,
+            max_correspondence_distance,
+            nullptr,
+            target_grid,
+            partial_stats);
+        return;
+    }
+    collectCorrespondenceStatsSpatialGridKernel<Scalar, false, false, true, false>
+        <<<grid_size, block_size, 0, stream>>>(
         source_transform,
         source_points,
         source_count,

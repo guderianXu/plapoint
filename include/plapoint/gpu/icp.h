@@ -531,6 +531,18 @@ inline bool canProbeExactPointwiseStats(
     return !std::isfinite(max_dist);
 }
 
+/// Return true when transformed stats may accept same-index target matches before nearest-neighbor search.
+inline bool canProbeTransformedExactPointwiseStats(
+    int source_count,
+    const void* target_points,
+    int target_count,
+    const int* d_correspondence_indices)
+{
+    return d_correspondence_indices == nullptr &&
+           target_points != nullptr &&
+           source_count == target_count;
+}
+
 /// Compute the compact ICP alignment step using workspace already reserved for source_count.
 /// The caller must call IcpCorrespondenceStatsWorkspace::reserveFloatAlignmentStep(source_count) first.
 IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
