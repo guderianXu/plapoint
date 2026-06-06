@@ -2204,6 +2204,128 @@ TEST(ICPGpuPathTest, CorrespondenceStatsWorkspaceCanReserveCompactAlignmentStepR
     EXPECT_LT(compact_workspace._stats_storage.size(), full_workspace._stats_storage.size());
 }
 
+TEST(ICPGpuPathTest, TargetSpatialGridSortedCoordinateStorageUsesScalarWidth)
+{
+    constexpr int target_count = 11;
+
+    EXPECT_EQ(
+        plapoint::gpu::detail::targetSpatialGridSortedCoordinateByteCount<float>(target_count),
+        static_cast<std::size_t>(target_count) * sizeof(float));
+    EXPECT_EQ(
+        plapoint::gpu::detail::targetSpatialGridSortedCoordinateByteCount<double>(target_count),
+        static_cast<std::size_t>(target_count) * sizeof(double));
+    EXPECT_LT(
+        plapoint::gpu::detail::targetSpatialGridSortedCoordinateByteCount<float>(target_count),
+        plapoint::gpu::detail::targetSpatialGridSortedCoordinateByteCount<double>(target_count));
+
+    EXPECT_FALSE(plapoint::gpu::detail::targetSpatialGridCoordinateStorageNeedsReserve(
+        target_count,
+        sizeof(float),
+        target_count,
+        sizeof(float)));
+    EXPECT_TRUE(plapoint::gpu::detail::targetSpatialGridCoordinateStorageNeedsReserve(
+        target_count,
+        sizeof(float),
+        target_count,
+        sizeof(double)));
+    EXPECT_TRUE(plapoint::gpu::detail::targetSpatialGridCoordinateStorageNeedsReserve(
+        target_count,
+        sizeof(double),
+        target_count + 1,
+        sizeof(double)));
+    EXPECT_TRUE(plapoint::gpu::detail::targetSpatialGridCoordinateStorageNeedsReserve(
+        target_count,
+        std::size_t{0},
+        target_count,
+        sizeof(float)));
+}
+
+TEST(ICPGpuPathTest, TargetSpatialGridCacheMatchRequiresCoordinateStorageWidth)
+{
+    constexpr int target_count = 11;
+    const void* target_points = reinterpret_cast<const void*>(0x1000);
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+
+    workspace.markTargetSpatialGridCache(target_points, target_count, 1.0, 1);
+
+    EXPECT_FALSE(workspace.targetSpatialGridCacheMatches(target_points, target_count, 1.0));
+    EXPECT_FALSE(workspace.targetSpatialGridCacheMatchesForScalar<float>(target_points, target_count, 1.0));
+    EXPECT_FALSE(workspace.targetSpatialGridCacheMatchesForScalar<double>(target_points, target_count, 1.0));
+}
+
+TEST(ICPGpuPathTest, TargetSpatialGridWorkspaceReservesFloatSizedSortedCoordinates)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    constexpr int target_count = 11;
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+
+    workspace.reserveTargetSpatialGridForScalar<float>(target_count);
+    EXPECT_EQ(
+        workspace._target_spatial_grid_sorted_x_storage.size(),
+        plapoint::gpu::detail::targetSpatialGridSortedCoordinateByteCount<float>(target_count));
+    EXPECT_EQ(
+        workspace._target_spatial_grid_sorted_y_storage.size(),
+        plapoint::gpu::detail::targetSpatialGridSortedCoordinateByteCount<float>(target_count));
+    EXPECT_EQ(
+        workspace._target_spatial_grid_sorted_z_storage.size(),
+        plapoint::gpu::detail::targetSpatialGridSortedCoordinateByteCount<float>(target_count));
+
+    workspace.markTargetSpatialGridCache(
+        reinterpret_cast<const void*>(0x1000),
+        target_count,
+        1.0,
+        1);
+    ASSERT_TRUE(workspace.targetSpatialGridCacheMatchesForScalar<float>(
+        reinterpret_cast<const void*>(0x1000),
+        target_count,
+        1.0));
+    EXPECT_FALSE(workspace.targetSpatialGridCacheMatches(
+        reinterpret_cast<const void*>(0x1000),
+        target_count,
+        1.0));
+    EXPECT_FALSE(workspace.targetSpatialGridCacheMatchesForScalar<double>(
+        reinterpret_cast<const void*>(0x1000),
+        target_count,
+        1.0));
+
+    workspace.reserveTargetSpatialGridForScalar<double>(target_count);
+    EXPECT_EQ(
+        workspace._target_spatial_grid_sorted_x_storage.size(),
+        plapoint::gpu::detail::targetSpatialGridSortedCoordinateByteCount<double>(target_count));
+    EXPECT_EQ(
+        workspace._target_spatial_grid_sorted_y_storage.size(),
+        plapoint::gpu::detail::targetSpatialGridSortedCoordinateByteCount<double>(target_count));
+    EXPECT_EQ(
+        workspace._target_spatial_grid_sorted_z_storage.size(),
+        plapoint::gpu::detail::targetSpatialGridSortedCoordinateByteCount<double>(target_count));
+    EXPECT_FALSE(workspace.targetSpatialGridCacheMatches(
+        reinterpret_cast<const void*>(0x1000),
+        target_count,
+        1.0));
+
+    workspace.markTargetSpatialGridCache(
+        reinterpret_cast<const void*>(0x1000),
+        target_count,
+        1.0,
+        1);
+    EXPECT_TRUE(workspace.targetSpatialGridCacheMatches(
+        reinterpret_cast<const void*>(0x1000),
+        target_count,
+        1.0));
+    EXPECT_TRUE(workspace.targetSpatialGridCacheMatchesForScalar<double>(
+        reinterpret_cast<const void*>(0x1000),
+        target_count,
+        1.0));
+    EXPECT_FALSE(workspace.targetSpatialGridCacheMatchesForScalar<float>(
+        reinterpret_cast<const void*>(0x1000),
+        target_count,
+        1.0));
+}
+
 TEST(ICPGpuPathTest, FloatAlignmentStepWorkspaceReservesFloatSizedResultStorage)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

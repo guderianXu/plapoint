@@ -5106,3 +5106,62 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun the exact-pointwise same-buffer and equal-different-buffer GPU tests to measure the target-load skip and equality
   probe cost on hardware.
+
+## Task 145: Store Float Target Spatial-Grid Coordinates At Float Width
+
+- Goal: reduce float GPU ICP finite-radius spatial-grid memory traffic and workspace footprint. The sorted target x/y/z
+  coordinate arrays no longer need to be stored as double for float ICP; they can be stored as `float` and converted to
+  double only when loaded for distance math.
+- RED checks:
+  - `cmake --build build-codex-cuda -j$(nproc)` after adding
+    `TargetSpatialGridSortedCoordinateStorageUsesScalarWidth` and
+    `TargetSpatialGridWorkspaceReservesFloatSizedSortedCoordinates`:
+    failed because the Scalar-width byte-count helpers and `reserveTargetSpatialGridForScalar<Scalar>()` did not exist.
+  - After review, the same build failed again after adding
+    `TargetSpatialGridCacheMatchRequiresCoordinateStorageWidth`, because
+    `targetSpatialGridCacheMatchesForScalar<Scalar>()` did not exist.
+- Implementation:
+  - Added Scalar-width target-spatial-grid reservation helpers while keeping the old
+    `reserveTargetSpatialGrid(int)` entry point as the double-width compatibility path.
+  - Changed `prepareTargetSpatialGrid<Scalar>()` to reserve sorted coordinate storage at `sizeof(Scalar)`.
+  - Changed sorted target x/y/z storage pointers in the device grid descriptor to typeless pointers; gather writes
+    `Scalar` values, and spatial-grid kernels load them as `Scalar` before converting to double for distance arithmetic.
+  - Added `_target_spatial_grid_coordinate_value_bytes` metadata and made cache matching include Scalar width. The old
+    `targetSpatialGridCacheMatches()` now represents double-width cache matching, while
+    `targetSpatialGridCacheMatchesForScalar<Scalar>()` is used by the templated GPU ICP path.
+  - Added no-device tests for byte-count and cache metadata semantics, plus a CUDA-device workspace test for actual
+    float-sized sorted-coordinate allocations and float/double cache invalidation.
+- Review:
+  - A read-only subagent review found no blocking issues. It specifically checked old API compatibility, Scalar
+    gather/load behavior, reserve invalidation on width changes, and test coverage. The one noted API risk was addressed
+    by adding Scalar-width cache matching before final verification.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TargetSpatialGridSortedCoordinateStorageUsesScalarWidth:ICPGpuPathTest.TargetSpatialGridCacheMatchRequiresCoordinateStorageWidth:ICPGpuPathTest.TargetSpatialGridWorkspaceReservesFloatSizedSortedCoordinates`:
+    3 tests discovered; 2 passed and the actual DeviceBuffer allocation test skipped because this machine has no usable
+    CUDA device.
+- Full verification performed in this session:
+  - `git diff --check`:
+    clean before the documentation update.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    274 test entries, 0 failed. GPU-dependent tests were discovered and skipped because the current session cannot
+    communicate with a usable CUDA device.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`:
+    1 test, 0 failed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran and included the checked GPU ICP rows with `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  run the spatial-grid ICP GPU tests and benchmark rows on hardware to quantify the float target-grid memory/bandwidth
+  savings. This change should reduce each float target spatial-grid sorted coordinate column from 8 bytes per point to
+  4 bytes per point.

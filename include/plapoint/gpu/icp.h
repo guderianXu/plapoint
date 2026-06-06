@@ -3,6 +3,7 @@
 #ifdef PLAPOINT_WITH_CUDA
 
 #include <cmath>
+#include <cstddef>
 
 #include <cuda_runtime.h>
 
@@ -102,11 +103,25 @@ public:
     /// Reserve reusable target spatial grid storage for finite-radius candidate search.
     void reserveTargetSpatialGrid(int target_count);
 
+    /// Reserve reusable target spatial grid storage using Scalar-sized sorted target coordinates.
+    template <typename Scalar>
+    void reserveTargetSpatialGridForScalar(int target_count)
+    {
+        reserveTargetSpatialGrid(target_count, sizeof(Scalar));
+    }
+
     /// Clear cached target spatial-grid metadata. Call this if target device contents mutate in place.
     void invalidateTargetSpatialGridCache();
 
-    /// Return true when the cached target spatial grid matches the supplied target identity and cell size.
+    /// Return true when the cached double-width target spatial grid matches the target identity and cell size.
     bool targetSpatialGridCacheMatches(const void* target_points, int target_count, double cell_size) const;
+
+    /// Return true when the cached target spatial grid matches the target identity, cell size, and Scalar width.
+    template <typename Scalar>
+    bool targetSpatialGridCacheMatchesForScalar(const void* target_points, int target_count, double cell_size) const
+    {
+        return targetSpatialGridCacheMatches(target_points, target_count, cell_size, sizeof(Scalar));
+    }
 
     /// Return true when the cached target tile bounds match the supplied target identity.
     bool targetTileBoundsCacheMatches(const void* target_points, int target_count) const;
@@ -179,6 +194,12 @@ private:
     void reserveStatsStorage(std::size_t byte_count);
     void reserveHostResultStorage(std::size_t byte_count);
     void reserveAlignmentStepStorage(int source_count, std::size_t result_byte_count);
+    void reserveTargetSpatialGrid(int target_count, std::size_t coordinate_value_bytes);
+    bool targetSpatialGridCacheMatches(
+        const void* target_points,
+        int target_count,
+        double cell_size,
+        std::size_t coordinate_value_bytes) const;
 
     DeviceBuffer<unsigned char> _partial_storage;
     DeviceBuffer<unsigned char> _stats_storage;
@@ -202,6 +223,7 @@ private:
     const void* _target_spatial_grid_points = nullptr;
     int _target_spatial_grid_point_count = 0;
     double _target_spatial_grid_cell_size = 0.0;
+    std::size_t _target_spatial_grid_coordinate_value_bytes = 0;
     bool _target_spatial_grid_cache_valid = false;
 };
 
@@ -444,6 +466,28 @@ IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajor(
 
 namespace detail
 {
+
+/// Return the byte count for one sorted target-coordinate column stored with Scalar precision.
+template <typename Scalar>
+inline std::size_t targetSpatialGridSortedCoordinateByteCount(int target_count)
+{
+    if (target_count <= 0)
+    {
+        return 0;
+    }
+    return static_cast<std::size_t>(target_count) * sizeof(Scalar);
+}
+
+/// Return true when the reusable sorted-coordinate storage is too small or has the wrong scalar width.
+inline bool targetSpatialGridCoordinateStorageNeedsReserve(
+    int current_point_capacity,
+    std::size_t current_coordinate_value_bytes,
+    int target_count,
+    std::size_t requested_coordinate_value_bytes)
+{
+    return target_count > current_point_capacity ||
+           current_coordinate_value_bytes != requested_coordinate_value_bytes;
+}
 
 /// Return true when exact pointwise stats can skip target-coordinate loads because source and target alias.
 template <typename Scalar>
