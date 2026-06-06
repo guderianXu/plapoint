@@ -473,7 +473,7 @@ private:
             else if (terminal_iteration && _compute_final_metrics)
             {
                 gpu::IcpResidualStats<Scalar> final_stats;
-                if (output_aliases_target && terminal_final_metrics_can_use_target_snapshot)
+                if (terminal_final_metrics_can_use_target_snapshot)
                 {
                     final_stats =
                         gpu::detail::

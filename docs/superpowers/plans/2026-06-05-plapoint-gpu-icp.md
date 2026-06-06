@@ -4237,3 +4237,48 @@ Verification evidence:
   rerun `AlignUsesReservedWorkspaceForTerminalResidualStats` and compare terminal final-metrics benchmark rows on real
   GPU hardware. The next likely optimization is to let non-target-alias terminal final metrics reuse a cached target
   spatial-grid snapshot whenever the cache matches, not only when output aliases the target.
+
+## Task 125: Reuse Cached Spatial-Grid Snapshot For Regular Terminal Output
+
+- Goal: avoid re-entering `prepareTargetSpatialGrid()` during terminal GPU ICP final metrics when a cached finite-radius
+  target spatial-grid snapshot is already available. Before this task, the snapshot transform+residual helper was used
+  only when the output cloud aliased the target cloud; regular output clouds fell back to the generic helper, which
+  avoided rebuilding the grid on a cache hit but still repeated host-side reserve/pointer/cache preparation.
+- RED check:
+  - Added test-only `g_icp_target_spatial_grid_prepare_count` with reset/read accessors.
+  - Added `AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput`, which expects a regular-output,
+    finite-radius, non-identity single-iteration GPU align to build the target spatial grid once and enter
+    `prepareTargetSpatialGrid()` once total.
+  - Before the implementation, `cmake --build build-codex-cuda -j$(nproc)` failed at link time because the new test
+    referenced the missing prepare-count hook. Static inspection showed the regular-output terminal final-metrics branch
+    still called the generic transform+residual helper, which would enter `prepareTargetSpatialGrid()` a second time on
+    real GPU hardware.
+- Implementation:
+  - Counted target spatial-grid prepare entries after `shouldUseTargetSpatialGrid()` accepts the finite-radius path.
+  - Relaxed the terminal final-metrics branch in `alignGpu()` from
+    `output_aliases_target && terminal_final_metrics_can_use_target_snapshot` to
+    `terminal_final_metrics_can_use_target_snapshot`.
+  - Kept the existing target-alias safety behavior: when output aliases the target and no usable snapshot exists,
+    `terminal_output_needs_target_points` still sends the transform through scratch storage so final metrics can read
+    the original target points.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput:ICPGpuPathTest.AlignUsesReservedWorkspaceForTerminalResidualStats:ICPGpuPathTest.AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsUseSpatialGrid:ICPGpuPathTest.AlignReusesFiniteRadiusSpatialGridAcrossStatsCalls`:
+    selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    254 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput` and compare
+  `gpu_icp_finite_radius_translation_reuse_output` before/after this commit on real GPU hardware.

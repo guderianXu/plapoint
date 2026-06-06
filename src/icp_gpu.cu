@@ -174,6 +174,7 @@ std::atomic<std::uintptr_t> g_icp_last_transform_output_pointer{0};
 std::atomic<int> g_icp_transform_points_call_count{0};
 std::atomic<int> g_icp_transform_multiply_call_count{0};
 std::atomic<int> g_icp_identity_transform_write_count{0};
+std::atomic<int> g_icp_target_spatial_grid_prepare_count{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
 __device__ unsigned long long g_icp_target_candidate_visit_count;
 __device__ unsigned long long g_icp_target_index_load_count;
@@ -3363,6 +3364,10 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
         return grid;
     }
 
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_target_spatial_grid_prepare_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+
     const double cell_size = static_cast<double>(max_correspondence_distance);
     const bool finite_cell_bounds = icpGridCellBoundsAreFinite(cell_size);
     workspace.reserveTargetSpatialGrid(target_count);
@@ -4671,6 +4676,16 @@ void resetIcpTargetSpatialGridBuildCountForTesting()
 int icpTargetSpatialGridBuildCountForTesting()
 {
     return g_icp_target_spatial_grid_build_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpTargetSpatialGridPrepareCountForTesting()
+{
+    g_icp_target_spatial_grid_prepare_count.store(0, std::memory_order_relaxed);
+}
+
+int icpTargetSpatialGridPrepareCountForTesting()
+{
+    return g_icp_target_spatial_grid_prepare_count.load(std::memory_order_relaxed);
 }
 
 void resetIcpGridCellLookupCountForTesting()
