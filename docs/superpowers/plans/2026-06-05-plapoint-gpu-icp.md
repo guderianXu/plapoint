@@ -1826,6 +1826,50 @@ Verification evidence:
   rerun `ICPGpuPathTest.FallbackStatsStopsLoadingTargetTilesWhenBlockExactMatched`, full CUDA `ctest`, and the
   100k-point ICP benchmark to confirm runtime behavior and performance impact.
 
+## Task 79: Skip Bounded Fallback Target-Tile Loads Before Shared-Memory Fill
+
+- Goal: avoid loading target tiles into shared memory when precomputed target tile bounds prove that no unfinished
+  source thread in the block can accept any point from that tile. Previous bounded fallback pruning skipped the
+  per-source candidate loop for irrelevant far tiles, but it still loaded each target tile before making that decision.
+- TDD coverage:
+  - Extended `CorrespondenceStatsSkipsFarTargetTilesBeforeCandidateLoop` to require the indexed zero-radius fallback
+    case to load only the first relevant target tile instead of all three target tiles.
+  - Added `FallbackStatsSkipTargetTileLoadsWhenBoundsRejectWholeBlock`, which covers correspondence with index output,
+    residual-only stats, and transform+residual stats when every target tile is outside the zero-radius bounds for the
+    source block.
+  - Runtime RED could not be observed in this session because the current machine has no usable CUDA device. The tests
+    were added before production changes; on the previous implementation the target-tile load counter would increment
+    once per fallback tile after the shared-memory fill.
+- Implementation:
+  - Moved the `UseTargetTileBounds` relevance check before target coordinate loads in
+    `collectCorrespondenceStatsKernel()`, `collectResidualStatsKernel()`, and
+    `transformAndCollectResidualStatsKernel()`.
+  - Used a block-uniform `__syncthreads_count(tile_relevant)` vote so all threads either skip the tile together or
+    proceed to shared-memory target loading together.
+  - Kept the existing end-of-loaded-tile unfinished-source vote, exact-match early exit, indexed correspondence output,
+    and unbounded fallback path unchanged.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `git diff --check`:
+    clean.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsSkipsFarTargetTilesBeforeCandidateLoop:ICPGpuPathTest.FallbackStatsSkipTargetTileLoadsWhenBoundsRejectWholeBlock:ICPGpuPathTest.FallbackStatsStopsLoadingTargetTilesWhenBlockExactMatched:ICPGpuPathTest.FallbackStatsLaunchesTileBoundSpecializationsByRadius:ICPGpuPathTest.CorrespondenceStatsStopsNonSpatialScanAfterExactMatchWhenIndicesOmitted:ICPGpuPathTest.ResidualStatsStopsNonSpatialScanAfterExactMatch:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 6 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    231 test entries, 0 failed; GPU-dependent tests, including the new bounded fallback target-tile load test, were
+    skipped because the current session cannot communicate with the NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `ICPGpuPathTest.FallbackStatsSkipTargetTileLoadsWhenBoundsRejectWholeBlock`, full CUDA `ctest`, and the
+  100k-point ICP benchmark to confirm runtime behavior and performance impact.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell

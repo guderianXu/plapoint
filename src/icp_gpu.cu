@@ -707,6 +707,26 @@ __global__ void collectCorrespondenceStatsKernel(
     for (int tile_start = 0; tile_start < target_count; tile_start += kIcpStatsBlockSize)
     {
         const int tile_idx = tile_start / kIcpStatsBlockSize;
+        bool tile_relevant = true;
+        if constexpr (UseTargetTileBounds)
+        {
+            tile_relevant = false;
+            if (source_valid && !stop_target_scan)
+            {
+                const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
+                tile_relevant =
+                    bounds.has_valid_point &&
+                    sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&
+                    sy >= bounds.min_y - max_dist && sy <= bounds.max_y + max_dist &&
+                    sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
+            }
+            const int relevant_source_count = __syncthreads_count(tile_relevant);
+            if (relevant_source_count == 0)
+            {
+                continue;
+            }
+        }
+
         const int target_idx = tile_start + local_idx;
         double tx = 0.0;
         double ty = 0.0;
@@ -724,20 +744,6 @@ __global__ void collectCorrespondenceStatsKernel(
         }
 #endif
         __syncthreads();
-
-        bool tile_relevant = true;
-        if constexpr (UseTargetTileBounds)
-        {
-            if (source_valid)
-            {
-                const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
-                tile_relevant =
-                    bounds.has_valid_point &&
-                    sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&
-                    sy >= bounds.min_y - max_dist && sy <= bounds.max_y + max_dist &&
-                    sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
-            }
-        }
 
         if (source_valid && !stop_target_scan && tile_relevant)
         {
@@ -1257,6 +1263,26 @@ __global__ void collectResidualStatsKernel(
     for (int tile_start = 0; tile_start < target_count; tile_start += kIcpStatsBlockSize)
     {
         const int tile_idx = tile_start / kIcpStatsBlockSize;
+        bool tile_relevant = true;
+        if constexpr (UseTargetTileBounds)
+        {
+            tile_relevant = false;
+            if (source_valid && !stop_target_scan)
+            {
+                const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
+                tile_relevant =
+                    bounds.has_valid_point &&
+                    sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&
+                    sy >= bounds.min_y - max_dist && sy <= bounds.max_y + max_dist &&
+                    sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
+            }
+            const int relevant_source_count = __syncthreads_count(tile_relevant);
+            if (relevant_source_count == 0)
+            {
+                continue;
+            }
+        }
+
         const int target_idx = tile_start + local_idx;
         double tx = 0.0;
         double ty = 0.0;
@@ -1274,20 +1300,6 @@ __global__ void collectResidualStatsKernel(
         }
 #endif
         __syncthreads();
-
-        bool tile_relevant = true;
-        if constexpr (UseTargetTileBounds)
-        {
-            if (source_valid)
-            {
-                const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
-                tile_relevant =
-                    bounds.has_valid_point &&
-                    sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&
-                    sy >= bounds.min_y - max_dist && sy <= bounds.max_y + max_dist &&
-                    sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
-            }
-        }
 
         if (source_valid && !stop_target_scan && tile_relevant)
         {
@@ -1630,6 +1642,26 @@ __global__ void transformAndCollectResidualStatsKernel(
     for (int tile_start = 0; tile_start < target_count; tile_start += kIcpStatsBlockSize)
     {
         const int tile_idx = tile_start / kIcpStatsBlockSize;
+        bool tile_relevant = true;
+        if constexpr (UseTargetTileBounds)
+        {
+            tile_relevant = false;
+            if (source_valid && !stop_target_scan)
+            {
+                const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
+                tile_relevant =
+                    bounds.has_valid_point &&
+                    sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&
+                    sy >= bounds.min_y - max_dist && sy <= bounds.max_y + max_dist &&
+                    sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
+            }
+            const int relevant_source_count = __syncthreads_count(tile_relevant);
+            if (relevant_source_count == 0)
+            {
+                continue;
+            }
+        }
+
         const int target_idx = tile_start + local_idx;
         double tx = 0.0;
         double ty = 0.0;
@@ -1647,20 +1679,6 @@ __global__ void transformAndCollectResidualStatsKernel(
         }
 #endif
         __syncthreads();
-
-        bool tile_relevant = true;
-        if constexpr (UseTargetTileBounds)
-        {
-            if (source_valid)
-            {
-                const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
-                tile_relevant =
-                    bounds.has_valid_point &&
-                    sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&
-                    sy >= bounds.min_y - max_dist && sy <= bounds.max_y + max_dist &&
-                    sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
-            }
-        }
 
         if (source_valid && !stop_target_scan && tile_relevant)
         {
