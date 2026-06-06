@@ -105,9 +105,12 @@ endif()
 # Source files
 add_subdirectory(src)
 
+if(PLAPOINT_BUILD_TESTS OR PLAPOINT_BUILD_BENCHMARKS)
+    enable_testing()
+endif()
+
 # Tests
 if(PLAPOINT_BUILD_TESTS)
-    enable_testing()
     find_package(GTest REQUIRED)
     add_subdirectory(test)
 endif()

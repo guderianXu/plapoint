@@ -5011,3 +5011,50 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   compare `gpu_icp_identity_same_buffer_reuse_output` with `gpu_icp_identity` to quantify the exact same-buffer fast
   path and persistent-object/output reuse savings on real hardware.
+
+## Task 143: Add CTest Coverage For GPU ICP Benchmark Row Registration
+
+- Goal: stop relying on manual `rg` checks when new GPU ICP benchmark rows are added. The benchmark-only build now has
+  a CTest smoke check that runs the benchmark executable and verifies the key GPU ICP CSV rows are registered even when
+  no usable CUDA device is available.
+- RED check:
+  - `ctest --test-dir build-codex-cuda-bench-only -N | rg 'plapoint\\.benchmarks\\.gpu_icp_rows_registered'`:
+    exited with status 1 before implementation because the benchmark-only build did not register any CTest for GPU ICP
+    benchmark rows.
+- Implementation:
+  - Moved top-level `enable_testing()` so benchmark-only builds can emit CTest metadata without building unit tests.
+  - Added `cmake/check_gpu_icp_benchmark_rows.cmake`, which runs `plapoint_benchmarks --skip-cpu-icp`, checks all
+    current key GPU ICP row names by CSV first column, and also checks the
+    `gpu_icp_identity_same_buffer_reuse_output,skipped,disabled,` row when `--skip-icp-identity` is set.
+  - Registered `plapoint.benchmarks.gpu_icp_rows_registered` from `benchmarks/CMakeLists.txt` when CUDA support is
+    enabled.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    reconfigured the benchmark-only build and passed.
+  - `ctest --test-dir build-codex-cuda-bench-only -N | rg 'plapoint\\.benchmarks\\.gpu_icp_rows_registered'`:
+    found `Test #1: plapoint.benchmarks.gpu_icp_rows_registered`.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint\\.benchmarks\\.gpu_icp_rows_registered --output-on-failure`:
+    1 test, 0 failed.
+- Full verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    270 test entries, 0 failed. GPU-dependent tests were discovered and skipped because the current session cannot
+    communicate with a usable CUDA device.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`:
+    1 test, 0 failed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran and included the checked GPU ICP rows with `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when future GPU ICP benchmark rows are added:
+  add the new row name to `cmake/check_gpu_icp_benchmark_rows.cmake` in the same change, so row registration remains
+  covered by CTest.
