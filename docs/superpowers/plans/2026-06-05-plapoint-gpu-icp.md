@@ -6953,3 +6953,49 @@ Verification evidence:
   transform+residual kernels now avoid impossible exact-pointwise residual probes for unequal source/target counts.
   Equal-count benchmark rows remain at the prior level, which is expected because the probe is still intentionally
   enabled for those cases.
+
+## Task 184: Reuse Direct Lookup for Snapshot Residual Metrics
+
+- Goal: terminal residual metrics that reuse the target spatial-grid snapshot from the final alignment step should also
+  reuse the cached compact direct-lookup table. The snapshot path already restores sorted cell keys, sorted
+  coordinates, cell starts, and cell counts, but it left `direct_lookup_active` unset, so the terminal residual kernel
+  fell back to the lower-bound spatial-grid branch.
+- RED check:
+  - Tightened `ICPGpuPathTest.AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput` to reset
+    `g_icp_direct_spatial_grid_kernel_launch_count` and expect two direct spatial-grid kernel launches: one for the
+    alignment step and one for the terminal residual snapshot.
+  - Before implementation, the test failed with direct spatial-grid kernel launch count 1 instead of 2.
+- Implementation:
+  - Added `populateTargetSpatialGridDirectLookup(target_grid, workspace)` after reconstructing the snapshot
+    `IcpTargetSpatialGrid` in
+    `transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorImpl()`.
+  - The helper only activates direct lookup when the workspace has a valid cached direct lookup table, so sparse or
+    non-compact grids continue using the existing lower-bound path.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput`:
+    failed before implementation with direct spatial-grid kernel launch count 1 versus expected 2, then passed after
+    implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn:ICPGpuPathTest.SpatialGridDirectLookupSpecializationSkipsXyBaseGuard:ICPGpuPathTest.SpatialGridDirectLookupSpecializationSkipsActiveGuard:ICPGpuPathTest.SpatialGridDirectLookupUsesSpecializedKernelLaunches:ICPGpuPathTest.AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsUseSpatialGrid:ICPGpuPathTest.AlignWritesTerminalOrderedTransformDirectlyWhenOutputAliasesTarget`:
+    10 targeted direct-lookup and terminal-output tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 20 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(finite_radius_translation_(reuse_output|reuse_output_skip_final_metrics|ordered_output|ordered_output_skip_final_metrics)|stats_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid_reserved_workspace|stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid_reserved_workspace|residual_stats_finite_radius_translation_ordered|transform_residual_stats_finite_radius_translation_cached_grid|alignment_step_transformed_exact_pointwise_cached_grid|alignment_step_transformed_exact_pointwise_cache_hit)'`:
+    ran successfully on the RTX 4060 Laptop GPU.
+  - A second benchmark run confirmed the end-to-end reuse-output rows stayed lower while standalone residual rows stayed
+    near the prior level. Relevant second-run rows:
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.37765 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.2234 ms,
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.538074 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.508124 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.697188 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.696874 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.211568 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.229981 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.672577 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.476385 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_ordered` = 0.031528 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.491794 ms.
+- Current conclusion:
+  `align(output)` terminal residual metrics can now reuse the direct spatial-grid specialization from the cached target
+  snapshot. This affects the full finite-radius reuse-output path rather than the standalone transform-residual
+  benchmark, which uses the non-snapshot residual entry point.

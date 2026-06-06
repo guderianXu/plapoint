@@ -6518,6 +6518,7 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
     target_grid.cell_size = static_cast<double>(max_correspondence_distance);
     target_grid.finite_cell_bounds = icpGridCellBoundsAreFinite(target_grid.cell_size);
     target_grid.cell_count = target_spatial_grid_cell_count;
+    populateTargetSpatialGridDirectLookup(target_grid, workspace);
 
     constexpr int block_size = kIcpStatsBlockSize;
     const int grid_size = icpStatsPartialCount(source_count);

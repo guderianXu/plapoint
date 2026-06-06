@@ -5170,12 +5170,14 @@ TEST(ICPGpuPathTest, AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithR
     plapoint::gpu::resetIcpResidualStatsCallCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
+    plapoint::gpu::resetIcpDirectSpatialGridKernelLaunchCountForTesting();
     GpuCloud output;
     icp.align(output);
 
     EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpDirectSpatialGridKernelLaunchCountForTesting(), 2);
     EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-5f);
     EXPECT_EQ(output.size(), source->size());
 }
