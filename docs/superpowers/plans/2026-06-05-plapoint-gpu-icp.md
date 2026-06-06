@@ -1564,6 +1564,43 @@ Verification evidence:
   rerun the selected GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime behavior and
   performance impact.
 
+## Task 68: Use Read-Only Loads For GPU ICP Spatial-Grid Metadata
+
+- Goal: reduce read-only global-memory pressure in the finite-radius GPU ICP spatial-grid search path. The hot
+  correspondence and residual kernels repeatedly read sorted target coordinates, target indices, and cell keys while
+  scanning nearby cells; these arrays are immutable during the search kernels.
+- Implementation:
+  - Added a `loadReadOnlyIcpValue()` device helper that uses `__ldg` in CUDA device code and falls back to a plain
+    dereference for non-device compilation.
+  - Added a read-only `loadIcpGridCellKey()` helper and used it in the grid-cell binary search and active z-cell scan.
+  - Routed sorted target x/y/z coordinate loads through the read-only helper while preserving the testing coordinate
+    load counter.
+  - Added `loadSortedIcpTargetIndex()` so target-index tie-breaking and final index writes use read-only loads while
+    preserving the testing index-load counter.
+  - Kept spatial-grid ordering, candidate pruning, tie-breaking, correspondence stats, and residual stats semantics
+    unchanged.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsLoadsSpatialGridTargetIndexOnlyForCompetitiveCandidates:ICPGpuPathTest.SpatialGridCandidateLoadsYzCoordinatesOnlyAfterXPruning:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYExceedsRadius:ICPGpuPathTest.CorrespondenceStatsBatchesSpatialGridNeighborLookupsByXY:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 5 selected GPU spatial-grid tests were discovered but skipped because the current
+    session has no usable CUDA device.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    225 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran, but all GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi || true`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected GPU tests and compare finite-radius ICP benchmark rows with Nsight memory metrics to confirm
+  runtime impact.
+
 ## Task 57: Specialize Spatial-Grid Kernels By Finite Cell Bounds
 
 - Goal: remove a runtime `finite_cell_bounds` branch from the finite-radius spatial-grid ICP hot path. The branch value

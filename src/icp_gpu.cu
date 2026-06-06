@@ -250,6 +250,28 @@ __device__ __forceinline__ int icpNeighborCellOffset(int offset_index)
     return offset_index == 0 ? 0 : (offset_index == 1 ? -1 : 1);
 }
 
+template <typename Value>
+__device__ __forceinline__ Value loadReadOnlyIcpValue(const Value* value)
+{
+#if defined(__CUDA_ARCH__)
+    return __ldg(value);
+#else
+    return *value;
+#endif
+}
+
+__device__ __forceinline__ IcpGridCellKey loadIcpGridCellKey(
+    const IcpGridCellKey* cell_keys,
+    int cell_idx)
+{
+    const IcpGridCellKey* key = cell_keys + cell_idx;
+    return {
+        loadReadOnlyIcpValue(&key->x),
+        loadReadOnlyIcpValue(&key->y),
+        loadReadOnlyIcpValue(&key->z)
+    };
+}
+
 template <typename Scalar>
 struct ComputeIcpTargetGridCellKey
 {
@@ -289,7 +311,7 @@ __global__ void gatherSortedIcpTargetPointsKernel(
         return;
     }
 
-    const int target_idx = sorted_target_indices[idx];
+    const int target_idx = loadReadOnlyIcpValue(sorted_target_indices + idx);
     sorted_x[idx] = static_cast<double>(target_points[target_idx]);
     sorted_y[idx] = static_cast<double>(target_points[target_count + target_idx]);
     sorted_z[idx] = static_cast<double>(target_points[2 * target_count + target_idx]);
@@ -309,7 +331,7 @@ __device__ __forceinline__ int lowerBoundIcpGridCell(
     while (first < last)
     {
         const int mid = first + (last - first) / 2;
-        if (less(cell_keys[mid], query))
+        if (less(loadIcpGridCellKey(cell_keys, mid), query))
         {
             first = mid + 1;
         }
@@ -321,12 +343,22 @@ __device__ __forceinline__ int lowerBoundIcpGridCell(
     return first;
 }
 
+__device__ __forceinline__ int loadSortedIcpTargetIndex(
+    const IcpTargetSpatialGrid& target_grid,
+    int sorted_offset)
+{
+#ifdef PLAPOINT_ENABLE_TESTING
+    atomicAdd(&g_icp_target_index_load_count, 1ull);
+#endif
+    return loadReadOnlyIcpValue(target_grid.sorted_target_indices + sorted_offset);
+}
+
 __device__ __forceinline__ double loadSortedIcpTargetX(const IcpTargetSpatialGrid& target_grid, int sorted_offset)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
     atomicAdd(&g_icp_sorted_target_coordinate_load_count, 1ull);
 #endif
-    return target_grid.sorted_target_x[sorted_offset];
+    return loadReadOnlyIcpValue(target_grid.sorted_target_x + sorted_offset);
 }
 
 __device__ __forceinline__ double loadSortedIcpTargetY(const IcpTargetSpatialGrid& target_grid, int sorted_offset)
@@ -334,7 +366,7 @@ __device__ __forceinline__ double loadSortedIcpTargetY(const IcpTargetSpatialGri
 #ifdef PLAPOINT_ENABLE_TESTING
     atomicAdd(&g_icp_sorted_target_coordinate_load_count, 1ull);
 #endif
-    return target_grid.sorted_target_y[sorted_offset];
+    return loadReadOnlyIcpValue(target_grid.sorted_target_y + sorted_offset);
 }
 
 __device__ __forceinline__ double loadSortedIcpTargetZ(const IcpTargetSpatialGrid& target_grid, int sorted_offset)
@@ -342,7 +374,7 @@ __device__ __forceinline__ double loadSortedIcpTargetZ(const IcpTargetSpatialGri
 #ifdef PLAPOINT_ENABLE_TESTING
     atomicAdd(&g_icp_sorted_target_coordinate_load_count, 1ull);
 #endif
-    return target_grid.sorted_target_z[sorted_offset];
+    return loadReadOnlyIcpValue(target_grid.sorted_target_z + sorted_offset);
 }
 
 __device__ __forceinline__ double distanceOutsideIcpGridCellAxis(double value, int cell_coordinate, double cell_size)
@@ -811,7 +843,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                 int cell_idx = lowerBoundIcpGridCell(target_grid.cell_keys, target_grid.cell_count, query_key);
                 while (cell_idx < target_grid.cell_count && !stop_cell_scan)
                 {
-                    const IcpGridCellKey cell_key = target_grid.cell_keys[cell_idx];
+                    const IcpGridCellKey cell_key = loadIcpGridCellKey(target_grid.cell_keys, cell_idx);
                     if (cell_key.x != query_x || cell_key.y != query_y || cell_key.z > max_z)
                     {
                         break;
@@ -877,16 +909,10 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                             int target_idx = -1;
                             if (!update_best)
                             {
-                                target_idx = target_grid.sorted_target_indices[sorted_offset];
-#ifdef PLAPOINT_ENABLE_TESTING
-                                atomicAdd(&g_icp_target_index_load_count, 1ull);
-#endif
+                                target_idx = loadSortedIcpTargetIndex(target_grid, sorted_offset);
                                 if (best_idx < 0)
                                 {
-                                    best_idx = target_grid.sorted_target_indices[best_sorted_offset];
-#ifdef PLAPOINT_ENABLE_TESTING
-                                    atomicAdd(&g_icp_target_index_load_count, 1ull);
-#endif
+                                    best_idx = loadSortedIcpTargetIndex(target_grid, best_sorted_offset);
                                 }
                                 update_best = target_idx < best_idx;
                             }
@@ -933,10 +959,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
             {
                 if (best_idx < 0)
                 {
-                    best_idx = target_grid.sorted_target_indices[best_sorted_offset];
-#ifdef PLAPOINT_ENABLE_TESTING
-                    atomicAdd(&g_icp_target_index_load_count, 1ull);
-#endif
+                    best_idx = loadSortedIcpTargetIndex(target_grid, best_sorted_offset);
                 }
                 correspondence_indices[source_idx] = best_idx;
             }
@@ -1249,7 +1272,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
                 int cell_idx = lowerBoundIcpGridCell(target_grid.cell_keys, target_grid.cell_count, query_key);
                 while (cell_idx < target_grid.cell_count && !stop_cell_scan)
                 {
-                    const IcpGridCellKey cell_key = target_grid.cell_keys[cell_idx];
+                    const IcpGridCellKey cell_key = loadIcpGridCellKey(target_grid.cell_keys, cell_idx);
                     if (cell_key.x != query_x || cell_key.y != query_y || cell_key.z > max_z)
                     {
                         break;
@@ -1604,7 +1627,7 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                 int cell_idx = lowerBoundIcpGridCell(target_grid.cell_keys, target_grid.cell_count, query_key);
                 while (cell_idx < target_grid.cell_count && !stop_cell_scan)
                 {
-                    const IcpGridCellKey cell_key = target_grid.cell_keys[cell_idx];
+                    const IcpGridCellKey cell_key = loadIcpGridCellKey(target_grid.cell_keys, cell_idx);
                     if (cell_key.x != query_x || cell_key.y != query_y || cell_key.z > max_z)
                     {
                         break;
