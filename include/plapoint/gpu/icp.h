@@ -575,6 +575,8 @@ IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajorWithReservedWor
 
 /// Compute the compact ICP alignment step from source points transformed by d_source_transform.
 /// The caller must call IcpCorrespondenceStatsWorkspace::reserveFloatAlignmentStep(source_count) first.
+/// Set probe_transformed_exact_pointwise_on_cache_hit only when same-index transformed matches are expected often
+/// enough to justify an extra O(source_count) exact preflight before reusing a cached target spatial grid.
 IcpAlignmentStepResult<float> computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(
     const float* d_source_transform,
     const float* d_source_points,
@@ -585,10 +587,13 @@ IcpAlignmentStepResult<float> computeTransformedIcpAlignmentStepColumnMajorWithR
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     float* d_step_transform,
     cudaStream_t stream = 0,
-    bool assume_ordered_correspondences = false);
+    bool assume_ordered_correspondences = false,
+    bool probe_transformed_exact_pointwise_on_cache_hit = false);
 
 /// Compute the compact ICP alignment step from source points transformed by d_source_transform.
 /// The caller must call IcpCorrespondenceStatsWorkspace::reserveDoubleAlignmentStep(source_count) first.
+/// Set probe_transformed_exact_pointwise_on_cache_hit only when same-index transformed matches are expected often
+/// enough to justify an extra O(source_count) exact preflight before reusing a cached target spatial grid.
 IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(
     const double* d_source_transform,
     const double* d_source_points,
@@ -599,10 +604,13 @@ IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepColumnMajorWith
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     double* d_step_transform,
     cudaStream_t stream = 0,
-    bool assume_ordered_correspondences = false);
+    bool assume_ordered_correspondences = false,
+    bool probe_transformed_exact_pointwise_on_cache_hit = false);
 
 /// Compute a transformed compact ICP alignment step and write accumulated_transform = step * previous_accumulated.
 /// The caller must call IcpCorrespondenceStatsWorkspace::reserveFloatAlignmentStep(source_count) first.
+/// Set probe_transformed_exact_pointwise_on_cache_hit only when same-index transformed matches are expected often
+/// enough to justify an extra O(source_count) exact preflight before reusing a cached target spatial grid.
 IcpAlignmentStepResult<float> computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
     const float* d_source_transform,
     const float* d_source_points,
@@ -615,10 +623,13 @@ IcpAlignmentStepResult<float> computeTransformedIcpAlignmentStepAndAccumulateTra
     const float* d_previous_accumulated_transform,
     float* d_accumulated_transform,
     cudaStream_t stream = 0,
-    bool assume_ordered_correspondences = false);
+    bool assume_ordered_correspondences = false,
+    bool probe_transformed_exact_pointwise_on_cache_hit = false);
 
 /// Compute a transformed compact ICP alignment step and write accumulated_transform = step * previous_accumulated.
 /// The caller must call IcpCorrespondenceStatsWorkspace::reserveDoubleAlignmentStep(source_count) first.
+/// Set probe_transformed_exact_pointwise_on_cache_hit only when same-index transformed matches are expected often
+/// enough to justify an extra O(source_count) exact preflight before reusing a cached target spatial grid.
 IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
     const double* d_source_transform,
     const double* d_source_points,
@@ -631,7 +642,8 @@ IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepAndAccumulateTr
     const double* d_previous_accumulated_transform,
     double* d_accumulated_transform,
     cudaStream_t stream = 0,
-    bool assume_ordered_correspondences = false);
+    bool assume_ordered_correspondences = false,
+    bool probe_transformed_exact_pointwise_on_cache_hit = false);
 
 /// Compute final residual metrics using workspace already reserved for source_count.
 /// The caller must reserve residual-compatible partial and result storage first.

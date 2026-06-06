@@ -5771,7 +5771,8 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
     Scalar* d_accumulated_transform,
     cudaStream_t stream,
     bool reserve_workspace,
-    bool assume_ordered_correspondences)
+    bool assume_ordered_correspondences,
+    bool probe_transformed_exact_pointwise_on_cache_hit)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
@@ -5906,7 +5907,8 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
                 d_target_points,
                 target_count,
                 cell_size);
-        if (use_target_spatial_grid && !target_grid_cache_matches)
+        if (use_target_spatial_grid &&
+            (!target_grid_cache_matches || probe_transformed_exact_pointwise_on_cache_hit))
         {
             const bool exact_pointwise_stats =
                 launchTransformedExactPointwiseAlignmentStep<Scalar, AccumulateTransform>(
@@ -7270,7 +7272,8 @@ IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajor(
         nullptr,
         stream,
         true,
-        assume_ordered_correspondences);
+        assume_ordered_correspondences,
+        false);
 }
 
 IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajor(
@@ -7297,7 +7300,8 @@ IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajor(
         nullptr,
         stream,
         true,
-        assume_ordered_correspondences);
+        assume_ordered_correspondences,
+        false);
 }
 
 namespace detail
@@ -7327,7 +7331,8 @@ IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajorWithReservedWork
         nullptr,
         stream,
         false,
-        assume_ordered_correspondences);
+        assume_ordered_correspondences,
+        false);
 }
 
 IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
@@ -7354,7 +7359,8 @@ IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajorWithReservedWor
         nullptr,
         stream,
         false,
-        assume_ordered_correspondences);
+        assume_ordered_correspondences,
+        false);
 }
 
 IcpAlignmentStepResult<float> computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(
@@ -7367,7 +7373,8 @@ IcpAlignmentStepResult<float> computeTransformedIcpAlignmentStepColumnMajorWithR
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     float* d_step_transform,
     cudaStream_t stream,
-    bool assume_ordered_correspondences)
+    bool assume_ordered_correspondences,
+    bool probe_transformed_exact_pointwise_on_cache_hit)
 {
     return computeIcpAlignmentStepColumnMajorImpl<float, true, false>(
         d_source_transform,
@@ -7382,7 +7389,8 @@ IcpAlignmentStepResult<float> computeTransformedIcpAlignmentStepColumnMajorWithR
         nullptr,
         stream,
         false,
-        assume_ordered_correspondences);
+        assume_ordered_correspondences,
+        probe_transformed_exact_pointwise_on_cache_hit);
 }
 
 IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(
@@ -7395,7 +7403,8 @@ IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepColumnMajorWith
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     double* d_step_transform,
     cudaStream_t stream,
-    bool assume_ordered_correspondences)
+    bool assume_ordered_correspondences,
+    bool probe_transformed_exact_pointwise_on_cache_hit)
 {
     return computeIcpAlignmentStepColumnMajorImpl<double, true, false>(
         d_source_transform,
@@ -7410,7 +7419,8 @@ IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepColumnMajorWith
         nullptr,
         stream,
         false,
-        assume_ordered_correspondences);
+        assume_ordered_correspondences,
+        probe_transformed_exact_pointwise_on_cache_hit);
 }
 
 IcpAlignmentStepResult<float> computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
@@ -7425,7 +7435,8 @@ IcpAlignmentStepResult<float> computeTransformedIcpAlignmentStepAndAccumulateTra
     const float* d_previous_accumulated_transform,
     float* d_accumulated_transform,
     cudaStream_t stream,
-    bool assume_ordered_correspondences)
+    bool assume_ordered_correspondences,
+    bool probe_transformed_exact_pointwise_on_cache_hit)
 {
     return computeIcpAlignmentStepColumnMajorImpl<float, true, true>(
         d_source_transform,
@@ -7440,7 +7451,8 @@ IcpAlignmentStepResult<float> computeTransformedIcpAlignmentStepAndAccumulateTra
         d_accumulated_transform,
         stream,
         false,
-        assume_ordered_correspondences);
+        assume_ordered_correspondences,
+        probe_transformed_exact_pointwise_on_cache_hit);
 }
 
 IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
@@ -7455,7 +7467,8 @@ IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepAndAccumulateTr
     const double* d_previous_accumulated_transform,
     double* d_accumulated_transform,
     cudaStream_t stream,
-    bool assume_ordered_correspondences)
+    bool assume_ordered_correspondences,
+    bool probe_transformed_exact_pointwise_on_cache_hit)
 {
     return computeIcpAlignmentStepColumnMajorImpl<double, true, true>(
         d_source_transform,
@@ -7470,7 +7483,8 @@ IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepAndAccumulateTr
         d_accumulated_transform,
         stream,
         false,
-        assume_ordered_correspondences);
+        assume_ordered_correspondences,
+        probe_transformed_exact_pointwise_on_cache_hit);
 }
 
 } // namespace detail

@@ -5911,3 +5911,55 @@ Verification evidence:
   residual-only ICP stats now has the same reserved-workspace detail surface as transformed residual stats and compact
   alignment steps. The 100k benchmark shows this removes a small host-side reserve-check cost; the remaining runtime is
   dominated by residual correspondence search, reduction, and host result synchronization.
+
+## Task 162: Add Opt-In Transformed Exact Preflight For Cache-Hit Alignment Steps
+
+- Goal: make transformed exact-pointwise alignment available even when the target spatial grid cache already matches,
+  without changing the default cache-hit behavior. The opt-in is useful when callers know transformed same-index matches
+  are common enough to justify one extra O(source_count) exact preflight before reusing the cached grid.
+- RED checks:
+  - Added `ICPGpuPathTest.TransformedAlignmentStepCanProbeExactPointwiseOnCacheHitWhenRequested`, calling
+    `computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(..., false, true)` after building a matching
+    target-grid cache.
+  - The first CUDA build failed for the expected reason: the transformed detail API accepted only the existing stream
+    and ordered-correspondence arguments.
+  - Added benchmark row-registration expectation for
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit_preflight`.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure -R plapoint\.benchmarks\.gpu_icp_rows_registered`:
+    failed with the expected missing-row error for the new benchmark row.
+- Implementation:
+  - Added `probe_transformed_exact_pointwise_on_cache_hit`, defaulting to false, to the transformed alignment-step
+    detail overloads.
+  - Kept non-transformed and default transformed cache-hit behavior unchanged.
+  - When the opt-in is true, transformed finite-radius cache-hit calls try the existing transformed exact-pointwise
+    launcher before preparing or reusing the cached spatial grid.
+  - Documented the tradeoff in the header and added a benchmark row that compares default cache-hit search with the
+    opt-in exact preflight on the same exact transformed source/target setup.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformedAlignmentStepCanProbeExactPointwiseOnCacheHitWhenRequested`:
+    initially failed to compile for the expected missing-signature reason, then passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformedAlignmentStepUsesCachedSpatialGridWithoutExactPointwiseProbe:ICPGpuPathTest.TransformedAlignmentStepCanProbeExactPointwiseOnCacheHitWhenRequested:ICPGpuPathTest.TransformedAlignmentStepSkipsSpatialGridSearchForExactPointwiseMatches:ICPGpuPathTest.TransformedExactPointwiseAlignmentStepFallsBackToSpatialGridOnMismatch:ICPGpuPathTest.TransformedExactPointwiseAccumulatedFallbackDoesNotWriteInvalidTransform`:
+    5 tests, 0 failed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure -R plapoint\.benchmarks\.gpu_icp_rows_registered`:
+    1/1 passed after benchmark implementation.
+- Full verification performed in this session:
+  - `git diff --check`: clean.
+  - GPU: RTX 4060 Laptop GPU, driver 580.159.03.
+  - `cmake --build build-codex-cpu -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, 1 CUDA-only test skipped.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 292/292 passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.211197 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.236155 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit_preflight` = 0.211727 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace` = 0.858664 ms, and
+    `gpu_icp_stats_step_finite_radius_translation_ordered` = 0.25261 ms.
+- Current conclusion:
+  cache-hit transformed exact preflight is about 10% faster than the default cache-hit path for exact same-index
+  transformed inputs at 100k points, and it reaches the cache-miss exact-preflight cost class. It remains opt-in because
+  the extra O(source_count) probe is a real cost when cache-hit inputs are not exact same-index matches.

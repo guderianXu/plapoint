@@ -55,6 +55,7 @@ set(expected_gpu_icp_rows
     gpu_icp_alignment_step_ordered_same_buffer_finite_radius
     gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid
     gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit
+    gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit_preflight
     gpu_icp_stats_finite_radius_translation_cached_grid
     gpu_icp_residual_stats_finite_radius_translation_new_workspace
     gpu_icp_residual_stats_finite_radius_translation_cached_grid
