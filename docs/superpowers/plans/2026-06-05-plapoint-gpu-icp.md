@@ -4153,3 +4153,43 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun `GpuPointScratchBufferSkipsRepeatedReserveCheckForSameShape` and multi-iteration GPU ICP benchmarks on real
   hardware to quantify the CPU-side helper overhead removed from scratch-buffer reuse.
+
+## Task 123: Skip Repeated GPU ICP 4x4 Transform Buffer Reserve Checks
+
+- Goal: remove repeated CPU-side dimension checks for the internal GPU ICP 4x4 transform buffers. The step,
+  accumulated, and next-accumulated transform buffers are private workspaces that this class always creates as 4x4
+  matrices, so repeated reserve calls only need to verify that the pointer already exists.
+- RED check:
+  - Added test-only `_gpu_accumulated_transform_reserve_check_count` and `_gpu_next_transform_reserve_check_count`,
+    alongside the existing step-transform reserve counter.
+  - Added `GpuTransformBuffersSkipRepeatedReserveChecks`, which reserves each transform buffer twice and expects each
+    reserve-check counter to remain at one while preserving the same device allocation pointer.
+  - Before the implementation, each helper entered its reserve check on every call, so direct repeated calls would
+    increment each counter to two on real GPU hardware.
+- Implementation:
+  - `reserveGpuStepTransformBuffer()`, `reserveGpuAccumulatedTransformBuffer()`, and
+    `reserveGpuNextTransformBuffer()` now return immediately when their corresponding `std::unique_ptr` already exists.
+  - Each helper now performs the test-only reserve-check count and allocates the 4x4 GPU matrix only on first creation.
+  - This relies on the internal invariant that these private transform buffers are only created by these helpers and
+    always have shape 4x4.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed before full test runs.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.GpuTransformBuffersSkipRepeatedReserveChecks:ICPGpuPathTest.AlignChecksStepTransformBufferOnceBeforeLoop:ICPGpuPathTest.AlignSkipsNextTransformBufferAllocationForSingleIteration:ICPGpuPathTest.AlignReusesGpuWorkspacesAcrossRepeatedCalls`:
+    selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed before full test runs.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed before the benchmark smoke run.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    252 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `GpuTransformBuffersSkipRepeatedReserveChecks` and multi-iteration GPU ICP benchmarks on real hardware to
+  quantify the CPU-side helper overhead removed from repeated transform-buffer reserve calls.

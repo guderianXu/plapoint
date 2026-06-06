@@ -686,29 +686,38 @@ private:
 
     void reserveGpuStepTransformBuffer()
     {
+        if (_gpu_T_step)
+        {
+            return;
+        }
 #ifdef PLAPOINT_ENABLE_TESTING
         ++_gpu_step_transform_reserve_check_count;
 #endif
-        if (!_gpu_T_step || _gpu_T_step->rows() != 4 || _gpu_T_step->cols() != 4)
-        {
-            _gpu_T_step = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
-        }
+        _gpu_T_step = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
     }
 
     void reserveGpuAccumulatedTransformBuffer()
     {
-        if (!_gpu_T_acc || _gpu_T_acc->rows() != 4 || _gpu_T_acc->cols() != 4)
+        if (_gpu_T_acc)
         {
-            _gpu_T_acc = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
+            return;
         }
+#ifdef PLAPOINT_ENABLE_TESTING
+        ++_gpu_accumulated_transform_reserve_check_count;
+#endif
+        _gpu_T_acc = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
     }
 
     void reserveGpuNextTransformBuffer()
     {
-        if (!_gpu_next_T_acc || _gpu_next_T_acc->rows() != 4 || _gpu_next_T_acc->cols() != 4)
+        if (_gpu_next_T_acc)
         {
-            _gpu_next_T_acc = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
+            return;
         }
+#ifdef PLAPOINT_ENABLE_TESTING
+        ++_gpu_next_transform_reserve_check_count;
+#endif
+        _gpu_next_T_acc = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
     }
 
     template <typename GpuStats>
@@ -1039,6 +1048,8 @@ private:
     bool _final_T_gpu_valid = false;
 #ifdef PLAPOINT_ENABLE_TESTING
     int _gpu_step_transform_reserve_check_count = 0;
+    int _gpu_accumulated_transform_reserve_check_count = 0;
+    int _gpu_next_transform_reserve_check_count = 0;
     int _gpu_point_scratch_reserve_check_count = 0;
 #endif
 #endif
