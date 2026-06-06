@@ -3767,3 +3767,40 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun both target-alias final-metrics tests on GPU hardware and add a benchmark row comparing target-output final
   metrics against caller-owned output and skip-final-metrics target output.
+
+## Task 114: Benchmark Target Output With Final Metrics
+
+- Goal: add a benchmark row for finite-radius GPU ICP target-output alignment with terminal final metrics enabled. This
+  measures the Task 113 direct target-output path against the existing caller-owned output row and the target-output
+  skip-final-metrics row.
+- RED check:
+  - Ran the benchmark smoke command and filtered for
+    `^gpu_icp_finite_radius_translation_reuse_target_output,`; the grep failed before the implementation because the
+    row did not exist.
+  - Searched `benchmarks/plapoint_benchmarks.cpp` for
+    `gpu_icp_finite_radius_translation_reuse_target_output` and
+    `benchmarkGpuIcpFiniteRadiusTranslationReuseTargetOutput`; both were absent before the implementation.
+- Implementation:
+  - Added `benchmarkGpuIcpFiniteRadiusTranslationReuseTargetOutput()`, which builds the same translated finite-radius
+    GPU ICP fixture as the caller-owned output benchmarks and times `icp.align(*target)`.
+  - Kept the no-device behavior consistent with the existing GPU benchmark rows by printing
+    `gpu_icp_finite_radius_translation_reuse_target_output,skipped,no_usable_cuda_device,`.
+  - Inserted the new row between the caller-owned skip-final-metrics row and the existing target-output
+    skip-final-metrics row so the output groups the comparable paths together.
+- Verification performed in this session:
+  - The targeted RED check failed before the implementation and passed after rebuilding the benchmark binary:
+    `gpu_icp_finite_radius_translation_reuse_target_output,skipped,no_usable_cuda_device,`.
+  - `git diff --check`:
+    clean before the plan update.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    248 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran and printed the new
+    `gpu_icp_finite_radius_translation_reuse_target_output,skipped,no_usable_cuda_device,` row.
+- Follow-up required when a CUDA device is available:
+  rerun the benchmark on real GPU hardware and compare `gpu_icp_finite_radius_translation_reuse_output`,
+  `gpu_icp_finite_radius_translation_reuse_target_output`, and
+  `gpu_icp_finite_radius_translation_reuse_target_output_skip_final_metrics`.
