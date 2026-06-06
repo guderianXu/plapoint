@@ -76,6 +76,9 @@ public:
     /// Reserve enough storage for the supplied source point count. Throws for negative counts.
     void reserve(int source_count);
 
+    /// Reserve storage for correspondence partials and the compact alignment-step result.
+    void reserveAlignmentStep(int source_count);
+
     /// Reserve reusable target tile bounds storage for finite-radius pruning.
     void reserveTargetTileBounds(int target_count);
 
@@ -146,6 +149,9 @@ public:
     unsigned char* targetSpatialGridCellCountsStorage() { return _target_spatial_grid_cell_counts_storage.get(); }
 
 private:
+    void reservePartialStats(int source_count);
+    void reserveStatsStorage(std::size_t byte_count);
+
     DeviceBuffer<unsigned char> _partial_storage;
     DeviceBuffer<unsigned char> _stats_storage;
     DeviceBuffer<unsigned char> _target_tile_bounds_storage;

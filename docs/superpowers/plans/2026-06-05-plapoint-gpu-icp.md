@@ -2441,6 +2441,42 @@ Verification evidence:
   rerun the selected GPU tests and the fused stats+step fallback benchmark rows from Task 93 to confirm allocation
   reduction and measure any effect on repeated new-workspace calls.
 
+## Task 95: Reserve Compact GPU ICP Alignment-Step Result Storage
+
+- Goal: avoid allocating the full `RawIcpStats` result buffer on the compact alignment-step path used by
+  `alignGpu()`. The compact path still needs full `RawIcpStats` partials for the reduction, but its final device result
+  is only `IcpAlignmentStepRawResult`.
+- RED:
+  - Added `ICPGpuPathTest.CorrespondenceStatsWorkspaceCanReserveCompactAlignmentStepResult`, which requires a fresh
+    `reserveAlignmentStep(4)` workspace to allocate partial storage and a stats/result storage buffer smaller than the
+    full `reserve(4)` buffer.
+  - `cmake --build build-codex-cuda -j$(nproc)` failed before implementation with
+    `IcpCorrespondenceStatsWorkspace has no member named 'reserveAlignmentStep'`.
+  - Static check failed before implementation because `alignGpu()` still called
+    `_gpu_stats_workspace.reserve(source_count)`.
+- Implementation:
+  - Added `IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(int)`, which reserves full correspondence partials
+    and only the compact `IcpAlignmentStepRawResult` final result buffer.
+  - Split `IcpCorrespondenceStatsWorkspace::reserve()` internally into `reservePartialStats()` and
+    `reserveStatsStorage()` so the full stats and compact alignment-step paths can share partial reservation without
+    forcing the same final-result buffer size.
+  - Changed `computeIcpAlignmentStepColumnMajorImpl()` to call `reserveAlignmentStep(source_count)`.
+  - Changed `alignGpu()`'s pre-loop workspace warm-up to call `reserveAlignmentStep(source_count)`.
+  - Kept `computeIcpStatsAndStepTransformColumnMajorImpl()` on full `reserve(source_count)` because that API still
+    writes and copies a full `RawIcpStats` result to host.
+- Verification performed in this session:
+  - Static check:
+    `test "$(rg -n "_gpu_stats_workspace\\.reserveAlignmentStep\\(source_count\\)" include/plapoint/registration/icp.h | wc -l)" -eq 1 &&
+    test "$(rg -n "_gpu_stats_workspace\\.reserve\\(source_count\\)" include/plapoint/registration/icp.h | wc -l)" -eq 0 &&
+    test "$(rg -n "stats_workspace\\.reserveAlignmentStep\\(source_count\\)" src/icp_gpu.cu | wc -l)" -eq 1` passed after the change.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    CUDA test build succeeded after adding `reserveAlignmentStep()`.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsWorkspaceCanReserveCompactAlignmentStepResult:ICPGpuPathTest.CorrespondenceStatsWorkspaceReusesDeviceStorage:ICPGpuPathTest.AlignmentStepCompactResultMatchesFullStatsStepResult:ICPGpuPathTest.AlignReusesGpuWorkspacesAcrossRepeatedCalls`:
+    all 4 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+- Follow-up required when a CUDA device is available:
+  rerun the selected tests and compare the Task 93 `gpu_icp_alignment_step_fallback_tile_bounds_*` benchmark rows,
+  especially the new-workspace row where smaller result storage can reduce per-call allocation overhead.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell

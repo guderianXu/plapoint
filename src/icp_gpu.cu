@@ -4207,7 +4207,7 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
         throw std::invalid_argument("ICP GPU: device pointers must not be null");
     }
 
-    stats_workspace.reserve(source_count);
+    stats_workspace.reserveAlignmentStep(source_count);
 
     constexpr int block_size = kIcpStatsBlockSize;
     const int grid_size = icpStatsPartialCount(source_count);
@@ -4564,15 +4564,40 @@ void IcpCorrespondenceStatsWorkspace::reserve(int source_count)
         return;
     }
 
+    reservePartialStats(source_count);
+    reserveStatsStorage(sizeof(RawIcpStats));
+}
+
+void IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(int source_count)
+{
+    if (source_count < 0)
+    {
+        throw std::invalid_argument("ICP GPU: source point count must not be negative");
+    }
+    if (source_count == 0)
+    {
+        return;
+    }
+
+    reservePartialStats(source_count);
+    reserveStatsStorage(sizeof(IcpAlignmentStepRawResult));
+}
+
+void IcpCorrespondenceStatsWorkspace::reservePartialStats(int source_count)
+{
     const int required_partials = icpStatsPartialCount(source_count);
     if (partialCapacity() < required_partials)
     {
         _partial_storage.allocate(static_cast<std::size_t>(required_partials) * sizeof(RawIcpStats));
         _partial_capacity = required_partials;
     }
-    if (_stats_storage.size() < sizeof(RawIcpStats))
+}
+
+void IcpCorrespondenceStatsWorkspace::reserveStatsStorage(std::size_t byte_count)
+{
+    if (_stats_storage.size() < byte_count)
     {
-        _stats_storage.allocate(sizeof(RawIcpStats));
+        _stats_storage.allocate(byte_count);
     }
 }
 

@@ -360,7 +360,7 @@ private:
 
         reserveGpuTransformBuffers();
         gpu::setIdentityTransform4x4Async(_gpu_T_acc->data(), 0);
-        _gpu_stats_workspace.reserve(source_count);
+        _gpu_stats_workspace.reserveAlignmentStep(source_count);
 
         _converged = false;
         _fitness_score = Scalar(0);
