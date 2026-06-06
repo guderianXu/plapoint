@@ -1564,6 +1564,39 @@ Verification evidence:
   rerun the selected GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime behavior and
   performance impact.
 
+## Task 57: Specialize Spatial-Grid Kernels By Finite Cell Bounds
+
+- Goal: remove a runtime `finite_cell_bounds` branch from the finite-radius spatial-grid ICP hot path. The branch value
+  is fixed when the target grid is prepared, but the candidate-loop cell-bound distance helpers previously received it
+  as a per-call boolean inside the GPU kernel.
+- Implementation:
+  - Added `FiniteCellBounds` template parameters to the correspondence, residual, and transform+residual spatial-grid
+    kernels.
+  - Changed XY/Z cell-bound distance helper dispatch to `if constexpr`, so each kernel instance keeps only the finite
+    or guarded distance path.
+  - Added host-side launch helpers that choose the `true` or `false` kernel instance from
+    `target_grid.finite_cell_bounds`.
+  - Replaced all five spatial-grid correspondence launch sites plus the residual and transform+residual launch sites
+    with the host launch helpers.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYExceedsRadius:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest:ICPGpuPathTest.ResidualStatsStopsSpatialGridLookupsAfterExactMatch`:
+    4 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    225 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran, but all GPU rows reported `skipped,no_usable_cuda_device`.
+- Follow-up required when a CUDA device is available:
+  rerun the selected GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime behavior and
+  performance impact.
+
 ## Task 56: Force-Inline GPU ICP Spatial-Grid Helpers
 
 - Goal: reduce device-side call overhead in the finite-radius spatial-grid ICP hot path without changing algorithmic

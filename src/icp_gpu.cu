@@ -399,17 +399,19 @@ __device__ __forceinline__ double minDistanceSqToFiniteIcpGridCellXY(
     return dx * dx + dy * dy;
 }
 
+template <bool FiniteCellBounds>
 __device__ __forceinline__ double minDistanceSqToIcpGridCellXY(
     double x,
     double y,
     int cell_x,
     int cell_y,
-    double cell_size,
-    bool finite_cell_bounds)
+    double cell_size)
 {
-    return finite_cell_bounds ?
-        minDistanceSqToFiniteIcpGridCellXY(x, y, cell_x, cell_y, cell_size) :
-        minDistanceSqToIcpGridCellXY(x, y, cell_x, cell_y, cell_size);
+    if constexpr (FiniteCellBounds)
+    {
+        return minDistanceSqToFiniteIcpGridCellXY(x, y, cell_x, cell_y, cell_size);
+    }
+    return minDistanceSqToIcpGridCellXY(x, y, cell_x, cell_y, cell_size);
 }
 
 __device__ __forceinline__ double minDistanceSqToIcpGridCellZ(
@@ -430,15 +432,17 @@ __device__ __forceinline__ double minDistanceSqToFiniteIcpGridCellZ(
     return dz * dz;
 }
 
+template <bool FiniteCellBounds>
 __device__ __forceinline__ double minDistanceSqToIcpGridCellZ(
     double z,
     int cell_z,
-    double cell_size,
-    bool finite_cell_bounds)
+    double cell_size)
 {
-    return finite_cell_bounds ?
-        minDistanceSqToFiniteIcpGridCellZ(z, cell_z, cell_size) :
-        minDistanceSqToIcpGridCellZ(z, cell_z, cell_size);
+    if constexpr (FiniteCellBounds)
+    {
+        return minDistanceSqToFiniteIcpGridCellZ(z, cell_z, cell_size);
+    }
+    return minDistanceSqToIcpGridCellZ(z, cell_z, cell_size);
 }
 
 __device__ __forceinline__ void recordAcceptedCorrespondence(
@@ -693,7 +697,7 @@ __global__ void collectCorrespondenceStatsKernel(
     }
 }
 
-template <typename Scalar>
+template <typename Scalar, bool FiniteCellBounds>
 __global__ void collectCorrespondenceStatsSpatialGridKernel(
     const Scalar* source_points,
     int source_count,
@@ -774,13 +778,12 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                     continue;
                 }
 
-                const double min_xy_dist_sq = minDistanceSqToIcpGridCellXY(
+                const double min_xy_dist_sq = minDistanceSqToIcpGridCellXY<FiniteCellBounds>(
                     sx,
                     sy,
                     query_x,
                     query_y,
-                    target_grid.cell_size,
-                    target_grid.finite_cell_bounds);
+                    target_grid.cell_size);
                 if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq > best_dist_sq)
                 {
                     continue;
@@ -796,11 +799,10 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                         break;
                     }
 
-                    const double min_cell_dist_sq = min_xy_dist_sq + minDistanceSqToIcpGridCellZ(
+                    const double min_cell_dist_sq = min_xy_dist_sq + minDistanceSqToIcpGridCellZ<FiniteCellBounds>(
                         sz,
                         cell_key.z,
-                        target_grid.cell_size,
-                        target_grid.finite_cell_bounds);
+                        target_grid.cell_size);
                     if (min_cell_dist_sq > max_dist_sq || min_cell_dist_sq > best_dist_sq)
                     {
                         ++cell_idx;
@@ -1135,7 +1137,7 @@ __global__ void collectResidualStatsKernel(
     }
 }
 
-template <typename Scalar>
+template <typename Scalar, bool FiniteCellBounds>
 __global__ void collectResidualStatsSpatialGridKernel(
     const Scalar* source_points,
     int source_count,
@@ -1205,13 +1207,12 @@ __global__ void collectResidualStatsSpatialGridKernel(
                     continue;
                 }
 
-                const double min_xy_dist_sq = minDistanceSqToIcpGridCellXY(
+                const double min_xy_dist_sq = minDistanceSqToIcpGridCellXY<FiniteCellBounds>(
                     sx,
                     sy,
                     query_x,
                     query_y,
-                    target_grid.cell_size,
-                    target_grid.finite_cell_bounds);
+                    target_grid.cell_size);
                 if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq >= best_dist_sq)
                 {
                     continue;
@@ -1227,11 +1228,10 @@ __global__ void collectResidualStatsSpatialGridKernel(
                         break;
                     }
 
-                    const double min_cell_dist_sq = min_xy_dist_sq + minDistanceSqToIcpGridCellZ(
+                    const double min_cell_dist_sq = min_xy_dist_sq + minDistanceSqToIcpGridCellZ<FiniteCellBounds>(
                         sz,
                         cell_key.z,
-                        target_grid.cell_size,
-                        target_grid.finite_cell_bounds);
+                        target_grid.cell_size);
                     if (min_cell_dist_sq > max_dist_sq || min_cell_dist_sq >= best_dist_sq)
                     {
                         ++cell_idx;
@@ -1467,7 +1467,7 @@ __global__ void transformAndCollectResidualStatsKernel(
     }
 }
 
-template <typename Scalar>
+template <typename Scalar, bool FiniteCellBounds>
 __global__ void transformAndCollectResidualStatsSpatialGridKernel(
     const Scalar* transform,
     const Scalar* source_points,
@@ -1553,13 +1553,12 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                     continue;
                 }
 
-                const double min_xy_dist_sq = minDistanceSqToIcpGridCellXY(
+                const double min_xy_dist_sq = minDistanceSqToIcpGridCellXY<FiniteCellBounds>(
                     sx,
                     sy,
                     query_x,
                     query_y,
-                    target_grid.cell_size,
-                    target_grid.finite_cell_bounds);
+                    target_grid.cell_size);
                 if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq >= best_dist_sq)
                 {
                     continue;
@@ -1575,11 +1574,10 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                         break;
                     }
 
-                    const double min_cell_dist_sq = min_xy_dist_sq + minDistanceSqToIcpGridCellZ(
+                    const double min_cell_dist_sq = min_xy_dist_sq + minDistanceSqToIcpGridCellZ<FiniteCellBounds>(
                         sz,
                         cell_key.z,
-                        target_grid.cell_size,
-                        target_grid.finite_cell_bounds);
+                        target_grid.cell_size);
                     if (min_cell_dist_sq > max_dist_sq || min_cell_dist_sq >= best_dist_sq)
                     {
                         ++cell_idx;
@@ -1664,6 +1662,105 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
     {
         partial_stats[blockIdx.x] = shared_stats[0];
     }
+}
+
+template <typename Scalar>
+void launchCollectCorrespondenceStatsSpatialGridKernel(
+    int grid_size,
+    int block_size,
+    cudaStream_t stream,
+    const Scalar* source_points,
+    int source_count,
+    Scalar max_correspondence_distance,
+    int* correspondence_indices,
+    const IcpTargetSpatialGrid& target_grid,
+    RawIcpStats* partial_stats)
+{
+    if (target_grid.finite_cell_bounds)
+    {
+        collectCorrespondenceStatsSpatialGridKernel<Scalar, true><<<grid_size, block_size, 0, stream>>>(
+            source_points,
+            source_count,
+            max_correspondence_distance,
+            correspondence_indices,
+            target_grid,
+            partial_stats);
+        return;
+    }
+
+    collectCorrespondenceStatsSpatialGridKernel<Scalar, false><<<grid_size, block_size, 0, stream>>>(
+        source_points,
+        source_count,
+        max_correspondence_distance,
+        correspondence_indices,
+        target_grid,
+        partial_stats);
+}
+
+template <typename Scalar>
+void launchCollectResidualStatsSpatialGridKernel(
+    int grid_size,
+    int block_size,
+    cudaStream_t stream,
+    const Scalar* source_points,
+    int source_count,
+    Scalar max_correspondence_distance,
+    const IcpTargetSpatialGrid& target_grid,
+    RawIcpResidualStats* partial_stats)
+{
+    if (target_grid.finite_cell_bounds)
+    {
+        collectResidualStatsSpatialGridKernel<Scalar, true><<<grid_size, block_size, 0, stream>>>(
+            source_points,
+            source_count,
+            max_correspondence_distance,
+            target_grid,
+            partial_stats);
+        return;
+    }
+
+    collectResidualStatsSpatialGridKernel<Scalar, false><<<grid_size, block_size, 0, stream>>>(
+        source_points,
+        source_count,
+        max_correspondence_distance,
+        target_grid,
+        partial_stats);
+}
+
+template <typename Scalar>
+void launchTransformAndCollectResidualStatsSpatialGridKernel(
+    int grid_size,
+    int block_size,
+    cudaStream_t stream,
+    const Scalar* transform,
+    const Scalar* source_points,
+    int source_count,
+    Scalar max_correspondence_distance,
+    Scalar* output_points,
+    const IcpTargetSpatialGrid& target_grid,
+    RawIcpResidualStats* partial_stats)
+{
+    if (target_grid.finite_cell_bounds)
+    {
+        transformAndCollectResidualStatsSpatialGridKernel<Scalar, true><<<grid_size, block_size, 0, stream>>>(
+            transform,
+            source_points,
+            source_count,
+            max_correspondence_distance,
+            output_points,
+            target_grid,
+            partial_stats);
+        return;
+    }
+
+    transformAndCollectResidualStatsSpatialGridKernel<Scalar, false><<<grid_size, block_size, 0, stream>>>(
+        transform,
+        source_points,
+        source_count,
+        max_correspondence_distance,
+        output_points,
+        target_grid,
+        partial_stats);
 }
 
 __global__ void reduceRawIcpStatsKernel(
@@ -2732,7 +2829,10 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
 
     if (target_grid.active)
     {
-        collectCorrespondenceStatsSpatialGridKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+        launchCollectCorrespondenceStatsSpatialGridKernel(
+            grid_size,
+            block_size,
+            stream,
             d_source_points,
             source_count,
             max_correspondence_distance,
@@ -2815,7 +2915,10 @@ IcpResidualStats<Scalar> computeIcpResidualStatsColumnMajorImpl(
 
     if (target_grid.active)
     {
-        collectResidualStatsSpatialGridKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+        launchCollectResidualStatsSpatialGridKernel(
+            grid_size,
+            block_size,
+            stream,
             d_source_points,
             source_count,
             max_correspondence_distance,
@@ -2902,7 +3005,10 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
 
     if (target_grid.active)
     {
-        transformAndCollectResidualStatsSpatialGridKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+        launchTransformAndCollectResidualStatsSpatialGridKernel(
+            grid_size,
+            block_size,
+            stream,
             d_transform,
             d_source_points,
             source_count,
@@ -3237,7 +3343,10 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
 
         if (target_grid.active)
         {
-            collectCorrespondenceStatsSpatialGridKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+            launchCollectCorrespondenceStatsSpatialGridKernel(
+                grid_size,
+                block_size,
+                stream,
                 d_source_points,
                 source_count,
                 max_correspondence_distance,
@@ -3366,7 +3475,10 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
 
         if (target_grid.active)
         {
-            collectCorrespondenceStatsSpatialGridKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+            launchCollectCorrespondenceStatsSpatialGridKernel(
+                grid_size,
+                block_size,
+                stream,
                 d_source_points,
                 source_count,
                 max_correspondence_distance,
