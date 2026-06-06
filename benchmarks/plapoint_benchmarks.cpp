@@ -399,6 +399,34 @@ void benchmarkGpuIcp(int icp_points, int icp_max_iterations, int iterations)
     }
 }
 
+void benchmarkGpuIcpIdentitySameBufferReuseOutput(int icp_points, int icp_max_iterations, int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped("gpu_icp_identity_same_buffer_reuse_output", "no_usable_cuda_device");
+        return;
+    }
+
+    auto cpu_cloud = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto cloud = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_cloud->toGpu());
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(cloud);
+    icp.setInputTarget(cloud);
+    icp.setMaxIterations(icp_max_iterations);
+
+    Cloud<plamatrix::Device::GPU> output;
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        icp.align(output);
+        sink += output.size();
+    });
+    printResult("gpu_icp_identity_same_buffer_reuse_output", icp_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << "gpu_icp_identity_same_buffer_reuse_output produced no aligned points\n";
+    }
+}
+
 void benchmarkGpuIcpFiniteRadius(int icp_points, int icp_max_iterations, int iterations)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
@@ -1401,10 +1429,15 @@ int main(int argc, char** argv)
     if (options.skip_icp_identity)
     {
         printSkipped("gpu_icp_identity", "disabled");
+        printSkipped("gpu_icp_identity_same_buffer_reuse_output", "disabled");
     }
     else
     {
         benchmarkGpuIcp(options.icp_points, options.icp_max_iterations, options.iterations);
+        benchmarkGpuIcpIdentitySameBufferReuseOutput(
+            options.icp_points,
+            options.icp_max_iterations,
+            options.iterations);
     }
     benchmarkGpuIcpFiniteRadius(options.icp_points, options.icp_max_iterations, options.iterations);
     benchmarkGpuIcpFiniteRadiusTranslation(options.icp_points, options.icp_max_iterations, options.iterations);

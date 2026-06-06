@@ -4967,3 +4967,47 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   compare `gpu_icp_finite_radius_translation_reuse_shrinking` against the non-shrinking reuse rows and rerun around
   the capacity-cache commits to quantify the allocation-reserve savings.
+
+## Task 142: Benchmark Same-Buffer GPU ICP Identity Reuse
+
+- Goal: add a benchmark row for the exact same-buffer identity path where one GPU cloud is used as both source and
+  target, while the ICP object and caller output cloud are reused. This makes the fastest exact-pointwise identity path
+  directly comparable with the existing `gpu_icp_identity` row, which creates a fresh ICP object per sample and uses
+  separate source/target buffers.
+- RED check:
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1 --icp-points 1000 --icp-max-iterations 1 --skip-cpu-icp | rg '^gpu_icp_identity_same_buffer_reuse_output,'`:
+    exited with status 1 before implementation because no benchmark row with that name existed.
+- Implementation:
+  - Added `benchmarkGpuIcpIdentitySameBufferReuseOutput()`.
+  - The row creates one GPU cloud, sets it as both source and target, reuses one GPU ICP object, and reuses one output
+    cloud across benchmark samples.
+  - Added a matching `disabled` row when `--skip-icp-identity` is set so identity benchmark output remains explicit.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed after adding the benchmark.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1 --icp-points 1000 --icp-max-iterations 1 --skip-cpu-icp | rg '^gpu_icp_identity_same_buffer_reuse_output,'`:
+    produced `gpu_icp_identity_same_buffer_reuse_output,skipped,no_usable_cuda_device,` on this machine.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1 --icp-points 1000 --icp-max-iterations 1 --skip-cpu-icp --skip-icp-identity | rg '^gpu_icp_identity_same_buffer_reuse_output,'`:
+    produced `gpu_icp_identity_same_buffer_reuse_output,skipped,disabled,`.
+- Full verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    270 test entries, 0 failed. GPU-dependent tests were discovered and skipped because the current session cannot
+    communicate with a usable CUDA device.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran and included
+    `gpu_icp_identity_same_buffer_reuse_output,skipped,no_usable_cuda_device,`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  compare `gpu_icp_identity_same_buffer_reuse_output` with `gpu_icp_identity` to quantify the exact same-buffer fast
+  path and persistent-object/output reuse savings on real hardware.
