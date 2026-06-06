@@ -490,7 +490,7 @@ private:
             }
             else if (terminal_iteration &&
                      !terminal_identity_step &&
-                     (_compute_final_metrics || output))
+                     output)
             {
                 transform_output_points = gpuPointScratchBuffer(source_count, next_points_in_a);
             }
@@ -571,8 +571,16 @@ private:
                             transform_output_points,
                             _gpu_stats_workspace);
                 }
-                cur_points = transform_output_points;
-                current_points_use_accumulated_transform = false;
+                if (transform_output_points)
+                {
+                    cur_points = transform_output_points;
+                    current_points_use_accumulated_transform = false;
+                }
+                else
+                {
+                    cur_points = source_points;
+                    current_points_use_accumulated_transform = true;
+                }
                 if (final_stats.invalid_source_count > 0)
                 {
                     throw std::invalid_argument("ICP: transformed source contains non-finite point");

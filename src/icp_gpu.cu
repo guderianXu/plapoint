@@ -2089,9 +2089,12 @@ __global__ void transformAndCollectResidualStatsKernel(
         Scalar oy = Scalar(0);
         Scalar oz = Scalar(0);
         transformColumnMajorPoint3x4(block_transform, px, py, pz, ox, oy, oz);
-        output_points[source_idx] = ox;
-        output_points[source_count + source_idx] = oy;
-        output_points[2 * source_count + source_idx] = oz;
+        if (output_points)
+        {
+            output_points[source_idx] = ox;
+            output_points[source_count + source_idx] = oy;
+            output_points[2 * source_count + source_idx] = oz;
+        }
 
         sx = static_cast<double>(ox);
         sy = static_cast<double>(oy);
@@ -2292,9 +2295,12 @@ __global__ void transformAndCollectOrderedResidualStatsKernel(
         Scalar oy = Scalar(0);
         Scalar oz = Scalar(0);
         transformColumnMajorPoint3x4(block_transform, px, py, pz, ox, oy, oz);
-        output_points[source_idx] = ox;
-        output_points[point_count + source_idx] = oy;
-        output_points[2 * point_count + source_idx] = oz;
+        if (output_points)
+        {
+            output_points[source_idx] = ox;
+            output_points[point_count + source_idx] = oy;
+            output_points[2 * point_count + source_idx] = oz;
+        }
 
         const double sx = static_cast<double>(ox);
         const double sy = static_cast<double>(oy);
@@ -2381,9 +2387,12 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
         Scalar oy = Scalar(0);
         Scalar oz = Scalar(0);
         transformColumnMajorPoint3x4(block_transform, px, py, pz, ox, oy, oz);
-        output_points[source_idx] = ox;
-        output_points[source_count + source_idx] = oy;
-        output_points[2 * source_count + source_idx] = oz;
+        if (output_points)
+        {
+            output_points[source_idx] = ox;
+            output_points[source_count + source_idx] = oy;
+            output_points[2 * source_count + source_idx] = oz;
+        }
 
         sx = static_cast<double>(ox);
         sy = static_cast<double>(oy);
@@ -4738,11 +4747,11 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
     {
         return {};
     }
-    if (!d_transform || !d_source_points || !d_target_points || !d_output_points)
+    if (!d_transform || !d_source_points || !d_target_points)
     {
         throw std::invalid_argument("ICP GPU: device pointers must not be null");
     }
-    if (d_output_points == d_target_points)
+    if (d_output_points && d_output_points == d_target_points)
     {
         throw std::invalid_argument("ICP GPU: transform residual output must not alias target points");
     }
@@ -4851,11 +4860,11 @@ IcpResidualStats<Scalar> transformPointsAndComputeOrderedIcpResidualStatsColumnM
     {
         throw std::invalid_argument("ICP GPU: ordered residual metrics require equal source and target counts");
     }
-    if (!d_transform || !d_source_points || !d_target_points || !d_output_points)
+    if (!d_transform || !d_source_points || !d_target_points)
     {
         throw std::invalid_argument("ICP GPU: device pointers must not be null");
     }
-    if (d_output_points == d_target_points)
+    if (d_output_points && d_output_points == d_target_points)
     {
         throw std::invalid_argument("ICP GPU: ordered residual output must not alias target points");
     }
@@ -4927,7 +4936,7 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
     {
         return {};
     }
-    if (!d_transform || !d_source_points || !d_output_points)
+    if (!d_transform || !d_source_points)
     {
         throw std::invalid_argument("ICP GPU: device pointers must not be null");
     }

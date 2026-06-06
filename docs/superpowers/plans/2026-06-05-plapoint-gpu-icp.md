@@ -5578,3 +5578,48 @@ Verification evidence:
   ordered final metrics now add only about 0.024 ms over skip-final metrics at 100k points, instead of paying the
   generic residual-search cost. Compared with the non-ordered final-metrics row, the ordered final-metrics path is about
   45% faster for this paired-cloud benchmark while preserving the explicit opt-in requirement.
+
+## Task 155: Skip Scratch Point Materialization For No-Output Final Metrics
+
+- Goal: make `IterativeClosestPoint::align()` without an output cloud avoid allocating and writing a temporary
+  transformed point buffer when final metrics are enabled. The final residual kernels only need transformed coordinates
+  for distance accumulation; they do not need to materialize a point cloud unless the caller requested output points.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignWithoutOutputOrderedFinalMetricsSkipsScratchPointBuffer`.
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignWithoutOutputOrderedFinalMetricsSkipsScratchPointBuffer`:
+    failed as expected because the old path wrote final metrics into `_gpu_points_a`; the last transform-output pointer
+    was non-null and `_gpu_points_a` was allocated.
+  - Added benchmark rows:
+    `gpu_icp_finite_radius_translation_ordered_transform_only` and
+    `gpu_icp_finite_radius_translation_ordered_transform_only_one_iteration`.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint.benchmarks.gpu_icp_rows_registered --output-on-failure`:
+    failed with the expected missing-row error for
+    `gpu_icp_finite_radius_translation_ordered_transform_only`.
+- Implementation:
+  - Changed transformed residual kernels to treat `d_output_points == nullptr` as metrics-only mode: transform source
+    coordinates in registers, accumulate residual stats, and skip the transformed point writeback.
+  - Relaxed the reserved-workspace transformed residual detail entry points so their output pointer can be null while
+    preserving the target-output alias checks when an output pointer is supplied.
+  - Updated GPU `align()` terminal final-metrics handling so no-output calls pass a null transformed-output pointer
+    instead of reserving `_gpu_points_a` / `_gpu_points_b` scratch storage.
+  - Added `ICPGpuPathTest.AlignWithoutOutputFinalMetricsSkipsScratchPointBuffer` to cover the ordinary
+    nearest-neighbor final-metrics path as well as the ordered path.
+  - Registered no-output ordered final-metrics benchmark rows.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignWithoutOutputOrderedFinalMetricsSkipsScratchPointBuffer`:
+    1 test, 0 failed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignWithoutOutputOrderedFinalMetricsSkipsScratchPointBuffer:ICPGpuPathTest.AlignWithoutOutputFinalMetricsSkipsScratchPointBuffer`:
+    2 tests, 0 failed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) && ctest --test-dir build-codex-cuda-bench-only -R plapoint.benchmarks.gpu_icp_rows_registered --output-on-failure`:
+    passed after benchmark implementation.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.897569 ms,
+    `gpu_icp_finite_radius_translation_ordered_transform_only` = 0.897627 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_one_iteration` = 0.280447 ms, and
+    `gpu_icp_finite_radius_translation_ordered_transform_only_one_iteration` = 0.280382 ms.
+- Current conclusion:
+  the no-output final-metrics path now avoids scratch point-buffer allocation and transformed-cloud writeback. At 100k
+  points on the RTX 4060 Laptop GPU, this does not materially change wall time for the ordered benchmark; remaining time
+  is dominated by alignment-step/final-residual reductions and host synchronization rather than final point
+  materialization.
