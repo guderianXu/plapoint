@@ -111,6 +111,23 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslatedGridPoints(
 }
 
 template <typename Scalar>
+plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslatedPerturbedGridPoints(
+    int count,
+    Scalar tx,
+    Scalar ty,
+    Scalar tz)
+{
+    auto points = makeTranslatedGridPoints<Scalar>(count, tx, ty, tz);
+    for (int i = 0; i < count; ++i)
+    {
+        points(i, 0) += static_cast<Scalar>((i % 7) - 3) * Scalar(0.0002);
+        points(i, 1) += static_cast<Scalar>(((i / 7) % 5) - 2) * Scalar(0.00015);
+        points(i, 2) += static_cast<Scalar>(((i / 35) % 3) - 1) * Scalar(0.0001);
+    }
+    return points;
+}
+
+template <typename Scalar>
 plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeBinaryGridPoints(int count)
 {
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(count, 3);
@@ -816,6 +833,47 @@ void benchmarkGpuIcpFiniteRadiusTranslationOrderedTransformOnly(
     icp.setMaxCorrespondenceDistance(0.02f);
     icp.setMaxIterations(icp_max_iterations);
     icp.setGpuAssumeOrderedCorrespondences(true);
+
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        icp.align();
+        sink += static_cast<std::size_t>(icp.getFinalTransformationDevice().rows());
+    });
+    printResult(benchmark_name, icp_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << benchmark_name << " produced no final transform\n";
+    }
+}
+
+void benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
+    const char* benchmark_name,
+    int icp_points,
+    int iterations,
+    bool assume_ordered_correspondences)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(benchmark_name, "no_usable_cuda_device");
+        return;
+    }
+
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeTranslatedPerturbedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.02f);
+    icp.setMaxIterations(2);
+    icp.setTransformationEpsilon(1.0e-12f);
+    icp.setComputeFinalMetrics(false);
+    if (assume_ordered_correspondences)
+    {
+        icp.setGpuAssumeOrderedCorrespondences(true);
+    }
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -1847,6 +1905,16 @@ int main(int argc, char** argv)
         1,
         options.iterations,
         false);
+    benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
+        "gpu_icp_finite_radius_nonrigid_transform_only_two_iterations",
+        options.icp_points,
+        options.iterations,
+        false);
+    benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
+        "gpu_icp_finite_radius_nonrigid_ordered_transform_only_two_iterations",
+        options.icp_points,
+        options.iterations,
+        true);
     benchmarkGpuIcpFiniteRadiusTranslationTransformOnlySkipFinalMetrics(
         "gpu_icp_finite_radius_translation_transform_only_skip_final_metrics",
         options.icp_points,

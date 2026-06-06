@@ -5702,3 +5702,64 @@ Verification evidence:
   final-metrics-disabled output alignment now avoids one ICP host synchronization while preserving output correctness.
   The 100k benchmark remains roughly flat because terminal output transformation is not the dominant cost; alignment-step
   reductions and host result synchronization remain the larger bottleneck.
+
+## Task 158: Propagate Ordered ICP Correspondences Through Transformed Iterations
+
+- Goal: keep `setGpuAssumeOrderedCorrespondences(true)` effective after the first ICP iteration. Before this change, the
+  first untransformed alignment step could use same-index correspondences, but later iterations using the accumulated
+  transform did not receive the ordered hint and could fall back to target spatial-grid search.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignPropagatesOrderedCorrespondencesToTransformedIterations`, using a two-iteration
+    non-rigid ordered cloud pair so the second transformed iteration still has residual work to do.
+  - The first run failed for the expected reason: full-distance evaluations = 7, target-candidate visits = 10,
+    grid-cell lookups = 4, target spatial-grid prepares = 1, and target spatial-grid builds = 1.
+  - Added benchmark row-registration expectations for
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` and
+    `gpu_icp_finite_radius_nonrigid_ordered_transform_only_two_iterations`.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint.benchmarks.gpu_icp_rows_registered --output-on-failure`:
+    failed with the expected missing-row error for
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations`.
+- Implementation:
+  - Added `transformAndCollectOrderedCorrespondenceStatsKernel()`, which transforms source points, reads only the
+    same-index target point, filters by max correspondence distance, and reduces the full correspondence covariance
+    stats needed by the step solver.
+  - Added a transformed ordered alignment-step launcher that reuses the existing reduce-and-compute-step kernels,
+    including the accumulated-transform variant.
+  - Added ordered hint parameters to transformed alignment-step detail entry points and passed
+    `_gpu_assume_ordered_correspondences` from `IterativeClosestPoint::alignGpu()` when using accumulated transforms.
+  - Added two non-rigid two-iteration benchmark rows to compare generic spatial-grid search with ordered pointwise
+    alignment.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignPropagatesOrderedCorrespondencesToTransformedIterations`:
+    1 test, 0 failed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignPropagatesOrderedCorrespondencesToTransformedIterations:ICPGpuPathTest.AlignCanUseOrderedPointwiseCorrespondencesForFiniteRadiusTranslation:ICPGpuPathTest.TransformedAlignmentStepSkipsSpatialGridSearchForExactPointwiseMatches:ICPGpuPathTest.TransformedExactPointwiseAlignmentStepFallsBackToSpatialGridOnMismatch`:
+    4 tests, 0 failed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) && ctest --test-dir build-codex-cuda-bench-only -R plapoint.benchmarks.gpu_icp_rows_registered --output-on-failure`:
+    passed after benchmark implementation.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 2.16386 ms,
+    `gpu_icp_finite_radius_nonrigid_ordered_transform_only_two_iterations` = 0.50355 ms,
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.533299 ms,
+    `gpu_icp_finite_radius_translation_ordered_transform_only` = 0.533254 ms, and
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.504603 ms.
+- Full verification performed in this session:
+  - `git diff --check`: clean.
+  - GPU: RTX 4060 Laptop GPU, driver 580.159.03.
+  - `cmake --build build-codex-cpu -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, 1 CUDA-only test skipped.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 288/288 passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 2.16727 ms,
+    `gpu_icp_finite_radius_nonrigid_ordered_transform_only_two_iterations` = 0.504406 ms,
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.535268 ms,
+    `gpu_icp_finite_radius_translation_ordered_transform_only` = 0.534188 ms, and
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.50575 ms.
+- Current conclusion:
+  ordered ICP now avoids target spatial-grid search on transformed iterations as well as on the first iteration. On the
+  100k non-rigid ordered benchmark, the ordered two-iteration transform-only path is about 4.3x faster than the generic
+  spatial-grid path.

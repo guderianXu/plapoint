@@ -417,7 +417,9 @@ private:
                         _gpu_stats_workspace,
                         _gpu_T_step->data(),
                         _gpu_T_acc->data(),
-                        _gpu_next_T_acc->data());
+                        _gpu_next_T_acc->data(),
+                        0,
+                        _gpu_assume_ordered_correspondences);
             }
             else
             {

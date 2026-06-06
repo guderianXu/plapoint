@@ -3659,6 +3659,51 @@ TEST(ICPGpuPathTest, AlignCanUseOrderedPointwiseCorrespondencesForFiniteRadiusTr
     EXPECT_EQ(output.size(), source->size());
 }
 
+TEST(ICPGpuPathTest, AlignPropagatesOrderedCorrespondencesToTransformedIterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_points = makeNonCollinearPoints();
+    auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.1f, -0.05f, 0.025f);
+    target_points.setValue(1, 0, target_points.getValue(1, 0) + 0.025f);
+    target_points.setValue(2, 1, target_points.getValue(2, 1) - 0.015f);
+    target_points.setValue(3, 2, target_points.getValue(3, 2) + 0.01f);
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(2.0f);
+    icp.setMaxIterations(2);
+    icp.setTransformationEpsilon(1.0e-12f);
+    icp.setComputeFinalMetrics(false);
+    icp.setGpuAssumeOrderedCorrespondences(true);
+
+    plapoint::gpu::resetIcpTransformedAlignmentStepCallCountForTesting();
+    plapoint::gpu::resetIcpFullDistanceEvaluationCountForTesting();
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
+    icp.align();
+
+    EXPECT_EQ(plapoint::gpu::icpTransformedAlignmentStepCallCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 0);
+}
+
 TEST(ICPGpuPathTest, AlignOrderedFinalMetricsSkipTargetSpatialGridSearch)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
