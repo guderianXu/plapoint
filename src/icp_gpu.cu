@@ -680,6 +680,7 @@ __global__ void collectCorrespondenceStatsKernel(
     double best_ty = 0.0;
     double best_tz = 0.0;
     const double max_dist = static_cast<double>(max_correspondence_distance);
+    const double max_dist_sq = max_dist * max_dist;
     const bool can_prune_by_radius = isfinite(max_dist) && max_dist >= 0.0;
     __shared__ double target_tile_x[kIcpStatsBlockSize];
     __shared__ double target_tile_y[kIcpStatsBlockSize];
@@ -762,7 +763,7 @@ __global__ void collectCorrespondenceStatsKernel(
         bool accepted = best_idx >= 0;
         if (accepted && isfinite(max_dist))
         {
-            accepted = best_dist_sq <= max_dist * max_dist;
+            accepted = best_dist_sq <= max_dist_sq;
         }
 
         if (!accepted)
@@ -1199,6 +1200,7 @@ __global__ void collectResidualStatsKernel(
 
     double best_dist_sq = INFINITY;
     const double max_dist = static_cast<double>(max_correspondence_distance);
+    const double max_dist_sq = max_dist * max_dist;
     const bool can_prune_by_radius = isfinite(max_dist) && max_dist >= 0.0;
     bool stop_target_scan = false;
     __shared__ double target_tile_x[kIcpStatsBlockSize];
@@ -1281,7 +1283,7 @@ __global__ void collectResidualStatsKernel(
         bool accepted = isfinite(best_dist_sq);
         if (accepted && isfinite(max_dist))
         {
-            accepted = best_dist_sq <= max_dist * max_dist;
+            accepted = best_dist_sq <= max_dist_sq;
         }
         if (accepted)
         {
@@ -1550,6 +1552,7 @@ __global__ void transformAndCollectResidualStatsKernel(
 
     double best_dist_sq = INFINITY;
     const double max_dist = static_cast<double>(max_correspondence_distance);
+    const double max_dist_sq = max_dist * max_dist;
     const bool can_prune_by_radius = isfinite(max_dist) && max_dist >= 0.0;
     bool stop_target_scan = false;
     __shared__ double target_tile_x[kIcpStatsBlockSize];
@@ -1632,7 +1635,7 @@ __global__ void transformAndCollectResidualStatsKernel(
         bool accepted = isfinite(best_dist_sq);
         if (accepted && isfinite(max_dist))
         {
-            accepted = best_dist_sq <= max_dist * max_dist;
+            accepted = best_dist_sq <= max_dist_sq;
         }
         if (accepted)
         {

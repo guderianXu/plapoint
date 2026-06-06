@@ -1671,6 +1671,40 @@ Verification evidence:
   rerun `ICPGpuPathTest.ResidualStatsStopsNonSpatialScanAfterExactMatch`, full CUDA `ctest`, and the 100k-point ICP
   benchmark to confirm runtime behavior and performance impact.
 
+## Task 75: Reuse Squared Radius In GPU ICP Fallback Kernels
+
+- Goal: remove repeated per-thread radius squaring from the shared-memory target-tiling fallback path. This fallback
+  remains active for infinite-radius ICP and for finite-radius cases where the target spatial grid is not usable.
+- Implementation:
+  - Added a local `max_dist_sq` in `collectCorrespondenceStatsKernel()`.
+  - Added a local `max_dist_sq` in `collectResidualStatsKernel()`.
+  - Added a local `max_dist_sq` in `transformAndCollectResidualStatsKernel()`.
+  - Reused that value for final acceptance checks instead of recomputing `max_dist * max_dist`.
+  - Kept axis pruning, finite-radius checks, exact-match early stop behavior, and max-distance semantics unchanged.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `rg -n "max_dist \* max_dist|const double max_dist_sq" src/icp_gpu.cu`:
+    remaining occurrences are the six local `max_dist_sq` initializations in the GPU ICP correspondence/residual kernels.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsFindsNearestTargetsPastFirstTile:ICPGpuPathTest.CorrespondenceStatsPrunesFarTargetsBeforeFullDistanceEvaluation:ICPGpuPathTest.CorrespondenceStatsSkipsFarTargetTilesBeforeCandidateLoop:ICPGpuPathTest.ResidualStatsStopsNonSpatialScanAfterExactMatch:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 4 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    227 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected fallback GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime behavior
+  and performance impact.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell
