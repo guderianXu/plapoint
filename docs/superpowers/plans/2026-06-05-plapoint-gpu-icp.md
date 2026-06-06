@@ -1912,6 +1912,50 @@ Verification evidence:
   rerun `ICPGpuPathTest.FallbackStatsSkipUnboundedTargetTileLoadsWhenBlockHasNoValidSources`, full CUDA `ctest`, and the
   100k-point ICP benchmark to confirm runtime behavior and performance impact.
 
+## Task 81: Skip Exact Pointwise Target Loads For Same Buffers
+
+- Goal: reduce global-memory traffic in the exact pointwise identity path when source and target are the same GPU
+  buffer. The previous exact pointwise kernels still read source and target columns separately even when the pointers
+  were identical, duplicating three target-coordinate loads per point before recording zero-residual correspondences.
+- TDD red:
+  - Added CUDA-only target-load counter declarations and same-buffer assertions to
+    `ResidualStatsUsesExactPointwiseFastPathForSameBuffer`.
+  - Added `CorrespondenceStatsSameBufferExactPointwiseAvoidsTargetCoordinateLoads`, which first proves separate but
+    equal buffers still count three target loads per point, then requires the same-buffer exact correspondence path to
+    count zero target loads.
+  - `cmake --build build-codex-cuda -j$(nproc)` failed as expected at link time because
+    `resetIcpExactPointwiseTargetLoadCountForTesting()` and `icpExactPointwiseTargetLoadCountForTesting()` did not
+    exist yet.
+- Implementation:
+  - Added a CUDA-only exact pointwise target-load counter.
+  - Templated `collectExactPointwiseCorrespondenceStatsKernel()` and `collectExactPointwiseResidualStatsKernel()` on
+    `SameBuffer`.
+  - The `SameBuffer=true` kernel instances reuse source values for target values and skip target coordinate loads and
+    equality comparison loads; the `SameBuffer=false` instances keep the previous separate-buffer comparison behavior.
+  - Updated exact pointwise stats, stats+identity-step, alignment-step, and residual launch helpers to select the
+    same-buffer kernel instance when `d_source_points == d_target_points`.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed after implementing the hooks and same-buffer kernel instances.
+  - `git diff --check`:
+    clean.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsSameBufferExactPointwiseAvoidsTargetCoordinateLoads:ICPGpuPathTest.ResidualStatsUsesExactPointwiseFastPathForSameBuffer:ICPGpuPathTest.AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs:ICPGpuPathTest.CorrespondenceStatsAllowOmittedIndexOutput:ICPGpuPathTest.CorrespondenceStatsStillWriteRequestedIndexOutput:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 6 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    233 test entries, 0 failed; GPU-dependent tests, including the new exact pointwise target-load test, were skipped
+    because the current session cannot communicate with the NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `ICPGpuPathTest.CorrespondenceStatsSameBufferExactPointwiseAvoidsTargetCoordinateLoads`, full CUDA `ctest`, and
+  the 100k-point ICP benchmark to confirm runtime behavior and performance impact.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell
