@@ -704,7 +704,8 @@ __global__ void collectCorrespondenceStatsKernel(
     __shared__ double target_tile_z[kIcpStatsBlockSize];
     __shared__ int target_tile_valid[kIcpStatsBlockSize];
 
-    for (int tile_start = 0; tile_start < target_count; tile_start += kIcpStatsBlockSize)
+    const int scan_target_count = __syncthreads_count(source_valid) > 0 ? target_count : 0;
+    for (int tile_start = 0; tile_start < scan_target_count; tile_start += kIcpStatsBlockSize)
     {
         const int tile_idx = tile_start / kIcpStatsBlockSize;
         bool tile_relevant = true;
@@ -1260,7 +1261,8 @@ __global__ void collectResidualStatsKernel(
     __shared__ double target_tile_z[kIcpStatsBlockSize];
     __shared__ int target_tile_valid[kIcpStatsBlockSize];
 
-    for (int tile_start = 0; tile_start < target_count; tile_start += kIcpStatsBlockSize)
+    const int scan_target_count = __syncthreads_count(source_valid) > 0 ? target_count : 0;
+    for (int tile_start = 0; tile_start < scan_target_count; tile_start += kIcpStatsBlockSize)
     {
         const int tile_idx = tile_start / kIcpStatsBlockSize;
         bool tile_relevant = true;
@@ -1639,7 +1641,8 @@ __global__ void transformAndCollectResidualStatsKernel(
     __shared__ double target_tile_z[kIcpStatsBlockSize];
     __shared__ int target_tile_valid[kIcpStatsBlockSize];
 
-    for (int tile_start = 0; tile_start < target_count; tile_start += kIcpStatsBlockSize)
+    const int scan_target_count = __syncthreads_count(source_valid) > 0 ? target_count : 0;
+    for (int tile_start = 0; tile_start < scan_target_count; tile_start += kIcpStatsBlockSize)
     {
         const int tile_idx = tile_start / kIcpStatsBlockSize;
         bool tile_relevant = true;

@@ -1870,6 +1870,48 @@ Verification evidence:
   rerun `ICPGpuPathTest.FallbackStatsSkipTargetTileLoadsWhenBoundsRejectWholeBlock`, full CUDA `ctest`, and the
   100k-point ICP benchmark to confirm runtime behavior and performance impact.
 
+## Task 80: Skip Fallback Target-Tile Loop For Blocks With No Valid Sources
+
+- Goal: avoid entering the shared-memory fallback target-tile loop when every source thread in a block is invalid.
+  Before this change, unbounded fallback kernels could still load the first target tile before the synchronized
+  unfinished-source vote discovered that no thread needed target scanning.
+- TDD coverage:
+  - Added `FallbackStatsSkipUnboundedTargetTileLoadsWhenBlockHasNoValidSources`, which feeds a NaN source point through
+    correspondence with index output, residual-only stats, and transform+residual stats on the unbounded fallback path.
+  - The test expects zero active correspondences, one invalid source, correspondence index `-1`, and zero target-tile
+    loads for all three fallback kernels.
+  - Runtime RED could not be observed in this session because the current machine has no usable CUDA device. The test
+    was added before production changes; on the previous unbounded fallback behavior the target-tile load counter would
+    increment once before the end-of-tile unfinished-source vote broke out of the loop.
+- Implementation:
+  - Added a block-uniform `__syncthreads_count(source_valid)` precheck in `collectCorrespondenceStatsKernel()`,
+    `collectResidualStatsKernel()`, and `transformAndCollectResidualStatsKernel()`.
+  - Used the precheck result to set `scan_target_count` to either the original target count or zero, keeping the existing
+    target-tile loop body and synchronization structure unchanged.
+  - Preserved invalid-source accounting, requested correspondence index output, bounded fallback tile pruning, and the
+    unbounded normal-source scan path.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `git diff --check`:
+    clean.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.FallbackStatsSkipUnboundedTargetTileLoadsWhenBlockHasNoValidSources:ICPGpuPathTest.FallbackStatsSkipTargetTileLoadsWhenBoundsRejectWholeBlock:ICPGpuPathTest.FallbackStatsStopsLoadingTargetTilesWhenBlockExactMatched:ICPGpuPathTest.FallbackStatsLaunchesTileBoundSpecializationsByRadius:ICPGpuPathTest.CorrespondenceStatsStopsNonSpatialScanAfterExactMatchWhenIndicesOmitted:ICPGpuPathTest.ResidualStatsStopsNonSpatialScanAfterExactMatch:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 6 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    232 test entries, 0 failed; GPU-dependent tests, including the new no-valid-source fallback test, were skipped
+    because the current session cannot communicate with the NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `ICPGpuPathTest.FallbackStatsSkipUnboundedTargetTileLoadsWhenBlockHasNoValidSources`, full CUDA `ctest`, and the
+  100k-point ICP benchmark to confirm runtime behavior and performance impact.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell
