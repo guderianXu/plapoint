@@ -2139,6 +2139,46 @@ Verification evidence:
   rerun the selected correspondence fallback GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm
   runtime behavior and measure the shared-memory reload impact.
 
+## Task 87: Parallelize Exact Identity Alignment-Step Transform Write
+
+- Goal: reduce work done by thread 0 in the exact pointwise GPU ICP alignment-step path. The normal exact pointwise step
+  kernel already writes the 4x4 identity transform with 16 threads, but the compact alignment-step variant still called
+  a helper that wrote all 16 identity values serially from thread 0.
+- Static RED:
+  - `test "$(rg -n "writeAlignmentStepRawResultFromRawStats<Scalar>\\(shared_stats\\[0\\], step_transform, result, true\\)|bool exact_identity_step|if \\(exact_identity_step\\)" src/icp_gpu.cu | wc -l)" -eq 0`:
+    failed before the change because the exact identity alignment-step kernel still used the helper's
+    `exact_identity_step` branch.
+- Implementation:
+  - Changed `reduceRawIcpStatsAndSetExactPointwiseIdentityAlignmentStepKernel()` to write identity transform values with
+    `local_idx < 16`, matching the existing exact pointwise step kernel.
+  - Added `writeAlignmentStepRawResultFields()` so exact identity and computed-step alignment paths share result-field
+    writing.
+  - Removed the `exact_identity_step` branch from `writeAlignmentStepRawResultFromRawStats()`; that helper now only
+    computes the non-identity step transform and writes shared result fields.
+  - Kept active-count, invalid-source count, non-collinearity flags, step-valid semantics, residual sum, and delta
+    values unchanged.
+- Verification performed in this session:
+  - `test "$(rg -n "writeAlignmentStepRawResultFromRawStats<Scalar>\\(shared_stats\\[0\\], step_transform, result, true\\)|bool exact_identity_step|if \\(exact_identity_step\\)" src/icp_gpu.cu | wc -l)" -eq 0`:
+    passed after removing the exact-identity helper branch.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs:ICPGpuPathTest.AlignReusesIterationStatsForExactIdentityTerminalMetrics:ICPGpuPathTest.AlignComputesStepFromDeviceStatsWithoutHostInputCopy:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPGpuPathTest.AlignmentStepCompactResultMatchesFullStatsStepResult:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 5 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    233 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran, but all GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected exact pointwise alignment GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm
+  runtime behavior and measure the identity-step impact.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell

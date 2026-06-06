@@ -143,8 +143,12 @@ template <typename Scalar>
 __device__ void writeAlignmentStepRawResultFromRawStats(
     const RawIcpStats& raw,
     Scalar* __restrict__ step_transform,
-    IcpAlignmentStepRawResult* __restrict__ result,
-    bool exact_identity_step);
+    IcpAlignmentStepRawResult* __restrict__ result);
+
+__device__ bool rawStatsCovarianceHasNonCollinearGeometry(
+    const double sum[3],
+    const double outer_sum[9],
+    int active_count);
 
 #ifdef PLAPOINT_ENABLE_TESTING
 std::atomic<int> g_icp_correspondence_stats_call_count{0};
@@ -228,6 +232,23 @@ __device__ __forceinline__ void addRawIcpResidualStats(RawIcpResidualStats& dst,
     dst.active_count += src.active_count;
     dst.invalid_source_count += src.invalid_source_count;
     dst.residual_sq_sum += src.residual_sq_sum;
+}
+
+__device__ __forceinline__ void writeAlignmentStepRawResultFields(
+    const RawIcpStats& raw,
+    IcpAlignmentStepRawResult* __restrict__ result,
+    int step_valid,
+    double delta)
+{
+    result->active_count = raw.active_count;
+    result->invalid_source_count = raw.invalid_source_count;
+    result->src_has_non_collinear_geometry =
+        rawStatsCovarianceHasNonCollinearGeometry(raw.src_sum, raw.src_outer_sum, raw.active_count) ? 1 : 0;
+    result->tgt_has_non_collinear_geometry =
+        rawStatsCovarianceHasNonCollinearGeometry(raw.tgt_sum, raw.tgt_outer_sum, raw.active_count) ? 1 : 0;
+    result->step_valid = step_valid;
+    result->residual_sq_sum = raw.residual_sq_sum;
+    result->delta = delta;
 }
 
 template <typename Value>
@@ -2434,9 +2455,18 @@ __global__ void reduceRawIcpStatsAndSetExactPointwiseIdentityAlignmentStepKernel
         __syncthreads();
     }
 
+    if (local_idx < 16)
+    {
+        const int row = local_idx & 3;
+        const int col = local_idx >> 2;
+        step_transform[local_idx] = row == col ? Scalar(1) : Scalar(0);
+    }
+
     if (local_idx == 0)
     {
-        writeAlignmentStepRawResultFromRawStats<Scalar>(shared_stats[0], step_transform, result, true);
+        const RawIcpStats raw = shared_stats[0];
+        const int step_valid = raw.active_count > 0 && isfinite(raw.residual_sq_sum) ? 1 : 0;
+        writeAlignmentStepRawResultFields(raw, result, step_valid, 0.0);
     }
 }
 
@@ -2505,7 +2535,7 @@ __global__ void reduceRawIcpStatsAndComputeAlignmentStepKernel(
 
     if (local_idx == 0)
     {
-        writeAlignmentStepRawResultFromRawStats<Scalar>(shared_stats[0], step_transform, result, false);
+        writeAlignmentStepRawResultFromRawStats<Scalar>(shared_stats[0], step_transform, result);
     }
 }
 
@@ -2905,36 +2935,12 @@ template <typename Scalar>
 __device__ void writeAlignmentStepRawResultFromRawStats(
     const RawIcpStats& raw,
     Scalar* __restrict__ step_transform,
-    IcpAlignmentStepRawResult* __restrict__ result,
-    bool exact_identity_step)
+    IcpAlignmentStepRawResult* __restrict__ result)
 {
     IcpStepTransformRawResult step_result{};
-    if (exact_identity_step)
-    {
-#pragma unroll
-        for (int idx = 0; idx < 16; ++idx)
-        {
-            const int row = idx & 3;
-            const int col = idx >> 2;
-            step_transform[idx] = row == col ? Scalar(1) : Scalar(0);
-        }
-        step_result.delta = 0.0;
-        step_result.valid = raw.active_count > 0 && isfinite(raw.residual_sq_sum) ? 1 : 0;
-    }
-    else
-    {
-        computeStepTransformFromRawStatsValue<Scalar>(raw, step_transform, &step_result);
-    }
+    computeStepTransformFromRawStatsValue<Scalar>(raw, step_transform, &step_result);
 
-    result->active_count = raw.active_count;
-    result->invalid_source_count = raw.invalid_source_count;
-    result->src_has_non_collinear_geometry =
-        rawStatsCovarianceHasNonCollinearGeometry(raw.src_sum, raw.src_outer_sum, raw.active_count) ? 1 : 0;
-    result->tgt_has_non_collinear_geometry =
-        rawStatsCovarianceHasNonCollinearGeometry(raw.tgt_sum, raw.tgt_outer_sum, raw.active_count) ? 1 : 0;
-    result->step_valid = step_result.valid;
-    result->residual_sq_sum = raw.residual_sq_sum;
-    result->delta = step_result.delta;
+    writeAlignmentStepRawResultFields(raw, result, step_result.valid, step_result.delta);
 }
 
 bool covarianceHasNonCollinearGeometry(const double covariance[9]);
