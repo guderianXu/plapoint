@@ -5662,3 +5662,43 @@ Verification evidence:
   exact transformed residual stats can now bypass target-grid preparation entirely on cache-miss/new-workspace paths.
   At 100k points on the RTX 4060 Laptop GPU, the exact transformed residual row is about 2.9x faster than the generic
   transformed residual new-workspace row and slightly faster than the cached-grid transformed residual row.
+
+## Task 157: Async Terminal Output Transform When Final Metrics Are Disabled
+
+- Goal: avoid an extra host synchronization in `IterativeClosestPoint::align(output)` when final metrics are disabled.
+  The terminal point transform writes GPU output only; CPU-side ICP decisions already have the alignment-step result.
+- RED checks:
+  - Changed `ICPGpuPathTest.AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled` to expect one ICP host
+    synchronization instead of two.
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled`:
+    failed as expected because the old terminal output path used synchronous `transformPointsColumnMajor()`, producing
+    two host synchronizations.
+- Implementation:
+  - Switched the final-metrics-disabled terminal output transform to `transformPointsColumnMajorAsync()` on the existing
+    default stream.
+  - Kept launch-error checking in the shared transform implementation and left output storage reuse / target-cache
+    invalidation unchanged.
+  - Added output readback assertions to the same test after the synchronization-count assertion, verifying that
+    `align(output)` still produces the expected transformed points.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled`:
+    1 test, 0 failed after implementation.
+- Full verification performed in this session:
+  - `git diff --check`: clean.
+  - GPU: RTX 4060 Laptop GPU, driver 580.159.03.
+  - `cmake --build build-codex-cpu -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, 1 CUDA-only test skipped.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 287/287 passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.48875 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.859403 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.874918 ms, and
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics_one_iteration` = 0.253598 ms.
+- Current conclusion:
+  final-metrics-disabled output alignment now avoids one ICP host synchronization while preserving output correctness.
+  The 100k benchmark remains roughly flat because terminal output transformation is not the dominant cost; alignment-step
+  reductions and host result synchronization remain the larger bottleneck.

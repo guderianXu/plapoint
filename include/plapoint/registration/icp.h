@@ -607,7 +607,7 @@ private:
                 {
                     if (transform_output_points)
                     {
-                        gpu::transformPointsColumnMajor(
+                        gpu::transformPointsColumnMajorAsync(
                             _gpu_T_acc->data(),
                             source_points,
                             source_count,

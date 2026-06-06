@@ -4215,10 +4215,20 @@ TEST(ICPGpuPathTest, AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled)
     EXPECT_EQ(plapoint::gpu::icpCorrespondenceStatsCallCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTransformMultiplyCallCountForTesting(), 0);
-    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
     EXPECT_EQ(icp._gpu_points_a, nullptr);
     EXPECT_EQ(icp._gpu_points_b, nullptr);
     EXPECT_EQ(output.size(), source->size());
+
+    const auto output_cpu = output.toCpu();
+    ASSERT_EQ(output_cpu.points().rows(), target_cpu->points().rows());
+    for (plamatrix::Index row = 0; row < target_cpu->points().rows(); ++row)
+    {
+        for (plamatrix::Index col = 0; col < target_cpu->points().cols(); ++col)
+        {
+            EXPECT_NEAR(output_cpu.points().getValue(row, col), target_cpu->points().getValue(row, col), 1.0e-5f);
+        }
+    }
 }
 
 TEST(ICPGpuPathTest, AlignWithoutOutputSkipsTerminalPointTransformWhenFinalMetricsAreDisabled)
