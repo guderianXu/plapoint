@@ -5165,3 +5165,51 @@ Verification evidence:
   run the spatial-grid ICP GPU tests and benchmark rows on hardware to quantify the float target-grid memory/bandwidth
   savings. This change should reduce each float target spatial-grid sorted coordinate column from 8 bytes per point to
   4 bytes per point.
+
+## Task 146: Reuse Float Spatial-Grid Snapshots For GPU Final Metrics
+
+- Goal: restore the terminal GPU ICP final-metrics snapshot predicate after Task 145 made target spatial-grid cache
+  matching include the sorted-coordinate Scalar width. Float ICP should reuse a valid float-width cached target grid
+  instead of rejecting it through the legacy double-width matcher.
+- RED check:
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.FinalMetricsSnapshotPredicateUsesScalarSpatialGridCacheWidth`:
+    failed before implementation. The predicate returned false for a float-width cache that should match, then returned
+    true after the same cache metadata was switched to double-width storage.
+- Implementation:
+  - Changed `IterativeClosestPoint<Scalar, GPU>::gpuFinalMetricsCanUseCachedTargetSpatialGridSnapshot()` to call
+    `_gpu_stats_workspace.template targetSpatialGridCacheMatchesForScalar<Scalar>()`.
+  - Added a no-device unit test that constructs `IterativeClosestPoint<float, GPU>`, marks a fake target spatial-grid
+    cache, and verifies that the final-metrics snapshot predicate accepts float-width cache metadata and rejects
+    double-width metadata for the same float path.
+- Review:
+  - A read-only subagent review found no blocking issues. It confirmed that the new test does not allocate GPU memory or
+    require `hasUsableCudaDevice()`, the production final-metrics predicate now uses the Scalar-aware matcher, and no
+    remaining GPU ICP runtime path calls the legacy double-width `targetSpatialGridCacheMatches()` API.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.FinalMetricsSnapshotPredicateUsesScalarSpatialGridCacheWidth`:
+    passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.FinalMetricsSnapshotPredicateUsesScalarSpatialGridCacheWidth`:
+    1 test, 0 failed.
+- Full verification performed in this session:
+  - `git diff --check`:
+    clean before the documentation update.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    275 test entries, 0 failed. GPU-dependent tests were discovered and skipped because the current session cannot
+    communicate with a usable CUDA device.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`:
+    1 test, 0 failed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  run float finite-radius terminal final-metrics GPU tests and benchmark rows on hardware to quantify the avoided grid
+  rebuild or fallback after float-width spatial-grid cache reuse.

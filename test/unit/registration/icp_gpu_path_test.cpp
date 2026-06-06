@@ -2253,6 +2253,22 @@ TEST(ICPGpuPathTest, TargetSpatialGridCacheMatchRequiresCoordinateStorageWidth)
     EXPECT_FALSE(workspace.targetSpatialGridCacheMatchesForScalar<double>(target_points, target_count, 1.0));
 }
 
+TEST(ICPGpuPathTest, FinalMetricsSnapshotPredicateUsesScalarSpatialGridCacheWidth)
+{
+    constexpr int target_count = 11;
+    const auto* target_points = reinterpret_cast<const float*>(0x1000);
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setMaxCorrespondenceDistance(1.0f);
+    icp._gpu_stats_workspace.markTargetSpatialGridCache(target_points, target_count, 1.0, 2);
+    icp._gpu_stats_workspace._target_spatial_grid_coordinate_value_bytes = sizeof(float);
+
+    EXPECT_TRUE(icp.gpuFinalMetricsCanUseCachedTargetSpatialGridSnapshot(target_points, target_count));
+
+    icp._gpu_stats_workspace._target_spatial_grid_coordinate_value_bytes = sizeof(double);
+    EXPECT_FALSE(icp.gpuFinalMetricsCanUseCachedTargetSpatialGridSnapshot(target_points, target_count));
+}
+
 TEST(ICPGpuPathTest, TargetSpatialGridWorkspaceReservesFloatSizedSortedCoordinates)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

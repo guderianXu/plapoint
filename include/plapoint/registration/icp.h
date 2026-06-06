@@ -694,7 +694,10 @@ private:
         const double cell_size = static_cast<double>(_max_corr_dist);
         return std::isfinite(cell_size) &&
                cell_size > 0.0 &&
-               _gpu_stats_workspace.targetSpatialGridCacheMatches(target_points, target_count, cell_size) &&
+               _gpu_stats_workspace.template targetSpatialGridCacheMatchesForScalar<Scalar>(
+                   target_points,
+                   target_count,
+                   cell_size) &&
                _gpu_stats_workspace.targetSpatialGridCellCount() > 0;
     }
 
