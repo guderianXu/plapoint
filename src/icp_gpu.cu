@@ -279,6 +279,7 @@ __device__ unsigned long long g_icp_exact_pointwise_target_load_count;
 __device__ unsigned long long g_icp_grid_cell_lookup_count;
 __device__ unsigned long long g_icp_grid_cell_offset_count;
 __device__ unsigned long long g_icp_direct_grid_lookup_xy_check_count;
+__device__ unsigned long long g_icp_direct_grid_lookup_active_guard_count;
 #endif
 
 #ifdef PLAPOINT_ENABLE_TESTING
@@ -749,19 +750,27 @@ __device__ __forceinline__ int loadIcpGridCellCount(const IcpTargetSpatialGrid& 
     return loadReadOnlyIcpValue(target_grid.cell_counts + cell_idx);
 }
 
+template <bool CheckActive>
 __device__ __forceinline__ bool directLookupIcpGridCellXyBase(
     const IcpTargetSpatialGrid& target_grid,
     int query_x,
     int query_y,
     int& xy_base)
 {
+    if constexpr (CheckActive)
+    {
+#ifdef PLAPOINT_ENABLE_TESTING
+        atomicAdd(&g_icp_direct_grid_lookup_active_guard_count, 1ull);
+#endif
+        if (!target_grid.direct_lookup_active || !target_grid.direct_lookup_cell_indices)
+        {
+            return false;
+        }
+    }
+
 #ifdef PLAPOINT_ENABLE_TESTING
     atomicAdd(&g_icp_direct_grid_lookup_xy_check_count, 1ull);
 #endif
-    if (!target_grid.direct_lookup_active || !target_grid.direct_lookup_cell_indices)
-    {
-        return false;
-    }
 
     if (query_x < target_grid.direct_lookup_min_x ||
         query_y < target_grid.direct_lookup_min_y)
@@ -1676,7 +1685,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                 if constexpr (DirectLookup)
                 {
                     int direct_lookup_xy_base = 0;
-                    if (!directLookupIcpGridCellXyBase(target_grid, query_x, query_y, direct_lookup_xy_base))
+                    if (!directLookupIcpGridCellXyBase<false>(target_grid, query_x, query_y, direct_lookup_xy_base))
                     {
                         continue;
                     }
@@ -2580,7 +2589,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
                 if constexpr (DirectLookup)
                 {
                     int direct_lookup_xy_base = 0;
-                    if (!directLookupIcpGridCellXyBase(target_grid, query_x, query_y, direct_lookup_xy_base))
+                    if (!directLookupIcpGridCellXyBase<false>(target_grid, query_x, query_y, direct_lookup_xy_base))
                     {
                         continue;
                     }
@@ -3119,7 +3128,7 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                 if constexpr (DirectLookup)
                 {
                     int direct_lookup_xy_base = 0;
-                    if (!directLookupIcpGridCellXyBase(target_grid, query_x, query_y, direct_lookup_xy_base))
+                    if (!directLookupIcpGridCellXyBase<false>(target_grid, query_x, query_y, direct_lookup_xy_base))
                     {
                         continue;
                     }
@@ -7267,6 +7276,19 @@ unsigned long long icpDirectGridLookupXyCheckCountForTesting()
 {
     unsigned long long count = 0;
     PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_direct_grid_lookup_xy_check_count, sizeof(count)));
+    return count;
+}
+
+void resetIcpDirectGridLookupActiveGuardCountForTesting()
+{
+    const unsigned long long zero = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyToSymbol(g_icp_direct_grid_lookup_active_guard_count, &zero, sizeof(zero)));
+}
+
+unsigned long long icpDirectGridLookupActiveGuardCountForTesting()
+{
+    unsigned long long count = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_direct_grid_lookup_active_guard_count, sizeof(count)));
     return count;
 }
 

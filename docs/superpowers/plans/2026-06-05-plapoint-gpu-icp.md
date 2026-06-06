@@ -6593,3 +6593,45 @@ Verification evidence:
   direct compact spatial-grid searches now compile without the lower-bound branch body in the direct variants. The
   measured 100k cached-grid rows are essentially run-to-run-noise-level changes, but unlike the reverted Z table read
   pruning, this keeps benchmark rows flat while simplifying hot-path control flow for later kernel-level tuning.
+
+## Task 176: Skip Direct Lookup Active Guard in Specialized Kernels
+
+- Goal: after Task 175, the host launchers already select direct spatial-grid specializations only when the compact
+  direct lookup table is active. The direct-specialized kernels should not repeat the old per-source XY-column
+  `direct_lookup_active` guard before every direct lookup XY range check.
+- RED check:
+  - Added a testing-only `g_icp_direct_grid_lookup_active_guard_count` counter and
+    `ICPGpuPathTest.SpatialGridDirectLookupSpecializationSkipsActiveGuard`.
+  - Before implementation, correspondence stats, residual stats, and transform+residual stats each failed with active
+    guard count 1 instead of the expected 0.
+- Implementation:
+  - Converted the direct lookup XY helper to a compile-time `CheckActive` helper.
+  - Direct spatial-grid specializations call the helper with active checking disabled, so CUDA compiles out the old
+    guard while preserving the guarded helper shape for future fallback use.
+  - Left XY range/count accounting and Z lookup behavior unchanged.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridDirectLookupSpecializationSkipsActiveGuard`:
+    failed before implementation with active guard count 1 versus expected 0 on all three checked paths, then passed
+    after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridDirectLookupSpecializationSkipsActiveGuard:ICPGpuPathTest.SpatialGridDirectLookupUsesSpecializedKernelLaunches:ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn:ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells:ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath:ICPGpuPathTest.CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridXYLookupsBeforeSearch:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYExceedsRadius`:
+    12 targeted spatial-grid tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 20 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(finite_radius_translation_(reuse_output|reuse_output_skip_final_metrics|ordered_output|ordered_output_skip_final_metrics)|stats_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid_reserved_workspace|stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid_reserved_workspace|residual_stats_finite_radius_translation_ordered|transform_residual_stats_finite_radius_translation_cached_grid|alignment_step_transformed_exact_pointwise_cached_grid|alignment_step_transformed_exact_pointwise_cache_hit)'`:
+    ran successfully on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.44699 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.2769 ms,
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.532473 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.505868 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.735913 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.736198 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.210796 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.230354 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.711529 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.523133 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_ordered` = 0.029646 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.52326 ms.
+- Current conclusion:
+  direct-specialized kernels no longer repeat the active-state guard in the direct lookup XY base helper. The benchmark
+  effect is again small and within noise, but the direct hot path is now consistently specialized from launcher through
+  XY lookup.
