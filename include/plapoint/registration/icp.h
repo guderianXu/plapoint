@@ -358,8 +358,6 @@ private:
         const Scalar* cur_points = _source->points().data();
         bool next_points_in_a = true;
 
-        reserveGpuTransformBuffers();
-
         _converged = false;
         _fitness_score = Scalar(0);
         _final_rmse = std::numeric_limits<Scalar>::infinity();
@@ -368,6 +366,7 @@ private:
 
         for (int iter = 0; iter < _max_iter; ++iter)
         {
+            reserveGpuStepTransformBuffer();
             const auto stats_and_step = gpu::computeIcpAlignmentStepColumnMajor(
                 cur_points,
                 source_count,
@@ -565,12 +564,8 @@ private:
         }
     }
 
-    void reserveGpuTransformBuffers()
+    void reserveGpuStepTransformBuffer()
     {
-        if (!_gpu_T_acc || _gpu_T_acc->rows() != 4 || _gpu_T_acc->cols() != 4)
-        {
-            _gpu_T_acc = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
-        }
         if (!_gpu_T_step || _gpu_T_step->rows() != 4 || _gpu_T_step->cols() != 4)
         {
             _gpu_T_step = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
