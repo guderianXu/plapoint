@@ -3637,3 +3637,43 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun the target-output cache invalidation cases on real GPU hardware, including the skip-final-metrics direct target
   output path and the same-buffer no-write path.
+
+## Task 111: Skip Repeated Alignment-Step Workspace Reserve Checks
+
+- Goal: reduce CPU-side overhead in multi-iteration GPU ICP by avoiding repeated `reserveAlignmentStep()` work once the
+  reusable partial-reduction and compact alignment-step result buffers already have enough capacity for the current
+  source point count.
+- RED check:
+  - Tightened `AlignReservesAlignmentStepWorkspaceOncePerCall` so a two-iteration GPU align must make two compact
+    alignment-step calls but only one alignment-step workspace reserve.
+  - Added a static RED check against `IcpCorrespondenceStatsWorkspace::reserveAlignmentStep()` requiring a capacity
+    guard and early return before the testing reserve counter increments. The check failed before the implementation.
+- Implementation:
+  - `reserveAlignmentStep()` now returns immediately for zero source count before touching the test counter.
+  - For non-empty sources, it computes the required partial count and byte count, then returns early when the existing
+    partial storage, partial capacity, and result storage are already sufficient.
+  - The public GPU ICP helper API is unchanged; direct callers still get automatic first-use allocation.
+- Verification performed in this session:
+  - The static RED check failed before the implementation and passed after the implementation.
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReservesAlignmentStepWorkspaceOncePerCall`:
+    the selected GPU test was discovered but skipped because the current session has no usable CUDA device.
+  - `git diff --check`:
+    clean before the plan update.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    246 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `AlignReservesAlignmentStepWorkspaceOncePerCall` on GPU hardware and compare repeated-iteration ICP benchmark
+  rows before/after this change to quantify host-side overhead reduction.

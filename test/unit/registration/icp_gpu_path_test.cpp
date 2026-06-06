@@ -2876,12 +2876,15 @@ TEST(ICPGpuPathTest, AlignReservesAlignmentStepWorkspaceOncePerCall)
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(2.0f);
-    icp.setMaxIterations(1);
+    icp.setMaxIterations(2);
+    icp.setTransformationEpsilon(1.0e-8f);
 
+    plapoint::gpu::resetIcpAlignmentStepCallCountForTesting();
     plapoint::gpu::resetIcpAlignmentStepReserveCountForTesting();
     GpuCloud output;
     icp.align(output);
 
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepCallCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepReserveCountForTesting(), 1);
     EXPECT_EQ(output.size(), source->size());
 }

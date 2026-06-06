@@ -4607,13 +4607,24 @@ void IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(int source_count)
     {
         throw std::invalid_argument("ICP GPU: source point count must not be negative");
     }
-#ifdef PLAPOINT_ENABLE_TESTING
-    g_icp_alignment_step_reserve_count.fetch_add(1, std::memory_order_relaxed);
-#endif
     if (source_count == 0)
     {
         return;
     }
+
+    const int required_partials = icpStatsPartialCount(source_count);
+    const std::size_t required_partial_bytes =
+        static_cast<std::size_t>(required_partials) * sizeof(RawIcpStats);
+    if (partialCapacity() >= required_partials &&
+        _partial_storage.size() >= required_partial_bytes &&
+        _stats_storage.size() >= sizeof(IcpAlignmentStepRawResult))
+    {
+        return;
+    }
+
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_alignment_step_reserve_count.fetch_add(1, std::memory_order_relaxed);
+#endif
 
     reservePartialStorage(source_count, sizeof(RawIcpStats));
     reserveStatsStorage(sizeof(IcpAlignmentStepRawResult));
