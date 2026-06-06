@@ -3846,3 +3846,51 @@ Verification evidence:
   `gpu_icp_alignment_step_finite_radius_translation_cached_grid` to quantify the compact result format, then compare
   new-workspace and cached-grid rows to decide whether the next optimization should target workspace setup or spatial
   grid reuse.
+
+## Task 116: Exact Pointwise Correspondence Indices
+
+- Goal: let the exact-pointwise GPU ICP correspondence fast path write requested correspondence indices. Before this
+  task, any caller that passed `d_correspondence_indices` bypassed the exact same-buffer path and fell back to
+  spatial-grid or tiled target scanning even when each source point corresponded to the same target index.
+- RED check:
+  - `rg -n "collectExactPointwiseCorrespondenceStatsKernel\\([^)]*correspondence_indices" src/icp_gpu.cu` failed before
+    the implementation because the exact-pointwise correspondence kernel had no index-output parameter.
+  - `rg -n "if \\(d_correspondence_indices \\|\\| source_count != target_count\\)" src/icp_gpu.cu` found the guard that
+    rejected exact-pointwise stats whenever index output was requested.
+  - Added `CorrespondenceStatsSameBufferExactPointwiseWritesRequestedIndices`, requiring same-buffer finite-radius
+    correspondence stats with requested indices to write identity indices without full distance evaluations, candidate
+    visits, target-grid lookups, or target-coordinate loads.
+- Implementation:
+  - Added an optional `correspondence_indices` parameter to `collectExactPointwiseCorrespondenceStatsKernel()`.
+  - The exact-pointwise kernel now writes `source_idx` for accepted same-index correspondences and `-1` for non-finite
+    or mismatched pointwise candidates.
+  - `shouldTryExactPointwiseStats()` no longer rejects non-null index output. Same-buffer finite-radius calls can now
+    use the exact path, and row-wise equal infinite-radius calls with distinct source/target buffers can also avoid the
+    full all-target scan while still writing indices.
+  - Updated `CorrespondenceStatsStillWriteRequestedIndexOutput` so it verifies the new no-full-distance behavior while
+    keeping the identity index-output check.
+- Verification performed in this session:
+  - Static RED checks passed after the implementation: index output is threaded through the exact-pointwise kernel and
+    the old `d_correspondence_indices || source_count != target_count` rejection is gone.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsStillWriteRequestedIndexOutput:ICPGpuPathTest.CorrespondenceStatsSameBufferExactPointwiseWritesRequestedIndices`:
+    both selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `git diff --check`:
+    clean before the plan update.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    249 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the two selected GPU tests and add a benchmark row only if index-output correspondence stats are a relevant
+  public workload outside `alignGpu()`, which already omits index output.

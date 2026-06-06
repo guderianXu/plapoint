@@ -498,6 +498,9 @@ TEST(ICPGpuPathTest, CorrespondenceStatsStillWriteRequestedIndexOutput)
     plapoint::gpu::DeviceBuffer<int> indices(static_cast<std::size_t>(source.rows()));
 
     plapoint::gpu::resetIcpFullDistanceEvaluationCountForTesting();
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    plapoint::gpu::resetIcpExactPointwiseTargetLoadCountForTesting();
     const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
         source.data(),
         static_cast<int>(source.rows()),
@@ -519,7 +522,12 @@ TEST(ICPGpuPathTest, CorrespondenceStatsStillWriteRequestedIndexOutput)
     {
         EXPECT_EQ(host_indices[static_cast<std::size_t>(i)], i);
     }
-    EXPECT_GT(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
+    EXPECT_EQ(
+        plapoint::gpu::icpExactPointwiseTargetLoadCountForTesting(),
+        static_cast<unsigned long long>(3 * source.rows()));
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsReportsDegenerateGeometry)
@@ -1400,6 +1408,50 @@ TEST(ICPGpuPathTest, CorrespondenceStatsSameBufferExactPointwiseAvoidsTargetCoor
     EXPECT_EQ(stats.active_count, static_cast<int>(points.rows()));
     EXPECT_EQ(stats.invalid_source_count, 0);
     EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-8);
+    EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpExactPointwiseTargetLoadCountForTesting(), 0ull);
+}
+
+TEST(ICPGpuPathTest, CorrespondenceStatsSameBufferExactPointwiseWritesRequestedIndices)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto points = makeNonCollinearPoints().toGpu();
+    plapoint::gpu::DeviceBuffer<int> indices(static_cast<std::size_t>(points.rows()));
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+
+    plapoint::gpu::resetIcpFullDistanceEvaluationCountForTesting();
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    plapoint::gpu::resetIcpExactPointwiseTargetLoadCountForTesting();
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        points.data(),
+        static_cast<int>(points.rows()),
+        points.data(),
+        static_cast<int>(points.rows()),
+        2.0f,
+        indices.get(),
+        workspace);
+
+    std::vector<int> host_indices(static_cast<std::size_t>(points.rows()), -1);
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(
+        host_indices.data(),
+        indices.get(),
+        host_indices.size() * sizeof(int),
+        cudaMemcpyDeviceToHost));
+
+    EXPECT_EQ(stats.active_count, static_cast<int>(points.rows()));
+    EXPECT_EQ(stats.invalid_source_count, 0);
+    EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-8);
+    for (int i = 0; i < static_cast<int>(host_indices.size()); ++i)
+    {
+        EXPECT_EQ(host_indices[static_cast<std::size_t>(i)], i);
+    }
     EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
     EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 0ull);
     EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
