@@ -7474,3 +7474,55 @@ Verification evidence:
   noncompetitive, without reintroducing extra neighbor XY distance work for out-of-range direct lookup columns. The
   benchmark impact is small on the current 100k translation fixture, so the larger remaining bottleneck is still the
   cached-grid candidate scan/reduction path rather than this guard order.
+
+## Task 196: Skip Redundant GPU ICP Outer-Covariance Lower Triangle
+
+- Goal: avoid calculating and reducing the lower-triangle entries of `RawIcpStats::src_outer_sum` and
+  `RawIcpStats::tgt_outer_sum`. These two outer-product matrices are symmetric; only the upper-triangle entries are
+  needed by the device-side non-collinearity checks, and host-side full covariance output can mirror the upper triangle.
+  `cross_sum` remains a full 3x3 matrix because source-target cross covariance is not symmetric.
+- RED check:
+  - Added a testing-only `g_icp_outer_lower_triangle_accumulation_count` device counter and
+    `ICPGpuPathTest.CorrespondenceStatsSkipsRedundantOuterLowerTriangleAccumulation`.
+  - The test compares all nine source, target, and cross covariance entries against the CPU reference, then expects no
+    lower-triangle source/target outer-product accumulation.
+  - Before implementation, the test failed with lower-triangle accumulation count 24 instead of 0 for the four-point
+    translated fixture.
+- Implementation:
+  - `recordAcceptedCorrespondence()` now writes the full 3x3 `cross_sum` but only the upper-triangle entries
+    `[0, 1, 2, 4, 5, 8]` for source and target outer sums.
+  - `addRawIcpStats()` still reduces all nine cross-covariance sums but only reduces those six upper-triangle
+    source/target outer entries.
+  - `makeHostStats()` reconstructs full 3x3 source/target covariance output by mapping lower-triangle requests to the
+    mirrored upper-triangle raw outer-sum entry.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsSkipsRedundantOuterLowerTriangleAccumulation`:
+    failed before implementation with lower-triangle accumulation count 24, then passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsSkipsRedundantOuterLowerTriangleAccumulation:ICPGpuPathTest.CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath:ICPGpuPathTest.AlignComputesStepFromDeviceStatsWithoutHostInputCopy:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPGpuPathTest.AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs:ICPGpuPathTest.AlignmentStepCompactResultMatchesFullStatsStepResult:ICPGpuPathTest.AlignCanUseOrderedPointwiseCorrespondencesForFiniteRadiusTranslation`:
+    8 correspondence-stats, direct/sparse grid, exact/ordered, and alignment-step tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(stats_step|alignment_step|stats)_finite_radius_translation_(cached_grid|cached_grid_reserved_workspace|ordered)|gpu_icp_alignment_step_(exact_pointwise_same_buffer|ordered_same_buffer_finite_radius)|gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics'`:
+    ran successfully on the RTX 4060 Laptop GPU.
+  - Relevant rows:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.16984 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.671481 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.670501 ms,
+    `gpu_icp_stats_step_finite_radius_translation_ordered` = 0.227333 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.669584 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace` = 0.669527 ms,
+    `gpu_icp_alignment_step_exact_pointwise_same_buffer` = 0.161631 ms,
+    `gpu_icp_alignment_step_exact_pointwise_same_buffer_reserved_workspace` = 0.161617 ms,
+    `gpu_icp_alignment_step_ordered_same_buffer_finite_radius` = 0.161623 ms, and
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.645778 ms.
+- Full verification after the upper-triangle-only outer-sum change:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 318/318 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) &&
+    ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, with the expected CUDA-only
+    `PointCloudTest.GpuTransfer` skip in the CPU build.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+- Current conclusion:
+  GPU ICP correspondence-stat kernels now skip six redundant source/target lower-triangle outer-product writes per
+  accepted correspondence, and the reduction kernels skip the same lower-triangle entries while preserving full host
+  covariance output.

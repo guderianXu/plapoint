@@ -251,6 +251,8 @@ void resetIcpDirectGridLookupXyBaseGuardCountForTesting();
 unsigned long long icpDirectGridLookupXyBaseGuardCountForTesting();
 void resetIcpDirectGridLookupLinearGuardCountForTesting();
 unsigned long long icpDirectGridLookupLinearGuardCountForTesting();
+void resetIcpOuterLowerTriangleAccumulationCountForTesting();
+unsigned long long icpOuterLowerTriangleAccumulationCountForTesting();
 void resetIcpLastTransformOutputPointerForTesting();
 const void* icpLastTransformOutputPointerForTesting();
 void resetIcpTransformPointsCallCountForTesting();
@@ -821,6 +823,42 @@ TEST(ICPGpuPathTest, CorrespondenceStatsReportsDegenerateGeometry)
     EXPECT_EQ(stats.active_count, 4);
     EXPECT_FALSE(stats.src_has_non_collinear_geometry);
     EXPECT_FALSE(stats.tgt_has_non_collinear_geometry);
+}
+
+TEST(ICPGpuPathTest, CorrespondenceStatsSkipsRedundantOuterLowerTriangleAccumulation)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto source_cpu = makeNonCollinearPoints();
+    auto target_cpu = makeTranslatedNonCollinearPoints(source_cpu, 0.1f, 0.2f, 0.3f);
+    const auto expected = makeMatchedStats(source_cpu, target_cpu);
+    auto source = source_cpu.toGpu();
+    auto target = target_cpu.toGpu();
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+    plapoint::gpu::resetIcpOuterLowerTriangleAccumulationCountForTesting();
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source.data(),
+        static_cast<int>(source.rows()),
+        target.data(),
+        static_cast<int>(target.rows()),
+        1.0f,
+        nullptr,
+        workspace);
+
+    EXPECT_EQ(stats.active_count, expected.active_count);
+    EXPECT_EQ(stats.invalid_source_count, expected.invalid_source_count);
+    EXPECT_NEAR(stats.residual_sq_sum, expected.residual_sq_sum, 1.0e-6);
+    for (int idx = 0; idx < 9; ++idx)
+    {
+        EXPECT_NEAR(stats.cross_covariance[idx], expected.cross_covariance[idx], 1.0e-6);
+        EXPECT_NEAR(stats.src_covariance[idx], expected.src_covariance[idx], 1.0e-6);
+        EXPECT_NEAR(stats.tgt_covariance[idx], expected.tgt_covariance[idx], 1.0e-6);
+    }
+    EXPECT_EQ(plapoint::gpu::icpOuterLowerTriangleAccumulationCountForTesting(), 0ull);
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsFindsNearestTargetsPastFirstTile)

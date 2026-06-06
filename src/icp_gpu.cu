@@ -291,6 +291,7 @@ __device__ unsigned long long g_icp_direct_grid_lookup_xy_check_count;
 __device__ unsigned long long g_icp_direct_grid_lookup_active_guard_count;
 __device__ unsigned long long g_icp_direct_grid_lookup_xy_base_guard_count;
 __device__ unsigned long long g_icp_direct_grid_lookup_linear_guard_count;
+__device__ unsigned long long g_icp_outer_lower_triangle_accumulation_count;
 #endif
 
 #ifdef PLAPOINT_ENABLE_TESTING
@@ -349,6 +350,21 @@ bool icpGridCellBoundsAreFinite(double cell_size)
         cell_size <= std::numeric_limits<double>::max() / max_abs_grid_coordinate;
 }
 
+__host__ __device__ __forceinline__ int symmetricIcpOuterIndex(int row, int col)
+{
+    return row <= col ? row * 3 + col : col * 3 + row;
+}
+
+__device__ __forceinline__ void addRawIcpOuterSumsUpperTriangle(double dst[9], const double src[9])
+{
+    dst[0] += src[0];
+    dst[1] += src[1];
+    dst[2] += src[2];
+    dst[4] += src[4];
+    dst[5] += src[5];
+    dst[8] += src[8];
+}
+
 __device__ __forceinline__ void addRawIcpStats(RawIcpStats& dst, const RawIcpStats& src)
 {
     dst.active_count += src.active_count;
@@ -363,9 +379,9 @@ __device__ __forceinline__ void addRawIcpStats(RawIcpStats& dst, const RawIcpSta
     for (int idx = 0; idx < 9; ++idx)
     {
         dst.cross_sum[idx] += src.cross_sum[idx];
-        dst.src_outer_sum[idx] += src.src_outer_sum[idx];
-        dst.tgt_outer_sum[idx] += src.tgt_outer_sum[idx];
     }
+    addRawIcpOuterSumsUpperTriangle(dst.src_outer_sum, src.src_outer_sum);
+    addRawIcpOuterSumsUpperTriangle(dst.tgt_outer_sum, src.tgt_outer_sum);
     dst.residual_sq_sum += src.residual_sq_sum;
 }
 
@@ -1169,8 +1185,13 @@ __device__ __forceinline__ void recordAcceptedCorrespondence(
         for (int c = 0; c < 3; ++c)
         {
             local.cross_sum[r * 3 + c] = source_values[r] * target_values[c];
-            local.src_outer_sum[r * 3 + c] = source_values[r] * source_values[c];
-            local.tgt_outer_sum[r * 3 + c] = target_values[r] * target_values[c];
+        }
+#pragma unroll
+        for (int c = r; c < 3; ++c)
+        {
+            const int idx = r * 3 + c;
+            local.src_outer_sum[idx] = source_values[r] * source_values[c];
+            local.tgt_outer_sum[idx] = target_values[r] * target_values[c];
         }
     }
 }
@@ -6026,11 +6047,12 @@ IcpCorrespondenceStats<Scalar> makeHostStats(const RawIcpStats& raw)
         for (int c = 0; c < 3; ++c)
         {
             const int idx = r * 3 + c;
+            const int outer_idx = symmetricIcpOuterIndex(r, c);
             stats.cross_covariance[idx] = raw.cross_sum[idx] -
                 raw.src_sum[r] * raw.tgt_sum[c] * inv_count;
-            stats.src_covariance[idx] = raw.src_outer_sum[idx] -
+            stats.src_covariance[idx] = raw.src_outer_sum[outer_idx] -
                 raw.src_sum[r] * raw.src_sum[c] * inv_count;
-            stats.tgt_covariance[idx] = raw.tgt_outer_sum[idx] -
+            stats.tgt_covariance[idx] = raw.tgt_outer_sum[outer_idx] -
                 raw.tgt_sum[r] * raw.tgt_sum[c] * inv_count;
         }
     }
@@ -7944,6 +7966,22 @@ unsigned long long icpDirectGridLookupLinearGuardCountForTesting()
 {
     unsigned long long count = 0;
     PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_direct_grid_lookup_linear_guard_count, sizeof(count)));
+    return count;
+}
+
+void resetIcpOuterLowerTriangleAccumulationCountForTesting()
+{
+    const unsigned long long zero = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyToSymbol(g_icp_outer_lower_triangle_accumulation_count, &zero, sizeof(zero)));
+}
+
+unsigned long long icpOuterLowerTriangleAccumulationCountForTesting()
+{
+    unsigned long long count = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(
+        &count,
+        g_icp_outer_lower_triangle_accumulation_count,
+        sizeof(count)));
     return count;
 }
 
