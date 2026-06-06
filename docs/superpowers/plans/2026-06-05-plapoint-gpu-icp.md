@@ -6027,3 +6027,65 @@ Verification evidence:
   full ICP can now opt into the transformed exact cache-hit preflight. On the 100k two-iteration binary-translation
   full-ICP benchmark, the preflight row is slightly faster than the default row, but the absolute gain is small because
   the first generic grid-search iteration still dominates the two-iteration runtime.
+
+## Task 164: Defer Last Transformed Accumulation For Terminal Identity Steps
+
+- Goal: avoid preparing and writing the next accumulated transform buffer when the final transformed ICP iteration only
+  confirms an identity step. This targets two-iteration exact-preflight convergence, where the second transformed step
+  proves the accumulated transform is already correct.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignSkipsNextAccumulatedTransformBufferForLastTransformedIdentityStep`, running two
+    finite-radius GPU ICP iterations with `setGpuProbeTransformedExactPointwiseOnCacheHit(true)` and final metrics
+    disabled. The test expects the second transformed exact-pointwise step to run and `_gpu_next_T_acc` to remain null.
+  - The first targeted run failed as expected because `alignGpu()` reserved `_gpu_next_T_acc` before computing the
+    transformed accumulated alignment step.
+  - Added benchmark row-registration expectation for
+    `gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations`.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure -R plapoint\.benchmarks\.gpu_icp_rows_registered`:
+    failed with the expected missing-row error before the new `align(output)` benchmark row was registered.
+- Implementation:
+  - When the current source is represented by an accumulated transform and the loop is on the final configured
+    iteration with transformed exact cache-hit preflight enabled, full GPU ICP now computes the transformed alignment
+    step without pre-accumulating it. The default transformed path still uses the fused accumulated alignment-step
+    kernel.
+  - If that last step is non-identity, ICP multiplies the step into the accumulated transform after reading the step
+    result. If the step is identity, it keeps the existing accumulated transform and avoids `_gpu_next_T_acc`.
+  - Added a binary-grid translated `align(output)` benchmark row with transformed exact cache-hit preflight enabled.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignFusesTransformedAlignmentStepWithAccumulatedTransformUpdate:ICPGpuPathTest.AlignSkipsNextAccumulatedTransformBufferForLastTransformedIdentityStep:ICPGpuPathTest.AlignDeferredLastTransformedStepAccumulatesNonIdentityBeforeFinalMetrics:ICPGpuPathTest.AlignCanProbeTransformedExactPointwiseOnCacheHitWhenRequested:ICPGpuPathTest.AlignWithoutOutputKeepsAccumulatedTransformAcrossIterations`:
+    5 tests, 0 failed after narrowing the deferred-accumulation branch to the opt-in preflight path and covering the
+    deferred non-identity final-metrics/output case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure -R plapoint\.benchmarks\.gpu_icp_rows_registered`:
+    1/1 passed after benchmark implementation.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_binary_translation_transform_only_two_iterations` = 1.00456 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_preflight_two_iterations` = 0.979825 ms,
+    `gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations` = 0.985785 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit_preflight` = 0.21071 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.858198 ms, and
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.826399 ms.
+- Full verification performed in this session:
+  - `git diff --check`: clean.
+  - GPU: RTX 4060 Laptop GPU, driver 580.159.03.
+  - `cmake --build build-codex-cpu -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, 1 CUDA-only test skipped.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 295/295 passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_binary_translation_transform_only_two_iterations` = 1.00636 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_preflight_two_iterations` = 0.980715 ms,
+    `gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations` = 0.987243 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit_preflight` = 0.210831 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.858913 ms, and
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.834334 ms.
+- Current conclusion:
+  terminal transformed identity convergence no longer allocates the next accumulated transform buffer. The new
+  `align(output)` benchmark shows the public output path stays close to transform-only preflight cost for this exact
+  two-iteration case. The larger remaining bottleneck is still the generic cached spatial-grid correspondence scan; the
+  next substantial optimization should evaluate a compact direct cell lookup table for dense cached grids.

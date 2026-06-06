@@ -409,25 +409,48 @@ private:
         for (int iter = 0; iter < _max_iter; ++iter)
         {
             gpu::IcpAlignmentStepResult<Scalar> stats_and_step;
+            bool alignment_step_accumulated_transform = false;
             if (current_points_use_accumulated_transform)
             {
-                reserveGpuNextTransformBuffer();
-                stats_and_step =
-                    gpu::detail::
-                        computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
-                        _gpu_T_acc->data(),
-                        source_points,
-                        source_count,
-                        target_points,
-                        target_count,
-                        _max_corr_dist,
-                        _gpu_stats_workspace,
-                        _gpu_T_step->data(),
-                        _gpu_T_acc->data(),
-                        _gpu_next_T_acc->data(),
-                        0,
-                        _gpu_assume_ordered_correspondences,
-                        _gpu_probe_transformed_exact_pointwise_on_cache_hit);
+                const bool defer_accumulated_transform =
+                    _gpu_probe_transformed_exact_pointwise_on_cache_hit && iter + 1 == _max_iter;
+                if (defer_accumulated_transform)
+                {
+                    stats_and_step =
+                        gpu::detail::computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(
+                            _gpu_T_acc->data(),
+                            source_points,
+                            source_count,
+                            target_points,
+                            target_count,
+                            _max_corr_dist,
+                            _gpu_stats_workspace,
+                            _gpu_T_step->data(),
+                            0,
+                            _gpu_assume_ordered_correspondences,
+                            _gpu_probe_transformed_exact_pointwise_on_cache_hit);
+                }
+                else
+                {
+                    reserveGpuNextTransformBuffer();
+                    stats_and_step =
+                        gpu::detail::
+                            computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
+                            _gpu_T_acc->data(),
+                            source_points,
+                            source_count,
+                            target_points,
+                            target_count,
+                            _max_corr_dist,
+                            _gpu_stats_workspace,
+                            _gpu_T_step->data(),
+                            _gpu_T_acc->data(),
+                            _gpu_next_T_acc->data(),
+                            0,
+                            _gpu_assume_ordered_correspondences,
+                            _gpu_probe_transformed_exact_pointwise_on_cache_hit);
+                    alignment_step_accumulated_transform = true;
+                }
             }
             else
             {
@@ -516,7 +539,7 @@ private:
                 }
                 else
                 {
-                    if (!current_points_use_accumulated_transform)
+                    if (!current_points_use_accumulated_transform || !alignment_step_accumulated_transform)
                     {
                         reserveGpuNextTransformBuffer();
                         gpu::multiplyTransform4x4Async(

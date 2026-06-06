@@ -892,6 +892,53 @@ void benchmarkGpuIcpFiniteRadiusBinaryTranslationTransformOnly(
     }
 }
 
+void benchmarkGpuIcpFiniteRadiusBinaryTranslationReuseOutputPreflight(int icp_points, int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(
+            "gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations",
+            "no_usable_cuda_device");
+        return;
+    }
+
+    constexpr float source_tx = 0.03125f;
+    constexpr float source_ty = -0.015625f;
+    constexpr float source_tz = 0.0078125f;
+    auto target_points_cpu = makeBinaryGridPoints<float>(icp_points);
+    auto target_to_source_cpu = makeTranslationTransform<float>(source_tx, source_ty, source_tz);
+    auto source_points_cpu = plamatrix::transformPoints(target_to_source_cpu, target_points_cpu);
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(source_points_cpu));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(target_points_cpu));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.0625f);
+    icp.setMaxIterations(2);
+    icp.setTransformationEpsilon(1.0e-12f);
+    icp.setGpuProbeTransformedExactPointwiseOnCacheHit(true);
+
+    Cloud<plamatrix::Device::GPU> output;
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        icp.align(output);
+        sink += output.size();
+    });
+    printResult(
+        "gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations",
+        icp_points,
+        iterations,
+        elapsed);
+    if (sink == 0)
+    {
+        std::cerr
+            << "gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations"
+            << " produced no aligned points\n";
+    }
+}
+
 void benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
     const char* benchmark_name,
     int icp_points,
@@ -2172,6 +2219,7 @@ int main(int argc, char** argv)
         options.icp_points,
         options.iterations,
         true);
+    benchmarkGpuIcpFiniteRadiusBinaryTranslationReuseOutputPreflight(options.icp_points, options.iterations);
     benchmarkGpuIcpFiniteRadiusTranslationReuseTargetOutput(
         options.icp_points,
         options.icp_max_iterations,
