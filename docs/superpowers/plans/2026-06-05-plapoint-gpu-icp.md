@@ -3719,3 +3719,51 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun the new same-buffer no-write version test on GPU hardware and verify repeated identity `align(*target)` calls
   keep persistent target cache reuse intact.
+
+## Task 113: Direct Target Output For Spatial-Grid Final Metrics
+
+- Goal: let target-aliased GPU ICP output write the terminal transform directly into the target point buffer when final
+  metrics can use an already cached finite-radius target spatial-grid snapshot. This avoids the previous scratch
+  transform buffer and final device-to-device copy while preserving the conservative scratch path for unbounded or
+  fallback final metrics that still read the target point buffer directly.
+- RED check:
+  - Renamed the existing target-alias final-metrics scratch test to
+    `AlignUsesScratchForTerminalTransformWhenOutputAliasesTargetWithoutSpatialGridSnapshot` and made it use the
+    unbounded/fallback path.
+  - Added `AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsUseSpatialGrid`, expecting
+    finite-radius final metrics to write to the target point buffer without allocating point scratch buffers.
+  - Added static RED checks requiring the high-level terminal-output decision to consult
+    `gpuFinalMetricsCanUseCachedTargetSpatialGridSnapshot()` and requiring a GPU snapshot residual helper. Both checks
+    failed before the implementation.
+- Implementation:
+  - Added `transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajor()` for float and double.
+    It launches the existing transform+spatial-grid residual kernel using workspace snapshot storage and a captured
+    cell count, without reading `d_target_points`.
+  - `alignGpu()` now records whether the terminal final metrics can use the cached target spatial-grid snapshot before
+    invalidating target cache metadata for target output writes.
+  - Target-aliased direct output remains disabled for final metrics paths without a cached spatial-grid snapshot, so
+    fallback kernels that read target points still use scratch output.
+- Verification performed in this session:
+  - Static RED checks failed before the implementation and passed after the implementation.
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignUsesScratchForTerminalTransformWhenOutputAliasesTargetWithoutSpatialGridSnapshot:ICPGpuPathTest.AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsUseSpatialGrid`:
+    2 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `git diff --check`:
+    clean before the plan update.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    248 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun both target-alias final-metrics tests on GPU hardware and add a benchmark row comparing target-output final
+  metrics against caller-owned output and skip-final-metrics target output.

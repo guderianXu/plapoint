@@ -2312,7 +2312,40 @@ TEST(ICPGpuPathTest, AlignWritesTerminalTransformDirectlyWhenOutputAliasesSource
     EXPECT_EQ(plapoint::gpu::icpLastTransformOutputPointerForTesting(), source_points);
 }
 
-TEST(ICPGpuPathTest, AlignUsesScratchForTerminalTransformWhenOutputAliasesTarget)
+TEST(ICPGpuPathTest, AlignUsesScratchForTerminalTransformWhenOutputAliasesTargetWithoutSpatialGridSnapshot)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_points_cpu = makeNonCollinearPoints();
+    auto target_points = makeTranslatedNonCollinearPoints(source_points_cpu, 0.1f, -0.05f, 0.025f);
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points_cpu));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+    const auto* target_points_ptr = static_cast<const GpuCloud&>(*target).points().data();
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxIterations(1);
+
+    plapoint::gpu::resetIcpLastTransformOutputPointerForTesting();
+    icp.align(*target);
+
+    EXPECT_EQ(target->size(), source->size());
+    EXPECT_EQ(static_cast<const GpuCloud&>(*target).points().data(), target_points_ptr);
+    ASSERT_NE(icp._gpu_points_a, nullptr);
+    EXPECT_EQ(icp._gpu_points_b, nullptr);
+    EXPECT_EQ(plapoint::gpu::icpLastTransformOutputPointerForTesting(), icp._gpu_points_a->data());
+}
+
+TEST(ICPGpuPathTest, AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsUseSpatialGrid)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -2341,9 +2374,9 @@ TEST(ICPGpuPathTest, AlignUsesScratchForTerminalTransformWhenOutputAliasesTarget
 
     EXPECT_EQ(target->size(), source->size());
     EXPECT_EQ(static_cast<const GpuCloud&>(*target).points().data(), target_points_ptr);
-    ASSERT_NE(icp._gpu_points_a, nullptr);
+    EXPECT_EQ(icp._gpu_points_a, nullptr);
     EXPECT_EQ(icp._gpu_points_b, nullptr);
-    EXPECT_EQ(plapoint::gpu::icpLastTransformOutputPointerForTesting(), icp._gpu_points_a->data());
+    EXPECT_EQ(plapoint::gpu::icpLastTransformOutputPointerForTesting(), target_points_ptr);
 }
 
 TEST(ICPGpuPathTest, AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsDisabled)

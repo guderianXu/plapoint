@@ -411,7 +411,18 @@ private:
             const Scalar* step_transform = _gpu_T_step->data();
             const bool terminal_iteration = step_result.delta < _eps || iter + 1 == _max_iter;
             const bool terminal_identity_step = terminal_iteration && step_result.delta == Scalar(0);
-            const bool terminal_output_needs_target_points = output_aliases_target && _compute_final_metrics;
+            const bool terminal_final_metrics_can_use_target_snapshot =
+                terminal_iteration &&
+                _compute_final_metrics &&
+                gpuFinalMetricsCanUseCachedTargetSpatialGridSnapshot(target_points, target_count);
+            const int target_spatial_grid_snapshot_cell_count =
+                terminal_final_metrics_can_use_target_snapshot
+                    ? _gpu_stats_workspace.targetSpatialGridCellCount()
+                    : 0;
+            const bool terminal_output_needs_target_points =
+                output_aliases_target &&
+                _compute_final_metrics &&
+                !terminal_final_metrics_can_use_target_snapshot;
             Scalar* transform_output_points = nullptr;
             if (terminal_iteration && !terminal_identity_step && !terminal_output_needs_target_points)
             {
@@ -455,15 +466,24 @@ private:
             }
             else if (terminal_iteration && _compute_final_metrics)
             {
-                auto final_stats = gpu::transformPointsAndComputeIcpResidualStatsColumnMajor(
-                    step_transform,
-                    cur_points,
-                    source_count,
-                    target_points,
-                    target_count,
-                    _max_corr_dist,
-                    transform_output_points,
-                    _gpu_stats_workspace);
+                auto final_stats = output_aliases_target && terminal_final_metrics_can_use_target_snapshot
+                    ? gpu::transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajor(
+                        step_transform,
+                        cur_points,
+                        source_count,
+                        _max_corr_dist,
+                        transform_output_points,
+                        _gpu_stats_workspace,
+                        target_spatial_grid_snapshot_cell_count)
+                    : gpu::transformPointsAndComputeIcpResidualStatsColumnMajor(
+                        step_transform,
+                        cur_points,
+                        source_count,
+                        target_points,
+                        target_count,
+                        _max_corr_dist,
+                        transform_output_points,
+                        _gpu_stats_workspace);
                 cur_points = transform_output_points;
                 if (final_stats.invalid_source_count > 0)
                 {
@@ -606,6 +626,19 @@ private:
             output = PointCloudType(std::move(points));
         }
         return output.points().data();
+    }
+
+    template <plamatrix::Device D = Dev>
+    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    gpuFinalMetricsCanUseCachedTargetSpatialGridSnapshot(
+        const Scalar* target_points,
+        int target_count) const
+    {
+        const double cell_size = static_cast<double>(_max_corr_dist);
+        return std::isfinite(cell_size) &&
+               cell_size > 0.0 &&
+               _gpu_stats_workspace.targetSpatialGridCacheMatches(target_points, target_count, cell_size) &&
+               _gpu_stats_workspace.targetSpatialGridCellCount() > 0;
     }
 
     template <plamatrix::Device D = Dev>

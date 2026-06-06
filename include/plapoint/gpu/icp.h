@@ -289,6 +289,28 @@ IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsColumnMajor(
     IcpCorrespondenceStatsWorkspace& workspace,
     cudaStream_t stream = 0);
 
+/// Transform points and compute final residual metrics against a cached target spatial-grid snapshot.
+IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajor(
+    const float* d_transform,
+    const float* d_source_points,
+    int source_count,
+    float max_correspondence_distance,
+    float* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    int target_spatial_grid_cell_count,
+    cudaStream_t stream = 0);
+
+/// Transform points and compute final residual metrics against a cached target spatial-grid snapshot.
+IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajor(
+    const double* d_transform,
+    const double* d_source_points,
+    int source_count,
+    double max_correspondence_distance,
+    double* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    int target_spatial_grid_cell_count,
+    cudaStream_t stream = 0);
+
 /// Compute the 4x4 ICP step transform from correspondence stats and write it to device memory.
 /// The returned delta is copied to host after synchronizing the supplied stream.
 IcpStepTransformResult<float> computeIcpStepTransformFromStats(

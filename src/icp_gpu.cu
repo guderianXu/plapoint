@@ -3839,6 +3839,99 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
 }
 
 template <typename Scalar>
+IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorImpl(
+    const Scalar* d_transform,
+    const Scalar* d_source_points,
+    int source_count,
+    Scalar max_correspondence_distance,
+    Scalar* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    int target_spatial_grid_cell_count,
+    cudaStream_t stream)
+{
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_residual_stats_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_last_transform_output_pointer.store(
+        reinterpret_cast<std::uintptr_t>(d_output_points),
+        std::memory_order_relaxed);
+#endif
+
+    if (source_count <= 0)
+    {
+        return {};
+    }
+    if (!d_transform || !d_source_points || !d_output_points)
+    {
+        throw std::invalid_argument("ICP GPU: device pointers must not be null");
+    }
+    if (!shouldUseTargetSpatialGrid(max_correspondence_distance) ||
+        target_spatial_grid_cell_count <= 0)
+    {
+        throw std::invalid_argument("ICP GPU: cached target spatial grid snapshot is not available");
+    }
+
+    auto* d_cell_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridUniqueKeysStorage());
+    auto* d_indices = reinterpret_cast<int*>(workspace.targetSpatialGridIndicesStorage());
+    auto* d_sorted_x = reinterpret_cast<double*>(workspace.targetSpatialGridSortedXStorage());
+    auto* d_sorted_y = reinterpret_cast<double*>(workspace.targetSpatialGridSortedYStorage());
+    auto* d_sorted_z = reinterpret_cast<double*>(workspace.targetSpatialGridSortedZStorage());
+    auto* d_cell_starts = reinterpret_cast<int*>(workspace.targetSpatialGridCellStartsStorage());
+    auto* d_cell_counts = reinterpret_cast<int*>(workspace.targetSpatialGridCellCountsStorage());
+    if (!d_cell_keys || !d_indices || !d_sorted_x || !d_sorted_y || !d_sorted_z || !d_cell_starts || !d_cell_counts)
+    {
+        throw std::invalid_argument("ICP GPU: cached target spatial grid snapshot is not available");
+    }
+
+    workspace.reserveResidualStats(source_count);
+
+    IcpTargetSpatialGrid target_grid{};
+    target_grid.active = true;
+    target_grid.cell_keys = d_cell_keys;
+    target_grid.sorted_target_indices = d_indices;
+    target_grid.sorted_target_x = d_sorted_x;
+    target_grid.sorted_target_y = d_sorted_y;
+    target_grid.sorted_target_z = d_sorted_z;
+    target_grid.cell_starts = d_cell_starts;
+    target_grid.cell_counts = d_cell_counts;
+    target_grid.cell_size = static_cast<double>(max_correspondence_distance);
+    target_grid.finite_cell_bounds = icpGridCellBoundsAreFinite(target_grid.cell_size);
+    target_grid.cell_count = target_spatial_grid_cell_count;
+
+    constexpr int block_size = kIcpStatsBlockSize;
+    const int grid_size = icpStatsPartialCount(source_count);
+    auto* d_partials = reinterpret_cast<RawIcpResidualStats*>(workspace.partialStorage());
+    auto* d_stats = reinterpret_cast<RawIcpResidualStats*>(workspace.statsStorage());
+    launchTransformAndCollectResidualStatsSpatialGridKernel(
+        grid_size,
+        block_size,
+        stream,
+        d_transform,
+        d_source_points,
+        source_count,
+        max_correspondence_distance,
+        d_output_points,
+        target_grid,
+        d_partials);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    reduceRawIcpResidualStatsKernel<<<1, block_size, 0, stream>>>(
+        d_partials,
+        grid_size,
+        d_stats);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    RawIcpResidualStats raw{};
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpResidualStats),
+                                        cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    return makeHostResidualStats<Scalar>(raw);
+}
+
+template <typename Scalar>
 void setIdentityTransform4x4Impl(Scalar* d_transform, cudaStream_t stream)
 {
     if (!d_transform)
@@ -4961,6 +5054,48 @@ IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsColumnMajor(
         max_correspondence_distance,
         d_output_points,
         workspace,
+        stream);
+}
+
+IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajor(
+    const float* d_transform,
+    const float* d_source_points,
+    int source_count,
+    float max_correspondence_distance,
+    float* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    int target_spatial_grid_cell_count,
+    cudaStream_t stream)
+{
+    return transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorImpl(
+        d_transform,
+        d_source_points,
+        source_count,
+        max_correspondence_distance,
+        d_output_points,
+        workspace,
+        target_spatial_grid_cell_count,
+        stream);
+}
+
+IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajor(
+    const double* d_transform,
+    const double* d_source_points,
+    int source_count,
+    double max_correspondence_distance,
+    double* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    int target_spatial_grid_cell_count,
+    cudaStream_t stream)
+{
+    return transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorImpl(
+        d_transform,
+        d_source_points,
+        source_count,
+        max_correspondence_distance,
+        d_output_points,
+        workspace,
+        target_spatial_grid_cell_count,
         stream);
 }
 
