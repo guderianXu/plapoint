@@ -1600,6 +1600,41 @@ Verification evidence:
   `ICPGpuPathTest.ResidualStatsUsesExactPointwiseFastPathForSameBuffer`, full CUDA `ctest`, and the 100k-point ICP
   benchmark to confirm runtime behavior and performance impact.
 
+## Task 71: Share GPU ICP Transform Coefficient Loads Per Block
+
+- Goal: reduce repeated per-thread transform coefficient loads and duplicated arithmetic expressions in GPU ICP point
+  transform paths. These paths are used both by the standalone point transform API and by terminal transform+residual
+  metric kernels.
+- Implementation:
+  - Added `transformColumnMajorPoint3x4()` as a `__forceinline__` device helper.
+  - Added a block-level 12-value shared-memory cache for the used 3x4 transform coefficients, populated with
+    `loadReadOnlyIcpValue()`.
+  - Reused the helper in `transformPointsColumnMajorKernel()`, `transformAndCollectResidualStatsKernel()`, and
+    `transformAndCollectResidualStatsSpatialGridKernel()`.
+  - Kept source-point reads and output writes unchanged so existing caller-owned/in-place output behavior is not
+    tightened by new aliasing assumptions.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformPointsColumnMajorWritesCallerOwnedOutput:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPGpuPathTest.ResidualStatsUsesExactPointwiseFastPathForSameBuffer:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 4 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:
+    226 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi || true`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected GPU transform/residual tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm
+  runtime behavior and performance impact.
+
 ## Task 69: Add Safe Alias Hints To GPU ICP Workspace Paths
 
 - Goal: give nvcc stronger aliasing and read-only load information in GPU ICP kernels without changing public

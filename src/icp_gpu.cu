@@ -125,6 +125,7 @@ struct IcpAlignmentStepRawResult
 };
 
 constexpr int kIcpStatsBlockSize = 128;
+constexpr int kIcpTransform3x4ValueCount = 12;
 
 template <typename Scalar>
 __device__ void computeStepTransformFromInput(
@@ -219,6 +220,53 @@ __device__ __forceinline__ Value loadReadOnlyIcpValue(const Value* __restrict__ 
 #else
     return *value;
 #endif
+}
+
+template <typename Scalar>
+__device__ __forceinline__ void transformColumnMajorPoint3x4(
+    const Scalar* transform_values,
+    Scalar px,
+    Scalar py,
+    Scalar pz,
+    Scalar& ox,
+    Scalar& oy,
+    Scalar& oz)
+{
+    const Scalar t00 = transform_values[0];
+    const Scalar t10 = transform_values[1];
+    const Scalar t20 = transform_values[2];
+    const Scalar t01 = transform_values[3];
+    const Scalar t11 = transform_values[4];
+    const Scalar t21 = transform_values[5];
+    const Scalar t02 = transform_values[6];
+    const Scalar t12 = transform_values[7];
+    const Scalar t22 = transform_values[8];
+    const Scalar t03 = transform_values[9];
+    const Scalar t13 = transform_values[10];
+    const Scalar t23 = transform_values[11];
+
+    ox = t00 * px + t01 * py + t02 * pz + t03;
+    oy = t10 * px + t11 * py + t12 * pz + t13;
+    oz = t20 * px + t21 * py + t22 * pz + t23;
+}
+
+__device__ __forceinline__ int columnMajorTransform3x4Offset(int packed_idx)
+{
+    return packed_idx + packed_idx / 3;
+}
+
+template <typename Scalar>
+__device__ __forceinline__ void loadColumnMajorTransform3x4Block(
+    const Scalar* __restrict__ transform,
+    Scalar* transform_values,
+    int local_idx)
+{
+    if (local_idx < kIcpTransform3x4ValueCount)
+    {
+        transform_values[local_idx] = loadReadOnlyIcpValue(
+            transform + columnMajorTransform3x4Offset(local_idx));
+    }
+    __syncthreads();
 }
 
 template <typename Scalar>
@@ -1451,6 +1499,8 @@ __global__ void transformAndCollectResidualStatsKernel(
     double sx = 0.0;
     double sy = 0.0;
     double sz = 0.0;
+    __shared__ Scalar block_transform[kIcpTransform3x4ValueCount];
+    loadColumnMajorTransform3x4Block(transform, block_transform, local_idx);
 
     if (source_idx < source_count)
     {
@@ -1458,9 +1508,10 @@ __global__ void transformAndCollectResidualStatsKernel(
         const Scalar py = source_points[source_count + source_idx];
         const Scalar pz = source_points[2 * source_count + source_idx];
 
-        const Scalar ox = transform[0] * px + transform[4] * py + transform[8] * pz + transform[12];
-        const Scalar oy = transform[1] * px + transform[5] * py + transform[9] * pz + transform[13];
-        const Scalar oz = transform[2] * px + transform[6] * py + transform[10] * pz + transform[14];
+        Scalar ox = Scalar(0);
+        Scalar oy = Scalar(0);
+        Scalar oz = Scalar(0);
+        transformColumnMajorPoint3x4(block_transform, px, py, pz, ox, oy, oz);
         output_points[source_idx] = ox;
         output_points[source_count + source_idx] = oy;
         output_points[2 * source_count + source_idx] = oz;
@@ -1598,6 +1649,8 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
     double sx = 0.0;
     double sy = 0.0;
     double sz = 0.0;
+    __shared__ Scalar block_transform[kIcpTransform3x4ValueCount];
+    loadColumnMajorTransform3x4Block(transform, block_transform, local_idx);
 
     if (source_idx < source_count)
     {
@@ -1605,9 +1658,10 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
         const Scalar py = source_points[source_count + source_idx];
         const Scalar pz = source_points[2 * source_count + source_idx];
 
-        const Scalar ox = transform[0] * px + transform[4] * py + transform[8] * pz + transform[12];
-        const Scalar oy = transform[1] * px + transform[5] * py + transform[9] * pz + transform[13];
-        const Scalar oz = transform[2] * px + transform[6] * py + transform[10] * pz + transform[14];
+        Scalar ox = Scalar(0);
+        Scalar oy = Scalar(0);
+        Scalar oz = Scalar(0);
+        transformColumnMajorPoint3x4(block_transform, px, py, pz, ox, oy, oz);
         output_points[source_idx] = ox;
         output_points[source_count + source_idx] = oy;
         output_points[2 * source_count + source_idx] = oz;
@@ -2165,6 +2219,9 @@ __global__ void transformPointsColumnMajorKernel(
     Scalar* output_points)
 {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int local_idx = threadIdx.x;
+    __shared__ Scalar block_transform[kIcpTransform3x4ValueCount];
+    loadColumnMajorTransform3x4Block(transform, block_transform, local_idx);
     if (idx >= point_count)
     {
         return;
@@ -2174,9 +2231,13 @@ __global__ void transformPointsColumnMajorKernel(
     const Scalar py = points[point_count + idx];
     const Scalar pz = points[2 * point_count + idx];
 
-    output_points[idx] = transform[0] * px + transform[4] * py + transform[8] * pz + transform[12];
-    output_points[point_count + idx] = transform[1] * px + transform[5] * py + transform[9] * pz + transform[13];
-    output_points[2 * point_count + idx] = transform[2] * px + transform[6] * py + transform[10] * pz + transform[14];
+    Scalar ox = Scalar(0);
+    Scalar oy = Scalar(0);
+    Scalar oz = Scalar(0);
+    transformColumnMajorPoint3x4(block_transform, px, py, pz, ox, oy, oz);
+    output_points[idx] = ox;
+    output_points[point_count + idx] = oy;
+    output_points[2 * point_count + idx] = oz;
 }
 
 __device__ void jacobiRotate4x4(double A[16], double V[16], int p, int q)
