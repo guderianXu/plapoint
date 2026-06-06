@@ -165,6 +165,7 @@ std::atomic<int> g_icp_fallback_unbounded_kernel_launch_count{0};
 std::atomic<std::uintptr_t> g_icp_last_transform_output_pointer{0};
 std::atomic<int> g_icp_transform_points_call_count{0};
 std::atomic<int> g_icp_transform_multiply_call_count{0};
+std::atomic<int> g_icp_identity_transform_write_count{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
 __device__ unsigned long long g_icp_target_candidate_visit_count;
 __device__ unsigned long long g_icp_target_index_load_count;
@@ -3836,6 +3837,9 @@ void setIdentityTransform4x4Impl(Scalar* d_transform, cudaStream_t stream)
         throw std::invalid_argument("ICP GPU: transform pointer must not be null");
     }
 
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_identity_transform_write_count.fetch_add(1, std::memory_order_relaxed);
+#endif
     setIdentityTransform4x4Kernel<Scalar><<<1, 16, 0, stream>>>(d_transform);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 }
@@ -4450,6 +4454,16 @@ void resetIcpHostSynchronizationCountForTesting()
 int icpHostSynchronizationCountForTesting()
 {
     return g_icp_host_synchronization_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpIdentityTransformWriteCountForTesting()
+{
+    g_icp_identity_transform_write_count.store(0, std::memory_order_relaxed);
+}
+
+int icpIdentityTransformWriteCountForTesting()
+{
+    return g_icp_identity_transform_write_count.load(std::memory_order_relaxed);
 }
 
 void resetIcpTargetTileBoundComputationCountForTesting()

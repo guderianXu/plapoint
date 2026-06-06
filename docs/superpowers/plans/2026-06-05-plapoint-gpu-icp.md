@@ -3112,3 +3112,46 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun the selected GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime behavior and
   performance impact.
+
+## Task 98: Skip Redundant Initial GPU Identity Transform Write
+
+- Goal: remove a small unconditional kernel launch from `alignGpu()`. The accumulated transform buffer was initialized
+  to identity before every GPU ICP alignment, but non-identity first iterations immediately replaced that buffer with
+  the solved step transform.
+- RED check:
+  - Added `AlignSkipsInitialIdentityTransformWriteForNonIdentityFirstStep` and new test-only identity-transform write
+    counters.
+  - Before implementing the hooks and optimization, `cmake --build build-codex-cuda -j$(nproc)` failed at link time
+    with undefined references to `resetIcpIdentityTransformWriteCountForTesting()` and
+    `icpIdentityTransformWriteCountForTesting()`.
+- Implementation:
+  - Added a test-only counter in `setIdentityTransform4x4Impl()` to count identity-transform write launches.
+  - Removed the unconditional `setIdentityTransform4x4Async()` call from the start of `alignGpu()`.
+  - For first-iteration exact-identity terminal alignments, reused the step solver's identity transform by swapping
+    `_gpu_T_acc` with `_gpu_T_step`.
+  - Non-identity first iterations continue to swap the solved step transform into `_gpu_T_acc`, so final transform
+    semantics are unchanged.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignSkipsInitialIdentityTransformWriteForNonIdentityFirstStep:ICPGpuPathTest.AlignReusesIterationStatsForExactIdentityTerminalMetrics:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics`:
+    3 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - Static checks confirmed `include/plapoint/registration/icp.h` no longer calls `setIdentityTransform4x4Async()` and
+    the identity write counter/test path is present.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    238 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected GPU tests and 100k-point GPU ICP benchmark to quantify the launch-count and runtime impact.

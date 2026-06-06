@@ -359,7 +359,6 @@ private:
         bool next_points_in_a = true;
 
         reserveGpuTransformBuffers();
-        gpu::setIdentityTransform4x4Async(_gpu_T_acc->data(), 0);
         _gpu_stats_workspace.reserveAlignmentStep(source_count);
 
         _converged = false;
@@ -436,6 +435,10 @@ private:
 
             if (terminal_identity_step)
             {
+                if (iter == 0)
+                {
+                    std::swap(_gpu_T_acc, _gpu_T_step);
+                }
                 _converged = stats.active_count >= 3 && _fitness_score >= _min_fitness_score;
                 break;
             }
