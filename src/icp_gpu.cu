@@ -823,11 +823,11 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
 #endif
                         const double tx = loadSortedIcpTargetX(target_grid, sorted_offset);
                         const double dx = sx - tx;
-                        if (fabs(dx) > max_dist)
+                        const double dx_sq = dx * dx;
+                        if (dx_sq > max_dist_sq)
                         {
                             continue;
                         }
-                        const double dx_sq = dx * dx;
                         if (dx_sq > best_dist_sq)
                         {
                             continue;
@@ -835,11 +835,12 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
 
                         const double ty = loadSortedIcpTargetY(target_grid, sorted_offset);
                         const double dy = sy - ty;
-                        if (fabs(dy) > max_dist)
+                        const double dy_sq = dy * dy;
+                        const double xy_dist_sq = dx_sq + dy_sq;
+                        if (xy_dist_sq > max_dist_sq)
                         {
                             continue;
                         }
-                        const double xy_dist_sq = dx_sq + dy * dy;
                         if (xy_dist_sq > best_dist_sq)
                         {
                             continue;
@@ -847,14 +848,15 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
 
                         const double tz = loadSortedIcpTargetZ(target_grid, sorted_offset);
                         const double dz = sz - tz;
-                        if (fabs(dz) > max_dist)
+                        const double dz_sq = dz * dz;
+                        const double dist_sq = xy_dist_sq + dz_sq;
+                        if (dist_sq > max_dist_sq)
                         {
                             continue;
                         }
 #ifdef PLAPOINT_ENABLE_TESTING
                         atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
 #endif
-                        const double dist_sq = dx * dx + dy * dy + dz * dz;
                         if (isfinite(dist_sq) && dist_sq <= best_dist_sq)
                         {
                             bool update_best = dist_sq < best_dist_sq || best_sorted_offset < 0;
@@ -1251,11 +1253,11 @@ __global__ void collectResidualStatsSpatialGridKernel(
                         const int sorted_offset = start + offset;
                         const double tx = loadSortedIcpTargetX(target_grid, sorted_offset);
                         const double dx = sx - tx;
-                        if (fabs(dx) > max_dist)
+                        const double dx_sq = dx * dx;
+                        if (dx_sq > max_dist_sq)
                         {
                             continue;
                         }
-                        const double dx_sq = dx * dx;
                         if (dx_sq >= best_dist_sq)
                         {
                             continue;
@@ -1263,11 +1265,12 @@ __global__ void collectResidualStatsSpatialGridKernel(
 
                         const double ty = loadSortedIcpTargetY(target_grid, sorted_offset);
                         const double dy = sy - ty;
-                        if (fabs(dy) > max_dist)
+                        const double dy_sq = dy * dy;
+                        const double xy_dist_sq = dx_sq + dy_sq;
+                        if (xy_dist_sq > max_dist_sq)
                         {
                             continue;
                         }
-                        const double xy_dist_sq = dx_sq + dy * dy;
                         if (xy_dist_sq >= best_dist_sq)
                         {
                             continue;
@@ -1275,12 +1278,13 @@ __global__ void collectResidualStatsSpatialGridKernel(
 
                         const double tz = loadSortedIcpTargetZ(target_grid, sorted_offset);
                         const double dz = sz - tz;
-                        if (fabs(dz) > max_dist)
+                        const double dz_sq = dz * dz;
+                        const double dist_sq = xy_dist_sq + dz_sq;
+                        if (dist_sq > max_dist_sq)
                         {
                             continue;
                         }
 
-                        const double dist_sq = dx * dx + dy * dy + dz * dz;
                         if (isfinite(dist_sq) && dist_sq < best_dist_sq)
                         {
                             best_dist_sq = dist_sq;
@@ -1599,11 +1603,11 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                         const int sorted_offset = start + offset;
                         const double tx = loadSortedIcpTargetX(target_grid, sorted_offset);
                         const double dx = sx - tx;
-                        if (fabs(dx) > max_dist)
+                        const double dx_sq = dx * dx;
+                        if (dx_sq > max_dist_sq)
                         {
                             continue;
                         }
-                        const double dx_sq = dx * dx;
                         if (dx_sq >= best_dist_sq)
                         {
                             continue;
@@ -1611,11 +1615,12 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
 
                         const double ty = loadSortedIcpTargetY(target_grid, sorted_offset);
                         const double dy = sy - ty;
-                        if (fabs(dy) > max_dist)
+                        const double dy_sq = dy * dy;
+                        const double xy_dist_sq = dx_sq + dy_sq;
+                        if (xy_dist_sq > max_dist_sq)
                         {
                             continue;
                         }
-                        const double xy_dist_sq = dx_sq + dy * dy;
                         if (xy_dist_sq >= best_dist_sq)
                         {
                             continue;
@@ -1623,12 +1628,13 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
 
                         const double tz = loadSortedIcpTargetZ(target_grid, sorted_offset);
                         const double dz = sz - tz;
-                        if (fabs(dz) > max_dist)
+                        const double dz_sq = dz * dz;
+                        const double dist_sq = xy_dist_sq + dz_sq;
+                        if (dist_sq > max_dist_sq)
                         {
                             continue;
                         }
 
-                        const double dist_sq = dx * dx + dy * dy + dz * dz;
                         if (isfinite(dist_sq) && dist_sq < best_dist_sq)
                         {
                             best_dist_sq = dist_sq;
