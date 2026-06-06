@@ -6502,3 +6502,45 @@ Verification evidence:
   the direct exact-match micro-path now avoids two unused offset calculations per source point while preserving sparse
   lower-bound behavior. The 100k cached-grid rows remain dominated by generic correspondence search and show only
   run-to-run-noise-level wall-clock movement for this micro-optimization.
+
+## Task 174: Reuse Direct Lookup XY Base Across Neighbor Z Probes
+
+- Goal: avoid repeating direct-lookup active/pointer checks, X/Y bounds checks, and XY linear-index multiplication for
+  each center/lower/upper Z probe under the same `(query_x, query_y)` neighbor column.
+- RED check:
+  - Added `g_icp_direct_grid_lookup_xy_check_count` behind `PLAPOINT_ENABLE_TESTING`, plus reset/read helpers.
+  - Added `ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn`, using a source point in one Z
+    cell and a compact direct-lookup target point in the upper neighboring Z cell.
+  - Before implementation, correspondence stats, residual stats, and transform+residual stats each performed 3 full
+    direct lookup XY checks for the same neighbor column instead of the expected 1.
+- Implementation:
+  - Split direct lookup into `directLookupIcpGridCellXyBase()` and `directLookupIcpGridCellAtZ()`.
+  - In the correspondence-stats, residual-stats, and transform+residual spatial-grid kernels, compute the XY base once
+    before the Z loop and reuse it for the three Z probes.
+  - Removed the now-unused full-key direct lookup wrapper to keep CUDA builds warning-free.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn`:
+    failed before implementation with XY check counts 3 versus expected 1 on all three checked paths.
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn:ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells:ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath:ICPGpuPathTest.CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridXYLookupsBeforeSearch:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance`:
+    8 targeted spatial-grid tests passed after implementation and wrapper cleanup.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 20 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(finite_radius_translation_(reuse_output|reuse_output_skip_final_metrics|ordered_output|ordered_output_skip_final_metrics)|stats_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid_reserved_workspace|stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid_reserved_workspace|residual_stats_finite_radius_translation_ordered|transform_residual_stats_finite_radius_translation_cached_grid|alignment_step_transformed_exact_pointwise_cached_grid|alignment_step_transformed_exact_pointwise_cache_hit)'`:
+    ran successfully on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.44731 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.2718 ms,
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.535707 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.506894 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.736217 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.736163 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.211526 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.231412 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.71086 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.523058 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_ordered` = 0.031329 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.523196 ms.
+- Current conclusion:
+  direct lookup now amortizes XY range checks and XY-base arithmetic across the three Z probes in a neighbor column.
+  The 100k cached-grid benchmark effect remains within run-to-run noise; generic correspondence search and candidate
+  scans are still the dominant optimization target.
