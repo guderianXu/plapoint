@@ -465,10 +465,12 @@ __device__ __forceinline__ void recordAcceptedCorrespondence(
 
     const double source_values[3]{sx, sy, sz};
     const double target_values[3]{tx, ty, tz};
+#pragma unroll
     for (int r = 0; r < 3; ++r)
     {
         local.src_sum[r] = source_values[r];
         local.tgt_sum[r] = target_values[r];
+#pragma unroll
         for (int c = 0; c < 3; ++c)
         {
             local.cross_sum[r * 3 + c] = source_values[r] * target_values[c];
