@@ -795,6 +795,40 @@ void benchmarkGpuIcpAlignmentStepFiniteRadiusTranslationCachedGrid(int icp_point
     }
 }
 
+void benchmarkGpuIcpAlignmentStepExactPointwiseSameBuffer(int icp_points, int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(
+            "gpu_icp_alignment_step_exact_pointwise_same_buffer",
+            "no_usable_cuda_device");
+        return;
+    }
+
+    auto cpu_points = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto points = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_points->toGpu());
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        const auto result = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
+            points->points().data(),
+            static_cast<int>(points->size()),
+            points->points().data(),
+            static_cast<int>(points->size()),
+            std::numeric_limits<float>::infinity(),
+            stats_workspace,
+            step_transform.data());
+        sink += static_cast<std::size_t>(std::max(0, result.active_count));
+    });
+    printResult("gpu_icp_alignment_step_exact_pointwise_same_buffer", icp_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << "gpu_icp_alignment_step_exact_pointwise_same_buffer produced no correspondences\n";
+    }
+}
+
 void benchmarkGpuIcpStatsFiniteRadiusTranslationCachedGrid(int icp_points, int iterations)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
@@ -1263,6 +1297,7 @@ int main(int argc, char** argv)
     benchmarkGpuIcpStatsStepFiniteRadiusTranslationCachedGrid(options.icp_points, options.iterations);
     benchmarkGpuIcpAlignmentStepFiniteRadiusTranslationNewWorkspace(options.icp_points, options.iterations);
     benchmarkGpuIcpAlignmentStepFiniteRadiusTranslationCachedGrid(options.icp_points, options.iterations);
+    benchmarkGpuIcpAlignmentStepExactPointwiseSameBuffer(options.icp_points, options.iterations);
     benchmarkGpuIcpStatsFiniteRadiusTranslationCachedGrid(options.icp_points, options.iterations);
     benchmarkGpuIcpResidualStatsFiniteRadiusTranslationNewWorkspace(options.icp_points, options.iterations);
     benchmarkGpuIcpResidualStatsFiniteRadiusTranslationCachedGrid(options.icp_points, options.iterations);

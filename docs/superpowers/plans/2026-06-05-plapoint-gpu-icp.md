@@ -3941,3 +3941,43 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun the duplicate requested-index test on real GPU hardware and keep exact-pointwise optimizations limited to
   aggregate stats paths that do not expose correspondence index tie behavior.
+
+## Task 118: Benchmark Exact-Pointwise Compact Alignment Step
+
+- Goal: make the same-buffer exact-pointwise compact alignment-step path directly measurable. Existing benchmark rows
+  covered finite-radius spatial-grid and fallback tile-bound compact alignment steps, but not the ideal already-aligned
+  exact-pointwise path used by identity GPU ICP cases.
+- RED check:
+  - Ran the benchmark smoke command and filtered for
+    `^gpu_icp_alignment_step_exact_pointwise_same_buffer,`; the grep failed before the implementation because the row
+    did not exist.
+- Implementation:
+  - Added `benchmarkGpuIcpAlignmentStepExactPointwiseSameBuffer()`, which passes the same GPU point buffer as source
+    and target to `computeIcpAlignmentStepColumnMajor()` with infinite correspondence distance.
+  - Inserted the new row next to the existing compact alignment-step benchmark rows so future GPU runs can compare
+    exact-pointwise, finite-radius cached-grid, and fallback tile-bound compact step costs.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean before the plan update.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1 --icp-points 1000 --icp-max-iterations 1 --skip-cpu-icp | rg '^gpu_icp_alignment_step_exact_pointwise_same_buffer,'`:
+    printed `gpu_icp_alignment_step_exact_pointwise_same_buffer,skipped,no_usable_cuda_device,` because the current
+    session cannot communicate with the NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran and printed the new
+    `gpu_icp_alignment_step_exact_pointwise_same_buffer,skipped,no_usable_cuda_device,` row.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    249 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the benchmark on real GPU hardware and compare
+  `gpu_icp_alignment_step_exact_pointwise_same_buffer` against
+  `gpu_icp_alignment_step_finite_radius_translation_cached_grid` and
+  `gpu_icp_alignment_step_fallback_tile_bounds_cached_bounds`.
