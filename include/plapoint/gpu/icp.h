@@ -127,6 +127,12 @@ public:
     /// Return the number of unique cells in the currently cached target spatial grid.
     int targetSpatialGridCellCount() const { return _target_spatial_grid_cell_count; }
 
+    /// Return the target point buffer identity used by the cached spatial grid.
+    const void* targetSpatialGridPoints() const { return _target_spatial_grid_points; }
+
+    /// Return the target point count used by the cached spatial grid.
+    int targetSpatialGridPointCount() const { return _target_spatial_grid_point_count; }
+
     /// Return the reusable partial reduction storage pointer, or null before reserve().
     unsigned char* partialStorage() { return _partial_storage.get(); }
 

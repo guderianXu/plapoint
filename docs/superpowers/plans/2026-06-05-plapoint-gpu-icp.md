@@ -4708,3 +4708,50 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun `AlignFusesTransformedAlignmentStepWithAccumulatedTransformUpdate` on real GPU hardware and compare
   multi-iteration GPU ICP benchmark rows before/after removing the standalone 4x4 multiply launch.
+
+## Task 136: Skip Final Transformed Residual Search for Exact Pointwise Matches
+
+- Goal: reduce terminal GPU ICP final-metric work for ordered rigid-transform cases. The transform+residual kernels now
+  check the same-index target point immediately after writing the transformed source point. When that direct residual is
+  exactly zero, the kernel records the final residual and skips spatial-grid or fallback nearest-neighbor search for
+  that source point.
+- RED check:
+  - Added `TransformResidualStatsSkipsSearchForExactPointwiseMatches`, which calls
+    `transformPointsAndComputeIcpResidualStatsColumnMajor()` with a known translation and same-index target matches,
+    expecting no full-distance evaluations, no target-candidate visits, and no grid-cell lookups.
+  - Added the test first so `cmake --build build-codex-cuda -j$(nproc)` failed at link time because
+    `resetIcpTransformedExactPointwiseResidualCallCountForTesting()` and
+    `icpTransformedExactPointwiseResidualCallCountForTesting()` did not exist.
+- Implementation:
+  - Added original target pointer/count metadata to `IcpTargetSpatialGrid`, including cached snapshot accessors on
+    `IcpCorrespondenceStatsWorkspace`.
+  - Added a device helper that accepts only finite same-index transformed residuals with exact zero distance; all other
+    cases fall through to the existing spatial-grid or fallback search.
+  - Applied the helper to both transform+residual fallback kernels and transform+residual spatial-grid kernels, so
+    ordered exact terminal outputs can avoid nearest-neighbor candidate search without adding a new kernel launch.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformResidualStatsSkipsSearchForExactPointwiseMatches:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics:ICPGpuPathTest.AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput`:
+    CUDA build passed. The selected GPU-runtime tests were discovered but skipped because no usable CUDA device is
+    available in this session.
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    266 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver. The new `TransformResidualStatsSkipsSearchForExactPointwiseMatches` test was discovered and skipped
+    with the other GPU-runtime tests.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `TransformResidualStatsSkipsSearchForExactPointwiseMatches` and compare terminal final-metric GPU ICP rows for
+  ordered rigid-transform data before/after this fast path.

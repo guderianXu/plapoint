@@ -88,6 +88,8 @@ struct IcpGridCellKeyEqual
 
 struct IcpTargetSpatialGrid
 {
+    const void* target_points = nullptr;
+    int target_count = 0;
     const IcpGridCellKey* __restrict__ cell_keys = nullptr;
     const int* __restrict__ sorted_target_indices = nullptr;
     const double* __restrict__ sorted_target_x = nullptr;
@@ -193,6 +195,7 @@ std::atomic<int> g_icp_stats_step_host_result_copy_count{0};
 std::atomic<int> g_icp_alignment_step_call_count{0};
 std::atomic<int> g_icp_transformed_alignment_step_call_count{0};
 std::atomic<int> g_icp_accumulated_alignment_step_call_count{0};
+std::atomic<int> g_icp_transformed_exact_pointwise_residual_call_count{0};
 std::atomic<int> g_icp_alignment_step_reserve_count{0};
 std::atomic<int> g_icp_alignment_step_reserve_check_count{0};
 std::atomic<int> g_icp_residual_stats_reserve_check_count{0};
@@ -226,6 +229,14 @@ void recordFallbackKernelLaunchForTesting(bool uses_target_tile_bounds)
     else
     {
         g_icp_fallback_unbounded_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void recordTransformedExactPointwiseResidualCallForTesting(bool enabled)
+{
+    if (enabled)
+    {
+        g_icp_transformed_exact_pointwise_residual_call_count.fetch_add(1, std::memory_order_relaxed);
     }
 }
 #endif
@@ -714,6 +725,44 @@ __device__ __forceinline__ void recordAcceptedCorrespondence(
             local.tgt_outer_sum[r * 3 + c] = target_values[r] * target_values[c];
         }
     }
+}
+
+template <typename Scalar>
+__device__ __forceinline__ bool tryAcceptTransformedExactPointwiseResidual(
+    int source_idx,
+    int source_count,
+    const void* target_points_raw,
+    int target_count,
+    double sx,
+    double sy,
+    double sz,
+    RawIcpResidualStats& local)
+{
+    if (!target_points_raw || source_count != target_count)
+    {
+        return false;
+    }
+
+    const auto* target_points = static_cast<const Scalar*>(target_points_raw);
+    double tx = 0.0;
+    double ty = 0.0;
+    double tz = 0.0;
+    if (!loadFiniteColumnMajorPoint(target_points, target_count, source_idx, tx, ty, tz))
+    {
+        return false;
+    }
+#ifdef PLAPOINT_ENABLE_TESTING
+    atomicAdd(&g_icp_exact_pointwise_target_load_count, 3ull);
+#endif
+
+    if (sx != tx || sy != ty || sz != tz)
+    {
+        return false;
+    }
+
+    local.active_count = 1;
+    local.residual_sq_sum = 0.0;
+    return true;
 }
 
 template <typename Scalar>
@@ -1833,6 +1882,18 @@ __global__ void transformAndCollectResidualStatsKernel(
         else
         {
             source_valid = true;
+            if (tryAcceptTransformedExactPointwiseResidual<Scalar>(
+                    source_idx,
+                    source_count,
+                    target_points,
+                    target_count,
+                    sx,
+                    sy,
+                    sz,
+                    local))
+            {
+                source_valid = false;
+            }
         }
     }
 
@@ -2028,6 +2089,18 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
         else
         {
             source_valid = true;
+            if (tryAcceptTransformedExactPointwiseResidual<Scalar>(
+                    source_idx,
+                    source_count,
+                    target_grid.target_points,
+                    target_grid.target_count,
+                    sx,
+                    sy,
+                    sz,
+                    local))
+            {
+                source_valid = false;
+            }
         }
     }
 
@@ -2376,6 +2449,7 @@ void launchTransformAndCollectResidualStatsKernel(
 {
 #ifdef PLAPOINT_ENABLE_TESTING
     recordFallbackKernelLaunchForTesting(target_tile_bounds != nullptr);
+    recordTransformedExactPointwiseResidualCallForTesting(source_count == target_count);
 #endif
 
     if (target_tile_bounds)
@@ -2546,6 +2620,11 @@ void launchTransformAndCollectResidualStatsSpatialGridKernel(
     const IcpTargetSpatialGrid& target_grid,
     RawIcpResidualStats* partial_stats)
 {
+#ifdef PLAPOINT_ENABLE_TESTING
+    recordTransformedExactPointwiseResidualCallForTesting(
+        target_grid.target_points != nullptr && source_count == target_grid.target_count);
+#endif
+
     if (target_grid.finite_cell_bounds)
     {
         transformAndCollectResidualStatsSpatialGridKernel<Scalar, true><<<grid_size, block_size, 0, stream>>>(
@@ -3648,6 +3727,8 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     auto* d_cell_starts = reinterpret_cast<int*>(workspace.targetSpatialGridCellStartsStorage());
     auto* d_cell_counts = reinterpret_cast<int*>(workspace.targetSpatialGridCellCountsStorage());
 
+    grid.target_points = d_target_points;
+    grid.target_count = target_count;
     grid.cell_keys = d_unique_keys;
     grid.sorted_target_indices = d_indices;
     grid.sorted_target_x = d_sorted_x;
@@ -4187,6 +4268,8 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
 
     IcpTargetSpatialGrid target_grid{};
     target_grid.active = true;
+    target_grid.target_points = workspace.targetSpatialGridPoints();
+    target_grid.target_count = workspace.targetSpatialGridPointCount();
     target_grid.cell_keys = d_cell_keys;
     target_grid.sorted_target_indices = d_indices;
     target_grid.sorted_target_x = d_sorted_x;
@@ -4914,6 +4997,16 @@ void resetIcpExactPointwiseStepCallCountForTesting()
 int icpExactPointwiseStepCallCountForTesting()
 {
     return g_icp_exact_pointwise_step_call_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpTransformedExactPointwiseResidualCallCountForTesting()
+{
+    g_icp_transformed_exact_pointwise_residual_call_count.store(0, std::memory_order_relaxed);
+}
+
+int icpTransformedExactPointwiseResidualCallCountForTesting()
+{
+    return g_icp_transformed_exact_pointwise_residual_call_count.load(std::memory_order_relaxed);
 }
 
 void resetIcpExactPointwiseTargetLoadCountForTesting()
