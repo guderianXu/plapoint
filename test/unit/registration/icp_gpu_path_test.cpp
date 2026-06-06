@@ -174,6 +174,8 @@ void resetIcpHostSynchronizationCountForTesting();
 int icpHostSynchronizationCountForTesting();
 void resetIcpTargetTileBoundComputationCountForTesting();
 unsigned long long icpTargetTileBoundComputationCountForTesting();
+void resetIcpTargetTileLoadCountForTesting();
+unsigned long long icpTargetTileLoadCountForTesting();
 void resetIcpFallbackTileBoundKernelLaunchCountForTesting();
 int icpFallbackTileBoundKernelLaunchCountForTesting();
 void resetIcpFallbackUnboundedKernelLaunchCountForTesting();
@@ -1389,6 +1391,80 @@ TEST(ICPGpuPathTest, FallbackStatsLaunchesTileBoundSpecializationsByRadius)
     EXPECT_EQ(transformed_stats.active_count, 1);
     EXPECT_EQ(plapoint::gpu::icpFallbackTileBoundKernelLaunchCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpFallbackUnboundedKernelLaunchCountForTesting(), 0);
+}
+
+TEST(ICPGpuPathTest, FallbackStatsStopsLoadingTargetTilesWhenBlockExactMatched)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source(1, 3);
+    source.setValue(0, 0, 0.0f);
+    source.setValue(0, 1, 0.0f);
+    source.setValue(0, 2, 0.0f);
+
+    constexpr int target_count = 257;
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(target_count, 3);
+    target.setValue(0, 0, 0.0f);
+    target.setValue(0, 1, 0.0f);
+    target.setValue(0, 2, 0.0f);
+    for (int i = 1; i < target_count; ++i)
+    {
+        target.setValue(i, 0, 1000.0f + static_cast<float>(i));
+        target.setValue(i, 1, 1000.0f);
+        target.setValue(i, 2, 1000.0f);
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> identity(4, 4);
+    identity.fill(0.0f);
+    identity.setValue(0, 0, 1.0f);
+    identity.setValue(1, 1, 1.0f);
+    identity.setValue(2, 2, 1.0f);
+    identity.setValue(3, 3, 1.0f);
+
+    auto source_gpu = source.toGpu();
+    auto target_gpu = target.toGpu();
+    auto identity_gpu = identity.toGpu();
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output_gpu(source.rows(), 3);
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+
+    plapoint::gpu::resetIcpTargetTileLoadCountForTesting();
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        0.0f,
+        nullptr,
+        workspace);
+    EXPECT_EQ(stats.active_count, 1);
+    EXPECT_EQ(plapoint::gpu::icpTargetTileLoadCountForTesting(), 1ull);
+
+    plapoint::gpu::resetIcpTargetTileLoadCountForTesting();
+    const auto residual_stats = plapoint::gpu::computeIcpResidualStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        std::numeric_limits<float>::infinity(),
+        workspace);
+    EXPECT_EQ(residual_stats.active_count, 1);
+    EXPECT_EQ(plapoint::gpu::icpTargetTileLoadCountForTesting(), 1ull);
+
+    plapoint::gpu::resetIcpTargetTileLoadCountForTesting();
+    const auto transformed_stats = plapoint::gpu::transformPointsAndComputeIcpResidualStatsColumnMajor(
+        identity_gpu.data(),
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        0.0f,
+        output_gpu.data(),
+        workspace);
+    EXPECT_EQ(transformed_stats.active_count, 1);
+    EXPECT_EQ(plapoint::gpu::icpTargetTileLoadCountForTesting(), 1ull);
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsStopsSpatialGridAfterExactMatchWhenIndicesOmitted)

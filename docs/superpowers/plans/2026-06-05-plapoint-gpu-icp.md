@@ -1786,6 +1786,46 @@ Verification evidence:
   rerun `ICPGpuPathTest.FallbackStatsLaunchesTileBoundSpecializationsByRadius`, full CUDA `ctest`, and the 100k-point
   ICP benchmark to confirm runtime behavior and performance impact.
 
+## Task 78: Stop Fallback Target-Tile Loads After Block Exact Matches
+
+- Goal: avoid loading remaining target tiles in the shared-memory fallback kernels once every source thread in a block
+  has either become inactive or found an exact zero-distance match. Previous per-thread exact-stop logic avoided later
+  candidate evaluation but still forced all threads through the remaining target-tile loads to preserve synchronization.
+- TDD red:
+  - Added `FallbackStatsStopsLoadingTargetTilesWhenBlockExactMatched`, which expects correspondence, residual-only, and
+    transform+residual fallback calls to load one target tile instead of all three when a block exact-matches in the
+    first tile.
+  - `cmake --build build-codex-cuda -j$(nproc)` failed as expected at link time because the new target-tile load
+    counter hooks were not yet defined.
+- Implementation:
+  - Added a CUDA-only target-tile load counter for the shared-memory fallback kernels.
+  - Counted one target-tile load per block per fallback tile in `collectCorrespondenceStatsKernel()`,
+    `collectResidualStatsKernel()`, and `transformAndCollectResidualStatsKernel()`.
+  - Replaced the end-of-tile `__syncthreads()` with `__syncthreads_count(source_valid && !stop_target_scan)`.
+  - Broke out of the tile loop only when the synchronized unfinished-source count is zero, so all threads leave the loop
+    together and the shared-memory tile synchronization remains uniform.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.FallbackStatsStopsLoadingTargetTilesWhenBlockExactMatched:ICPGpuPathTest.FallbackStatsLaunchesTileBoundSpecializationsByRadius:ICPGpuPathTest.CorrespondenceStatsStopsNonSpatialScanAfterExactMatchWhenIndicesOmitted:ICPGpuPathTest.ResidualStatsStopsNonSpatialScanAfterExactMatch:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 4 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    230 test entries, 0 failed; GPU-dependent tests, including the new target-tile-load early-exit test, were skipped
+    because the current session cannot communicate with the NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `ICPGpuPathTest.FallbackStatsStopsLoadingTargetTilesWhenBlockExactMatched`, full CUDA `ctest`, and the
+  100k-point ICP benchmark to confirm runtime behavior and performance impact.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell

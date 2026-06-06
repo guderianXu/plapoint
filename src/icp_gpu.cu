@@ -166,6 +166,7 @@ __device__ unsigned long long g_icp_target_candidate_visit_count;
 __device__ unsigned long long g_icp_target_index_load_count;
 __device__ unsigned long long g_icp_sorted_target_coordinate_load_count;
 __device__ unsigned long long g_icp_target_tile_bound_computation_count;
+__device__ unsigned long long g_icp_target_tile_load_count;
 __device__ unsigned long long g_icp_grid_cell_lookup_count;
 #endif
 
@@ -716,6 +717,12 @@ __global__ void collectCorrespondenceStatsKernel(
         target_tile_y[local_idx] = ty;
         target_tile_z[local_idx] = tz;
         target_tile_valid[local_idx] = target_valid ? 1 : 0;
+#ifdef PLAPOINT_ENABLE_TESTING
+        if (local_idx == 0)
+        {
+            atomicAdd(&g_icp_target_tile_load_count, 1ull);
+        }
+#endif
         __syncthreads();
 
         bool tile_relevant = true;
@@ -791,7 +798,11 @@ __global__ void collectCorrespondenceStatsKernel(
                 }
             }
         }
-        __syncthreads();
+        const int unfinished_source_count = __syncthreads_count(source_valid && !stop_target_scan);
+        if (unfinished_source_count == 0)
+        {
+            break;
+        }
     }
 
     if (source_valid)
@@ -1256,6 +1267,12 @@ __global__ void collectResidualStatsKernel(
         target_tile_y[local_idx] = ty;
         target_tile_z[local_idx] = tz;
         target_tile_valid[local_idx] = target_valid ? 1 : 0;
+#ifdef PLAPOINT_ENABLE_TESTING
+        if (local_idx == 0)
+        {
+            atomicAdd(&g_icp_target_tile_load_count, 1ull);
+        }
+#endif
         __syncthreads();
 
         bool tile_relevant = true;
@@ -1322,7 +1339,11 @@ __global__ void collectResidualStatsKernel(
                 }
             }
         }
-        __syncthreads();
+        const int unfinished_source_count = __syncthreads_count(source_valid && !stop_target_scan);
+        if (unfinished_source_count == 0)
+        {
+            break;
+        }
     }
 
     if (source_valid)
@@ -1619,6 +1640,12 @@ __global__ void transformAndCollectResidualStatsKernel(
         target_tile_y[local_idx] = ty;
         target_tile_z[local_idx] = tz;
         target_tile_valid[local_idx] = target_valid ? 1 : 0;
+#ifdef PLAPOINT_ENABLE_TESTING
+        if (local_idx == 0)
+        {
+            atomicAdd(&g_icp_target_tile_load_count, 1ull);
+        }
+#endif
         __syncthreads();
 
         bool tile_relevant = true;
@@ -1685,7 +1712,11 @@ __global__ void transformAndCollectResidualStatsKernel(
                 }
             }
         }
-        __syncthreads();
+        const int unfinished_source_count = __syncthreads_count(source_valid && !stop_target_scan);
+        if (unfinished_source_count == 0)
+        {
+            break;
+        }
     }
 
     if (source_valid)
@@ -4239,6 +4270,19 @@ unsigned long long icpTargetTileBoundComputationCountForTesting()
 {
     unsigned long long count = 0;
     PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_target_tile_bound_computation_count, sizeof(count)));
+    return count;
+}
+
+void resetIcpTargetTileLoadCountForTesting()
+{
+    const unsigned long long zero = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyToSymbol(g_icp_target_tile_load_count, &zero, sizeof(zero)));
+}
+
+unsigned long long icpTargetTileLoadCountForTesting()
+{
+    unsigned long long count = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_target_tile_load_count, sizeof(count)));
     return count;
 }
 
