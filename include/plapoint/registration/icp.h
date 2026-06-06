@@ -94,6 +94,19 @@ public:
     /// Throws for missing/empty clouds, too few valid correspondences, or degenerate correspondence geometry.
     void align(PointCloudType& output)
     {
+        alignImpl(&output);
+    }
+
+    /// Align the source cloud to the target cloud without materializing an aligned output cloud.
+    /// The final transformation and metrics remain available through the getter methods.
+    void align()
+    {
+        alignImpl(nullptr);
+    }
+
+private:
+    void alignImpl(PointCloudType* output)
+    {
         if (!_source) throw std::runtime_error("ICP: source cloud not set");
         if (!_target) throw std::runtime_error("ICP: target cloud not set");
         if (_source->size() == 0) throw std::invalid_argument("ICP: source cloud must not be empty");
@@ -294,18 +307,22 @@ public:
 
         _final_T = std::move(T_acc);
         _final_T_cpu_valid = true;
-        auto aligned = plamatrix::transformPoints(_final_T, src);
-        validateFinitePointMatrix(aligned, "ICP: aligned output contains non-finite point");
-        if constexpr (Dev == plamatrix::Device::CPU)
+        if (output)
         {
-            output = PointCloudType(std::move(aligned));
-        }
-        else
-        {
-            output = PointCloudType(aligned.toGpu());
+            auto aligned = plamatrix::transformPoints(_final_T, src);
+            validateFinitePointMatrix(aligned, "ICP: aligned output contains non-finite point");
+            if constexpr (Dev == plamatrix::Device::CPU)
+            {
+                *output = PointCloudType(std::move(aligned));
+            }
+            else
+            {
+                *output = PointCloudType(aligned.toGpu());
+            }
         }
     }
 
+public:
     /// Return the final 4x4 source-to-target transform on CPU.
     const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& getFinalTransformation() const
     {
@@ -354,12 +371,12 @@ private:
 #ifdef PLAPOINT_WITH_CUDA
     template <plamatrix::Device D = Dev>
     std::enable_if_t<D == plamatrix::Device::GPU, void>
-    alignGpu(PointCloudType& output)
+    alignGpu(PointCloudType* output)
     {
         const int source_count = checkedInt(_source->size(), "ICP: source point count exceeds int range");
         const int target_count = checkedInt(_target->size(), "ICP: target point count exceeds int range");
         const Scalar* target_points = refreshGpuTargetWorkspaceCacheForCurrentTarget();
-        const bool output_aliases_target = outputAliasesGpuTarget(output);
+        const bool output_aliases_target = output && outputAliasesGpuTarget(*output);
         bool final_points_written_to_output = false;
 
         reserveGpuStepTransformBuffer();
@@ -448,16 +465,18 @@ private:
                 _compute_final_metrics &&
                 !terminal_final_metrics_can_use_target_snapshot;
             Scalar* transform_output_points = nullptr;
-            if (terminal_iteration && !terminal_identity_step && !terminal_output_needs_target_points)
+            if (terminal_iteration && !terminal_identity_step && output && !terminal_output_needs_target_points)
             {
-                transform_output_points = prepareGpuOutputPointBuffer(output, source_count);
+                transform_output_points = prepareGpuOutputPointBuffer(*output, source_count);
                 if (output_aliases_target)
                 {
                     invalidateGpuTargetWorkspaceCache();
                 }
                 final_points_written_to_output = true;
             }
-            else if (terminal_iteration && !terminal_identity_step)
+            else if (terminal_iteration &&
+                     !terminal_identity_step &&
+                     (_compute_final_metrics || output))
             {
                 transform_output_points = gpuPointScratchBuffer(source_count, next_points_in_a);
             }
@@ -551,14 +570,22 @@ private:
             {
                 if (terminal_iteration)
                 {
-                    gpu::transformPointsColumnMajor(
-                        _gpu_T_acc->data(),
-                        source_points,
-                        source_count,
-                        transform_output_points,
-                        0);
-                    cur_points = transform_output_points;
-                    current_points_use_accumulated_transform = false;
+                    if (transform_output_points)
+                    {
+                        gpu::transformPointsColumnMajor(
+                            _gpu_T_acc->data(),
+                            source_points,
+                            source_count,
+                            transform_output_points,
+                            0);
+                        cur_points = transform_output_points;
+                        current_points_use_accumulated_transform = false;
+                    }
+                    else
+                    {
+                        cur_points = source_points;
+                        current_points_use_accumulated_transform = true;
+                    }
                 }
                 else
                 {
@@ -583,11 +610,11 @@ private:
         }
 
         _final_T_gpu_valid = true;
-        if (!final_points_written_to_output)
+        if (output && !final_points_written_to_output)
         {
             if (current_points_use_accumulated_transform)
             {
-                Scalar* output_points = prepareGpuOutputPointBuffer(output, source_count);
+                Scalar* output_points = prepareGpuOutputPointBuffer(*output, source_count);
                 if (output_aliases_target)
                 {
                     invalidateGpuTargetWorkspaceCache();
@@ -599,9 +626,9 @@ private:
                     output_points,
                     0);
             }
-            else if (!gpuOutputAlreadyContainsCurrentPoints(output, source_count, cur_points))
+            else if (!gpuOutputAlreadyContainsCurrentPoints(*output, source_count, cur_points))
             {
-                Scalar* output_points = prepareGpuOutputPointBuffer(output, source_count);
+                Scalar* output_points = prepareGpuOutputPointBuffer(*output, source_count);
                 if (output_points != cur_points)
                 {
                     if (output_aliases_target)

@@ -5445,3 +5445,48 @@ Verification evidence:
   iteration followed by cheaper transformed exact-pointwise iterations plus loop/output overhead. Further production
   optimization should focus on reducing unnecessary iterations, host synchronizations around convergence checks, and
   avoiding or specializing the final source-output transform when callers do not need materialized aligned points.
+
+## Task 152: Add GPU ICP Transform-Only Align Path
+
+- Goal: support throughput callers that only need the final ICP transform by adding `IterativeClosestPoint::align()`
+  without an output cloud. On the GPU path, this lets final-metrics-disabled runs skip materializing transformed source
+  points into an output buffer.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignWithoutOutputSkipsTerminalPointTransformWhenFinalMetricsAreDisabled`.
+  - `cmake --build build-codex-cuda -j$(nproc)` failed with the expected compile error because
+    `IterativeClosestPoint<float, Device::GPU>` had no zero-argument `align()` overload.
+  - Added transform-only benchmark rows to `cmake/check_gpu_icp_benchmark_rows.cmake`.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint\\.benchmarks\\.gpu_icp_rows_registered --output-on-failure`
+    failed with the expected missing-row error for
+    `gpu_icp_finite_radius_translation_transform_only_skip_final_metrics`.
+- Implementation:
+  - Split the public `align(output)` method into a wrapper over a private `alignImpl(PointCloudType*)` and added
+    `align()` as the no-output wrapper.
+  - Updated the GPU `alignGpu()` path to accept a nullable output pointer. When final metrics are disabled and no output
+    cloud is requested, terminal iterations no longer allocate a point output/scratch buffer or launch
+    `transformPointsColumnMajor()` just to materialize aligned points.
+  - Kept existing `align(output)` semantics unchanged, including target-output alias handling and final metrics paths.
+  - Added `ICPGpuPathTest.AlignWithoutOutputKeepsAccumulatedTransformAcrossIterations` to cover multi-iteration
+    accumulated-transform use without output materialization.
+  - Added benchmark rows:
+    `gpu_icp_finite_radius_translation_transform_only_skip_final_metrics` and
+    `gpu_icp_finite_radius_translation_transform_only_skip_final_metrics_one_iteration`.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignWithoutOutputSkipsTerminalPointTransformWhenFinalMetricsAreDisabled:ICPGpuPathTest.AlignWithoutOutputKeepsAccumulatedTransformAcrossIterations`:
+    2 tests, 0 failed.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint\\.benchmarks\\.gpu_icp_rows_registered --output-on-failure`:
+    passed after benchmark implementation.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.48752 ms,
+    `gpu_icp_finite_radius_translation_transform_only_skip_final_metrics` = 1.4812 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.865159 ms, and
+    `gpu_icp_finite_radius_translation_transform_only_skip_final_metrics_one_iteration` = 0.858768 ms.
+- Current conclusion:
+  transform-only alignment now avoids final point materialization when metrics are disabled, and tests confirm the GPU
+  transform kernel is not launched in that path. At 100k points on the RTX 4060 Laptop GPU, measured wall-clock gain is
+  about 0.006 ms, so this is a useful API/behavior cleanup but not the next major performance lever. The larger remaining
+  wins are still in reducing iteration count, lowering per-iteration correspondence search cost, and trimming host
+  synchronization around convergence.
