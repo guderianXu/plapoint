@@ -172,6 +172,8 @@ void resetIcpExactPointwiseTargetLoadCountForTesting();
 unsigned long long icpExactPointwiseTargetLoadCountForTesting();
 void resetIcpRawStatsStepKernelLaunchCountForTesting();
 int icpRawStatsStepKernelLaunchCountForTesting();
+void resetIcpStatsStepHostResultCopyCountForTesting();
+int icpStatsStepHostResultCopyCountForTesting();
 void resetIcpAlignmentStepCallCountForTesting();
 int icpAlignmentStepCallCountForTesting();
 void resetIcpAlignmentStepReserveCountForTesting();
@@ -445,6 +447,38 @@ TEST(ICPGpuPathTest, AlignmentStepCompactResultMatchesFullStatsStepResult)
             EXPECT_NEAR(compact_step.getValue(row, col), full_step.getValue(row, col), 1.0e-6f);
         }
     }
+}
+
+TEST(ICPGpuPathTest, StatsAndStepTransformCopiesOneHostResult)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto source_cpu = makeNonCollinearPoints();
+    auto target_cpu = makeTranslatedNonCollinearPoints(source_cpu, 0.1f, -0.05f, 0.025f);
+    auto source_gpu = source_cpu.toGpu();
+    auto target_gpu = target_cpu.toGpu();
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+    plapoint::gpu::IcpStepTransformWorkspace step_workspace;
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+
+    plapoint::gpu::resetIcpStatsStepHostResultCopyCountForTesting();
+    const auto result = plapoint::gpu::computeIcpStatsAndStepTransformColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        2.0f,
+        stats_workspace,
+        step_gpu.data(),
+        step_workspace);
+
+    EXPECT_EQ(result.stats.active_count, 4);
+    EXPECT_TRUE(result.step_valid);
+    EXPECT_EQ(plapoint::gpu::icpStatsStepHostResultCopyCountForTesting(), 1);
 }
 
 TEST(ICPGpuPathTest, TransformPointsColumnMajorWritesCallerOwnedOutput)

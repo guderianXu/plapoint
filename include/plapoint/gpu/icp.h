@@ -79,6 +79,9 @@ public:
     /// Reserve storage for correspondence partials and the compact alignment-step result.
     void reserveAlignmentStep(int source_count);
 
+    /// Reserve storage for correspondence partials and a fused full-stats plus step-transform result.
+    void reserveStatsAndStep(int source_count);
+
     /// Reserve storage for compact residual-stats partials and result.
     void reserveResidualStats(int source_count);
 

@@ -4404,3 +4404,44 @@ Verification evidence:
   rerun `StepTransformWorkspaceReusesPinnedHostResultStorage` and compare step-transform and fused stats+step
   benchmark rows on real GPU hardware. The broader next optimization should be guided by Nsight timing on a machine
   with a working NVIDIA driver, because the current environment cannot execute GPU kernels.
+
+## Task 129: Copy Fused Stats-Step Result With One D2H Transfer
+
+- Goal: reduce `computeIcpStatsAndStepTransformColumnMajor()` from two small device-to-host result copies to one. The
+  public result still exposes full `IcpCorrespondenceStats` plus the step-transform result, so this task adds a compact
+  raw struct containing both instead of reusing the smaller alignment-step result.
+- RED check:
+  - Added test-only `g_icp_stats_step_host_result_copy_count` with reset/read accessors.
+  - Added `StatsAndStepTransformCopiesOneHostResult`, requiring a fused stats+step call to perform one result copy.
+  - Added the test first so `cmake --build build-codex-cuda -j$(nproc)` failed at link time because the new hook
+    functions did not exist.
+- Implementation:
+  - Added `IcpStatsAndStepRawResult`, with `RawIcpStats` as the first field and `IcpStepTransformRawResult` as the
+    second field.
+  - Added `IcpCorrespondenceStatsWorkspace::reserveStatsAndStep()` so fused stats+step calls reserve partials plus the
+    combined device/host result storage.
+  - Updated the exact-pointwise identity-step reducer and the general stats+step reducer to write
+    `IcpStatsAndStepRawResult`.
+  - Updated `computeIcpStatsAndStepTransformColumnMajorImpl()` to copy the combined raw result once, then convert both
+    the full stats and step result from that pinned host buffer.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.StatsAndStepTransformCopiesOneHostResult:ICPGpuPathTest.AlignmentStepCompactResultMatchesFullStatsStepResult:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPGpuPathTest.StepTransformWorkspaceReusesPinnedHostResultStorage`:
+    selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    259 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `StatsAndStepTransformCopiesOneHostResult` and compare
+  `gpu_icp_stats_step_finite_radius_translation_cached_grid` before/after this commit on real GPU hardware.
