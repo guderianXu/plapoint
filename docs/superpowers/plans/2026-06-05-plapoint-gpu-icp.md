@@ -2510,6 +2510,37 @@ Verification evidence:
   rerun the selected tests and benchmark ICP terminal final-metrics cases, especially non-identity terminal iterations
   that call `transformPointsAndComputeIcpResidualStatsColumnMajor()`.
 
+## Task 97: Add GPU ICP Residual Stats Benchmarks
+
+- Goal: make the Task 96 residual-stats workspace optimization measurable. Existing benchmark rows cover full
+  correspondence stats, fused stats+step, and compact alignment-step paths, but they do not isolate the residual-only
+  stats path or the transform+residual final-metrics path used by `alignGpu()` terminal iterations.
+- Static RED:
+  - `test "$(rg -n "gpu_icp_residual_stats_finite_radius_translation_(new_workspace|cached_grid)" benchmarks/plapoint_benchmarks.cpp | wc -l)" -ge 4`:
+    failed before the change because no residual-stats benchmark rows existed.
+  - `test "$(rg -n "gpu_icp_transform_residual_stats_finite_radius_translation_(new_workspace|cached_grid)" benchmarks/plapoint_benchmarks.cpp | wc -l)" -ge 4`:
+    failed before the change because no transform+residual benchmark rows existed.
+- Implementation:
+  - Added `gpu_icp_residual_stats_finite_radius_translation_new_workspace`, which creates a fresh stats workspace for
+    each measured residual-only stats call.
+  - Added `gpu_icp_residual_stats_finite_radius_translation_cached_grid`, which reuses one stats workspace so the
+    finite-radius target spatial grid can be cached across measured residual stats calls.
+  - Added `gpu_icp_transform_residual_stats_finite_radius_translation_new_workspace`, which reuses caller-owned output
+    and transform buffers but creates a fresh stats workspace per measured transform+residual call.
+  - Added `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid`, which reuses caller-owned output,
+    transform, and stats workspace buffers across transform+residual calls.
+  - All four rows use the existing translated finite-radius grid dataset and `max_correspondence_distance = 0.02f` so
+    they exercise the positive-radius spatial-grid path rather than the fallback tile-bound path.
+- Verification performed in this session:
+  - Both static RED commands passed after adding the benchmark rows.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    benchmark-only CUDA build succeeded.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran and printed all four new rows; each reported `skipped,no_usable_cuda_device` on this machine.
+- Follow-up required when a CUDA device is available:
+  rerun the benchmark with enough iterations to compare the new residual rows and quantify whether Task 96's compact
+  residual workspace reservation reduces new-workspace overhead or final-metrics path runtime.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell
