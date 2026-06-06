@@ -4526,3 +4526,47 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun `AlignSkipsMetricUpdateForNonTerminalGpuIterations` on real GPU hardware and compare multi-iteration
   `gpu_icp_finite_radius_translation_*` rows to measure the removed host-side metric work.
+
+## Task 132: Use Float-Sized Delta In Float Alignment-Step Result
+
+- Goal: reduce the per-iteration D2H payload for `float` GPU ICP alignment steps. The compact alignment-step result
+  still needs a double residual sum for stable metrics, but the step delta returned to `IcpAlignmentStepResult<float>`
+  does not need an internal double slot.
+- RED check:
+  - Added `FloatAlignmentStepRawResultUsesFloatSizedDelta`, which requires the float raw alignment-step result to be
+    at most 24 bytes while the double path remains at most 32 bytes.
+  - Added the test first so `cmake --build build-codex-cuda -j$(nproc)` failed at link time because
+    `icpFloatAlignmentStepRawResultByteCountForTesting()` and
+    `icpDoubleAlignmentStepRawResultByteCountForTesting()` did not exist.
+- Implementation:
+  - Templated `IcpAlignmentStepRawResult<Scalar>` and stored `delta` as `Scalar`.
+  - Reordered the raw fields so the float result packs to 24 bytes and the double result stays compact at 32 bytes.
+  - Updated exact-pointwise and normal alignment-step reduction kernels, host conversion, and D2H copies to use
+    `IcpAlignmentStepRawResult<Scalar>`.
+  - Kept `IcpCorrespondenceStatsWorkspace::reserveAlignmentStep()` reserving the max double-sized result storage so
+    the public reserve API does not need a scalar template.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.FloatAlignmentStepRawResultUsesFloatSizedDelta:ICPGpuPathTest.AlignmentStepRawResultFitsCompactHostCopy`:
+    passed after implementation. These tests run without CUDA runtime access and verify the float/double raw result
+    byte-size constraints.
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.FloatAlignmentStepRawResultUsesFloatSizedDelta:ICPGpuPathTest.AlignmentStepRawResultFitsCompactHostCopy:ICPGpuPathTest.AlignmentStepCompactResultMatchesFullStatsStepResult:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization`:
+    selected 4 tests; the 2 no-device byte-size tests passed, and the 2 GPU-runtime tests were skipped because no
+    usable CUDA device is available in this session.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    262 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the alignment-step benchmark rows on real hardware to quantify the smaller float result copy.

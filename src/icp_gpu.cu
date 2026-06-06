@@ -118,13 +118,14 @@ constexpr unsigned int kIcpAlignmentStepSrcNonCollinearFlag = 1u << 0;
 constexpr unsigned int kIcpAlignmentStepTgtNonCollinearFlag = 1u << 1;
 constexpr unsigned int kIcpAlignmentStepValidFlag = 1u << 2;
 
+template <typename Scalar>
 struct IcpAlignmentStepRawResult
 {
+    double residual_sq_sum;
+    Scalar delta;
     int active_count;
     int invalid_source_count;
     unsigned int flags;
-    double residual_sq_sum;
-    double delta;
 };
 
 struct IcpStatsAndStepRawResult
@@ -135,9 +136,11 @@ struct IcpStatsAndStepRawResult
 
 static_assert(sizeof(RawIcpStats) >= sizeof(RawIcpResidualStats),
               "ICP alignment-step partial workspace must cover residual-stats partials");
-static_assert(sizeof(IcpAlignmentStepRawResult) >= sizeof(RawIcpResidualStats),
+static_assert(sizeof(IcpAlignmentStepRawResult<float>) >= sizeof(RawIcpResidualStats),
               "ICP alignment-step result workspace must cover residual-stats results");
-static_assert(sizeof(IcpAlignmentStepRawResult) <= 32,
+static_assert(sizeof(IcpAlignmentStepRawResult<float>) <= 24,
+              "Float ICP alignment-step host result should use a float-sized delta");
+static_assert(sizeof(IcpAlignmentStepRawResult<double>) <= 32,
               "ICP alignment-step host result should stay compact");
 static_assert(offsetof(IcpStatsAndStepRawResult, stats) == 0,
               "ICP stats-step result must expose RawIcpStats at the start of the storage");
@@ -161,7 +164,7 @@ template <typename Scalar>
 __device__ __forceinline__ void writeAlignmentStepRawResultFromRawStats(
     const RawIcpStats& raw,
     Scalar* __restrict__ step_transform,
-    IcpAlignmentStepRawResult* __restrict__ result);
+    IcpAlignmentStepRawResult<Scalar>* __restrict__ result);
 
 template <typename Scalar>
 __device__ __forceinline__ void writeExactPointwiseStatsAndStepRawResult(
@@ -272,12 +275,15 @@ __device__ __forceinline__ void addRawIcpResidualStats(RawIcpResidualStats& dst,
     dst.residual_sq_sum += src.residual_sq_sum;
 }
 
+template <typename Scalar>
 __device__ __forceinline__ void writeAlignmentStepRawResultFields(
     const RawIcpStats& raw,
-    IcpAlignmentStepRawResult* __restrict__ result,
+    IcpAlignmentStepRawResult<Scalar>* __restrict__ result,
     int step_valid,
     double delta)
 {
+    result->residual_sq_sum = raw.residual_sq_sum;
+    result->delta = static_cast<Scalar>(delta);
     result->active_count = raw.active_count;
     result->invalid_source_count = raw.invalid_source_count;
     unsigned int flags = 0;
@@ -294,8 +300,6 @@ __device__ __forceinline__ void writeAlignmentStepRawResultFields(
         flags |= kIcpAlignmentStepValidFlag;
     }
     result->flags = flags;
-    result->residual_sq_sum = raw.residual_sq_sum;
-    result->delta = delta;
 }
 
 template <typename Value>
@@ -2487,7 +2491,7 @@ __global__ void reduceRawIcpStatsAndSetExactPointwiseIdentityAlignmentStepKernel
     const RawIcpStats* __restrict__ partial_stats,
     int partial_count,
     Scalar* __restrict__ step_transform,
-    IcpAlignmentStepRawResult* __restrict__ result)
+    IcpAlignmentStepRawResult<Scalar>* __restrict__ result)
 {
     const int local_idx = threadIdx.x;
     RawIcpStats local{};
@@ -2520,7 +2524,7 @@ __global__ void reduceRawIcpStatsAndSetExactPointwiseIdentityAlignmentStepKernel
     {
         const RawIcpStats raw = shared_stats[0];
         const int step_valid = raw.active_count > 0 && isfinite(raw.residual_sq_sum) ? 1 : 0;
-        writeAlignmentStepRawResultFields(raw, result, step_valid, 0.0);
+        writeAlignmentStepRawResultFields<Scalar>(raw, result, step_valid, 0.0);
     }
 }
 
@@ -2564,7 +2568,7 @@ __global__ void reduceRawIcpStatsAndComputeAlignmentStepKernel(
     const RawIcpStats* __restrict__ partial_stats,
     int partial_count,
     Scalar* __restrict__ step_transform,
-    IcpAlignmentStepRawResult* __restrict__ result)
+    IcpAlignmentStepRawResult<Scalar>* __restrict__ result)
 {
     const int local_idx = threadIdx.x;
     RawIcpStats local{};
@@ -3004,12 +3008,12 @@ template <typename Scalar>
 __device__ __forceinline__ void writeAlignmentStepRawResultFromRawStats(
     const RawIcpStats& raw,
     Scalar* __restrict__ step_transform,
-    IcpAlignmentStepRawResult* __restrict__ result)
+    IcpAlignmentStepRawResult<Scalar>* __restrict__ result)
 {
     IcpStepTransformRawResult step_result{};
     computeStepTransformFromRawStatsValue<Scalar>(raw, step_transform, &step_result);
 
-    writeAlignmentStepRawResultFields(raw, result, step_result.valid, step_result.delta);
+    writeAlignmentStepRawResultFields<Scalar>(raw, result, step_result.valid, step_result.delta);
 }
 
 bool covarianceHasNonCollinearGeometry(const double covariance[9]);
@@ -3204,7 +3208,7 @@ bool launchExactPointwiseAlignmentStep(
     RawIcpStats* d_partials,
     int partial_count,
     Scalar* d_step_transform,
-    IcpAlignmentStepRawResult* d_result,
+    IcpAlignmentStepRawResult<Scalar>* d_result,
     cudaStream_t stream)
 {
     if (!shouldTryExactPointwiseStats(
@@ -3531,7 +3535,7 @@ IcpResidualStats<Scalar> makeHostResidualStats(const RawIcpResidualStats& raw)
 }
 
 template <typename Scalar>
-IcpAlignmentStepResult<Scalar> makeHostAlignmentStepResult(const IcpAlignmentStepRawResult& raw)
+IcpAlignmentStepResult<Scalar> makeHostAlignmentStepResult(const IcpAlignmentStepRawResult<Scalar>& raw)
 {
     IcpAlignmentStepResult<Scalar> result;
     result.active_count = raw.active_count;
@@ -4395,10 +4399,11 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
     }
 
     constexpr int block_size = kIcpStatsBlockSize;
+    using AlignmentStepRawResult = IcpAlignmentStepRawResult<Scalar>;
     const int grid_size = icpStatsPartialCount(source_count);
     auto* d_partials = reinterpret_cast<RawIcpStats*>(stats_workspace.partialStorage());
-    auto* d_result = reinterpret_cast<IcpAlignmentStepRawResult*>(stats_workspace.statsStorage());
-    auto* h_result = reinterpret_cast<IcpAlignmentStepRawResult*>(stats_workspace.hostResultStorage());
+    auto* d_result = reinterpret_cast<AlignmentStepRawResult*>(stats_workspace.statsStorage());
+    auto* h_result = reinterpret_cast<AlignmentStepRawResult*>(stats_workspace.hostResultStorage());
     if (!h_result)
     {
         throw std::invalid_argument("ICP GPU: alignment-step host result workspace is not reserved");
@@ -4418,7 +4423,7 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
 
     if (exact_pointwise_stats)
     {
-        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(IcpAlignmentStepRawResult),
+        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(AlignmentStepRawResult),
                                             cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
         g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
@@ -4483,7 +4488,7 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
         PLAPOINT_CHECK_CUDA(cudaGetLastError());
     }
 
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(IcpAlignmentStepRawResult),
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(AlignmentStepRawResult),
                                         cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
@@ -4663,7 +4668,17 @@ int icpAlignmentStepReserveCheckCountForTesting()
 
 std::size_t icpAlignmentStepRawResultByteCountForTesting()
 {
-    return sizeof(IcpAlignmentStepRawResult);
+    return sizeof(IcpAlignmentStepRawResult<double>);
+}
+
+std::size_t icpFloatAlignmentStepRawResultByteCountForTesting()
+{
+    return sizeof(IcpAlignmentStepRawResult<float>);
+}
+
+std::size_t icpDoubleAlignmentStepRawResultByteCountForTesting()
+{
+    return sizeof(IcpAlignmentStepRawResult<double>);
 }
 
 void resetIcpResidualStatsReserveCheckCountForTesting()
@@ -4853,8 +4868,8 @@ void IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(int source_count)
         static_cast<std::size_t>(required_partials) * sizeof(RawIcpStats);
     if (partialCapacity() >= required_partials &&
         _partial_storage.size() >= required_partial_bytes &&
-        _stats_storage.size() >= sizeof(IcpAlignmentStepRawResult) &&
-        _host_result_storage.size() >= sizeof(IcpAlignmentStepRawResult))
+        _stats_storage.size() >= sizeof(IcpAlignmentStepRawResult<double>) &&
+        _host_result_storage.size() >= sizeof(IcpAlignmentStepRawResult<double>))
     {
         return;
     }
@@ -4864,8 +4879,8 @@ void IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(int source_count)
 #endif
 
     reservePartialStorage(source_count, sizeof(RawIcpStats));
-    reserveStatsStorage(sizeof(IcpAlignmentStepRawResult));
-    reserveHostResultStorage(sizeof(IcpAlignmentStepRawResult));
+    reserveStatsStorage(sizeof(IcpAlignmentStepRawResult<double>));
+    reserveHostResultStorage(sizeof(IcpAlignmentStepRawResult<double>));
 }
 
 void IcpCorrespondenceStatsWorkspace::reserveStatsAndStep(int source_count)

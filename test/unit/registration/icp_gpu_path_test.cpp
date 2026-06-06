@@ -181,6 +181,8 @@ int icpAlignmentStepReserveCountForTesting();
 void resetIcpAlignmentStepReserveCheckCountForTesting();
 int icpAlignmentStepReserveCheckCountForTesting();
 std::size_t icpAlignmentStepRawResultByteCountForTesting();
+std::size_t icpFloatAlignmentStepRawResultByteCountForTesting();
+std::size_t icpDoubleAlignmentStepRawResultByteCountForTesting();
 void resetIcpHostSynchronizationCountForTesting();
 int icpHostSynchronizationCountForTesting();
 void resetIcpHostResultStorageAllocationCountForTesting();
@@ -399,6 +401,16 @@ TEST(ICPGpuPathTest, AlignmentStepRawResultFitsCompactHostCopy)
 {
     EXPECT_GT(plapoint::gpu::icpAlignmentStepRawResultByteCountForTesting(), std::size_t{0});
     EXPECT_LE(plapoint::gpu::icpAlignmentStepRawResultByteCountForTesting(), std::size_t{32});
+}
+
+TEST(ICPGpuPathTest, FloatAlignmentStepRawResultUsesFloatSizedDelta)
+{
+    EXPECT_GT(plapoint::gpu::icpFloatAlignmentStepRawResultByteCountForTesting(), std::size_t{0});
+    EXPECT_LE(plapoint::gpu::icpFloatAlignmentStepRawResultByteCountForTesting(), std::size_t{24});
+    EXPECT_LE(plapoint::gpu::icpDoubleAlignmentStepRawResultByteCountForTesting(), std::size_t{32});
+    EXPECT_LT(
+        plapoint::gpu::icpFloatAlignmentStepRawResultByteCountForTesting(),
+        plapoint::gpu::icpDoubleAlignmentStepRawResultByteCountForTesting());
 }
 
 TEST(ICPGpuPathTest, AlignmentStepCompactResultMatchesFullStatsStepResult)
