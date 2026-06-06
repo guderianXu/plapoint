@@ -3520,6 +3520,7 @@ TEST(ICPGpuPathTest, AlignWritesTerminalTransformDirectlyWhenOutputAliasesTarget
     icp.setMaxIterations(1);
 
     plapoint::gpu::resetIcpLastTransformOutputPointerForTesting();
+    plapoint::gpu::resetIcpDirectSpatialGridKernelLaunchCountForTesting();
     icp.align(*target);
 
     EXPECT_EQ(target->size(), source->size());
@@ -3527,6 +3528,7 @@ TEST(ICPGpuPathTest, AlignWritesTerminalTransformDirectlyWhenOutputAliasesTarget
     EXPECT_EQ(icp._gpu_points_a, nullptr);
     EXPECT_EQ(icp._gpu_points_b, nullptr);
     EXPECT_EQ(plapoint::gpu::icpLastTransformOutputPointerForTesting(), target_points_ptr);
+    EXPECT_EQ(plapoint::gpu::icpDirectSpatialGridKernelLaunchCountForTesting(), 2);
 }
 
 TEST(ICPGpuPathTest, AlignWritesTerminalOrderedTransformDirectlyWhenOutputAliasesTarget)

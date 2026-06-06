@@ -518,12 +518,20 @@ private:
                 !terminal_ordered_final_metrics_can_overwrite_target_output &&
                 !terminal_final_metrics_can_use_target_snapshot;
             Scalar* transform_output_points = nullptr;
+            bool defer_target_workspace_cache_invalidation = false;
             if (terminal_iteration && !terminal_identity_step && output && !terminal_output_needs_target_points)
             {
                 transform_output_points = prepareGpuOutputPointBuffer(*output, source_count);
                 if (output_aliases_target)
                 {
-                    invalidateGpuTargetWorkspaceCache();
+                    if (terminal_final_metrics_can_use_target_snapshot)
+                    {
+                        defer_target_workspace_cache_invalidation = true;
+                    }
+                    else
+                    {
+                        invalidateGpuTargetWorkspaceCache();
+                    }
                 }
                 final_points_written_to_output = true;
             }
@@ -571,44 +579,59 @@ private:
             else if (terminal_iteration && _compute_final_metrics)
             {
                 gpu::IcpResidualStats<Scalar> final_stats;
-                if (terminal_final_metrics_can_use_ordered_correspondences)
+                try
                 {
-                    final_stats =
-                        gpu::detail::transformPointsAndComputeOrderedIcpResidualStatsColumnMajorWithReservedWorkspace(
-                            _gpu_T_acc->data(),
-                            source_points,
-                            source_count,
-                            target_points,
-                            target_count,
-                            _max_corr_dist,
-                            transform_output_points,
-                            _gpu_stats_workspace);
-                }
-                else if (terminal_final_metrics_can_use_target_snapshot)
-                {
-                    final_stats =
-                        gpu::detail::
-                            transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
+                    if (terminal_final_metrics_can_use_ordered_correspondences)
+                    {
+                        final_stats =
+                            gpu::detail::transformPointsAndComputeOrderedIcpResidualStatsColumnMajorWithReservedWorkspace(
                                 _gpu_T_acc->data(),
                                 source_points,
                                 source_count,
+                                target_points,
+                                target_count,
                                 _max_corr_dist,
                                 transform_output_points,
-                                _gpu_stats_workspace,
-                                target_spatial_grid_snapshot_cell_count);
+                                _gpu_stats_workspace);
+                    }
+                    else if (terminal_final_metrics_can_use_target_snapshot)
+                    {
+                        final_stats =
+                            gpu::detail::
+                                transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
+                                    _gpu_T_acc->data(),
+                                    source_points,
+                                    source_count,
+                                    _max_corr_dist,
+                                    transform_output_points,
+                                    _gpu_stats_workspace,
+                                    target_spatial_grid_snapshot_cell_count);
+                    }
+                    else
+                    {
+                        final_stats =
+                            gpu::detail::transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
+                                _gpu_T_acc->data(),
+                                source_points,
+                                source_count,
+                                target_points,
+                                target_count,
+                                _max_corr_dist,
+                                transform_output_points,
+                                _gpu_stats_workspace);
+                    }
                 }
-                else
+                catch (...)
                 {
-                    final_stats =
-                        gpu::detail::transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
-                            _gpu_T_acc->data(),
-                            source_points,
-                            source_count,
-                            target_points,
-                            target_count,
-                            _max_corr_dist,
-                            transform_output_points,
-                            _gpu_stats_workspace);
+                    if (defer_target_workspace_cache_invalidation)
+                    {
+                        invalidateGpuTargetWorkspaceCache();
+                    }
+                    throw;
+                }
+                if (defer_target_workspace_cache_invalidation)
+                {
+                    invalidateGpuTargetWorkspaceCache();
                 }
                 if (transform_output_points)
                 {

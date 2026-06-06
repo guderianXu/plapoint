@@ -6999,3 +6999,47 @@ Verification evidence:
   `align(output)` terminal residual metrics can now reuse the direct spatial-grid specialization from the cached target
   snapshot. This affects the full finite-radius reuse-output path rather than the standalone transform-residual
   benchmark, which uses the non-snapshot residual entry point.
+
+## Task 185: Preserve Snapshot Direct Lookup for Target-Aliased Output
+
+- Goal: when caller output aliases the GPU target cloud and terminal final metrics can reuse the cached target
+  spatial-grid snapshot, keep the snapshot's compact direct-lookup metadata alive until the terminal residual metrics
+  have used it. The previous target-alias path invalidated the target workspace cache immediately after selecting the
+  target buffer as transform output, which cleared the direct-lookup metadata before the snapshot residual kernel was
+  launched.
+- RED check:
+  - Tightened `ICPGpuPathTest.AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsUseSpatialGrid`
+    to reset `g_icp_direct_spatial_grid_kernel_launch_count` and expect two direct spatial-grid kernel launches: one
+    for the alignment step and one for the target-snapshot terminal residual metrics.
+  - Before implementation, the test failed with direct spatial-grid kernel launch count 1 instead of 2.
+- Implementation:
+  - Added a local `defer_target_workspace_cache_invalidation` flag in GPU `IterativeClosestPoint::align()`.
+  - For target-aliased terminal output only when final metrics use the cached target spatial-grid snapshot, delay
+    `invalidateGpuTargetWorkspaceCache()` until after the final residual stats call returns.
+  - The final-stats dispatch is wrapped so a thrown CUDA/runtime exception still invalidates the target workspace cache
+    before being rethrown.
+  - Other target-alias paths continue invalidating immediately because they either do not need the snapshot metadata or
+    do not use the target spatial-grid snapshot for terminal residual metrics.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsUseSpatialGrid`:
+    failed before implementation with direct spatial-grid kernel launch count 1 versus expected 2, then passed after
+    implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsUseSpatialGrid:ICPGpuPathTest.AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput:ICPGpuPathTest.AlignInvalidatesPersistentGpuTargetSpatialGridCacheAfterTargetAliasedOutput:ICPGpuPathTest.AlignUsesScratchForTerminalTransformWhenOutputAliasesTargetWithoutSpatialGridSnapshot:ICPGpuPathTest.AlignWritesTerminalOrderedTransformDirectlyWhenOutputAliasesTarget:ICPGpuPathTest.AlignUsesScratchForTerminalOrderedTransformWhenAttributedOutputAliasesTarget:ICPGpuPathTest.AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsDisabled:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.SpatialGridDirectLookupUsesSpecializedKernelLaunches`:
+    9 targeted target-alias, snapshot, and direct-lookup tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 40 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_finite_radius_translation_(reuse_target_output|reuse_target_output_skip_final_metrics|reuse_output|reuse_output_skip_final_metrics|ordered_output|ordered_output_skip_final_metrics)|gpu_icp_stats_finite_radius_translation_cached_grid|gpu_icp_residual_stats_finite_radius_translation_cached_grid|gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid'`:
+    ran successfully on the RTX 4060 Laptop GPU.
+  - Relevant second-run rows:
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.37091 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.20968 ms,
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.533697 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.505851 ms,
+    `gpu_icp_finite_radius_translation_reuse_target_output` = 1.46316 ms,
+    `gpu_icp_finite_radius_translation_reuse_target_output_skip_final_metrics` = 1.28601 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.669488 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.472383 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.473413 ms.
+- Current conclusion:
+  target-aliased terminal output now preserves the cached snapshot direct lookup for the final residual pass while still
+  invalidating the target workspace cache before `align()` can return or propagate final-stats errors.
