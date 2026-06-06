@@ -7424,3 +7424,53 @@ Verification evidence:
 - Current conclusion:
   sparse/lower-bound spatial-grid searches now avoid the same zero-distance center-Z helper cost that direct lookup
   paths already skipped, while neighbor Z cells retain the existing guarded distance calculation.
+
+## Task 195: Prune Direct Spatial-Grid XY Before Base Lookup
+
+- Goal: direct spatial-grid kernels should avoid computing and counting an XY direct-lookup base for neighbor XY cells
+  that cannot improve the current best distance. The direct table should still reject out-of-range XY cells before doing
+  neighbor XY distance work.
+- RED check:
+  - Added `ICPGpuPathTest.SpatialGridDirectLookupPrunesXYBeforeBaseLookup`, which builds a compact 3x3x3 target grid.
+    The center cell produces a non-zero best match first; all other in-range XY neighbors can then be pruned by the XY
+    lower bound before their direct lookup base is computed.
+  - Before implementation, correspondence stats, residual stats, and transform+residual stats each reported
+    `icpDirectGridLookupXyCheckCountForTesting() == 9` instead of the expected 1.
+- Implementation:
+  - Split `directLookupIcpGridCellXyBase()` into an uncounted `directLookupIcpGridCellXyLocal()` range/local-coordinate
+    stage and a counted `directLookupIcpGridCellXyBaseFromLocal()` base computation stage.
+  - Updated the correspondence-stats, residual-stats, and transform+residual direct-lookup spatial-grid branches to run
+    the direct XY range/local check first, then the XY lower-bound prune, then the counted base computation.
+  - Kept the existing out-of-range behavior intact. A first attempt that moved the XY lower-bound calculation before the
+    direct XY range check made `SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn` report 8 extra neighbor XY
+    distance calculations; the final two-stage helper avoids that regression.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridDirectLookupPrunesXYBeforeBaseLookup`:
+    failed before implementation with 9 XY base checks on all three checked paths, then passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridDirectLookupPrunesXYBeforeBaseLookup:ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn:ICPGpuPathTest.SpatialGridDirectLookupSpecializationSkipsXyBaseGuard:ICPGpuPathTest.SpatialGridDirectLookupSpecializationSkipsActiveGuard:ICPGpuPathTest.SpatialGridDirectLookupUsesSpecializedKernelLaunches:ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells:ICPGpuPathTest.CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridXYLookupsBeforeSearch:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYExceedsRadius:ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath`:
+    14 direct/sparse spatial-grid tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(stats_step|alignment_step|stats|residual_stats|transform_residual_stats)_finite_radius_translation_(cached_grid|cached_grid_reserved_workspace|ordered)|gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit|gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics'`:
+    ran successfully on the RTX 4060 Laptop GPU.
+  - Relevant rows:
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.6951 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.695075 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace` = 0.694432 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.670683 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.476272 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid_reserved_workspace` = 0.47409 ms,
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.475939 ms, and
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.700934 ms.
+- Full verification after the final helper split:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 317/317 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) &&
+    ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, with the expected CUDA-only
+    `PointCloudTest.GpuTransfer` skip in the CPU build.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+- Current conclusion:
+  direct spatial-grid paths now skip counted XY base computation after a center-cell best makes neighbor XY cells
+  noncompetitive, without reintroducing extra neighbor XY distance work for out-of-range direct lookup columns. The
+  benchmark impact is small on the current 100k translation fixture, so the larger remaining bottleneck is still the
+  cached-grid candidate scan/reduction path rather than this guard order.

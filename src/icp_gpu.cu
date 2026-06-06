@@ -772,12 +772,13 @@ __device__ __forceinline__ int loadIcpGridCellCount(const IcpTargetSpatialGrid& 
     return loadReadOnlyIcpValue(target_grid.cell_counts + cell_idx);
 }
 
-template <bool CheckActive, bool CheckXyBaseBounds>
-__device__ __forceinline__ bool directLookupIcpGridCellXyBase(
+template <bool CheckActive>
+__device__ __forceinline__ bool directLookupIcpGridCellXyLocal(
     const IcpTargetSpatialGrid& target_grid,
     int query_x,
     int query_y,
-    int& xy_base)
+    int& local_x,
+    int& local_y)
 {
     if constexpr (CheckActive)
     {
@@ -806,13 +807,37 @@ __device__ __forceinline__ bool directLookupIcpGridCellXyBase(
         return false;
     }
 
+    local_x = static_cast<int>(local_x_u);
+    local_y = static_cast<int>(local_y_u);
+    return true;
+}
+
+__device__ __forceinline__ int directLookupIcpGridCellXyBaseFromLocal(
+    const IcpTargetSpatialGrid& target_grid,
+    int local_x,
+    int local_y)
+{
 #ifdef PLAPOINT_ENABLE_TESTING
     atomicAdd(&g_icp_direct_grid_lookup_xy_check_count, 1ull);
 #endif
+    return (local_x * target_grid.direct_lookup_range_y + local_y) * target_grid.direct_lookup_range_z;
+}
 
-    const int local_x = static_cast<int>(local_x_u);
-    const int local_y = static_cast<int>(local_y_u);
-    xy_base = (local_x * target_grid.direct_lookup_range_y + local_y) * target_grid.direct_lookup_range_z;
+template <bool CheckActive, bool CheckXyBaseBounds>
+__device__ __forceinline__ bool directLookupIcpGridCellXyBase(
+    const IcpTargetSpatialGrid& target_grid,
+    int query_x,
+    int query_y,
+    int& xy_base)
+{
+    int local_x = 0;
+    int local_y = 0;
+    if (!directLookupIcpGridCellXyLocal<CheckActive>(target_grid, query_x, query_y, local_x, local_y))
+    {
+        return false;
+    }
+
+    xy_base = directLookupIcpGridCellXyBaseFromLocal(target_grid, local_x, local_y);
     if constexpr (CheckXyBaseBounds)
     {
 #ifdef PLAPOINT_ENABLE_TESTING
@@ -1834,12 +1859,14 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
 
                 if constexpr (DirectLookup)
                 {
-                    int direct_lookup_xy_base = 0;
-                    if (!directLookupIcpGridCellXyBase<false, false>(
+                    int direct_lookup_local_x = 0;
+                    int direct_lookup_local_y = 0;
+                    if (!directLookupIcpGridCellXyLocal<false>(
                             target_grid,
                             query_x,
                             query_y,
-                            direct_lookup_xy_base))
+                            direct_lookup_local_x,
+                            direct_lookup_local_y))
                     {
                         continue;
                     }
@@ -1855,6 +1882,10 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                     {
                         continue;
                     }
+                    const int direct_lookup_xy_base = directLookupIcpGridCellXyBaseFromLocal(
+                        target_grid,
+                        direct_lookup_local_x,
+                        direct_lookup_local_y);
                     for (int z_offset_idx = 0; z_offset_idx < 3 && !stop_cell_scan; ++z_offset_idx)
                     {
                         int query_z = 0;
@@ -2761,12 +2792,14 @@ __global__ void collectResidualStatsSpatialGridKernel(
 
                 if constexpr (DirectLookup)
                 {
-                    int direct_lookup_xy_base = 0;
-                    if (!directLookupIcpGridCellXyBase<false, false>(
+                    int direct_lookup_local_x = 0;
+                    int direct_lookup_local_y = 0;
+                    if (!directLookupIcpGridCellXyLocal<false>(
                             target_grid,
                             query_x,
                             query_y,
-                            direct_lookup_xy_base))
+                            direct_lookup_local_x,
+                            direct_lookup_local_y))
                     {
                         continue;
                     }
@@ -2782,6 +2815,10 @@ __global__ void collectResidualStatsSpatialGridKernel(
                     {
                         continue;
                     }
+                    const int direct_lookup_xy_base = directLookupIcpGridCellXyBaseFromLocal(
+                        target_grid,
+                        direct_lookup_local_x,
+                        direct_lookup_local_y);
                     for (int z_offset_idx = 0; z_offset_idx < 3 && !stop_cell_scan; ++z_offset_idx)
                     {
                         int query_z = 0;
@@ -3344,12 +3381,14 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
 
                 if constexpr (DirectLookup)
                 {
-                    int direct_lookup_xy_base = 0;
-                    if (!directLookupIcpGridCellXyBase<false, false>(
+                    int direct_lookup_local_x = 0;
+                    int direct_lookup_local_y = 0;
+                    if (!directLookupIcpGridCellXyLocal<false>(
                             target_grid,
                             query_x,
                             query_y,
-                            direct_lookup_xy_base))
+                            direct_lookup_local_x,
+                            direct_lookup_local_y))
                     {
                         continue;
                     }
@@ -3365,6 +3404,10 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                     {
                         continue;
                     }
+                    const int direct_lookup_xy_base = directLookupIcpGridCellXyBaseFromLocal(
+                        target_grid,
+                        direct_lookup_local_x,
+                        direct_lookup_local_y);
                     for (int z_offset_idx = 0; z_offset_idx < 3 && !stop_cell_scan; ++z_offset_idx)
                     {
                         int query_z = 0;
