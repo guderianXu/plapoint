@@ -406,6 +406,16 @@ __device__ __forceinline__ int loadSortedIcpTargetIndex(
     return loadReadOnlyIcpValue(target_grid.sorted_target_indices + sorted_offset);
 }
 
+__device__ __forceinline__ int loadIcpGridCellStart(const IcpTargetSpatialGrid& target_grid, int cell_idx)
+{
+    return loadReadOnlyIcpValue(target_grid.cell_starts + cell_idx);
+}
+
+__device__ __forceinline__ int loadIcpGridCellCount(const IcpTargetSpatialGrid& target_grid, int cell_idx)
+{
+    return loadReadOnlyIcpValue(target_grid.cell_counts + cell_idx);
+}
+
 __device__ __forceinline__ double loadSortedIcpTargetX(const IcpTargetSpatialGrid& target_grid, int sorted_offset)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
@@ -912,8 +922,8 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                         continue;
                     }
 
-                    const int start = target_grid.cell_starts[cell_idx];
-                    const int count = target_grid.cell_counts[cell_idx];
+                    const int start = loadIcpGridCellStart(target_grid, cell_idx);
+                    const int count = loadIcpGridCellCount(target_grid, cell_idx);
                     for (int offset = 0; offset < count; ++offset)
                     {
                         const int sorted_offset = start + offset;
@@ -1409,8 +1419,8 @@ __global__ void collectResidualStatsSpatialGridKernel(
                         continue;
                     }
 
-                    const int start = target_grid.cell_starts[cell_idx];
-                    const int count = target_grid.cell_counts[cell_idx];
+                    const int start = loadIcpGridCellStart(target_grid, cell_idx);
+                    const int count = loadIcpGridCellCount(target_grid, cell_idx);
                     for (int offset = 0; offset < count; ++offset)
                     {
                         const int sorted_offset = start + offset;
@@ -1779,8 +1789,8 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                         continue;
                     }
 
-                    const int start = target_grid.cell_starts[cell_idx];
-                    const int count = target_grid.cell_counts[cell_idx];
+                    const int start = loadIcpGridCellStart(target_grid, cell_idx);
+                    const int count = loadIcpGridCellCount(target_grid, cell_idx);
                     for (int offset = 0; offset < count; ++offset)
                     {
                         const int sorted_offset = start + offset;
