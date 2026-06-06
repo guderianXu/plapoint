@@ -3321,3 +3321,45 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun the selected GPU cache tests and a repeated-target finite-radius ICP benchmark to quantify avoided target-cache
   rebuilds.
+
+## Task 103: Synchronize Terminal GPU ICP Transform When Final Metrics Are Disabled
+
+- Goal: keep the `setComputeFinalMetrics(false)` GPU ICP path from returning before the terminal output-transform
+  kernel has completed. When the final non-identity iteration writes directly to the caller-owned output and no final
+  residual metrics are requested, there is no later stats or copy synchronization to naturally wait for that transform.
+- RED check:
+  - Updated `AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled` to reset the ICP host-synchronization counter
+    and expect two synchronizations: one for the fused alignment step result and one for the terminal output transform.
+  - A static RED check against the terminal transform branch failed before the implementation because it only called
+    `transformPointsColumnMajorAsync()`.
+- Implementation:
+  - The transform-only branch in `alignGpu()` now uses synchronous `transformPointsColumnMajor()` for the terminal
+    iteration and keeps the async transform path for non-terminal iterations.
+  - Added `synchronizeIcpStreamWithHost()` in `icp_gpu.cu` so synchronous transform wrappers update the testing-only
+    host synchronization counter consistently before calling `cudaStreamSynchronize()`.
+- Verification performed in this session:
+  - Static checks confirmed the terminal transform branch now contains a synchronous `transformPointsColumnMajor()`
+    call and that ICP stream synchronization uses the shared helper.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPGpuPathTest.TransformPointsColumnMajorWritesCallerOwnedOutput`:
+    3 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `git diff --check`:
+    clean before the full verification pass.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    241 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected GPU synchronization tests and a large finite-radius ICP benchmark with
+  `setComputeFinalMetrics(false)` to confirm the runtime synchronization behavior and measure the cost of the terminal
+  host wait.

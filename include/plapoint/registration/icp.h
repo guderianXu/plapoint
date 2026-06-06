@@ -481,12 +481,24 @@ private:
             }
             else
             {
-                gpu::transformPointsColumnMajorAsync(
-                    step_transform,
-                    cur_points,
-                    source_count,
-                    transform_output_points,
-                    0);
+                if (terminal_iteration)
+                {
+                    gpu::transformPointsColumnMajor(
+                        step_transform,
+                        cur_points,
+                        source_count,
+                        transform_output_points,
+                        0);
+                }
+                else
+                {
+                    gpu::transformPointsColumnMajorAsync(
+                        step_transform,
+                        cur_points,
+                        source_count,
+                        transform_output_points,
+                        0);
+                }
                 cur_points = transform_output_points;
             }
 

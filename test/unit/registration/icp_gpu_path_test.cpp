@@ -2816,12 +2816,14 @@ TEST(ICPGpuPathTest, AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled)
     plapoint::gpu::resetIcpCorrespondenceStatsCallCountForTesting();
     plapoint::gpu::resetIcpTransformPointsCallCountForTesting();
     plapoint::gpu::resetIcpTransformMultiplyCallCountForTesting();
+    plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     GpuCloud output;
     icp.align(output);
 
     EXPECT_EQ(plapoint::gpu::icpCorrespondenceStatsCallCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTransformMultiplyCallCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 2);
     EXPECT_EQ(icp._gpu_points_a, nullptr);
     EXPECT_EQ(icp._gpu_points_b, nullptr);
     EXPECT_EQ(output.size(), source->size());

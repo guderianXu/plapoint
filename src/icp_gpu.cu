@@ -191,6 +191,14 @@ void recordFallbackKernelLaunchForTesting(bool uses_target_tile_bounds)
 }
 #endif
 
+void synchronizeIcpStreamWithHost(cudaStream_t stream)
+{
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+}
+
 int icpStatsPartialCount(int source_count)
 {
     return (source_count + kIcpStatsBlockSize - 1) / kIcpStatsBlockSize;
@@ -5165,7 +5173,7 @@ void transformPointsColumnMajor(
     cudaStream_t stream)
 {
     transformPointsColumnMajorImpl(d_transform, d_points, point_count, d_output_points, stream);
-    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    synchronizeIcpStreamWithHost(stream);
 }
 
 void transformPointsColumnMajor(
@@ -5176,7 +5184,7 @@ void transformPointsColumnMajor(
     cudaStream_t stream)
 {
     transformPointsColumnMajorImpl(d_transform, d_points, point_count, d_output_points, stream);
-    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    synchronizeIcpStreamWithHost(stream);
 }
 
 void transformPointsColumnMajorAsync(
