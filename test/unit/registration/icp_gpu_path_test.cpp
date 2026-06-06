@@ -4931,6 +4931,8 @@ TEST(ICPGpuPathTest, AlignReusesIterationStatsForExactIdentityTerminalMetrics)
     EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpTransformMultiplyCallCountForTesting(), 0);
+    EXPECT_EQ(icp._gpu_output_device_to_device_copy_sync_count, 0);
+    EXPECT_EQ(icp._gpu_output_device_to_device_copy_async_count, 1);
     EXPECT_EQ(icp._gpu_points_a, nullptr);
     EXPECT_EQ(icp._gpu_points_b, nullptr);
     EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-6f);
@@ -5036,6 +5038,48 @@ TEST(ICPGpuPathTest, TransformResidualStatsSkipsSearchForExactPointwiseMatches)
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 0);
     EXPECT_EQ(stats.active_count, static_cast<int>(source_points.rows()));
     EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-8);
+}
+
+TEST(ICPGpuPathTest, TransformResidualStatsFallbackSkipsDuplicateExactPointwiseProbeAfterPreflightMiss)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto target_points = makeNonCollinearPoints();
+    auto source_points = makeTranslatedNonCollinearPoints(target_points, 0.5f, -0.25f, 0.125f);
+    auto transform = makeTranslationTransform(-0.25f, 0.125f, -0.0625f);
+
+    auto source_gpu = source_points.toGpu();
+    auto target_gpu = target_points.toGpu();
+    auto transform_gpu = transform.toGpu();
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output_gpu(source_points.rows(), 3);
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+
+    plapoint::gpu::resetIcpTransformedExactPointwiseResidualCallCountForTesting();
+    plapoint::gpu::resetIcpTransformedExactPointwiseResidualProbeCountForTesting();
+    plapoint::gpu::resetIcpExactPointwiseTargetLoadCountForTesting();
+    const auto stats = plapoint::gpu::transformPointsAndComputeIcpResidualStatsColumnMajor(
+        transform_gpu.data(),
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        2.0f,
+        output_gpu.data(),
+        workspace);
+
+    EXPECT_EQ(stats.active_count, static_cast<int>(source_points.rows()));
+    EXPECT_TRUE(std::isfinite(stats.residual_sq_sum));
+    EXPECT_GT(stats.residual_sq_sum, 0.0);
+    EXPECT_EQ(plapoint::gpu::icpTransformedExactPointwiseResidualCallCountForTesting(), 1);
+    EXPECT_EQ(
+        plapoint::gpu::icpTransformedExactPointwiseResidualProbeCountForTesting(),
+        static_cast<unsigned long long>(source_gpu.rows()));
+    EXPECT_EQ(
+        plapoint::gpu::icpExactPointwiseTargetLoadCountForTesting(),
+        static_cast<unsigned long long>(source_gpu.rows()) * 3ull);
 }
 
 TEST(ICPGpuPathTest, TransformResidualStatsSkipsExactPointwiseProbeWhenCountsDiffer)

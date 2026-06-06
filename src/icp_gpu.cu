@@ -4236,9 +4236,11 @@ void launchTransformAndCollectResidualStatsSpatialGridKernel(
     Scalar max_correspondence_distance,
     Scalar* output_points,
     const IcpTargetSpatialGrid& target_grid,
+    bool allow_transformed_exact_pointwise,
     RawIcpResidualStats* partial_stats)
 {
     const bool try_transformed_exact_pointwise =
+        allow_transformed_exact_pointwise &&
         detail::canProbeTransformedExactPointwiseStats(
             source_count,
             target_grid.target_points,
@@ -6303,9 +6305,11 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
             d_target_points,
             target_count,
             cell_size);
+    bool transformed_exact_pointwise_preflight_missed = false;
     if (use_target_spatial_grid &&
-        !target_grid_cache_matches &&
-        tryComputeTransformedExactPointwiseResidualStats(
+        !target_grid_cache_matches)
+    {
+        if (tryComputeTransformedExactPointwiseResidualStats(
             d_transform,
             d_source_points,
             source_count,
@@ -6317,8 +6321,10 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
             d_stats,
             h_stats,
             stream))
-    {
-        return makeHostResidualStats<Scalar>(*h_stats);
+        {
+            return makeHostResidualStats<Scalar>(*h_stats);
+        }
+        transformed_exact_pointwise_preflight_missed = true;
     }
 
     const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
@@ -6341,6 +6347,7 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
             max_correspondence_distance,
             d_output_points,
             target_grid,
+            !transformed_exact_pointwise_preflight_missed,
             d_partials);
     }
     else
@@ -6550,6 +6557,7 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
         max_correspondence_distance,
         d_output_points,
         target_grid,
+        true,
         d_partials);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 

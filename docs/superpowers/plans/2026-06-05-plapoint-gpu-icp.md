@@ -7135,3 +7135,82 @@ Verification evidence:
 - Current conclusion:
   transformed exact-pointwise mismatch paths now avoid a duplicate exact target load pass after preflight miss. The
   user-requested exact-hit preflight path still returns before spatial-grid search when it succeeds.
+
+## Task 188: Use Async D2D Copy for Post-Loop GPU Output
+
+- Goal: when `align(output)` reaches the post-loop output copy path and only needs to copy already-current GPU points
+  into the caller's GPU output buffer, enqueue that device-to-device copy on the stream instead of using host-blocking
+  `cudaMemcpy()`. This matches the existing async terminal transform path and avoids adding a host-blocking API call to
+  exact-identity/output-copy cases.
+- RED check:
+  - Added testing-only ICP object counters for post-loop output device-to-device copies:
+    `_gpu_output_device_to_device_copy_sync_count` and `_gpu_output_device_to_device_copy_async_count`.
+  - Tightened `ICPGpuPathTest.AlignReusesIterationStatsForExactIdentityTerminalMetrics` to expect no sync D2D output
+    copy and exactly one async D2D output copy.
+  - Before implementation, the test failed with sync count 1 and async count 0.
+- Implementation:
+  - Replaced the post-loop output `cudaMemcpy(..., cudaMemcpyDeviceToDevice)` with
+    `cudaMemcpyAsync(..., cudaMemcpyDeviceToDevice, 0)`.
+  - Kept the existing output-alias cache invalidation and `output_points != cur_points` guard unchanged.
+  - This does not alter ICP correspondences, transforms, or final metric computation; it only changes the host behavior
+    of the final GPU-to-GPU copy.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesIterationStatsForExactIdentityTerminalMetrics`:
+    failed before implementation with sync count 1 and async count 0, then passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesIterationStatsForExactIdentityTerminalMetrics:ICPGpuPathTest.AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled:ICPGpuPathTest.AlignWritesPostLoopOutputTransformWithoutExtraHostSynchronization:ICPGpuPathTest.AlignWithoutOutputSkipsTerminalPointTransformWhenFinalMetricsAreDisabled:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics`:
+    5 output/final-metrics path tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 40 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp | rg 'gpu_icp_identity|gpu_icp_finite_radius_translation_reuse_output|gpu_icp_finite_radius_translation_ordered_output|gpu_icp_finite_radius_translation_reuse_target_output'`:
+    ran successfully on the RTX 4060 Laptop GPU.
+  - Relevant rows:
+    `gpu_icp_identity` = 0.784121 ms,
+    `gpu_icp_identity_same_buffer_reuse_output` = 0.205765 ms,
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.373 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.21126 ms,
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.534058 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.501687 ms,
+    `gpu_icp_finite_radius_translation_reuse_target_output` = 1.46436 ms, and
+    `gpu_icp_finite_radius_translation_reuse_target_output_skip_final_metrics` = 1.28886 ms.
+- Current conclusion:
+  post-loop GPU output copies now enqueue as async device-to-device copies. Existing terminal transform and output-alias
+  behavior remains unchanged.
+
+## Task 189: Avoid Duplicate Transform-Residual Exact Probe After Preflight Miss
+
+- Goal: apply the Task 187 preflight-miss optimization to transform+residual final-metrics paths. When transformed
+  exact-pointwise residual preflight has already launched and missed, the fallback spatial-grid residual kernel should
+  skip its own transformed exact-pointwise branch and go straight to grid search.
+- RED check:
+  - Added
+    `ICPGpuPathTest.TransformResidualStatsFallbackSkipsDuplicateExactPointwiseProbeAfterPreflightMiss`, using the same
+    equal-count mismatch geometry as the transformed alignment fallback test.
+  - Before implementation, the test failed with transformed residual call count 2 instead of 1, residual probe count 8
+    instead of 4, and exact target load count 24 instead of 12.
+- Implementation:
+  - Added an `allow_transformed_exact_pointwise` flag to
+    `launchTransformAndCollectResidualStatsSpatialGridKernel()`.
+  - `transformPointsAndComputeIcpResidualStatsColumnMajorImpl()` now records when the independent transformed
+    exact-pointwise residual preflight did not produce finite residual stats, then disables the duplicate exact probe in
+    the following spatial-grid residual kernel.
+  - Target spatial-grid snapshot residual metrics keep the previous behavior by passing `true`, because that path has no
+    independent preflight miss state.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformResidualStatsFallbackSkipsDuplicateExactPointwiseProbeAfterPreflightMiss`:
+    failed before implementation with call/probe/load counts 2/8/24 versus expected 1/4/12, then passed after
+    implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformResidualStatsSkipsSearchForExactPointwiseMatches:ICPGpuPathTest.TransformResidualStatsFallbackSkipsDuplicateExactPointwiseProbeAfterPreflightMiss:ICPGpuPathTest.TransformResidualStatsSkipsExactPointwiseProbeWhenCountsDiffer:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput:ICPGpuPathTest.AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsUseSpatialGrid:ICPGpuPathTest.AlignReusesIterationStatsForExactIdentityTerminalMetrics:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics`:
+    8 transform-residual, snapshot, and output-copy tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 40 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_transform_residual_stats_(finite_radius_translation_cached_grid|transformed_exact_pointwise_new_workspace)|gpu_icp_finite_radius_(binary_translation_reuse_output_preflight|binary_translation_transform_only_preflight|nonrigid_transform_only_preflight)'`:
+    ran successfully on the RTX 4060 Laptop GPU.
+  - Relevant rows:
+    `gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations` = 2.04371 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_preflight_two_iterations` = 0.959705 ms,
+    `gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations` = 0.956306 ms,
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.481216 ms, and
+    `gpu_icp_transform_residual_stats_transformed_exact_pointwise_new_workspace` = 0.477538 ms.
+- Current conclusion:
+  transform+residual final-metrics fallback now avoids repeating exact same-index target loads after a known preflight
+  miss, while exact-hit preflight and snapshot residual paths retain their existing behavior.

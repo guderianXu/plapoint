@@ -732,11 +732,15 @@ private:
                     {
                         invalidateGpuTargetWorkspaceCache();
                     }
-                    PLAPOINT_CHECK_CUDA(cudaMemcpy(
+#ifdef PLAPOINT_ENABLE_TESTING
+                    ++_gpu_output_device_to_device_copy_async_count;
+#endif
+                    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
                         output_points,
                         cur_points,
                         static_cast<std::size_t>(source_count) * 3u * sizeof(Scalar),
-                        cudaMemcpyDeviceToDevice));
+                        cudaMemcpyDeviceToDevice,
+                        0));
                 }
             }
         }
@@ -1267,6 +1271,8 @@ private:
     int _gpu_next_transform_reserve_check_count = 0;
     int _gpu_point_scratch_reserve_check_count = 0;
     int _gpu_metric_update_count = 0;
+    int _gpu_output_device_to_device_copy_sync_count = 0;
+    int _gpu_output_device_to_device_copy_async_count = 0;
 #endif
 #endif
     bool _converged = false;
