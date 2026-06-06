@@ -39,8 +39,8 @@ struct RawIcpStats
     double src_sum[3];
     double tgt_sum[3];
     double cross_sum[9];
-    double src_outer_sum[9];
-    double tgt_outer_sum[9];
+    double src_outer_sum[6];
+    double tgt_outer_sum[6];
     double residual_sq_sum;
 };
 
@@ -238,7 +238,7 @@ __device__ __forceinline__ void multiplyTransform4x4SingleThread(
 
 __device__ __forceinline__ bool rawStatsCovarianceHasNonCollinearGeometry(
     const double sum[3],
-    const double outer_sum[9],
+    const double outer_sum[6],
     int active_count);
 
 #ifdef PLAPOINT_ENABLE_TESTING
@@ -350,19 +350,21 @@ bool icpGridCellBoundsAreFinite(double cell_size)
         cell_size <= std::numeric_limits<double>::max() / max_abs_grid_coordinate;
 }
 
-__host__ __device__ __forceinline__ int symmetricIcpOuterIndex(int row, int col)
+__host__ __device__ __forceinline__ int compactIcpOuterIndex(int row, int col)
 {
-    return row <= col ? row * 3 + col : col * 3 + row;
+    const int upper_row = row <= col ? row : col;
+    const int upper_col = row <= col ? col : row;
+    return upper_row * 3 + upper_col - upper_row * (upper_row + 1) / 2;
 }
 
-__device__ __forceinline__ void addRawIcpOuterSumsUpperTriangle(double dst[9], const double src[9])
+__device__ __forceinline__ void addRawIcpOuterSums(double dst[6], const double src[6])
 {
     dst[0] += src[0];
     dst[1] += src[1];
     dst[2] += src[2];
+    dst[3] += src[3];
     dst[4] += src[4];
     dst[5] += src[5];
-    dst[8] += src[8];
 }
 
 __device__ __forceinline__ void addRawIcpStats(RawIcpStats& dst, const RawIcpStats& src)
@@ -380,8 +382,8 @@ __device__ __forceinline__ void addRawIcpStats(RawIcpStats& dst, const RawIcpSta
     {
         dst.cross_sum[idx] += src.cross_sum[idx];
     }
-    addRawIcpOuterSumsUpperTriangle(dst.src_outer_sum, src.src_outer_sum);
-    addRawIcpOuterSumsUpperTriangle(dst.tgt_outer_sum, src.tgt_outer_sum);
+    addRawIcpOuterSums(dst.src_outer_sum, src.src_outer_sum);
+    addRawIcpOuterSums(dst.tgt_outer_sum, src.tgt_outer_sum);
     dst.residual_sq_sum += src.residual_sq_sum;
 }
 
@@ -1189,7 +1191,7 @@ __device__ __forceinline__ void recordAcceptedCorrespondence(
 #pragma unroll
         for (int c = r; c < 3; ++c)
         {
-            const int idx = r * 3 + c;
+            const int idx = compactIcpOuterIndex(r, c);
             local.src_outer_sum[idx] = source_values[r] * source_values[c];
             local.tgt_outer_sum[idx] = target_values[r] * target_values[c];
         }
@@ -5059,7 +5061,7 @@ __device__ __forceinline__ void computeStepTransformFromRawStatsValue(
 
 __device__ __forceinline__ bool rawStatsCovarianceHasNonCollinearGeometry(
     const double sum[3],
-    const double outer_sum[9],
+    const double outer_sum[6],
     int active_count)
 {
     if (active_count <= 0)
@@ -5071,9 +5073,9 @@ __device__ __forceinline__ bool rawStatsCovarianceHasNonCollinearGeometry(
     const double c00 = outer_sum[0] - sum[0] * sum[0] * inv_count;
     const double c01 = outer_sum[1] - sum[0] * sum[1] * inv_count;
     const double c02 = outer_sum[2] - sum[0] * sum[2] * inv_count;
-    const double c11 = outer_sum[4] - sum[1] * sum[1] * inv_count;
-    const double c12 = outer_sum[5] - sum[1] * sum[2] * inv_count;
-    const double c22 = outer_sum[8] - sum[2] * sum[2] * inv_count;
+    const double c11 = outer_sum[3] - sum[1] * sum[1] * inv_count;
+    const double c12 = outer_sum[4] - sum[1] * sum[2] * inv_count;
+    const double c22 = outer_sum[5] - sum[2] * sum[2] * inv_count;
     const double trace = c00 + c11 + c22;
     if (!isfinite(trace) || trace <= 0.0)
     {
@@ -6047,7 +6049,7 @@ IcpCorrespondenceStats<Scalar> makeHostStats(const RawIcpStats& raw)
         for (int c = 0; c < 3; ++c)
         {
             const int idx = r * 3 + c;
-            const int outer_idx = symmetricIcpOuterIndex(r, c);
+            const int outer_idx = compactIcpOuterIndex(r, c);
             stats.cross_covariance[idx] = raw.cross_sum[idx] -
                 raw.src_sum[r] * raw.tgt_sum[c] * inv_count;
             stats.src_covariance[idx] = raw.src_outer_sum[outer_idx] -
@@ -7704,6 +7706,11 @@ int icpAlignmentStepReserveCheckCountForTesting()
 std::size_t icpAlignmentStepRawResultByteCountForTesting()
 {
     return sizeof(IcpAlignmentStepRawResult<double>);
+}
+
+std::size_t icpRawStatsByteCountForTesting()
+{
+    return sizeof(RawIcpStats);
 }
 
 std::size_t icpFloatAlignmentStepRawResultByteCountForTesting()

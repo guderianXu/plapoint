@@ -7526,3 +7526,61 @@ Verification evidence:
   GPU ICP correspondence-stat kernels now skip six redundant source/target lower-triangle outer-product writes per
   accepted correspondence, and the reduction kernels skip the same lower-triangle entries while preserving full host
   covariance output.
+
+## Task 197: Compact GPU ICP Raw Stats Outer-Covariance Storage
+
+- Goal: after Task 196 stopped using source/target outer-product lower-triangle entries, shrink the internal
+  `RawIcpStats` layout so each symmetric outer-product sum stores only six upper-triangle entries. This reduces
+  per-source partial storage, shared-memory reduction footprint, and final raw stats copy size without changing the
+  public full 3x3 covariance output.
+- RED check:
+  - Added `icpRawStatsByteCountForTesting()` and
+    `ICPGpuPathTest.RawIcpStatsUsesCompactOuterCovarianceStorage`.
+  - Before implementation, the test failed because `RawIcpStats` was still 280 bytes, above the compact upper-triangle
+    storage limit of 240 bytes.
+- Implementation:
+  - Changed `RawIcpStats::src_outer_sum` and `RawIcpStats::tgt_outer_sum` from nine-entry arrays to six-entry compact
+    upper-triangle arrays.
+  - Replaced the old mirrored 3x3 index helper with `compactIcpOuterIndex()`, mapping
+    `(0,0),(0,1),(0,2),(1,1),(1,2),(2,2)` to `0..5`.
+  - Updated correspondence recording, raw stats reduction, device-side non-collinearity checks, and host stats
+    reconstruction to use the compact upper-triangle storage.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.RawIcpStatsUsesCompactOuterCovarianceStorage`:
+    failed before implementation with raw stats byte count 280 versus expected at most 240.
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.RawIcpStatsUsesCompactOuterCovarianceStorage:ICPGpuPathTest.CorrespondenceStatsSkipsRedundantOuterLowerTriangleAccumulation:ICPGpuPathTest.CorrespondenceStatsReportsDegenerateGeometry:ICPGpuPathTest.AlignmentStepCompactResultMatchesFullStatsStepResult:ICPGpuPathTest.AlignComputesStepFromDeviceStatsWithoutHostInputCopy:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization`:
+    6 raw-layout, covariance, geometry, and alignment-step tests passed after implementation.
+  - Baseline before this task, using the current pushed Task 196 code:
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.670298 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.670245 ms,
+    `gpu_icp_alignment_step_exact_pointwise_same_buffer` = 0.161614 ms,
+    `gpu_icp_alignment_step_ordered_same_buffer_finite_radius` = 0.156777 ms, and
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.6714 ms.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 40 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(stats_step|alignment_step|stats|residual_stats|transform_residual_stats)_finite_radius_translation_(new_workspace|cached_grid|cached_grid_reserved_workspace|ordered)|gpu_icp_alignment_step_(exact_pointwise_same_buffer|ordered_same_buffer_finite_radius)|gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics'`:
+    ran successfully on the RTX 4060 Laptop GPU after implementation.
+  - Relevant rows after implementation:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.03127 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.612242 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.612348 ms,
+    `gpu_icp_stats_step_finite_radius_translation_ordered` = 0.178453 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.612426 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace` = 0.612315 ms,
+    `gpu_icp_alignment_step_exact_pointwise_same_buffer` = 0.120715 ms,
+    `gpu_icp_alignment_step_exact_pointwise_same_buffer_reserved_workspace` = 0.120482 ms,
+    `gpu_icp_alignment_step_ordered_same_buffer_finite_radius` = 0.120739 ms, and
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.58682 ms.
+- Full verification after the compact raw-stats layout change:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 319/319 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) &&
+    ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, with the expected CUDA-only
+    `PointCloudTest.GpuTransfer` skip in the CPU build.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+- Current conclusion:
+  stats/alignment-step raw partial storage is now compact enough for the 240-byte layout guard and preserves the full
+  public covariance output. On the 100k finite-radius translation benchmark, cached-grid stats/alignment steps improved
+  from roughly 0.670 ms to roughly 0.612 ms, and exact/ordered alignment-step paths improved from roughly 0.16 ms to
+  roughly 0.12 ms.
