@@ -2215,6 +2215,46 @@ Verification evidence:
   rerun the selected step-transform GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime
   behavior and measure the transform-solve impact.
 
+## Task 89: Force-Inline GPU ICP Step-Transform Helpers
+
+- Goal: reduce device helper call overhead in the GPU ICP stats-to-step-transform path after the small fixed loops were
+  unrolled. This path is used by the stats+step kernels and the compact alignment-step result writer.
+- Static RED:
+  - `test "$(rg -n "__device__ (void jacobiRotate4x4|void largestEigenvectorSymmetric4x4|bool rawStatsCovarianceHasNonCollinearGeometry)" src/icp_gpu.cu | wc -l)" -eq 0`:
+    failed before the change because those helpers were still declared or defined as plain `__device__` functions.
+  - `test "$(rg -n "__device__ (bool scalarRepresentable|Scalar checkedDeviceScalar)" src/icp_gpu.cu | wc -l)" -eq 0`:
+    failed before the change because the scalar conversion helpers were still plain `__device__` helpers.
+  - `test "$(rg -n "__device__ void (computeStepTransformFromInput|computeStepTransformFromRawStatsValue|writeAlignmentStepRawResultFromRawStats)" src/icp_gpu.cu | wc -l)" -eq 0`:
+    failed before the change because the step-transform helper declarations and definitions were still plain
+    `__device__` functions.
+- Implementation:
+  - Added `__forceinline__` to the forward declarations and definitions for
+    `computeStepTransformFromInput()`, `computeStepTransformFromRawStatsValue()`, and
+    `writeAlignmentStepRawResultFromRawStats()`.
+  - Added `__forceinline__` to the definitions for `jacobiRotate4x4()`, `largestEigenvectorSymmetric4x4()`,
+    `scalarRepresentable()`, `checkedDeviceScalar()`, and `rawStatsCovarianceHasNonCollinearGeometry()`.
+  - Kept all transform math, covariance checks, scalar validity handling, and result fields unchanged.
+- Verification performed in this session:
+  - The three static RED commands passed after adding the force-inline qualifiers.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.StepTransformFromStatsWritesDeviceTransform:ICPGpuPathTest.AlignmentStepCompactResultMatchesFullStatsStepResult:ICPGpuPathTest.AlignComputesStepFromDeviceStatsWithoutHostInputCopy:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPTest.Multiply4x4RejectsUnrepresentableAccumulatedTransform:ICPValidation.RecoversKnownTransform`:
+    2 CPU tests passed; 4 selected GPU tests were discovered but skipped because the current session has no usable CUDA
+    device.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    233 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran, but all GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected step-transform GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime
+  behavior and measure any call-overhead/code-size tradeoff on real hardware.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell

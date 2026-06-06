@@ -128,24 +128,24 @@ constexpr int kIcpStatsBlockSize = 128;
 constexpr int kIcpTransform3x4ValueCount = 12;
 
 template <typename Scalar>
-__device__ void computeStepTransformFromInput(
+__device__ __forceinline__ void computeStepTransformFromInput(
     const IcpStepTransformInput& input,
     Scalar* __restrict__ step_transform,
     IcpStepTransformRawResult* __restrict__ result);
 
 template <typename Scalar>
-__device__ void computeStepTransformFromRawStatsValue(
+__device__ __forceinline__ void computeStepTransformFromRawStatsValue(
     const RawIcpStats& raw,
     Scalar* __restrict__ step_transform,
     IcpStepTransformRawResult* __restrict__ result);
 
 template <typename Scalar>
-__device__ void writeAlignmentStepRawResultFromRawStats(
+__device__ __forceinline__ void writeAlignmentStepRawResultFromRawStats(
     const RawIcpStats& raw,
     Scalar* __restrict__ step_transform,
     IcpAlignmentStepRawResult* __restrict__ result);
 
-__device__ bool rawStatsCovarianceHasNonCollinearGeometry(
+__device__ __forceinline__ bool rawStatsCovarianceHasNonCollinearGeometry(
     const double sum[3],
     const double outer_sum[9],
     int active_count);
@@ -2636,7 +2636,7 @@ __global__ void transformPointsColumnMajorKernel(
     output_points[2 * point_count + idx] = oz;
 }
 
-__device__ void jacobiRotate4x4(double A[16], double V[16], int p, int q)
+__device__ __forceinline__ void jacobiRotate4x4(double A[16], double V[16], int p, int q)
 {
     const double apq = A[p * 4 + q];
     const double app = A[p * 4 + p];
@@ -2684,7 +2684,7 @@ __device__ void jacobiRotate4x4(double A[16], double V[16], int p, int q)
     }
 }
 
-__device__ void largestEigenvectorSymmetric4x4(const double A_in[16], double eigenvector[4])
+__device__ __forceinline__ void largestEigenvectorSymmetric4x4(const double A_in[16], double eigenvector[4])
 {
     double A[16];
     double V[16];
@@ -2727,7 +2727,7 @@ __device__ void largestEigenvectorSymmetric4x4(const double A_in[16], double eig
 }
 
 template <typename Scalar>
-__device__ bool scalarRepresentable(double value)
+__device__ __forceinline__ bool scalarRepresentable(double value)
 {
     if (!isfinite(value))
     {
@@ -2744,7 +2744,7 @@ __device__ bool scalarRepresentable(double value)
 }
 
 template <typename Scalar>
-__device__ Scalar checkedDeviceScalar(double value, int& valid)
+__device__ __forceinline__ Scalar checkedDeviceScalar(double value, int& valid)
 {
     if (!scalarRepresentable<Scalar>(value))
     {
@@ -2754,7 +2754,7 @@ __device__ Scalar checkedDeviceScalar(double value, int& valid)
 }
 
 template <typename Scalar>
-__device__ void computeStepTransformFromInput(
+__device__ __forceinline__ void computeStepTransformFromInput(
     const IcpStepTransformInput& input,
     Scalar* __restrict__ step_transform,
     IcpStepTransformRawResult* __restrict__ result)
@@ -2869,7 +2869,7 @@ __global__ void computeStepTransformFromRawStatsKernel(
 }
 
 template <typename Scalar>
-__device__ void computeStepTransformFromRawStatsValue(
+__device__ __forceinline__ void computeStepTransformFromRawStatsValue(
     const RawIcpStats& raw,
     Scalar* __restrict__ step_transform,
     IcpStepTransformRawResult* __restrict__ result)
@@ -2903,7 +2903,7 @@ __device__ void computeStepTransformFromRawStatsValue(
     computeStepTransformFromInput<Scalar>(input, step_transform, result);
 }
 
-__device__ bool rawStatsCovarianceHasNonCollinearGeometry(
+__device__ __forceinline__ bool rawStatsCovarianceHasNonCollinearGeometry(
     const double sum[3],
     const double outer_sum[9],
     int active_count)
@@ -2938,7 +2938,7 @@ __device__ bool rawStatsCovarianceHasNonCollinearGeometry(
 }
 
 template <typename Scalar>
-__device__ void writeAlignmentStepRawResultFromRawStats(
+__device__ __forceinline__ void writeAlignmentStepRawResultFromRawStats(
     const RawIcpStats& raw,
     Scalar* __restrict__ step_transform,
     IcpAlignmentStepRawResult* __restrict__ result)
