@@ -6544,3 +6544,52 @@ Verification evidence:
   direct lookup now amortizes XY range checks and XY-base arithmetic across the three Z probes in a neighbor column.
   The 100k cached-grid benchmark effect remains within run-to-run noise; generic correspondence search and candidate
   scans are still the dominant optimization target.
+
+## Task 175: Specialize Direct Spatial-Grid Kernels at Compile Time
+
+- Abandoned experiment before this task:
+  - Tried pruning direct-lookup Z table reads by checking the current best-distance lower bound before reading the direct
+    lookup table entry.
+  - A micro-test showed fewer Z table reads, but the 100k cached-grid benchmark slowed down in repeated runs
+    (`gpu_icp_stats_step_finite_radius_translation_cached_grid` around 0.79 ms and
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` around 0.58 ms), so the experiment was reverted.
+- Goal: remove the runtime `target_grid.direct_lookup_active` branch from the hot spatial-grid kernels after the host
+  already knows whether the direct compact lookup table is active.
+- RED check:
+  - Added a host-side `g_icp_direct_spatial_grid_kernel_launch_count` testing counter and
+    `ICPGpuPathTest.SpatialGridDirectLookupUsesSpecializedKernelLaunches`.
+  - The test exercises correspondence stats, residual stats, and transform+residual stats on a compact target grid and
+    expects each call to launch a direct spatial-grid specialization exactly once.
+  - Before implementation, all three checks failed with launch count 0 instead of 1.
+- Implementation:
+  - Added a `DirectLookup` template parameter to the correspondence-stats, residual-stats, and transform+residual
+    spatial-grid kernels.
+  - Converted the direct lookup versus lower-bound search split to `if constexpr`, including the lower-bound-only
+    `min_z`/`max_z` preparation.
+  - Updated the host launchers to instantiate direct and lower-bound variants based on
+    `target_grid.direct_lookup_active`.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridDirectLookupUsesSpecializedKernelLaunches`:
+    failed before implementation with 0 direct-specialized launches, then passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridDirectLookupUsesSpecializedKernelLaunches:ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn:ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells:ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath:ICPGpuPathTest.CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridXYLookupsBeforeSearch:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYExceedsRadius`:
+    11 targeted spatial-grid tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 20 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(finite_radius_translation_(reuse_output|reuse_output_skip_final_metrics|ordered_output|ordered_output_skip_final_metrics)|stats_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid_reserved_workspace|stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid_reserved_workspace|residual_stats_finite_radius_translation_ordered|transform_residual_stats_finite_radius_translation_cached_grid|alignment_step_transformed_exact_pointwise_cached_grid|alignment_step_transformed_exact_pointwise_cache_hit)'`:
+    ran successfully on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.45521 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.27576 ms,
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.534461 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.50574 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.735926 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.735181 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.210873 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.235413 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.710951 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.522234 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_ordered` = 0.031171 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.530353 ms.
+- Current conclusion:
+  direct compact spatial-grid searches now compile without the lower-bound branch body in the direct variants. The
+  measured 100k cached-grid rows are essentially run-to-run-noise-level changes, but unlike the reverted Z table read
+  pruning, this keeps benchmark rows flat while simplifying hot-path control flow for later kernel-level tuning.

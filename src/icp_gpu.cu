@@ -268,6 +268,7 @@ std::atomic<int> g_icp_transform_multiply_call_count{0};
 std::atomic<int> g_icp_identity_transform_write_count{0};
 std::atomic<int> g_icp_target_spatial_grid_prepare_count{0};
 std::atomic<int> g_icp_host_result_storage_allocation_count{0};
+std::atomic<int> g_icp_direct_spatial_grid_kernel_launch_count{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
 __device__ unsigned long long g_icp_target_candidate_visit_count;
 __device__ unsigned long long g_icp_target_index_load_count;
@@ -298,6 +299,14 @@ void recordTransformedExactPointwiseResidualCallForTesting(bool enabled)
     if (enabled)
     {
         g_icp_transformed_exact_pointwise_residual_call_count.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void recordDirectSpatialGridKernelLaunchForTesting(bool enabled)
+{
+    if (enabled)
+    {
+        g_icp_direct_spatial_grid_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
     }
 }
 #endif
@@ -1522,7 +1531,8 @@ template <
     bool FiniteCellBounds,
     bool WriteCorrespondenceIndices,
     bool TransformSource,
-    bool TryTransformedExactPointwise>
+    bool TryTransformedExactPointwise,
+    bool DirectLookup>
 __global__ void collectCorrespondenceStatsSpatialGridKernel(
     const Scalar* __restrict__ source_transform,
     const Scalar* __restrict__ source_points,
@@ -1611,7 +1621,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
 
         int min_z = source_key.z;
         int max_z = source_key.z;
-        if (!target_grid.direct_lookup_active)
+        if constexpr (!DirectLookup)
         {
             if (!offsetGridCellCoordinate(source_key.z, -1, min_z))
             {
@@ -1663,7 +1673,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                     continue;
                 }
 
-                if (target_grid.direct_lookup_active)
+                if constexpr (DirectLookup)
                 {
                     int direct_lookup_xy_base = 0;
                     if (!directLookupIcpGridCellXyBase(target_grid, query_x, query_y, direct_lookup_xy_base))
@@ -2474,7 +2484,7 @@ __global__ void collectResidualStatsKernel(
     }
 }
 
-template <typename Scalar, bool FiniteCellBounds>
+template <typename Scalar, bool FiniteCellBounds, bool DirectLookup>
 __global__ void collectResidualStatsSpatialGridKernel(
     const Scalar* __restrict__ source_points,
     int source_count,
@@ -2516,7 +2526,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
 
         int min_z = source_key.z;
         int max_z = source_key.z;
-        if (!target_grid.direct_lookup_active)
+        if constexpr (!DirectLookup)
         {
             if (!offsetGridCellCoordinate(source_key.z, -1, min_z))
             {
@@ -2567,7 +2577,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
                     continue;
                 }
 
-                if (target_grid.direct_lookup_active)
+                if constexpr (DirectLookup)
                 {
                     int direct_lookup_xy_base = 0;
                     if (!directLookupIcpGridCellXyBase(target_grid, query_x, query_y, direct_lookup_xy_base))
@@ -2979,7 +2989,7 @@ __global__ void transformAndCollectOrderedResidualStatsKernel(
     }
 }
 
-template <typename Scalar, bool FiniteCellBounds>
+template <typename Scalar, bool FiniteCellBounds, bool DirectLookup>
 __global__ void transformAndCollectResidualStatsSpatialGridKernel(
     const Scalar* __restrict__ transform,
     const Scalar* source_points,
@@ -3055,7 +3065,7 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
 
         int min_z = source_key.z;
         int max_z = source_key.z;
-        if (!target_grid.direct_lookup_active)
+        if constexpr (!DirectLookup)
         {
             if (!offsetGridCellCoordinate(source_key.z, -1, min_z))
             {
@@ -3106,7 +3116,7 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                     continue;
                 }
 
-                if (target_grid.direct_lookup_active)
+                if constexpr (DirectLookup)
                 {
                     int direct_lookup_xy_base = 0;
                     if (!directLookupIcpGridCellXyBase(target_grid, query_x, query_y, direct_lookup_xy_base))
@@ -3499,11 +3509,74 @@ void launchCollectCorrespondenceStatsSpatialGridKernel(
     const IcpTargetSpatialGrid& target_grid,
     RawIcpStats* partial_stats)
 {
+#ifdef PLAPOINT_ENABLE_TESTING
+    recordDirectSpatialGridKernelLaunchForTesting(target_grid.direct_lookup_active);
+#endif
+
     if (target_grid.finite_cell_bounds)
     {
         if (correspondence_indices)
         {
-            collectCorrespondenceStatsSpatialGridKernel<Scalar, true, true, false, false>
+            if (target_grid.direct_lookup_active)
+            {
+                collectCorrespondenceStatsSpatialGridKernel<Scalar, true, true, false, false, true>
+                    <<<grid_size, block_size, 0, stream>>>(
+                    nullptr,
+                    source_points,
+                    source_count,
+                    max_correspondence_distance,
+                    correspondence_indices,
+                    target_grid,
+                    partial_stats);
+            }
+            else
+            {
+                collectCorrespondenceStatsSpatialGridKernel<Scalar, true, true, false, false, false>
+                    <<<grid_size, block_size, 0, stream>>>(
+                    nullptr,
+                    source_points,
+                    source_count,
+                    max_correspondence_distance,
+                    correspondence_indices,
+                    target_grid,
+                    partial_stats);
+            }
+        }
+        else
+        {
+            if (target_grid.direct_lookup_active)
+            {
+                collectCorrespondenceStatsSpatialGridKernel<Scalar, true, false, false, false, true>
+                    <<<grid_size, block_size, 0, stream>>>(
+                    nullptr,
+                    source_points,
+                    source_count,
+                    max_correspondence_distance,
+                    correspondence_indices,
+                    target_grid,
+                    partial_stats);
+            }
+            else
+            {
+                collectCorrespondenceStatsSpatialGridKernel<Scalar, true, false, false, false, false>
+                    <<<grid_size, block_size, 0, stream>>>(
+                    nullptr,
+                    source_points,
+                    source_count,
+                    max_correspondence_distance,
+                    correspondence_indices,
+                    target_grid,
+                    partial_stats);
+            }
+        }
+        return;
+    }
+
+    if (correspondence_indices)
+    {
+        if (target_grid.direct_lookup_active)
+        {
+            collectCorrespondenceStatsSpatialGridKernel<Scalar, false, true, false, false, true>
                 <<<grid_size, block_size, 0, stream>>>(
                 nullptr,
                 source_points,
@@ -3515,7 +3588,7 @@ void launchCollectCorrespondenceStatsSpatialGridKernel(
         }
         else
         {
-            collectCorrespondenceStatsSpatialGridKernel<Scalar, true, false, false, false>
+            collectCorrespondenceStatsSpatialGridKernel<Scalar, false, true, false, false, false>
                 <<<grid_size, block_size, 0, stream>>>(
                 nullptr,
                 source_points,
@@ -3525,32 +3598,33 @@ void launchCollectCorrespondenceStatsSpatialGridKernel(
                 target_grid,
                 partial_stats);
         }
-        return;
-    }
-
-    if (correspondence_indices)
-    {
-        collectCorrespondenceStatsSpatialGridKernel<Scalar, false, true, false, false>
-            <<<grid_size, block_size, 0, stream>>>(
-            nullptr,
-            source_points,
-            source_count,
-            max_correspondence_distance,
-            correspondence_indices,
-            target_grid,
-            partial_stats);
     }
     else
     {
-        collectCorrespondenceStatsSpatialGridKernel<Scalar, false, false, false, false>
-            <<<grid_size, block_size, 0, stream>>>(
-            nullptr,
-            source_points,
-            source_count,
-            max_correspondence_distance,
-            correspondence_indices,
-            target_grid,
-            partial_stats);
+        if (target_grid.direct_lookup_active)
+        {
+            collectCorrespondenceStatsSpatialGridKernel<Scalar, false, false, false, false, true>
+                <<<grid_size, block_size, 0, stream>>>(
+                nullptr,
+                source_points,
+                source_count,
+                max_correspondence_distance,
+                correspondence_indices,
+                target_grid,
+                partial_stats);
+        }
+        else
+        {
+            collectCorrespondenceStatsSpatialGridKernel<Scalar, false, false, false, false, false>
+                <<<grid_size, block_size, 0, stream>>>(
+                nullptr,
+                source_points,
+                source_count,
+                max_correspondence_distance,
+                correspondence_indices,
+                target_grid,
+                partial_stats);
+        }
     }
 }
 
@@ -3566,6 +3640,10 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
     const IcpTargetSpatialGrid& target_grid,
     RawIcpStats* partial_stats)
 {
+#ifdef PLAPOINT_ENABLE_TESTING
+    recordDirectSpatialGridKernelLaunchForTesting(target_grid.direct_lookup_active);
+#endif
+
     if (target_grid.finite_cell_bounds)
     {
         const bool try_transformed_exact_pointwise =
@@ -3576,7 +3654,35 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
                 nullptr);
         if (try_transformed_exact_pointwise)
         {
-            collectCorrespondenceStatsSpatialGridKernel<Scalar, true, false, true, true>
+            if (target_grid.direct_lookup_active)
+            {
+                collectCorrespondenceStatsSpatialGridKernel<Scalar, true, false, true, true, true>
+                    <<<grid_size, block_size, 0, stream>>>(
+                    source_transform,
+                    source_points,
+                    source_count,
+                    max_correspondence_distance,
+                    nullptr,
+                    target_grid,
+                    partial_stats);
+            }
+            else
+            {
+                collectCorrespondenceStatsSpatialGridKernel<Scalar, true, false, true, true, false>
+                    <<<grid_size, block_size, 0, stream>>>(
+                    source_transform,
+                    source_points,
+                    source_count,
+                    max_correspondence_distance,
+                    nullptr,
+                    target_grid,
+                    partial_stats);
+            }
+            return;
+        }
+        if (target_grid.direct_lookup_active)
+        {
+            collectCorrespondenceStatsSpatialGridKernel<Scalar, true, false, true, false, true>
                 <<<grid_size, block_size, 0, stream>>>(
                 source_transform,
                 source_points,
@@ -3585,17 +3691,19 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
                 nullptr,
                 target_grid,
                 partial_stats);
-            return;
         }
-        collectCorrespondenceStatsSpatialGridKernel<Scalar, true, false, true, false>
-            <<<grid_size, block_size, 0, stream>>>(
-            source_transform,
-            source_points,
-            source_count,
-            max_correspondence_distance,
-            nullptr,
-            target_grid,
-            partial_stats);
+        else
+        {
+            collectCorrespondenceStatsSpatialGridKernel<Scalar, true, false, true, false, false>
+                <<<grid_size, block_size, 0, stream>>>(
+                source_transform,
+                source_points,
+                source_count,
+                max_correspondence_distance,
+                nullptr,
+                target_grid,
+                partial_stats);
+        }
         return;
     }
 
@@ -3607,7 +3715,35 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
             nullptr);
     if (try_transformed_exact_pointwise)
     {
-        collectCorrespondenceStatsSpatialGridKernel<Scalar, false, false, true, true>
+        if (target_grid.direct_lookup_active)
+        {
+            collectCorrespondenceStatsSpatialGridKernel<Scalar, false, false, true, true, true>
+                <<<grid_size, block_size, 0, stream>>>(
+                source_transform,
+                source_points,
+                source_count,
+                max_correspondence_distance,
+                nullptr,
+                target_grid,
+                partial_stats);
+        }
+        else
+        {
+            collectCorrespondenceStatsSpatialGridKernel<Scalar, false, false, true, true, false>
+                <<<grid_size, block_size, 0, stream>>>(
+                source_transform,
+                source_points,
+                source_count,
+                max_correspondence_distance,
+                nullptr,
+                target_grid,
+                partial_stats);
+        }
+        return;
+    }
+    if (target_grid.direct_lookup_active)
+    {
+        collectCorrespondenceStatsSpatialGridKernel<Scalar, false, false, true, false, true>
             <<<grid_size, block_size, 0, stream>>>(
             source_transform,
             source_points,
@@ -3616,17 +3752,19 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
             nullptr,
             target_grid,
             partial_stats);
-        return;
     }
-    collectCorrespondenceStatsSpatialGridKernel<Scalar, false, false, true, false>
-        <<<grid_size, block_size, 0, stream>>>(
-        source_transform,
-        source_points,
-        source_count,
-        max_correspondence_distance,
-        nullptr,
-        target_grid,
-        partial_stats);
+    else
+    {
+        collectCorrespondenceStatsSpatialGridKernel<Scalar, false, false, true, false, false>
+            <<<grid_size, block_size, 0, stream>>>(
+            source_transform,
+            source_points,
+            source_count,
+            max_correspondence_distance,
+            nullptr,
+            target_grid,
+            partial_stats);
+    }
 }
 
 template <typename Scalar>
@@ -3640,23 +3778,51 @@ void launchCollectResidualStatsSpatialGridKernel(
     const IcpTargetSpatialGrid& target_grid,
     RawIcpResidualStats* partial_stats)
 {
+#ifdef PLAPOINT_ENABLE_TESTING
+    recordDirectSpatialGridKernelLaunchForTesting(target_grid.direct_lookup_active);
+#endif
+
     if (target_grid.finite_cell_bounds)
     {
-        collectResidualStatsSpatialGridKernel<Scalar, true><<<grid_size, block_size, 0, stream>>>(
+        if (target_grid.direct_lookup_active)
+        {
+            collectResidualStatsSpatialGridKernel<Scalar, true, true><<<grid_size, block_size, 0, stream>>>(
+                source_points,
+                source_count,
+                max_correspondence_distance,
+                target_grid,
+                partial_stats);
+        }
+        else
+        {
+            collectResidualStatsSpatialGridKernel<Scalar, true, false><<<grid_size, block_size, 0, stream>>>(
+                source_points,
+                source_count,
+                max_correspondence_distance,
+                target_grid,
+                partial_stats);
+        }
+        return;
+    }
+
+    if (target_grid.direct_lookup_active)
+    {
+        collectResidualStatsSpatialGridKernel<Scalar, false, true><<<grid_size, block_size, 0, stream>>>(
             source_points,
             source_count,
             max_correspondence_distance,
             target_grid,
             partial_stats);
-        return;
     }
-
-    collectResidualStatsSpatialGridKernel<Scalar, false><<<grid_size, block_size, 0, stream>>>(
-        source_points,
-        source_count,
-        max_correspondence_distance,
-        target_grid,
-        partial_stats);
+    else
+    {
+        collectResidualStatsSpatialGridKernel<Scalar, false, false><<<grid_size, block_size, 0, stream>>>(
+            source_points,
+            source_count,
+            max_correspondence_distance,
+            target_grid,
+            partial_stats);
+    }
 }
 
 template <typename Scalar>
@@ -3675,11 +3841,42 @@ void launchTransformAndCollectResidualStatsSpatialGridKernel(
 #ifdef PLAPOINT_ENABLE_TESTING
     recordTransformedExactPointwiseResidualCallForTesting(
         target_grid.target_points != nullptr && source_count == target_grid.target_count);
+    recordDirectSpatialGridKernelLaunchForTesting(target_grid.direct_lookup_active);
 #endif
 
     if (target_grid.finite_cell_bounds)
     {
-        transformAndCollectResidualStatsSpatialGridKernel<Scalar, true><<<grid_size, block_size, 0, stream>>>(
+        if (target_grid.direct_lookup_active)
+        {
+            transformAndCollectResidualStatsSpatialGridKernel<Scalar, true, true>
+                <<<grid_size, block_size, 0, stream>>>(
+                transform,
+                source_points,
+                source_count,
+                max_correspondence_distance,
+                output_points,
+                target_grid,
+                partial_stats);
+        }
+        else
+        {
+            transformAndCollectResidualStatsSpatialGridKernel<Scalar, true, false>
+                <<<grid_size, block_size, 0, stream>>>(
+                transform,
+                source_points,
+                source_count,
+                max_correspondence_distance,
+                output_points,
+                target_grid,
+                partial_stats);
+        }
+        return;
+    }
+
+    if (target_grid.direct_lookup_active)
+    {
+        transformAndCollectResidualStatsSpatialGridKernel<Scalar, false, true>
+            <<<grid_size, block_size, 0, stream>>>(
             transform,
             source_points,
             source_count,
@@ -3687,17 +3884,19 @@ void launchTransformAndCollectResidualStatsSpatialGridKernel(
             output_points,
             target_grid,
             partial_stats);
-        return;
     }
-
-    transformAndCollectResidualStatsSpatialGridKernel<Scalar, false><<<grid_size, block_size, 0, stream>>>(
-        transform,
-        source_points,
-        source_count,
-        max_correspondence_distance,
-        output_points,
-        target_grid,
-        partial_stats);
+    else
+    {
+        transformAndCollectResidualStatsSpatialGridKernel<Scalar, false, false>
+            <<<grid_size, block_size, 0, stream>>>(
+            transform,
+            source_points,
+            source_count,
+            max_correspondence_distance,
+            output_points,
+            target_grid,
+            partial_stats);
+    }
 }
 
 __global__ void reduceRawIcpStatsKernel(
@@ -7020,6 +7219,16 @@ void resetIcpTargetSpatialGridPrepareCountForTesting()
 int icpTargetSpatialGridPrepareCountForTesting()
 {
     return g_icp_target_spatial_grid_prepare_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpDirectSpatialGridKernelLaunchCountForTesting()
+{
+    g_icp_direct_spatial_grid_kernel_launch_count.store(0, std::memory_order_relaxed);
+}
+
+int icpDirectSpatialGridKernelLaunchCountForTesting()
+{
+    return g_icp_direct_spatial_grid_kernel_launch_count.load(std::memory_order_relaxed);
 }
 
 void resetIcpGridCellLookupCountForTesting()
