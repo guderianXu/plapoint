@@ -280,6 +280,7 @@ __device__ unsigned long long g_icp_grid_cell_lookup_count;
 __device__ unsigned long long g_icp_grid_cell_offset_count;
 __device__ unsigned long long g_icp_direct_grid_lookup_xy_check_count;
 __device__ unsigned long long g_icp_direct_grid_lookup_active_guard_count;
+__device__ unsigned long long g_icp_direct_grid_lookup_linear_guard_count;
 #endif
 
 #ifdef PLAPOINT_ENABLE_TESTING
@@ -809,6 +810,7 @@ __device__ __forceinline__ bool directLookupIcpGridCellXyBase(
     return true;
 }
 
+template <bool CheckLinearBounds>
 __device__ __forceinline__ int directLookupIcpGridCellAtZ(
     const IcpTargetSpatialGrid& target_grid,
     int xy_base,
@@ -827,9 +829,15 @@ __device__ __forceinline__ int directLookupIcpGridCellAtZ(
     }
 
     const int linear_idx = xy_base + static_cast<int>(local_z_u);
-    if (linear_idx < 0 || linear_idx >= target_grid.direct_lookup_entry_count)
+    if constexpr (CheckLinearBounds)
     {
-        return -1;
+#ifdef PLAPOINT_ENABLE_TESTING
+        atomicAdd(&g_icp_direct_grid_lookup_linear_guard_count, 1ull);
+#endif
+        if (linear_idx < 0 || linear_idx >= target_grid.direct_lookup_entry_count)
+        {
+            return -1;
+        }
     }
     return loadReadOnlyIcpValue(target_grid.direct_lookup_cell_indices + linear_idx);
 }
@@ -1706,7 +1714,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                             continue;
                         }
                         const int cell_idx =
-                            directLookupIcpGridCellAtZ(target_grid, direct_lookup_xy_base, query_z);
+                            directLookupIcpGridCellAtZ<false>(target_grid, direct_lookup_xy_base, query_z);
                         if (cell_idx >= 0)
                         {
                             const double min_cell_dist_sq =
@@ -2607,7 +2615,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
                             continue;
                         }
                         const int cell_idx =
-                            directLookupIcpGridCellAtZ(target_grid, direct_lookup_xy_base, query_z);
+                            directLookupIcpGridCellAtZ<false>(target_grid, direct_lookup_xy_base, query_z);
                         if (cell_idx >= 0)
                         {
                             const double min_cell_dist_sq =
@@ -3143,7 +3151,7 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                             continue;
                         }
                         const int cell_idx =
-                            directLookupIcpGridCellAtZ(target_grid, direct_lookup_xy_base, query_z);
+                            directLookupIcpGridCellAtZ<false>(target_grid, direct_lookup_xy_base, query_z);
                         if (cell_idx >= 0)
                         {
                             const double min_cell_dist_sq =
@@ -7291,6 +7299,19 @@ unsigned long long icpDirectGridLookupActiveGuardCountForTesting()
 {
     unsigned long long count = 0;
     PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_direct_grid_lookup_active_guard_count, sizeof(count)));
+    return count;
+}
+
+void resetIcpDirectGridLookupLinearGuardCountForTesting()
+{
+    const unsigned long long zero = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyToSymbol(g_icp_direct_grid_lookup_linear_guard_count, &zero, sizeof(zero)));
+}
+
+unsigned long long icpDirectGridLookupLinearGuardCountForTesting()
+{
+    unsigned long long count = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_direct_grid_lookup_linear_guard_count, sizeof(count)));
     return count;
 }
 

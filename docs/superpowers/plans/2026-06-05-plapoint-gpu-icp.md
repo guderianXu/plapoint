@@ -6677,3 +6677,45 @@ Verification evidence:
   center-neighbor probes now bypass the overflow-check helper while lower/upper neighbor probes retain overflow safety.
   The broad 100k cached-grid benchmark remains within normal run-to-run noise, but the exact-match direct path has fewer
   instructions before early exit.
+
+## Task 178: Skip Direct Lookup Z Linear Bounds Guard
+
+- Goal: after the direct lookup XY helper validates `local_x`/`local_y` and returns a checked `xy_base`, and the Z helper
+  validates `local_z` against `range_z`, the final linear-index bounds guard in the direct-specialized path is
+  redundant. The direct hot path should not repeat that check before loading the compact lookup entry.
+- RED check:
+  - Added a testing-only `g_icp_direct_grid_lookup_linear_guard_count` counter and extended
+    `ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells`.
+  - Before implementation, correspondence stats, residual stats, and transform+residual stats each failed with linear
+    guard count 1 instead of the expected 0.
+- Implementation:
+  - Converted `directLookupIcpGridCellAtZ()` to a `CheckLinearBounds` compile-time helper.
+  - Direct spatial-grid specializations call `directLookupIcpGridCellAtZ<false>()`, so CUDA compiles out the final
+    linear-index guard in the direct-selected kernels.
+  - The XY base range checks and Z range checks stay active, so `linear_idx = xy_base + local_z` remains constrained by
+    the compact table dimensions before the entry load.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells`:
+    failed before implementation with linear guard count 1 versus expected 0 on all three checked paths, then passed
+    after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells:ICPGpuPathTest.SpatialGridDirectLookupSpecializationSkipsActiveGuard:ICPGpuPathTest.SpatialGridDirectLookupUsesSpecializedKernelLaunches:ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn:ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath:ICPGpuPathTest.CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridXYLookupsBeforeSearch:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYExceedsRadius`:
+    12 targeted spatial-grid tests passed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 20 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(finite_radius_translation_(reuse_output|reuse_output_skip_final_metrics|ordered_output|ordered_output_skip_final_metrics)|stats_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid_reserved_workspace|stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid_reserved_workspace|residual_stats_finite_radius_translation_ordered|transform_residual_stats_finite_radius_translation_cached_grid|alignment_step_transformed_exact_pointwise_cached_grid|alignment_step_transformed_exact_pointwise_cache_hit)'`:
+    ran successfully on the RTX 4060 Laptop GPU. Relevant second-run rows:
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.45594 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.27673 ms,
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.533353 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.505816 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.736026 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.735091 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.210766 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.235382 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.711419 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.523652 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_ordered` = 0.025953 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.522168 ms.
+- Current conclusion:
+  direct exact-match paths now avoid the final redundant linear-index guard before the compact table load. The broad
+  100k benchmark rows remain noise-level compared with prior runs, but the specialized direct lookup path has one fewer
+  branch in the innermost grid probe.
