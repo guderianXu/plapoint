@@ -4487,3 +4487,42 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun alignment-step and full GPU ICP benchmark rows on real hardware to quantify the effect of reducing the
   per-iteration compact result copy from the previous larger raw layout.
+
+## Task 131: Skip Non-Terminal GPU ICP Metric Updates
+
+- Goal: avoid host-side fitness/RMSE recomputation for GPU ICP iterations whose metrics are not observable and not used
+  for convergence. Non-terminal iterations already continue based on the step delta, while default non-identity
+  terminal iterations recompute final metrics from terminal residual stats.
+- RED check:
+  - Added `AlignSkipsMetricUpdateForNonTerminalGpuIterations`, which runs a two-iteration translated GPU ICP case and
+    expects only one host metrics update.
+  - Added the test first so `cmake --build build-codex-cuda -j$(nproc)` failed because
+    `_gpu_metric_update_count` did not exist.
+- Implementation:
+  - Added a test-only `_gpu_metric_update_count` counter around `updateResidualMetricsFromGpuStats()`.
+  - Moved the first stats metrics update out of the top of the GPU ICP loop.
+  - Kept metrics updates on the exact-identity terminal path, on terminal final residual stats, and on terminal
+    skip-final-metrics mode where convergence still uses the terminal iteration stats.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignSkipsMetricUpdateForNonTerminalGpuIterations:ICPGpuPathTest.AlignSkipsFinalStatsForNonTerminalGpuIterations:ICPGpuPathTest.AlignReusesIterationStatsForExactIdentityTerminalMetrics:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics:ICPGpuPathTest.AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled`:
+    CUDA build passed; selected GPU-runtime tests were discovered but skipped because no usable CUDA device is
+    available in this session.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    261 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `AlignSkipsMetricUpdateForNonTerminalGpuIterations` on real GPU hardware and compare multi-iteration
+  `gpu_icp_finite_radius_translation_*` rows to measure the removed host-side metric work.

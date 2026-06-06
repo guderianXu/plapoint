@@ -404,7 +404,6 @@ private:
                 throw std::runtime_error("ICP: target correspondence geometry is degenerate");
             }
 
-            updateResidualMetricsFromGpuStats(stats, source_count);
             if (!stats_and_step.step_valid)
             {
                 throw std::runtime_error("ICP: transform step is not representable");
@@ -467,6 +466,7 @@ private:
                 {
                     std::swap(_gpu_T_acc, _gpu_T_step);
                 }
+                updateResidualMetricsFromGpuStats(stats, source_count);
                 _converged = stats.active_count >= 3 && _fitness_score >= _min_fitness_score;
                 break;
             }
@@ -541,6 +541,10 @@ private:
                         0);
                 }
                 cur_points = transform_output_points;
+                if (terminal_iteration && !_compute_final_metrics)
+                {
+                    updateResidualMetricsFromGpuStats(stats, source_count);
+                }
             }
 
             if (!terminal_iteration)
@@ -732,6 +736,9 @@ private:
     template <typename GpuStats>
     void updateResidualMetricsFromGpuStats(const GpuStats& stats, int source_count)
     {
+#if defined(PLAPOINT_WITH_CUDA) && defined(PLAPOINT_ENABLE_TESTING)
+        ++_gpu_metric_update_count;
+#endif
         if (stats.active_count <= 0)
         {
             _fitness_score = Scalar(0);
@@ -1060,6 +1067,7 @@ private:
     int _gpu_accumulated_transform_reserve_check_count = 0;
     int _gpu_next_transform_reserve_check_count = 0;
     int _gpu_point_scratch_reserve_check_count = 0;
+    int _gpu_metric_update_count = 0;
 #endif
 #endif
     bool _converged = false;
