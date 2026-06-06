@@ -2369,6 +2369,49 @@ Verification evidence:
   rerun the benchmark with enough iterations to compare the new-workspace and cached-bounds rows and quantify target
   tile-bound cache savings.
 
+## Task 93: Add GPU ICP Fallback Tile-Bounds Step Benchmarks
+
+- Goal: extend the Task 92 fallback tile-bound cache measurement from standalone correspondence stats into the fused
+  stats+step helper and the compact alignment-step helper used by the GPU ICP alignment loop.
+- Static RED:
+  - `test "$(rg -n "gpu_icp_stats_step_fallback_tile_bounds_(new_workspace|cached_bounds)" benchmarks/plapoint_benchmarks.cpp | wc -l)" -ge 4`:
+    failed before the change because no fallback tile-bound stats+step benchmark rows existed.
+  - `test "$(rg -n "gpu_icp_alignment_step_fallback_tile_bounds_(new_workspace|cached_bounds)" benchmarks/plapoint_benchmarks.cpp | wc -l)" -ge 4`:
+    failed before the change because no fallback tile-bound compact alignment-step benchmark rows existed.
+- Implementation:
+  - Added `gpu_icp_stats_step_fallback_tile_bounds_new_workspace`, which creates fresh stats and step workspaces for
+    every measured fused stats+step call and therefore includes target tile-bound precompute cost.
+  - Added `gpu_icp_stats_step_fallback_tile_bounds_cached_bounds`, which reuses the fused stats+step workspaces so the
+    benchmark warm-up can populate the target tile-bound cache before measured calls.
+  - Added `gpu_icp_alignment_step_fallback_tile_bounds_new_workspace`, which creates a fresh stats workspace for every
+    compact alignment-step call.
+  - Added `gpu_icp_alignment_step_fallback_tile_bounds_cached_bounds`, which reuses one stats workspace across compact
+    alignment-step calls so the target tile-bound cache can be measured on the path closest to `alignGpu()`.
+  - All four rows use distinct source/target device buffers with identical grid data and
+    `max_correspondence_distance = 0.0f`, forcing fallback tile-bound search instead of same-buffer exact pointwise
+    stats or the positive-radius spatial-grid path.
+  - The fallback benchmark point count remains capped at 4096 to keep the fallback O(N^2) smoke benchmark bounded when
+    the standard command passes `--icp-points 100000`.
+- Verification performed in this session:
+  - Both static RED commands passed after adding the benchmark rows.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    benchmark-only CUDA build succeeded.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran and printed all four new rows; each reported `skipped,no_usable_cuda_device` on this machine.
+  - `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:
+    CUDA test build succeeded; 234 test entries, 0 failed. GPU-dependent tests skipped because the current session
+    cannot communicate with the NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    CPU test build succeeded; 143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `git diff --check`:
+    reported no whitespace errors.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the benchmark with enough iterations to compare the four new rows against the standalone stats fallback rows and
+  decide whether the next optimization should target tile-bound precompute reuse, fallback scan occupancy, or remaining
+  host synchronization in the compact alignment-step path.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell
