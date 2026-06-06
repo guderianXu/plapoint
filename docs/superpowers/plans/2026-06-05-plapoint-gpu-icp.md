@@ -3195,3 +3195,44 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun the selected GPU tests and 100k-point GPU ICP benchmark to confirm the counter and measure any host overhead
   reduction.
+
+## Task 100: Lazily Allocate GPU ICP Next Transform Buffer
+
+- Goal: avoid allocating the extra 4x4 accumulated-transform scratch buffer for one-iteration or first-iteration
+  terminal GPU ICP paths. `_gpu_next_T_acc` is only needed when a second or later non-identity step must multiply the
+  new step transform into an existing accumulated transform.
+- RED check:
+  - Added `AlignSkipsNextTransformBufferAllocationForSingleIteration`, which requires a one-iteration non-identity GPU
+    align to leave `_gpu_next_T_acc` null.
+  - A static RED check against `reserveGpuTransformBuffers()` failed before the implementation because the helper still
+    preallocated `_gpu_next_T_acc`.
+- Implementation:
+  - Removed `_gpu_next_T_acc` allocation from `reserveGpuTransformBuffers()`.
+  - Added `reserveGpuNextTransformBuffer()` and call it only immediately before the transform-accumulation multiply on
+    iterations after the first.
+  - Updated the repeated-workspace test so one-iteration alignments no longer assume the next accumulated-transform
+    buffer exists.
+- Verification performed in this session:
+  - Static checks confirmed `reserveGpuTransformBuffers()` no longer allocates `_gpu_next_T_acc` and
+    `reserveGpuNextTransformBuffer()` is present on the transform-multiply path.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignSkipsNextTransformBufferAllocationForSingleIteration:ICPGpuPathTest.AlignReusesGpuWorkspacesAcrossRepeatedCalls:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics`:
+    3 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `git diff --check`:
+    clean before the final verification pass.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    240 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected GPU tests and large finite-radius ICP benchmark to confirm runtime behavior and allocation impact.

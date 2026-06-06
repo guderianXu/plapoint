@@ -2147,11 +2147,9 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     auto* first_grid_sorted_z = icp._gpu_stats_workspace.targetSpatialGridSortedZStorage();
     auto* first_step_transform = icp._gpu_T_step->data();
     auto* first_acc_transform = icp._gpu_T_acc->data();
-    auto* first_next_acc_transform = icp._gpu_next_T_acc->data();
     std::vector<const float*> first_transform_buffers = {
         first_step_transform,
-        first_acc_transform,
-        first_next_acc_transform};
+        first_acc_transform};
     std::sort(first_transform_buffers.begin(), first_transform_buffers.end());
     ASSERT_NE(icp._gpu_points_a, nullptr);
     ASSERT_NE(icp._gpu_points_b, nullptr);
@@ -2175,7 +2173,7 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     EXPECT_NE(first_grid_sorted_z, nullptr);
     EXPECT_NE(first_step_transform, nullptr);
     EXPECT_NE(first_acc_transform, nullptr);
-    EXPECT_NE(first_next_acc_transform, nullptr);
+    EXPECT_EQ(icp._gpu_next_T_acc, nullptr);
     EXPECT_NE(first_points_a, nullptr);
     EXPECT_NE(first_points_b, nullptr);
     EXPECT_EQ(icp._gpu_stats_workspace.partialStorage(), first_partial_storage);
@@ -2187,10 +2185,10 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     EXPECT_EQ(icp._gpu_stats_workspace.targetSpatialGridSortedZStorage(), first_grid_sorted_z);
     std::vector<const float*> current_transform_buffers = {
         icp._gpu_T_step->data(),
-        icp._gpu_T_acc->data(),
-        icp._gpu_next_T_acc->data()};
+        icp._gpu_T_acc->data()};
     std::sort(current_transform_buffers.begin(), current_transform_buffers.end());
     EXPECT_EQ(current_transform_buffers, first_transform_buffers);
+    EXPECT_EQ(icp._gpu_next_T_acc, nullptr);
     EXPECT_EQ(icp._gpu_points_a->data(), first_points_a);
     EXPECT_EQ(icp._gpu_points_b->data(), first_points_b);
     EXPECT_NE(source->points().data(), first_points_a);
@@ -2710,6 +2708,38 @@ TEST(ICPGpuPathTest, AlignReservesAlignmentStepWorkspaceOncePerCall)
     icp.align(output);
 
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepReserveCountForTesting(), 1);
+    EXPECT_EQ(output.size(), source->size());
+}
+
+TEST(ICPGpuPathTest, AlignSkipsNextTransformBufferAllocationForSingleIteration)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_points = makeNonCollinearPoints();
+    auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.1f, -0.05f, 0.025f);
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(2.0f);
+    icp.setMaxIterations(1);
+
+    GpuCloud output;
+    icp.align(output);
+
+    EXPECT_NE(icp._gpu_T_acc, nullptr);
+    EXPECT_NE(icp._gpu_T_step, nullptr);
+    EXPECT_EQ(icp._gpu_next_T_acc, nullptr);
     EXPECT_EQ(output.size(), source->size());
 }
 

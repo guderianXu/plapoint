@@ -423,6 +423,7 @@ private:
                 }
                 else
                 {
+                    reserveGpuNextTransformBuffer();
                     gpu::multiplyTransform4x4Async(
                         step_transform,
                         _gpu_T_acc->data(),
@@ -570,13 +571,17 @@ private:
         {
             _gpu_T_acc = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
         }
-        if (!_gpu_next_T_acc || _gpu_next_T_acc->rows() != 4 || _gpu_next_T_acc->cols() != 4)
-        {
-            _gpu_next_T_acc = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
-        }
         if (!_gpu_T_step || _gpu_T_step->rows() != 4 || _gpu_T_step->cols() != 4)
         {
             _gpu_T_step = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
+        }
+    }
+
+    void reserveGpuNextTransformBuffer()
+    {
+        if (!_gpu_next_T_acc || _gpu_next_T_acc->rows() != 4 || _gpu_next_T_acc->cols() != 4)
+        {
+            _gpu_next_T_acc = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
         }
     }
 
