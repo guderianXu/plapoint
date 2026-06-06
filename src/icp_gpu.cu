@@ -776,7 +776,8 @@ __global__ void collectCorrespondenceStatsKernel(
                     continue;
                 }
 
-                const double dx = sx - target_tile_x[tile_offset];
+                const double tx = target_tile_x[tile_offset];
+                const double dx = sx - tx;
                 const double dx_sq = dx * dx;
                 if constexpr (UseTargetTileBounds)
                 {
@@ -785,7 +786,8 @@ __global__ void collectCorrespondenceStatsKernel(
                         continue;
                     }
                 }
-                const double dy = sy - target_tile_y[tile_offset];
+                const double ty = target_tile_y[tile_offset];
+                const double dy = sy - ty;
                 const double dy_sq = dy * dy;
                 const double xy_dist_sq = dx_sq + dy_sq;
                 if constexpr (UseTargetTileBounds)
@@ -795,7 +797,8 @@ __global__ void collectCorrespondenceStatsKernel(
                         continue;
                     }
                 }
-                const double dz = sz - target_tile_z[tile_offset];
+                const double tz = target_tile_z[tile_offset];
+                const double dz = sz - tz;
                 const double dz_sq = dz * dz;
                 const double dist_sq = xy_dist_sq + dz_sq;
                 if constexpr (UseTargetTileBounds)
@@ -812,9 +815,9 @@ __global__ void collectCorrespondenceStatsKernel(
                 {
                     best_dist_sq = dist_sq;
                     best_idx = tile_start + tile_offset;
-                    best_tx = target_tile_x[tile_offset];
-                    best_ty = target_tile_y[tile_offset];
-                    best_tz = target_tile_z[tile_offset];
+                    best_tx = tx;
+                    best_ty = ty;
+                    best_tz = tz;
                     if constexpr (!WriteCorrespondenceIndices)
                     {
                         if (dist_sq <= 0.0)

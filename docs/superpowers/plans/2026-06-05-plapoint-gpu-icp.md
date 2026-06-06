@@ -2104,6 +2104,41 @@ Verification evidence:
   rerun the selected fallback GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime behavior
   and measure the bounded fallback arithmetic impact.
 
+## Task 86: Reuse Fallback Best Target Coordinates
+
+- Goal: reduce shared-memory reloads in the GPU ICP correspondence fallback scan. The candidate loop already reads
+  `target_tile_x/y/z[tile_offset]` to compute `dx/dy/dz`, then reloaded the same three coordinates when a candidate
+  became the current best target.
+- Static RED:
+  - `test "$(rg -n "best_t[xyz] = target_tile_[xyz]\\[tile_offset\\]" src/icp_gpu.cu | wc -l)" -eq 0`:
+    failed before the change because the correspondence fallback best update still read `target_tile_x/y/z` directly.
+- Implementation:
+  - Loaded fallback candidate coordinates into local `tx`, `ty`, and `tz` before computing `dx`, `dy`, and `dz`.
+  - Reused those locals for `best_tx`, `best_ty`, and `best_tz` on best-candidate updates.
+  - Kept best-distance comparison, best index output, zero-distance early stop, and bounded/unbounded specialization
+    behavior unchanged.
+- Verification performed in this session:
+  - `test "$(rg -n "best_t[xyz] = target_tile_[xyz]\\[tile_offset\\]" src/icp_gpu.cu | wc -l)" -eq 0`:
+    passed after replacing direct best-coordinate reloads.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsFindsNearestTargetsPastFirstTile:ICPGpuPathTest.CorrespondenceStatsPrunesFarTargetsBeforeFullDistanceEvaluation:ICPGpuPathTest.CorrespondenceStatsSkipsFarTargetTilesBeforeCandidateLoop:ICPGpuPathTest.CorrespondenceStatsAllowOmittedIndexOutput:ICPGpuPathTest.CorrespondenceStatsStillWriteRequestedIndexOutput:ICPGpuPathTest.CorrespondenceStatsStopsNonSpatialScanAfterExactMatchWhenIndicesOmitted:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 6 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    233 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran, but all GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected correspondence fallback GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm
+  runtime behavior and measure the shared-memory reload impact.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell
