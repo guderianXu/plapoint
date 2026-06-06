@@ -4364,3 +4364,43 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun the two new workspace tests and compare the stats/residual benchmark rows on real GPU hardware. The next
   narrow follow-up is adding pinned host result storage to `IcpStepTransformWorkspace` for its raw step result copies.
+
+## Task 128: Reuse Pinned Host Storage For Step-Transform Results
+
+- Goal: remove the remaining stack/pageable host destination for small GPU ICP result copies by adding pinned host
+  result storage to `IcpStepTransformWorkspace`. After this change, the remaining `RawIcpStats` names in `src/icp_gpu.cu`
+  are kernel-local shared-memory values, not device-to-host copy destinations.
+- RED check:
+  - Added `StepTransformWorkspaceReusesPinnedHostResultStorage`.
+  - Added the test first so `cmake --build build-codex-cuda -j$(nproc)` failed because
+    `IcpStepTransformWorkspace::hostResultStorage()` and `hostResultStorageCapacity()` did not exist.
+- Implementation:
+  - Added `_host_result_storage`, `hostResultStorage()`, and `hostResultStorageCapacity()` to
+    `IcpStepTransformWorkspace`.
+  - Made `IcpStepTransformWorkspace::reserveResult()` reserve pinned host storage for
+    `IcpStepTransformRawResult`.
+  - Routed `computeIcpStepTransformFromStatsImpl()`,
+    `computeIcpStepTransformFromDeviceStatsImpl()`, and the step-result half of
+    `computeIcpStatsAndStepTransformColumnMajorImpl()` through the reusable pinned host result buffer.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.StepTransformWorkspaceReusesPinnedHostResultStorage:ICPGpuPathTest.StepTransformWorkspaceCanReserveOnlyResultStorage:ICPGpuPathTest.StepTransformFromStatsWritesDeviceTransform:ICPGpuPathTest.AlignComputesStepFromDeviceStatsWithoutHostInputCopy:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization`:
+    selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    258 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `StepTransformWorkspaceReusesPinnedHostResultStorage` and compare step-transform and fused stats+step
+  benchmark rows on real GPU hardware. The broader next optimization should be guided by Nsight timing on a machine
+  with a working NVIDIA driver, because the current environment cannot execute GPU kernels.

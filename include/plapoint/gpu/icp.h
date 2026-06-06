@@ -205,9 +205,16 @@ public:
     /// Return the reusable step result storage pointer, or null before reserve().
     unsigned char* resultStorage() { return _result_storage.get(); }
 
+    /// Return the reusable pinned host step result storage pointer, or null before reserveResult().
+    unsigned char* hostResultStorage() { return _host_result_storage.get(); }
+
+    /// Return the currently reserved pinned host step result storage capacity, in bytes.
+    std::size_t hostResultStorageCapacity() const { return _host_result_storage.size(); }
+
 private:
     DeviceBuffer<unsigned char> _input_storage;
     DeviceBuffer<unsigned char> _result_storage;
+    HostPinnedBuffer<unsigned char> _host_result_storage;
 };
 
 /// Compute nearest-neighbor ICP correspondences for PlaMatrix column-major Nx3 device point arrays.

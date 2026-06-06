@@ -368,6 +368,30 @@ TEST(ICPGpuPathTest, StepTransformWorkspaceCanReserveOnlyResultStorage)
     EXPECT_NE(workspace.resultStorage(), nullptr);
 }
 
+TEST(ICPGpuPathTest, StepTransformWorkspaceReusesPinnedHostResultStorage)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plapoint::gpu::IcpStepTransformWorkspace workspace;
+
+    plapoint::gpu::resetIcpHostResultStorageAllocationCountForTesting();
+    workspace.reserveResult();
+    auto* first_host_result = workspace.hostResultStorage();
+    const auto first_capacity = workspace.hostResultStorageCapacity();
+
+    ASSERT_NE(first_host_result, nullptr);
+    EXPECT_GT(first_capacity, std::size_t{0});
+    EXPECT_EQ(plapoint::gpu::icpHostResultStorageAllocationCountForTesting(), 1);
+
+    workspace.reserveResult();
+    EXPECT_EQ(workspace.hostResultStorage(), first_host_result);
+    EXPECT_EQ(workspace.hostResultStorageCapacity(), first_capacity);
+    EXPECT_EQ(plapoint::gpu::icpHostResultStorageAllocationCountForTesting(), 1);
+}
+
 TEST(ICPGpuPathTest, AlignmentStepCompactResultMatchesFullStatsStepResult)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

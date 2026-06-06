@@ -4098,6 +4098,11 @@ IcpStepTransformResult<Scalar> computeIcpStepTransformFromStatsImpl(
 
     auto* d_input = reinterpret_cast<IcpStepTransformInput*>(active_workspace.inputStorage());
     auto* d_result = reinterpret_cast<IcpStepTransformRawResult*>(active_workspace.resultStorage());
+    auto* h_result = reinterpret_cast<IcpStepTransformRawResult*>(active_workspace.hostResultStorage());
+    if (!h_result)
+    {
+        throw std::invalid_argument("ICP GPU: step-transform host result workspace is not reserved");
+    }
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_step_transform_input_copy_count.fetch_add(1, std::memory_order_relaxed);
 #endif
@@ -4109,20 +4114,19 @@ IcpStepTransformResult<Scalar> computeIcpStepTransformFromStatsImpl(
         d_result);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    IcpStepTransformRawResult raw_result{};
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpStepTransformRawResult),
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(IcpStepTransformRawResult),
                                         cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
 #endif
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-    if (!raw_result.valid)
+    if (!h_result->valid)
     {
         throw std::runtime_error("ICP: transform step is not representable");
     }
 
     IcpStepTransformResult<Scalar> result;
-    result.delta = static_cast<Scalar>(raw_result.delta);
+    result.delta = static_cast<Scalar>(h_result->delta);
     return result;
 }
 
@@ -4148,6 +4152,11 @@ IcpStepTransformResult<Scalar> computeIcpStepTransformFromDeviceStatsImpl(
 
     const auto* d_stats = reinterpret_cast<const RawIcpStats*>(stats_workspace.statsStorage());
     auto* d_result = reinterpret_cast<IcpStepTransformRawResult*>(step_workspace.resultStorage());
+    auto* h_result = reinterpret_cast<IcpStepTransformRawResult*>(step_workspace.hostResultStorage());
+    if (!h_result)
+    {
+        throw std::invalid_argument("ICP GPU: step-transform host result workspace is not reserved");
+    }
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_raw_stats_step_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
 #endif
@@ -4157,20 +4166,19 @@ IcpStepTransformResult<Scalar> computeIcpStepTransformFromDeviceStatsImpl(
         d_result);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    IcpStepTransformRawResult raw_result{};
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpStepTransformRawResult),
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(IcpStepTransformRawResult),
                                         cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
 #endif
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-    if (!raw_result.valid)
+    if (!h_result->valid)
     {
         throw std::runtime_error("ICP: transform step is not representable");
     }
 
     IcpStepTransformResult<Scalar> result;
-    result.delta = static_cast<Scalar>(raw_result.delta);
+    result.delta = static_cast<Scalar>(h_result->delta);
     return result;
 }
 
@@ -4218,7 +4226,11 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
     {
         throw std::invalid_argument("ICP GPU: stats host result workspace is not reserved");
     }
-    IcpStepTransformRawResult raw_result{};
+    auto* h_result = reinterpret_cast<IcpStepTransformRawResult*>(step_workspace.hostResultStorage());
+    if (!h_result)
+    {
+        throw std::invalid_argument("ICP GPU: step-transform host result workspace is not reserved");
+    }
     const bool exact_pointwise_stats = launchExactPointwiseStatsAndIdentityStep(
         d_source_points,
         source_count,
@@ -4237,7 +4249,7 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
     {
         PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_stats, d_stats, sizeof(RawIcpStats),
                                             cudaMemcpyDeviceToHost, stream));
-        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpStepTransformRawResult),
+        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(IcpStepTransformRawResult),
                                             cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
         g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
@@ -4247,8 +4259,8 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
         {
             IcpStatsAndStepTransformResult<Scalar> result;
             result.stats = makeHostStats<Scalar>(*h_stats);
-            result.step.delta = static_cast<Scalar>(raw_result.delta);
-            result.step_valid = raw_result.valid != 0;
+            result.step.delta = static_cast<Scalar>(h_result->delta);
+            result.step_valid = h_result->valid != 0;
             return result;
         }
     }
@@ -4309,7 +4321,7 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
 
     PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_stats, d_stats, sizeof(RawIcpStats),
                                         cudaMemcpyDeviceToHost, stream));
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpStepTransformRawResult),
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(IcpStepTransformRawResult),
                                         cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
@@ -4318,8 +4330,8 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
 
     IcpStatsAndStepTransformResult<Scalar> result;
     result.stats = makeHostStats<Scalar>(*h_stats);
-    result.step.delta = static_cast<Scalar>(raw_result.delta);
-    result.step_valid = raw_result.valid != 0;
+    result.step.delta = static_cast<Scalar>(h_result->delta);
+    result.step_valid = h_result->valid != 0;
     return result;
 }
 
@@ -5000,6 +5012,13 @@ void IcpStepTransformWorkspace::reserveResult()
     if (_result_storage.size() < sizeof(IcpStepTransformRawResult))
     {
         _result_storage.allocate(sizeof(IcpStepTransformRawResult));
+    }
+    if (_host_result_storage.size() < sizeof(IcpStepTransformRawResult))
+    {
+        _host_result_storage.allocate(sizeof(IcpStepTransformRawResult));
+#ifdef PLAPOINT_ENABLE_TESTING
+        g_icp_host_result_storage_allocation_count.fetch_add(1, std::memory_order_relaxed);
+#endif
     }
 }
 
