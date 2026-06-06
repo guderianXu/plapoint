@@ -935,13 +935,15 @@ void benchmarkGpuIcpFiniteRadiusBinaryTranslationTransformOnly(
     }
 }
 
-void benchmarkGpuIcpFiniteRadiusBinaryTranslationReuseOutputPreflight(int icp_points, int iterations)
+void benchmarkGpuIcpFiniteRadiusBinaryTranslationReuseOutput(
+    const char* benchmark_name,
+    int icp_points,
+    int iterations,
+    bool probe_transformed_exact_pointwise_on_cache_hit)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
-        printSkipped(
-            "gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations",
-            "no_usable_cuda_device");
+        printSkipped(benchmark_name, "no_usable_cuda_device");
         return;
     }
 
@@ -961,7 +963,10 @@ void benchmarkGpuIcpFiniteRadiusBinaryTranslationReuseOutputPreflight(int icp_po
     icp.setMaxCorrespondenceDistance(0.0625f);
     icp.setMaxIterations(2);
     icp.setTransformationEpsilon(1.0e-12f);
-    icp.setGpuProbeTransformedExactPointwiseOnCacheHit(true);
+    if (probe_transformed_exact_pointwise_on_cache_hit)
+    {
+        icp.setGpuProbeTransformedExactPointwiseOnCacheHit(true);
+    }
 
     Cloud<plamatrix::Device::GPU> output;
     std::size_t sink = 0;
@@ -969,16 +974,10 @@ void benchmarkGpuIcpFiniteRadiusBinaryTranslationReuseOutputPreflight(int icp_po
         icp.align(output);
         sink += output.size();
     });
-    printResult(
-        "gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations",
-        icp_points,
-        iterations,
-        elapsed);
+    printResult(benchmark_name, icp_points, iterations, elapsed);
     if (sink == 0)
     {
-        std::cerr
-            << "gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations"
-            << " produced no aligned points\n";
+        std::cerr << benchmark_name << " produced no aligned points\n";
     }
 }
 
@@ -986,7 +985,8 @@ void benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
     const char* benchmark_name,
     int icp_points,
     int iterations,
-    bool assume_ordered_correspondences)
+    bool assume_ordered_correspondences,
+    bool probe_transformed_exact_pointwise_on_cache_hit)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -1009,6 +1009,10 @@ void benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
     if (assume_ordered_correspondences)
     {
         icp.setGpuAssumeOrderedCorrespondences(true);
+    }
+    if (probe_transformed_exact_pointwise_on_cache_hit)
+    {
+        icp.setGpuProbeTransformedExactPointwiseOnCacheHit(true);
     }
 
     std::size_t sink = 0;
@@ -2275,12 +2279,20 @@ int main(int argc, char** argv)
         "gpu_icp_finite_radius_nonrigid_transform_only_two_iterations",
         options.icp_points,
         options.iterations,
+        false,
         false);
+    benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
+        "gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations",
+        options.icp_points,
+        options.iterations,
+        false,
+        true);
     benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
         "gpu_icp_finite_radius_nonrigid_ordered_transform_only_two_iterations",
         options.icp_points,
         options.iterations,
-        true);
+        true,
+        false);
     benchmarkGpuIcpFiniteRadiusTranslationTransformOnlySkipFinalMetrics(
         "gpu_icp_finite_radius_translation_transform_only_skip_final_metrics",
         options.icp_points,
@@ -2301,7 +2313,16 @@ int main(int argc, char** argv)
         options.icp_points,
         options.iterations,
         true);
-    benchmarkGpuIcpFiniteRadiusBinaryTranslationReuseOutputPreflight(options.icp_points, options.iterations);
+    benchmarkGpuIcpFiniteRadiusBinaryTranslationReuseOutput(
+        "gpu_icp_finite_radius_binary_translation_reuse_output_two_iterations",
+        options.icp_points,
+        options.iterations,
+        false);
+    benchmarkGpuIcpFiniteRadiusBinaryTranslationReuseOutput(
+        "gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations",
+        options.icp_points,
+        options.iterations,
+        true);
     benchmarkGpuIcpFiniteRadiusTranslationReuseTargetOutput(
         options.icp_points,
         options.icp_max_iterations,

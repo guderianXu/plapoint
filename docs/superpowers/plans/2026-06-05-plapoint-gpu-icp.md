@@ -6309,3 +6309,72 @@ Verification evidence:
   cloud. The target-output ordered row is now in the same performance class as the regular ordered output row, while the
   generic target-output path and non-reusable target outputs still use the conservative scratch path unless a cached
   target snapshot is available.
+
+## Task 169: Add Binary Translation Output Preflight Benchmark Pair
+
+- Goal: make the full public `align(output)` cost of transformed exact-pointwise cache-hit preflight directly
+  measurable. The benchmark binary already compared default vs preflight for transform-only binary translation, and it
+  exposed only the preflight row for the caller-output path. Adding the default output row keeps future optimization
+  decisions grounded in a paired CSV comparison.
+- RED check:
+  - Added `gpu_icp_finite_radius_binary_translation_reuse_output_two_iterations` to
+    `cmake/check_gpu_icp_benchmark_rows.cmake`.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint\\.benchmarks\\.gpu_icp_rows_registered --output-on-failure`
+    failed as expected with a missing-row error before the benchmark emitted the new row.
+- Implementation:
+  - Generalized the binary-translation output benchmark helper so it accepts a row name and a
+    `probe_transformed_exact_pointwise_on_cache_hit` flag.
+  - Registered both `gpu_icp_finite_radius_binary_translation_reuse_output_two_iterations` and the existing
+    `gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations` row from the shared helper.
+  - Kept production ICP behavior unchanged; this task only improves benchmark observability for the existing opt-in
+    preflight API.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ctest --test-dir build-codex-cuda-bench-only -R plapoint\\.benchmarks\\.gpu_icp_rows_registered --output-on-failure`:
+    1/1 benchmark row-registration test passed after the benchmark implementation.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 2 --skip-cpu-icp --skip-icp-identity | rg 'binary_translation_(transform_only|reuse_output)'`:
+    ran successfully on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_binary_translation_transform_only_two_iterations` = 1.01315 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_preflight_two_iterations` = 0.980424 ms,
+    `gpu_icp_finite_radius_binary_translation_reuse_output_two_iterations` = 1.01158 ms, and
+    `gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations` = 0.986978 ms.
+- Current conclusion:
+  the public output path follows the same pattern as transform-only: transformed exact cache-hit preflight saves a small
+  amount for exact same-index two-iteration binary translations, but the first generic finite-radius grid-search
+  iteration still dominates total runtime. This supports keeping the preflight as an explicit opt-in rather than making
+  cache-hit probing the default behavior.
+
+## Task 170: Add Nonrigid Preflight Miss-Cost Benchmark
+
+- Goal: quantify the downside of enabling transformed exact-pointwise cache-hit preflight on same-count inputs that are
+  not exact same-index matches. This complements the binary translation exact-match rows and gives a direct benchmark
+  reason to keep `setGpuProbeTransformedExactPointwiseOnCacheHit(true)` opt-in.
+- RED check:
+  - Added `gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations` to
+    `cmake/check_gpu_icp_benchmark_rows.cmake`.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint\\.benchmarks\\.gpu_icp_rows_registered --output-on-failure`
+    failed as expected with a missing-row error before the benchmark emitted the new row.
+- Implementation:
+  - Extended the nonrigid transform-only benchmark helper with a
+    `probe_transformed_exact_pointwise_on_cache_hit` flag.
+  - Registered the default nonrigid row, the new preflight nonrigid row, and the existing ordered nonrigid row from the
+    same helper.
+  - Left default `alignGpu()` behavior unchanged; non-exact transformed cache-hit preflight remains explicit opt-in.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ctest --test-dir build-codex-cuda-bench-only -R plapoint\\.benchmarks\\.gpu_icp_rows_registered --output-on-failure`:
+    1/1 benchmark row-registration test passed after implementation.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 2 --skip-cpu-icp --skip-icp-identity | rg 'nonrigid|binary_translation_(transform_only|reuse_output)'`:
+    ran successfully on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 1.94721 ms,
+    `gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations` = 2.14202 ms,
+    `gpu_icp_finite_radius_nonrigid_ordered_transform_only_two_iterations` = 0.504709 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_two_iterations` = 1.01341 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_preflight_two_iterations` = 0.980842 ms,
+    `gpu_icp_finite_radius_binary_translation_reuse_output_two_iterations` = 1.01144 ms, and
+    `gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations` = 0.986903 ms.
+- Current conclusion:
+  transformed exact cache-hit preflight is useful for exact same-index binary translations, saving roughly
+  0.025-0.033 ms in the 100k two-iteration benchmark rows, but it adds about 0.195 ms on the 100k nonrigid miss case.
+  The default path should stay on the cached spatial-grid kernel unless the caller explicitly opts into preflight or
+  ordered correspondences.
