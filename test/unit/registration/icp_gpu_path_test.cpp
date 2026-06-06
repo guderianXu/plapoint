@@ -2147,9 +2147,8 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     auto* first_grid_sorted_z = icp._gpu_stats_workspace.targetSpatialGridSortedZStorage();
     auto* first_acc_transform = icp._gpu_T_acc->data();
     ASSERT_NE(icp._gpu_points_a, nullptr);
-    ASSERT_NE(icp._gpu_points_b, nullptr);
+    EXPECT_EQ(icp._gpu_points_b, nullptr);
     auto* first_points_a = icp._gpu_points_a->data();
-    auto* first_points_b = icp._gpu_points_b->data();
     const int first_partial_capacity = icp._gpu_stats_workspace.partialCapacity();
     EXPECT_EQ(icp._gpu_T_step, nullptr);
 
@@ -2183,7 +2182,6 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     EXPECT_NE(first_acc_transform, nullptr);
     EXPECT_EQ(icp._gpu_next_T_acc, nullptr);
     EXPECT_NE(first_points_a, nullptr);
-    EXPECT_NE(first_points_b, nullptr);
     EXPECT_EQ(icp._gpu_stats_workspace.partialStorage(), first_partial_storage);
     EXPECT_EQ(icp._gpu_stats_workspace.statsStorage(), first_stats_storage);
     EXPECT_EQ(icp._gpu_stats_workspace.targetSpatialGridKeysStorage(), first_grid_keys);
@@ -2198,13 +2196,10 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     EXPECT_EQ(current_transform_buffers, first_transform_buffers);
     EXPECT_EQ(icp._gpu_next_T_acc, nullptr);
     EXPECT_EQ(icp._gpu_points_a->data(), first_points_a);
-    EXPECT_EQ(icp._gpu_points_b->data(), first_points_b);
+    EXPECT_EQ(icp._gpu_points_b, nullptr);
     EXPECT_NE(source->points().data(), first_points_a);
-    EXPECT_NE(source->points().data(), first_points_b);
     EXPECT_NE(second_source->points().data(), first_points_a);
-    EXPECT_NE(second_source->points().data(), first_points_b);
     EXPECT_NE(third_source->points().data(), first_points_a);
-    EXPECT_NE(third_source->points().data(), first_points_b);
     EXPECT_EQ(icp._gpu_stats_workspace.partialCapacity(), first_partial_capacity);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
 }
@@ -2312,13 +2307,9 @@ TEST(ICPGpuPathTest, AlignUsesScratchForTerminalTransformWhenOutputAliasesSource
 
     EXPECT_EQ(source->size(), target->size());
     EXPECT_EQ(static_cast<const GpuCloud&>(*source).points().data(), source_points);
-    EXPECT_NE(plapoint::gpu::icpLastTransformOutputPointerForTesting(), source_points);
     ASSERT_NE(icp._gpu_points_a, nullptr);
-    ASSERT_NE(icp._gpu_points_b, nullptr);
-    const bool transform_output_is_scratch =
-        plapoint::gpu::icpLastTransformOutputPointerForTesting() == icp._gpu_points_a->data() ||
-        plapoint::gpu::icpLastTransformOutputPointerForTesting() == icp._gpu_points_b->data();
-    EXPECT_TRUE(transform_output_is_scratch);
+    EXPECT_EQ(icp._gpu_points_b, nullptr);
+    EXPECT_EQ(plapoint::gpu::icpLastTransformOutputPointerForTesting(), icp._gpu_points_a->data());
 }
 
 TEST(ICPGpuPathTest, AlignReplacesAttributedGpuOutputInsteadOfKeepingStaleMetadata)

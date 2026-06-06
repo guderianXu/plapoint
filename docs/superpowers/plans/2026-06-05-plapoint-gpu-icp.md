@@ -3363,3 +3363,45 @@ Verification evidence:
   rerun the selected GPU synchronization tests and a large finite-radius ICP benchmark with
   `setComputeFinalMetrics(false)` to confirm the runtime synchronization behavior and measure the cost of the terminal
   host wait.
+
+## Task 104: Lazily Allocate GPU ICP Point Scratch Buffers
+
+- Goal: avoid allocating both Nx3 GPU scratch point buffers when a GPU ICP call only needs one. The common
+  one-iteration terminal path with output aliasing the source only needs a single temporary output buffer before the
+  final device-to-device copy.
+- RED check:
+  - Updated `AlignUsesScratchForTerminalTransformWhenOutputAliasesSource` to expect only `_gpu_points_a` to be
+    allocated and the terminal transform output pointer to match that buffer.
+  - Updated `AlignReusesGpuWorkspacesAcrossRepeatedCalls` so repeated one-iteration aliased-output alignments reuse
+    `_gpu_points_a` without forcing `_gpu_points_b` allocation.
+  - A static RED check against `gpuPointScratchBuffer()` failed before the implementation because it still called
+    `reserveGpuPointBuffers()`, which allocated both scratch buffers together.
+- Implementation:
+  - Replaced the paired `reserveGpuPointBuffers()` helper with `reserveGpuPointBuffer()`, which validates and allocates
+    only the requested scratch matrix.
+  - `gpuPointScratchBuffer()` now reserves `_gpu_points_a` or `_gpu_points_b` lazily based on the current ping-pong
+    side, preserving multi-iteration behavior while avoiding the second allocation in single-scratch paths.
+- Verification performed in this session:
+  - Static RED check failed before the implementation and passed after the implementation.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignUsesScratchForTerminalTransformWhenOutputAliasesSource:ICPGpuPathTest.AlignReusesGpuWorkspacesAcrossRepeatedCalls`:
+    2 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    241 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected scratch-buffer tests and a one-iteration aliased-output GPU ICP benchmark to quantify the avoided
+  allocation and memory footprint.

@@ -530,8 +530,13 @@ private:
 
     Scalar* gpuPointScratchBuffer(int point_count, bool use_first_buffer)
     {
-        reserveGpuPointBuffers(point_count);
-        return use_first_buffer ? _gpu_points_a->data() : _gpu_points_b->data();
+        if (use_first_buffer)
+        {
+            reserveGpuPointBuffer(point_count, _gpu_points_a);
+            return _gpu_points_a->data();
+        }
+        reserveGpuPointBuffer(point_count, _gpu_points_b);
+        return _gpu_points_b->data();
     }
 
     bool outputAliasesGpuInput(const PointCloudType& output) const
@@ -568,16 +573,13 @@ private:
         return output.points().data();
     }
 
-    void reserveGpuPointBuffers(int point_count)
+    void reserveGpuPointBuffer(
+        int point_count,
+        std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>& buffer)
     {
-        if (!_gpu_points_a || _gpu_points_a->rows() != point_count || _gpu_points_a->cols() != 3)
+        if (!buffer || buffer->rows() != point_count || buffer->cols() != 3)
         {
-            _gpu_points_a =
-                std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(point_count, 3);
-        }
-        if (!_gpu_points_b || _gpu_points_b->rows() != point_count || _gpu_points_b->cols() != 3)
-        {
-            _gpu_points_b =
+            buffer =
                 std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(point_count, 3);
         }
     }
