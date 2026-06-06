@@ -94,6 +94,13 @@ public:
     /// Enable a GPU-only fast path that treats source[i] as corresponding to target[i] when point counts match.
     /// Use only for ordered or paired clouds where same-index correspondences are part of the input contract.
     void setGpuAssumeOrderedCorrespondences(bool enabled) { _gpu_assume_ordered_correspondences = enabled; }
+
+    /// Probe transformed same-index exact matches before reusing a cached target spatial grid.
+    /// Enable only when transformed source[i] is expected to equal target[i] often enough to pay an extra O(N) probe.
+    void setGpuProbeTransformedExactPointwiseOnCacheHit(bool enabled)
+    {
+        _gpu_probe_transformed_exact_pointwise_on_cache_hit = enabled;
+    }
 #endif
 
     /// Align the source cloud to the target cloud and write the transformed source to output.
@@ -419,7 +426,8 @@ private:
                         _gpu_T_acc->data(),
                         _gpu_next_T_acc->data(),
                         0,
-                        _gpu_assume_ordered_correspondences);
+                        _gpu_assume_ordered_correspondences,
+                        _gpu_probe_transformed_exact_pointwise_on_cache_hit);
             }
             else
             {
@@ -1200,6 +1208,7 @@ private:
     std::uint64_t _gpu_target_cache_points_version = 0;
     bool _final_T_gpu_valid = false;
     bool _gpu_assume_ordered_correspondences = false;
+    bool _gpu_probe_transformed_exact_pointwise_on_cache_hit = false;
 #ifdef PLAPOINT_ENABLE_TESTING
     int _gpu_step_transform_reserve_check_count = 0;
     int _gpu_accumulated_transform_reserve_check_count = 0;

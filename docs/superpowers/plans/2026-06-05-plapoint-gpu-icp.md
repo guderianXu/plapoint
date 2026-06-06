@@ -5963,3 +5963,67 @@ Verification evidence:
   cache-hit transformed exact preflight is about 10% faster than the default cache-hit path for exact same-index
   transformed inputs at 100k points, and it reaches the cache-miss exact-preflight cost class. It remains opt-in because
   the extra O(source_count) probe is a real cost when cache-hit inputs are not exact same-index matches.
+
+## Task 163: Expose Transformed Exact Cache-Hit Preflight Through Full ICP
+
+- Goal: let full `IterativeClosestPoint` callers opt into the transformed exact-pointwise cache-hit preflight added in
+  Task 162. This keeps default ICP behavior unchanged while making the optimization available to workloads where the
+  first iteration estimates a transform that makes transformed `source[i]` exactly match `target[i]` on the next
+  iteration.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignCanProbeTransformedExactPointwiseOnCacheHitWhenRequested`, configuring full GPU ICP with
+    `setGpuProbeTransformedExactPointwiseOnCacheHit(true)` on translated same-index point clouds and expecting the
+    transformed exact-pointwise alignment-step counter to increment on the second iteration while the target grid is
+    prepared and built only once.
+  - The first CUDA build failed for the expected reason:
+    `IterativeClosestPoint<float, plamatrix::Device::GPU>` did not expose
+    `setGpuProbeTransformedExactPointwiseOnCacheHit()`.
+  - Added benchmark row-registration expectations for
+    `gpu_icp_finite_radius_binary_translation_transform_only_two_iterations` and
+    `gpu_icp_finite_radius_binary_translation_transform_only_preflight_two_iterations`.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure -R plapoint\.benchmarks\.gpu_icp_rows_registered`:
+    failed with the expected missing-row error before the new full-ICP benchmark rows were registered.
+- Implementation:
+  - Added `IterativeClosestPoint::setGpuProbeTransformedExactPointwiseOnCacheHit()` and a private GPU-only flag.
+  - Passed that flag into transformed accumulated alignment-step calls so the second and later transformed ICP
+    iterations can probe exact same-index matches before reusing the cached target spatial grid.
+  - Added binary-grid translated full-ICP benchmark rows comparing the default transformed cache-hit path with the
+    opt-in preflight path over two ICP iterations.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignCanProbeTransformedExactPointwiseOnCacheHitWhenRequested:ICPGpuPathTest.TransformedAlignmentStepCanProbeExactPointwiseOnCacheHitWhenRequested:ICPGpuPathTest.AlignWithoutOutputKeepsAccumulatedTransformAcrossIterations`:
+    3 tests, 0 failed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure -R plapoint\.benchmarks\.gpu_icp_rows_registered`:
+    1/1 passed after benchmark implementation.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.206825 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.229486 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit_preflight` = 0.210867 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_two_iterations` = 1.00563 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_preflight_two_iterations` = 0.981047 ms,
+    `gpu_icp_stats_step_finite_radius_translation_ordered` = 0.248773 ms, and
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.506715 ms.
+- Full verification performed in this session:
+  - `git diff --check`: clean.
+  - GPU: RTX 4060 Laptop GPU, driver 580.159.03.
+  - `cmake --build build-codex-cpu -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, 1 CUDA-only test skipped.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 293/293 passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.210865 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.232457 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit_preflight` = 0.210909 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_two_iterations` = 1.00559 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_preflight_two_iterations` = 0.977812 ms,
+    `gpu_icp_stats_step_finite_radius_translation_ordered` = 0.248639 ms, and
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.506725 ms.
+- Current conclusion:
+  full ICP can now opt into the transformed exact cache-hit preflight. On the 100k two-iteration binary-translation
+  full-ICP benchmark, the preflight row is slightly faster than the default row, but the absolute gain is small because
+  the first generic grid-search iteration still dominates the two-iteration runtime.
