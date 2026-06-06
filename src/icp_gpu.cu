@@ -5555,7 +5555,8 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     Scalar* d_step_transform,
     IcpStepTransformWorkspace& step_workspace,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    bool assume_ordered_correspondences)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
@@ -5618,6 +5619,38 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
             result.step_valid = h_result->step.valid != 0;
             return result;
         }
+    }
+
+    if (assume_ordered_correspondences && source_count == target_count)
+    {
+        launchOrderedPointwiseCorrespondencePartials<Scalar>(
+            d_source_points,
+            d_target_points,
+            source_count,
+            max_correspondence_distance,
+            d_partials,
+            grid_size,
+            stream);
+        reduceRawIcpStatsAndComputeStepTransformKernel<Scalar><<<1, block_size, 0, stream>>>(
+            d_partials,
+            grid_size,
+            d_step_transform,
+            d_result);
+        PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(IcpStatsAndStepRawResult),
+                                            cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+        g_icp_stats_step_host_result_copy_count.fetch_add(1, std::memory_order_relaxed);
+        g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+        PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+
+        IcpStatsAndStepTransformResult<Scalar> result;
+        result.stats = makeHostStats<Scalar>(h_result->stats);
+        result.step.delta = static_cast<Scalar>(h_result->step.delta);
+        result.step_valid = h_result->step.valid != 0;
+        return result;
     }
 
     {
@@ -7084,7 +7117,8 @@ IcpStatsAndStepTransformResult<float> computeIcpStatsAndStepTransformColumnMajor
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     float* d_step_transform,
     IcpStepTransformWorkspace& step_workspace,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    bool assume_ordered_correspondences)
 {
     return computeIcpStatsAndStepTransformColumnMajorImpl(
         d_source_points,
@@ -7095,7 +7129,8 @@ IcpStatsAndStepTransformResult<float> computeIcpStatsAndStepTransformColumnMajor
         stats_workspace,
         d_step_transform,
         step_workspace,
-        stream);
+        stream,
+        assume_ordered_correspondences);
 }
 
 IcpStatsAndStepTransformResult<double> computeIcpStatsAndStepTransformColumnMajor(
@@ -7107,7 +7142,8 @@ IcpStatsAndStepTransformResult<double> computeIcpStatsAndStepTransformColumnMajo
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     double* d_step_transform,
     IcpStepTransformWorkspace& step_workspace,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    bool assume_ordered_correspondences)
 {
     return computeIcpStatsAndStepTransformColumnMajorImpl(
         d_source_points,
@@ -7118,7 +7154,8 @@ IcpStatsAndStepTransformResult<double> computeIcpStatsAndStepTransformColumnMajo
         stats_workspace,
         d_step_transform,
         step_workspace,
-        stream);
+        stream,
+        assume_ordered_correspondences);
 }
 
 IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajor(

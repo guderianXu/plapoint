@@ -518,6 +518,53 @@ TEST(ICPGpuPathTest, StatsAndStepTransformCopiesOneHostResult)
     EXPECT_EQ(plapoint::gpu::icpStatsStepHostResultCopyCountForTesting(), 1);
 }
 
+TEST(ICPGpuPathTest, StatsAndStepCanUseOrderedCorrespondencesForFiniteRadiusTranslation)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto target_cpu = makeNonCollinearPoints();
+    auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.1f, -0.05f, 0.025f);
+    auto source_gpu = source_cpu.toGpu();
+    auto target_gpu = target_cpu.toGpu();
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+    plapoint::gpu::IcpStepTransformWorkspace step_workspace;
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+
+    plapoint::gpu::resetIcpFullDistanceEvaluationCountForTesting();
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
+    const auto result = plapoint::gpu::computeIcpStatsAndStepTransformColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        2.0f,
+        stats_workspace,
+        step_gpu.data(),
+        step_workspace,
+        0,
+        true);
+
+    EXPECT_EQ(result.stats.active_count, static_cast<int>(source_gpu.rows()));
+    EXPECT_TRUE(result.step_valid);
+    EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 0);
+
+    const auto step_cpu = step_gpu.toCpu();
+    EXPECT_NEAR(step_cpu.getValue(0, 3), -0.1f, 1.0e-5f);
+    EXPECT_NEAR(step_cpu.getValue(1, 3), 0.05f, 1.0e-5f);
+    EXPECT_NEAR(step_cpu.getValue(2, 3), -0.025f, 1.0e-5f);
+}
+
 TEST(ICPGpuPathTest, TransformPointsColumnMajorWritesCallerOwnedOutput)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

@@ -5763,3 +5763,51 @@ Verification evidence:
   ordered ICP now avoids target spatial-grid search on transformed iterations as well as on the first iteration. On the
   100k non-rigid ordered benchmark, the ordered two-iteration transform-only path is about 4.3x faster than the generic
   spatial-grid path.
+
+## Task 159: Add Ordered Fast Path To Full Stats+Step ICP API
+
+- Goal: let direct callers of `computeIcpStatsAndStepTransformColumnMajor()` use the same ordered-correspondence fast
+  path as the compact alignment-step API. Before this change, full stats+step public calls always fell through to the
+  target spatial-grid search unless the exact pointwise identity shortcut applied.
+- RED checks:
+  - Added `ICPGpuPathTest.StatsAndStepCanUseOrderedCorrespondencesForFiniteRadiusTranslation`, calling
+    `computeIcpStatsAndStepTransformColumnMajor(..., true)` on equal-size translated point clouds and expecting zero
+    full-distance evaluations, target-candidate visits, grid lookups, target spatial-grid prepares, and target
+    spatial-grid builds.
+  - The first build failed as expected because the public full stats+step API did not accept the ordered hint.
+  - Added benchmark row-registration expectation for `gpu_icp_stats_step_finite_radius_translation_ordered`.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint.benchmarks.gpu_icp_rows_registered --output-on-failure`:
+    failed with the expected missing-row error for `gpu_icp_stats_step_finite_radius_translation_ordered`.
+- Implementation:
+  - Added `assume_ordered_correspondences` to the float/double full stats+step public overloads, defaulting to false.
+  - Routed equal-size ordered full stats+step calls through `launchOrderedPointwiseCorrespondencePartials()` and the
+    existing `reduceRawIcpStatsAndComputeStepTransformKernel()` instead of preparing or searching the target grid.
+  - Added `gpu_icp_stats_step_finite_radius_translation_ordered` to the benchmark binary, using the direct full
+    stats+step API with reusable workspaces.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.StatsAndStepCanUseOrderedCorrespondencesForFiniteRadiusTranslation`:
+    1 test, 0 failed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.StatsAndStepCanUseOrderedCorrespondencesForFiniteRadiusTranslation:ICPGpuPathTest.AlignmentStepCompactResultMatchesFullStatsStepResult:ICPGpuPathTest.StatsAndStepTransformCopiesOneHostResult`:
+    3 tests, 0 failed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) && ctest --test-dir build-codex-cuda-bench-only -R plapoint.benchmarks.gpu_icp_rows_registered --output-on-failure`:
+    passed after benchmark implementation.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_stats_step_finite_radius_translation_new_workspace` = 1.74427 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.858485 ms,
+    `gpu_icp_stats_step_finite_radius_translation_ordered` = 0.251727 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.858657 ms, and
+    `gpu_icp_alignment_step_exact_pointwise_same_buffer_reserved_workspace` = 0.181131 ms.
+- Full verification performed in this session:
+  - `git diff --check`: clean.
+  - GPU: RTX 4060 Laptop GPU, driver 580.159.03, NVIDIA-SMI CUDA version 13.0.
+  - `cmake --build build-codex-cpu -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, 1 CUDA-only test skipped.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 289/289 passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+- Current conclusion:
+  direct full stats+step callers can now opt into ordered correspondences and avoid target-grid work. On the 100k
+  finite-radius translation benchmark, the ordered full stats+step path is about 3.4x faster than the cached-grid
+  full stats+step path and about 6.9x faster than the new-workspace path.

@@ -425,7 +425,8 @@ IcpStatsAndStepTransformResult<float> computeIcpStatsAndStepTransformColumnMajor
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     float* d_step_transform,
     IcpStepTransformWorkspace& step_workspace,
-    cudaStream_t stream = 0);
+    cudaStream_t stream = 0,
+    bool assume_ordered_correspondences = false);
 
 /// Compute ICP correspondence stats and the step transform from one device-side reduction sequence.
 /// Copies the reduced stats and step delta back to host with a single stream synchronization.
@@ -438,7 +439,8 @@ IcpStatsAndStepTransformResult<double> computeIcpStatsAndStepTransformColumnMajo
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     double* d_step_transform,
     IcpStepTransformWorkspace& step_workspace,
-    cudaStream_t stream = 0);
+    cudaStream_t stream = 0,
+    bool assume_ordered_correspondences = false);
 
 /// Compute compact stats and the step transform needed by the GPU ICP alignment loop.
 /// Copies only the compact convergence/error summary and step delta back to host.
