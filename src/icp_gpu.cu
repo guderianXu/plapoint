@@ -744,7 +744,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
 
-    if (source_valid && target_grid.active)
+    if (source_valid)
     {
         const IcpGridCellKey source_key{
             icpGridCellCoordinate(sx, target_grid.cell_size),
@@ -1183,7 +1183,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
 
-    if (source_valid && target_grid.active)
+    if (source_valid)
     {
         const IcpGridCellKey source_key{
             icpGridCellCoordinate(sx, target_grid.cell_size),
@@ -1538,7 +1538,7 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
 
-    if (source_valid && target_grid.active)
+    if (source_valid)
     {
         const IcpGridCellKey source_key{
             icpGridCellCoordinate(sx, target_grid.cell_size),
