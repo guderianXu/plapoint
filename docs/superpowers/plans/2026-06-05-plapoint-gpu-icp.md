@@ -4111,3 +4111,45 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   compare each reserved-workspace row against its public-helper counterpart to quantify the CPU-side reserve-check
   overhead removed from `alignGpu()`.
+
+## Task 122: Cache GPU ICP Scratch Point Buffer Shape Checks
+
+- Goal: remove repeated CPU-side reserve/shape checks when GPU ICP reuses the same scratch point buffer for the same
+  source size. The align loop may request scratch buffer A or B multiple times across iterations or repeated calls, and
+  those requests do not need to re-check matrix dimensions after the buffer has been reserved for the current point
+  count.
+- RED check:
+  - Added test-only `_gpu_point_scratch_reserve_check_count`.
+  - Added `GpuPointScratchBufferSkipsRepeatedReserveCheckForSameShape`, which requests scratch A twice, scratch B
+    twice, then scratch A with a different point count. The expected check count is 2 after the repeated same-shape
+    A/B requests and 3 after the A size change.
+  - Before the implementation, `gpuPointScratchBuffer()` called `reserveGpuPointBuffer()` on every request, so the same
+    sequence would perform 4 checks before the size change and 5 after it on real GPU hardware.
+- Implementation:
+  - Added `_gpu_points_a_point_count` and `_gpu_points_b_point_count` cache fields.
+  - Routed `gpuPointScratchBuffer()` through `reserveGpuPointScratchBuffer()`, which calls the existing reserve helper
+    only when the selected scratch buffer is absent or was reserved for a different point count.
+  - Kept lazy allocation behavior: scratch buffers are still created only when the alignment path actually needs them.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `git diff --check`:
+    clean before the plan update.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.GpuPointScratchBufferSkipsRepeatedReserveCheckForSameShape:ICPGpuPathTest.AlignReusesGpuWorkspacesAcrossRepeatedCalls:ICPGpuPathTest.AlignUsesScratchForTerminalTransformWhenOutputAliasesTargetWithoutSpatialGridSnapshot`:
+    selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    251 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `GpuPointScratchBufferSkipsRepeatedReserveCheckForSameShape` and multi-iteration GPU ICP benchmarks on real
+  hardware to quantify the CPU-side helper overhead removed from scratch-buffer reuse.

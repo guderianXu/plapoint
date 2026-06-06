@@ -593,10 +593,10 @@ private:
     {
         if (use_first_buffer)
         {
-            reserveGpuPointBuffer(point_count, _gpu_points_a);
+            reserveGpuPointScratchBuffer(point_count, _gpu_points_a, _gpu_points_a_point_count);
             return _gpu_points_a->data();
         }
-        reserveGpuPointBuffer(point_count, _gpu_points_b);
+        reserveGpuPointScratchBuffer(point_count, _gpu_points_b, _gpu_points_b_point_count);
         return _gpu_points_b->data();
     }
 
@@ -662,10 +662,25 @@ private:
         int point_count,
         std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>& buffer)
     {
+#ifdef PLAPOINT_ENABLE_TESTING
+        ++_gpu_point_scratch_reserve_check_count;
+#endif
         if (!buffer || buffer->rows() != point_count || buffer->cols() != 3)
         {
             buffer =
                 std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(point_count, 3);
+        }
+    }
+
+    void reserveGpuPointScratchBuffer(
+        int point_count,
+        std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>& buffer,
+        int& reserved_point_count)
+    {
+        if (!buffer || reserved_point_count != point_count)
+        {
+            reserveGpuPointBuffer(point_count, buffer);
+            reserved_point_count = point_count;
         }
     }
 
@@ -1017,11 +1032,14 @@ private:
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_T_step;
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_points_a;
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_points_b;
+    int _gpu_points_a_point_count = 0;
+    int _gpu_points_b_point_count = 0;
     const void* _gpu_target_cache_points = nullptr;
     std::uint64_t _gpu_target_cache_points_version = 0;
     bool _final_T_gpu_valid = false;
 #ifdef PLAPOINT_ENABLE_TESTING
     int _gpu_step_transform_reserve_check_count = 0;
+    int _gpu_point_scratch_reserve_check_count = 0;
 #endif
 #endif
     bool _converged = false;

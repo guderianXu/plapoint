@@ -3035,6 +3035,29 @@ TEST(ICPGpuPathTest, AlignChecksStepTransformBufferOnceBeforeLoop)
     EXPECT_EQ(output.size(), source->size());
 }
 
+TEST(ICPGpuPathTest, GpuPointScratchBufferSkipsRepeatedReserveCheckForSameShape)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+
+    auto* first_a = icp.gpuPointScratchBuffer(4, true);
+    auto* second_a = icp.gpuPointScratchBuffer(4, true);
+    auto* first_b = icp.gpuPointScratchBuffer(4, false);
+    auto* second_b = icp.gpuPointScratchBuffer(4, false);
+
+    EXPECT_EQ(first_a, second_a);
+    EXPECT_EQ(first_b, second_b);
+    EXPECT_NE(first_a, first_b);
+    EXPECT_EQ(icp._gpu_point_scratch_reserve_check_count, 2);
+
+    static_cast<void>(icp.gpuPointScratchBuffer(5, true));
+    EXPECT_EQ(icp._gpu_point_scratch_reserve_check_count, 3);
+}
+
 TEST(ICPGpuPathTest, AlignSkipsNextTransformBufferAllocationForSingleIteration)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
