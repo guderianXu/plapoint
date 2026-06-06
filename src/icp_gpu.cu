@@ -777,25 +777,30 @@ __global__ void collectCorrespondenceStatsKernel(
                 }
 
                 const double dx = sx - target_tile_x[tile_offset];
+                const double dx_sq = dx * dx;
                 if constexpr (UseTargetTileBounds)
                 {
-                    if (fabs(dx) > max_dist)
+                    if (dx_sq > max_dist_sq)
                     {
                         continue;
                     }
                 }
                 const double dy = sy - target_tile_y[tile_offset];
+                const double dy_sq = dy * dy;
+                const double xy_dist_sq = dx_sq + dy_sq;
                 if constexpr (UseTargetTileBounds)
                 {
-                    if (fabs(dy) > max_dist)
+                    if (xy_dist_sq > max_dist_sq)
                     {
                         continue;
                     }
                 }
                 const double dz = sz - target_tile_z[tile_offset];
+                const double dz_sq = dz * dz;
+                const double dist_sq = xy_dist_sq + dz_sq;
                 if constexpr (UseTargetTileBounds)
                 {
-                    if (fabs(dz) > max_dist)
+                    if (dist_sq > max_dist_sq)
                     {
                         continue;
                     }
@@ -803,7 +808,6 @@ __global__ void collectCorrespondenceStatsKernel(
 #ifdef PLAPOINT_ENABLE_TESTING
                 atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
 #endif
-                const double dist_sq = dx * dx + dy * dy + dz * dz;
                 if (isfinite(dist_sq) && dist_sq < best_dist_sq)
                 {
                     best_dist_sq = dist_sq;
@@ -1352,31 +1356,35 @@ __global__ void collectResidualStatsKernel(
                 }
 
                 const double dx = sx - target_tile_x[tile_offset];
+                const double dx_sq = dx * dx;
                 if constexpr (UseTargetTileBounds)
                 {
-                    if (fabs(dx) > max_dist)
+                    if (dx_sq > max_dist_sq)
                     {
                         continue;
                     }
                 }
                 const double dy = sy - target_tile_y[tile_offset];
+                const double dy_sq = dy * dy;
+                const double xy_dist_sq = dx_sq + dy_sq;
                 if constexpr (UseTargetTileBounds)
                 {
-                    if (fabs(dy) > max_dist)
+                    if (xy_dist_sq > max_dist_sq)
                     {
                         continue;
                     }
                 }
                 const double dz = sz - target_tile_z[tile_offset];
+                const double dz_sq = dz * dz;
+                const double dist_sq = xy_dist_sq + dz_sq;
                 if constexpr (UseTargetTileBounds)
                 {
-                    if (fabs(dz) > max_dist)
+                    if (dist_sq > max_dist_sq)
                     {
                         continue;
                     }
                 }
 
-                const double dist_sq = dx * dx + dy * dy + dz * dz;
 #ifdef PLAPOINT_ENABLE_TESTING
                 atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
 #endif
@@ -1741,31 +1749,35 @@ __global__ void transformAndCollectResidualStatsKernel(
                 }
 
                 const double dx = sx - target_tile_x[tile_offset];
+                const double dx_sq = dx * dx;
                 if constexpr (UseTargetTileBounds)
                 {
-                    if (fabs(dx) > max_dist)
+                    if (dx_sq > max_dist_sq)
                     {
                         continue;
                     }
                 }
                 const double dy = sy - target_tile_y[tile_offset];
+                const double dy_sq = dy * dy;
+                const double xy_dist_sq = dx_sq + dy_sq;
                 if constexpr (UseTargetTileBounds)
                 {
-                    if (fabs(dy) > max_dist)
+                    if (xy_dist_sq > max_dist_sq)
                     {
                         continue;
                     }
                 }
                 const double dz = sz - target_tile_z[tile_offset];
+                const double dz_sq = dz * dz;
+                const double dist_sq = xy_dist_sq + dz_sq;
                 if constexpr (UseTargetTileBounds)
                 {
-                    if (fabs(dz) > max_dist)
+                    if (dist_sq > max_dist_sq)
                     {
                         continue;
                     }
                 }
 
-                const double dist_sq = dx * dx + dy * dy + dz * dz;
 #ifdef PLAPOINT_ENABLE_TESTING
                 atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
 #endif
