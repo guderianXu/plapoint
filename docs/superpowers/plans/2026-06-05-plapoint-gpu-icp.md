@@ -1956,6 +1956,41 @@ Verification evidence:
   rerun `ICPGpuPathTest.CorrespondenceStatsSameBufferExactPointwiseAvoidsTargetCoordinateLoads`, full CUDA `ctest`, and
   the 100k-point ICP benchmark to confirm runtime behavior and performance impact.
 
+## Task 82: Share Exact Pointwise Same-Buffer Launch Selection
+
+- Goal: reduce maintenance risk in the GPU ICP exact-pointwise fast path after Task 81. The same `SameBuffer` kernel
+  selection was duplicated across the stats-only, stats+identity-step, alignment-step, and residual-stats launch
+  helpers, so later exact-pointwise kernel changes would require touching multiple equivalent branches.
+- Refactor baseline:
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsSameBufferExactPointwiseAvoidsTargetCoordinateLoads:ICPGpuPathTest.ResidualStatsUsesExactPointwiseFastPathForSameBuffer:ICPGpuPathTest.AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 4 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+- Implementation:
+  - Added `launchExactPointwiseCorrespondencePartials()` to centralize correspondence partial-stat kernel launches and
+    choose `SameBuffer=true` only when `d_source_points == d_target_points`.
+  - Added `launchExactPointwiseResidualPartials()` to centralize residual partial-stat kernel launches with the same
+    same-buffer selection rule.
+  - Updated `launchExactPointwiseStats()`, `launchExactPointwiseStatsAndIdentityStep()`,
+    `launchExactPointwiseAlignmentStep()`, and `launchExactPointwiseResidualStats()` to call the shared helpers.
+  - Kept all exact-pointwise gating, CUDA error checks, testing counters, reduction kernels, and public behavior
+    unchanged.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsSameBufferExactPointwiseAvoidsTargetCoordinateLoads:ICPGpuPathTest.ResidualStatsUsesExactPointwiseFastPathForSameBuffer:ICPGpuPathTest.AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 4 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `rg -n "collectExactPointwiseCorrespondenceStatsKernel<Scalar|collectExactPointwiseResidualStatsKernel<Scalar|launchExactPointwiseCorrespondencePartials|launchExactPointwiseResidualPartials" src/icp_gpu.cu`:
+    direct exact-pointwise kernel launches are centralized in the two partial-launch helpers, with call sites using the
+    shared helpers.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    233 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell

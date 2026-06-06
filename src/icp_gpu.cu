@@ -2926,6 +2926,64 @@ bool shouldTryExactPointwiseStats(
 }
 
 template <typename Scalar>
+void launchExactPointwiseCorrespondencePartials(
+    const Scalar* d_source_points,
+    const Scalar* d_target_points,
+    int source_count,
+    RawIcpStats* d_partials,
+    int partial_count,
+    cudaStream_t stream)
+{
+    constexpr int block_size = kIcpStatsBlockSize;
+    if (d_source_points == d_target_points)
+    {
+        collectExactPointwiseCorrespondenceStatsKernel<Scalar, true><<<partial_count, block_size, 0, stream>>>(
+            d_source_points,
+            d_target_points,
+            source_count,
+            d_partials);
+    }
+    else
+    {
+        collectExactPointwiseCorrespondenceStatsKernel<Scalar, false><<<partial_count, block_size, 0, stream>>>(
+            d_source_points,
+            d_target_points,
+            source_count,
+            d_partials);
+    }
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+}
+
+template <typename Scalar>
+void launchExactPointwiseResidualPartials(
+    const Scalar* d_source_points,
+    const Scalar* d_target_points,
+    int source_count,
+    RawIcpResidualStats* d_partials,
+    int partial_count,
+    cudaStream_t stream)
+{
+    constexpr int block_size = kIcpStatsBlockSize;
+    if (d_source_points == d_target_points)
+    {
+        collectExactPointwiseResidualStatsKernel<Scalar, true><<<partial_count, block_size, 0, stream>>>(
+            d_source_points,
+            d_target_points,
+            source_count,
+            d_partials);
+    }
+    else
+    {
+        collectExactPointwiseResidualStatsKernel<Scalar, false><<<partial_count, block_size, 0, stream>>>(
+            d_source_points,
+            d_target_points,
+            source_count,
+            d_partials);
+    }
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+}
+
+template <typename Scalar>
 bool launchExactPointwiseStats(
     const Scalar* d_source_points,
     int source_count,
@@ -2950,23 +3008,13 @@ bool launchExactPointwiseStats(
     }
 
     constexpr int block_size = kIcpStatsBlockSize;
-    if (d_source_points == d_target_points)
-    {
-        collectExactPointwiseCorrespondenceStatsKernel<Scalar, true><<<partial_count, block_size, 0, stream>>>(
-            d_source_points,
-            d_target_points,
-            source_count,
-            d_partials);
-    }
-    else
-    {
-        collectExactPointwiseCorrespondenceStatsKernel<Scalar, false><<<partial_count, block_size, 0, stream>>>(
-            d_source_points,
-            d_target_points,
-            source_count,
-            d_partials);
-    }
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    launchExactPointwiseCorrespondencePartials<Scalar>(
+        d_source_points,
+        d_target_points,
+        source_count,
+        d_partials,
+        partial_count,
+        stream);
 
     reduceRawIcpStatsKernel<<<1, block_size, 0, stream>>>(
         d_partials,
@@ -3003,23 +3051,13 @@ bool launchExactPointwiseStatsAndIdentityStep(
     }
 
     constexpr int block_size = kIcpStatsBlockSize;
-    if (d_source_points == d_target_points)
-    {
-        collectExactPointwiseCorrespondenceStatsKernel<Scalar, true><<<partial_count, block_size, 0, stream>>>(
-            d_source_points,
-            d_target_points,
-            source_count,
-            d_partials);
-    }
-    else
-    {
-        collectExactPointwiseCorrespondenceStatsKernel<Scalar, false><<<partial_count, block_size, 0, stream>>>(
-            d_source_points,
-            d_target_points,
-            source_count,
-            d_partials);
-    }
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    launchExactPointwiseCorrespondencePartials<Scalar>(
+        d_source_points,
+        d_target_points,
+        source_count,
+        d_partials,
+        partial_count,
+        stream);
 
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_exact_pointwise_step_call_count.fetch_add(1, std::memory_order_relaxed);
@@ -3059,23 +3097,13 @@ bool launchExactPointwiseAlignmentStep(
     }
 
     constexpr int block_size = kIcpStatsBlockSize;
-    if (d_source_points == d_target_points)
-    {
-        collectExactPointwiseCorrespondenceStatsKernel<Scalar, true><<<partial_count, block_size, 0, stream>>>(
-            d_source_points,
-            d_target_points,
-            source_count,
-            d_partials);
-    }
-    else
-    {
-        collectExactPointwiseCorrespondenceStatsKernel<Scalar, false><<<partial_count, block_size, 0, stream>>>(
-            d_source_points,
-            d_target_points,
-            source_count,
-            d_partials);
-    }
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    launchExactPointwiseCorrespondencePartials<Scalar>(
+        d_source_points,
+        d_target_points,
+        source_count,
+        d_partials,
+        partial_count,
+        stream);
 
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_exact_pointwise_step_call_count.fetch_add(1, std::memory_order_relaxed);
@@ -3113,23 +3141,13 @@ bool launchExactPointwiseResidualStats(
     }
 
     constexpr int block_size = kIcpStatsBlockSize;
-    if (d_source_points == d_target_points)
-    {
-        collectExactPointwiseResidualStatsKernel<Scalar, true><<<partial_count, block_size, 0, stream>>>(
-            d_source_points,
-            d_target_points,
-            source_count,
-            d_partials);
-    }
-    else
-    {
-        collectExactPointwiseResidualStatsKernel<Scalar, false><<<partial_count, block_size, 0, stream>>>(
-            d_source_points,
-            d_target_points,
-            source_count,
-            d_partials);
-    }
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    launchExactPointwiseResidualPartials<Scalar>(
+        d_source_points,
+        d_target_points,
+        source_count,
+        d_partials,
+        partial_count,
+        stream);
 
     reduceRawIcpResidualStatsKernel<<<1, block_size, 0, stream>>>(
         d_partials,
