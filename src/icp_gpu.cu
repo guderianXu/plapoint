@@ -204,7 +204,7 @@ __device__ __forceinline__ void addRawIcpStats(RawIcpStats& dst, const RawIcpSta
     dst.residual_sq_sum += src.residual_sq_sum;
 }
 
-__device__ void addRawIcpResidualStats(RawIcpResidualStats& dst, const RawIcpResidualStats& src)
+__device__ __forceinline__ void addRawIcpResidualStats(RawIcpResidualStats& dst, const RawIcpResidualStats& src)
 {
     dst.active_count += src.active_count;
     dst.invalid_source_count += src.invalid_source_count;
