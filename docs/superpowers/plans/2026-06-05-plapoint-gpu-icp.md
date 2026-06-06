@@ -3527,3 +3527,25 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun the target-cache invalidation test on real GPU hardware, then benchmark repeated target-output align calls to
   confirm the rebuild cost is only paid when target contents were actually mutated.
+
+## Task 108: Add GPU ICP Target-Output Skip-Final-Metrics Benchmark
+
+- Goal: make the target-aliased output fast path measurable in the benchmark binary. The existing reusable-output
+  skip-final-metrics row measured caller-owned output, but did not exercise `align(*target)` with
+  `setComputeFinalMetrics(false)`, which is the path optimized in Task 106.
+- RED check:
+  - Ran the benchmark smoke command and grepped for
+    `gpu_icp_finite_radius_translation_reuse_target_output_skip_final_metrics`.
+  - The check failed before the implementation because no such benchmark row existed.
+- Implementation:
+  - Added `benchmarkGpuIcpFiniteRadiusTranslationReuseTargetOutputSkipFinalMetrics()`.
+  - The benchmark reuses one GPU ICP object, passes the target cloud as the output, disables final metrics, and reports
+    a separate CSV row next to the existing caller-owned-output skip-final-metrics benchmark.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1 --icp-points 1000 --icp-max-iterations 1 --skip-cpu-icp | rg "gpu_icp_finite_radius_translation_reuse_target_output_skip_final_metrics"`:
+    matched the new row; in this environment it reports `skipped,no_usable_cuda_device`.
+- Follow-up required when a CUDA device is available:
+  compare the new target-output row against
+  `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` to quantify the direct target-output fast path.
