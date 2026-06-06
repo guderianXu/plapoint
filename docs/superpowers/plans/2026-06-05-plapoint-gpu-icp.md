@@ -4614,3 +4614,48 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun `FloatAlignmentStepWorkspaceReservesFloatSizedResultStorage` and compare new-workspace float alignment-step
   benchmark rows on real GPU hardware.
+
+## Task 134: Skip Non-Terminal GPU ICP Point Materialization
+
+- Goal: remove the per-iteration `transformPoints` kernel from non-terminal GPU ICP iterations. Instead of writing a
+  transformed source scratch cloud after every non-terminal step, later alignment-step stats kernels now read the
+  original source points through the accumulated device transform. The final aligned point cloud is still materialized
+  only for terminal output or terminal final-metric computation, preserving the existing synchronous `align()` behavior.
+- RED check:
+  - Added `AlignSkipsNonTerminalPointTransformMaterialization`, which expects a two-iteration translated GPU ICP run to
+    use one transformed alignment-step stats call and zero standalone `transformPoints` calls.
+  - Added the test first so `cmake --build build-codex-cuda -j$(nproc)` failed at link time because
+    `resetIcpTransformedAlignmentStepCallCountForTesting()` and
+    `icpTransformedAlignmentStepCallCountForTesting()` did not exist.
+- Implementation:
+  - Added a transformed source-point loader for CUDA ICP stats kernels.
+  - Parameterized the correspondence-stats fallback and spatial-grid kernels with a `TransformSource` compile-time
+    branch so transformed and non-transformed paths share the same nearest-neighbor pruning logic.
+  - Added `computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace()` for float and double detail paths.
+  - Updated `alignGpu()` so non-terminal iterations update only the accumulated transform; later iterations compute
+    alignment stats from `accumulated_transform * original_source`, and final output/final metrics materialize the
+    points once.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignSkipsNonTerminalPointTransformMaterialization:ICPGpuPathTest.AlignSkipsFinalStatsForNonTerminalGpuIterations:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics:ICPGpuPathTest.AlignCanSkipTerminalFinalStatsWhenFinalMetricsAreDisabled`:
+    CUDA build passed. The selected GPU-runtime tests were discovered but skipped because no usable CUDA device is
+    available in this session.
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    264 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver. The new `AlignSkipsNonTerminalPointTransformMaterialization` test was discovered and skipped with
+    the other GPU-runtime tests.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `AlignSkipsNonTerminalPointTransformMaterialization` and compare multi-iteration `gpu_icp_*` rows on real GPU
+  hardware to measure the removed non-terminal transform kernel.

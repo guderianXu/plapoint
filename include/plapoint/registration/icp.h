@@ -372,7 +372,9 @@ private:
             _gpu_stats_workspace.reserveDoubleAlignmentStep(source_count);
         }
 
-        const Scalar* cur_points = _source->points().data();
+        const Scalar* source_points = _source->points().data();
+        const Scalar* cur_points = source_points;
+        bool current_points_use_accumulated_transform = false;
         bool next_points_in_a = true;
 
         _converged = false;
@@ -383,14 +385,31 @@ private:
 
         for (int iter = 0; iter < _max_iter; ++iter)
         {
-            const auto stats_and_step = gpu::detail::computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
-                cur_points,
-                source_count,
-                target_points,
-                target_count,
-                _max_corr_dist,
-                _gpu_stats_workspace,
-                _gpu_T_step->data());
+            gpu::IcpAlignmentStepResult<Scalar> stats_and_step;
+            if (current_points_use_accumulated_transform)
+            {
+                stats_and_step =
+                    gpu::detail::computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(
+                        _gpu_T_acc->data(),
+                        source_points,
+                        source_count,
+                        target_points,
+                        target_count,
+                        _max_corr_dist,
+                        _gpu_stats_workspace,
+                        _gpu_T_step->data());
+            }
+            else
+            {
+                stats_and_step = gpu::detail::computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
+                    cur_points,
+                    source_count,
+                    target_points,
+                    target_count,
+                    _max_corr_dist,
+                    _gpu_stats_workspace,
+                    _gpu_T_step->data());
+            }
             const auto& stats = stats_and_step;
             if (stats.invalid_source_count > 0)
             {
@@ -441,7 +460,7 @@ private:
                 }
                 final_points_written_to_output = true;
             }
-            else if (!terminal_identity_step)
+            else if (terminal_iteration && !terminal_identity_step)
             {
                 transform_output_points = gpuPointScratchBuffer(source_count, next_points_in_a);
             }
@@ -485,8 +504,8 @@ private:
                     final_stats =
                         gpu::detail::
                             transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
-                                step_transform,
-                                cur_points,
+                                _gpu_T_acc->data(),
+                                source_points,
                                 source_count,
                                 _max_corr_dist,
                                 transform_output_points,
@@ -497,8 +516,8 @@ private:
                 {
                     final_stats =
                         gpu::detail::transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
-                            step_transform,
-                            cur_points,
+                            _gpu_T_acc->data(),
+                            source_points,
                             source_count,
                             target_points,
                             target_count,
@@ -507,6 +526,7 @@ private:
                             _gpu_stats_workspace);
                 }
                 cur_points = transform_output_points;
+                current_points_use_accumulated_transform = false;
                 if (final_stats.invalid_source_count > 0)
                 {
                     throw std::invalid_argument("ICP: transformed source contains non-finite point");
@@ -532,22 +552,19 @@ private:
                 if (terminal_iteration)
                 {
                     gpu::transformPointsColumnMajor(
-                        step_transform,
-                        cur_points,
+                        _gpu_T_acc->data(),
+                        source_points,
                         source_count,
                         transform_output_points,
                         0);
+                    cur_points = transform_output_points;
+                    current_points_use_accumulated_transform = false;
                 }
                 else
                 {
-                    gpu::transformPointsColumnMajorAsync(
-                        step_transform,
-                        cur_points,
-                        source_count,
-                        transform_output_points,
-                        0);
+                    cur_points = source_points;
+                    current_points_use_accumulated_transform = true;
                 }
-                cur_points = transform_output_points;
                 if (terminal_iteration && !_compute_final_metrics)
                 {
                     updateResidualMetricsFromGpuStats(stats, source_count);
@@ -568,7 +585,21 @@ private:
         _final_T_gpu_valid = true;
         if (!final_points_written_to_output)
         {
-            if (!gpuOutputAlreadyContainsCurrentPoints(output, source_count, cur_points))
+            if (current_points_use_accumulated_transform)
+            {
+                Scalar* output_points = prepareGpuOutputPointBuffer(output, source_count);
+                if (output_aliases_target)
+                {
+                    invalidateGpuTargetWorkspaceCache();
+                }
+                gpu::transformPointsColumnMajor(
+                    _gpu_T_acc->data(),
+                    source_points,
+                    source_count,
+                    output_points,
+                    0);
+            }
+            else if (!gpuOutputAlreadyContainsCurrentPoints(output, source_count, cur_points))
             {
                 Scalar* output_points = prepareGpuOutputPointBuffer(output, source_count);
                 if (output_points != cur_points)
