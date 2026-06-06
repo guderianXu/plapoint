@@ -362,6 +362,8 @@ private:
         const bool output_aliases_target = outputAliasesGpuTarget(output);
         bool final_points_written_to_output = false;
 
+        reserveGpuStepTransformBuffer();
+
         const Scalar* cur_points = _source->points().data();
         bool next_points_in_a = true;
 
@@ -373,7 +375,6 @@ private:
 
         for (int iter = 0; iter < _max_iter; ++iter)
         {
-            reserveGpuStepTransformBuffer();
             const auto stats_and_step = gpu::computeIcpAlignmentStepColumnMajor(
                 cur_points,
                 source_count,
@@ -441,6 +442,10 @@ private:
             {
                 if (iter == 0)
                 {
+                    if (!terminal_iteration)
+                    {
+                        reserveGpuAccumulatedTransformBuffer();
+                    }
                     std::swap(_gpu_T_acc, _gpu_T_step);
                 }
                 else
@@ -665,9 +670,20 @@ private:
 
     void reserveGpuStepTransformBuffer()
     {
+#ifdef PLAPOINT_ENABLE_TESTING
+        ++_gpu_step_transform_reserve_check_count;
+#endif
         if (!_gpu_T_step || _gpu_T_step->rows() != 4 || _gpu_T_step->cols() != 4)
         {
             _gpu_T_step = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
+        }
+    }
+
+    void reserveGpuAccumulatedTransformBuffer()
+    {
+        if (!_gpu_T_acc || _gpu_T_acc->rows() != 4 || _gpu_T_acc->cols() != 4)
+        {
+            _gpu_T_acc = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
         }
     }
 
@@ -1003,6 +1019,9 @@ private:
     const void* _gpu_target_cache_points = nullptr;
     std::uint64_t _gpu_target_cache_points_version = 0;
     bool _final_T_gpu_valid = false;
+#ifdef PLAPOINT_ENABLE_TESTING
+    int _gpu_step_transform_reserve_check_count = 0;
+#endif
 #endif
     bool _converged = false;
 };

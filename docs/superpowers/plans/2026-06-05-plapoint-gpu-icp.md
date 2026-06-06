@@ -3981,3 +3981,48 @@ Verification evidence:
   `gpu_icp_alignment_step_exact_pointwise_same_buffer` against
   `gpu_icp_alignment_step_finite_radius_translation_cached_grid` and
   `gpu_icp_alignment_step_fallback_tile_bounds_cached_bounds`.
+
+## Task 119: Move Step Transform Buffer Reserve Out Of GPU ICP Loop
+
+- Goal: remove a fixed CPU-side check from each `alignGpu()` iteration by reserving the 4x4 step-transform buffer once
+  before entering the loop. Multi-iteration runs still need a usable step buffer after the first-iteration
+  `_gpu_T_acc`/`_gpu_T_step` swap, so the accumulated-transform buffer is reserved only when the first step is
+  non-terminal and execution will continue.
+- RED check:
+  - Added `AlignChecksStepTransformBufferOnceBeforeLoop`, requiring a two-iteration GPU ICP run to execute two compact
+    alignment-step calls but only one step-transform reserve check.
+  - `cmake --build build-codex-cuda -j$(nproc)` failed before the implementation because the new test referenced the
+    missing `_gpu_step_transform_reserve_check_count` test hook.
+- Implementation:
+  - Added `PLAPOINT_ENABLE_TESTING=1` to the `plapoint_tests` target so test-only header hooks are visible in test
+    translation units.
+  - Added a test-only `_gpu_step_transform_reserve_check_count` counter on `IterativeClosestPoint`.
+  - Moved `reserveGpuStepTransformBuffer()` before the GPU ICP loop.
+  - Added `reserveGpuAccumulatedTransformBuffer()` and call it only for the first non-terminal step before swapping
+    `_gpu_T_acc` and `_gpu_T_step`, preserving step-buffer reuse without adding an extra 4x4 allocation to terminal
+    identity or single-iteration paths.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean before the plan update.
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignChecksStepTransformBufferOnceBeforeLoop:ICPGpuPathTest.AlignReservesAlignmentStepWorkspaceOncePerCall:ICPGpuPathTest.AlignSkipsNextTransformBufferAllocationForSingleIteration:ICPGpuPathTest.AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs`:
+    build passed; the selected GPU tests were discovered but skipped because the current session has no usable CUDA
+    device.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - Static inspection:
+    `reserveGpuStepTransformBuffer();` now appears once in `alignGpu()` before the loop, and
+    `reserveGpuAccumulatedTransformBuffer();` appears only in the first-step non-terminal branch.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    250 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `AlignChecksStepTransformBufferOnceBeforeLoop` on real GPU hardware to confirm the reserve-check counter is one
+  while the compact alignment-step call counter is two.
