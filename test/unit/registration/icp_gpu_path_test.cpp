@@ -4429,6 +4429,64 @@ TEST(ICPGpuPathTest, TransformResidualStatsSkipsSearchForExactPointwiseMatches)
     EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-8);
 }
 
+TEST(ICPGpuPathTest, ResidualStatsOrderedHintSkipsSpatialGridSearchForFiniteRadius)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto target_points = makeNonCollinearPoints();
+    auto source_points = makeTranslatedNonCollinearPoints(target_points, 0.1f, -0.05f, 0.025f);
+    auto source_gpu = source_points.toGpu();
+    auto target_gpu = target_points.toGpu();
+
+    plapoint::gpu::resetIcpResidualStatsCallCountForTesting();
+    plapoint::gpu::resetIcpFullDistanceEvaluationCountForTesting();
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+    const auto stats = plapoint::gpu::computeIcpResidualStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        2.0f,
+        workspace,
+        0,
+        true);
+
+    EXPECT_EQ(stats.active_count, static_cast<int>(source_points.rows()));
+    EXPECT_NEAR(stats.residual_sq_sum, 0.0525, 1.0e-6);
+    EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 0);
+}
+
+TEST(ICPGpuPathTest, ResidualStatsOrderedHintRejectsUnequalCountsBeforeEmptyReturn)
+{
+    auto* source = reinterpret_cast<float*>(std::uintptr_t{0x1000});
+    auto* target = reinterpret_cast<float*>(std::uintptr_t{0x2000});
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+
+    EXPECT_THROW(
+        (void)plapoint::gpu::computeIcpResidualStatsColumnMajor(
+            source,
+            0,
+            target,
+            1,
+            2.0f,
+            workspace,
+            0,
+            true),
+        std::invalid_argument);
+}
+
 TEST(ICPGpuPathTest, TransformResidualStatsRejectsTargetOutputAliasBeforeCudaAllocation)
 {
     auto* transform = reinterpret_cast<float*>(std::uintptr_t{0x1000});

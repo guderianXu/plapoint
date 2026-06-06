@@ -2167,6 +2167,84 @@ __global__ void collectExactPointwiseResidualStatsKernel(
     }
 }
 
+template <typename Scalar, bool SameBuffer>
+__global__ void collectOrderedResidualStatsKernel(
+    const Scalar* source_points,
+    int point_count,
+    const Scalar* target_points,
+    Scalar max_correspondence_distance,
+    RawIcpResidualStats* __restrict__ partial_stats)
+{
+    const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int local_idx = threadIdx.x;
+    RawIcpResidualStats local{};
+
+    if (source_idx < point_count)
+    {
+        const Scalar raw_sx = loadReadOnlyIcpValue(source_points + source_idx);
+        const Scalar raw_sy = loadReadOnlyIcpValue(source_points + point_count + source_idx);
+        const Scalar raw_sz = loadReadOnlyIcpValue(source_points + 2 * point_count + source_idx);
+        const double sx = static_cast<double>(raw_sx);
+        const double sy = static_cast<double>(raw_sy);
+        const double sz = static_cast<double>(raw_sz);
+        if (!isfinite(sx) || !isfinite(sy) || !isfinite(sz))
+        {
+            local.invalid_source_count = 1;
+        }
+        else
+        {
+            double tx = sx;
+            double ty = sy;
+            double tz = sz;
+            bool target_is_finite = true;
+            if constexpr (!SameBuffer)
+            {
+                target_is_finite = loadFiniteColumnMajorPoint(target_points, point_count, source_idx, tx, ty, tz);
+#ifdef PLAPOINT_ENABLE_TESTING
+                atomicAdd(&g_icp_exact_pointwise_target_load_count, 3ull);
+#endif
+            }
+
+            if (target_is_finite)
+            {
+                const double dx = sx - tx;
+                const double dy = sy - ty;
+                const double dz = sz - tz;
+                const double dist_sq = dx * dx + dy * dy + dz * dz;
+                const double max_dist = static_cast<double>(max_correspondence_distance);
+                bool accepted = isfinite(dist_sq);
+                if (accepted && isfinite(max_dist))
+                {
+                    accepted = dist_sq <= max_dist * max_dist;
+                }
+                if (accepted)
+                {
+                    local.active_count = 1;
+                    local.residual_sq_sum = dist_sq;
+                }
+            }
+        }
+    }
+
+    __shared__ RawIcpResidualStats shared_stats[kIcpStatsBlockSize];
+    shared_stats[local_idx] = local;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            addRawIcpResidualStats(shared_stats[local_idx], shared_stats[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (local_idx == 0)
+    {
+        partial_stats[blockIdx.x] = shared_stats[0];
+    }
+}
+
 template <typename Scalar, bool UseTargetTileBounds>
 __global__ void collectResidualStatsKernel(
     const Scalar* source_points,
@@ -4414,6 +4492,38 @@ void launchExactPointwiseResidualPartials(
 }
 
 template <typename Scalar>
+void launchOrderedResidualStatsPartials(
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    Scalar max_correspondence_distance,
+    RawIcpResidualStats* d_partials,
+    int partial_count,
+    cudaStream_t stream)
+{
+    constexpr int block_size = kIcpStatsBlockSize;
+    if (d_source_points == d_target_points)
+    {
+        collectOrderedResidualStatsKernel<Scalar, true><<<partial_count, block_size, 0, stream>>>(
+            d_source_points,
+            source_count,
+            d_target_points,
+            max_correspondence_distance,
+            d_partials);
+    }
+    else
+    {
+        collectOrderedResidualStatsKernel<Scalar, false><<<partial_count, block_size, 0, stream>>>(
+            d_source_points,
+            source_count,
+            d_target_points,
+            max_correspondence_distance,
+            d_partials);
+    }
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+}
+
+template <typename Scalar>
 bool launchExactPointwiseStats(
     const Scalar* d_source_points,
     int source_count,
@@ -5358,13 +5468,18 @@ IcpResidualStats<Scalar> computeIcpResidualStatsColumnMajorImpl(
     Scalar max_correspondence_distance,
     IcpCorrespondenceStatsWorkspace& workspace,
     cudaStream_t stream,
-    bool reserve_workspace)
+    bool reserve_workspace,
+    bool assume_ordered_correspondences)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
     g_icp_residual_stats_call_count.fetch_add(1, std::memory_order_relaxed);
 #endif
 
+    if (assume_ordered_correspondences && source_count != target_count)
+    {
+        throw std::invalid_argument("ICP GPU: ordered residual metrics require equal source and target counts");
+    }
     if (source_count <= 0 || target_count <= 0)
     {
         return {};
@@ -5388,6 +5503,32 @@ IcpResidualStats<Scalar> computeIcpResidualStatsColumnMajorImpl(
     {
         throw std::invalid_argument("ICP GPU: residual-stats host result workspace is not reserved");
     }
+    if (assume_ordered_correspondences)
+    {
+        launchOrderedResidualStatsPartials<Scalar>(
+            d_source_points,
+            source_count,
+            d_target_points,
+            max_correspondence_distance,
+            d_partials,
+            grid_size,
+            stream);
+
+        reduceRawIcpResidualStatsKernel<<<1, block_size, 0, stream>>>(
+            d_partials,
+            grid_size,
+            d_stats);
+        PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_stats, d_stats, sizeof(RawIcpResidualStats),
+                                            cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+        g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+        PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+        return makeHostResidualStats<Scalar>(*h_stats);
+    }
+
     if (tryComputeExactPointwiseResidualStats(
             d_source_points,
             source_count,
@@ -7328,7 +7469,30 @@ IcpResidualStats<float> computeIcpResidualStatsColumnMajor(
         max_correspondence_distance,
         workspace,
         stream,
-        true);
+        true,
+        false);
+}
+
+IcpResidualStats<float> computeIcpResidualStatsColumnMajor(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream,
+    bool assume_ordered_correspondences)
+{
+    return computeIcpResidualStatsColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        workspace,
+        stream,
+        true,
+        assume_ordered_correspondences);
 }
 
 IcpResidualStats<double> computeIcpResidualStatsColumnMajor(
@@ -7348,7 +7512,30 @@ IcpResidualStats<double> computeIcpResidualStatsColumnMajor(
         max_correspondence_distance,
         workspace,
         stream,
-        true);
+        true,
+        false);
+}
+
+IcpResidualStats<double> computeIcpResidualStatsColumnMajor(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream,
+    bool assume_ordered_correspondences)
+{
+    return computeIcpResidualStatsColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        workspace,
+        stream,
+        true,
+        assume_ordered_correspondences);
 }
 
 IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsColumnMajor(
@@ -7463,7 +7650,30 @@ IcpResidualStats<float> computeIcpResidualStatsColumnMajorWithReservedWorkspace(
         max_correspondence_distance,
         workspace,
         stream,
+        false,
         false);
+}
+
+IcpResidualStats<float> computeIcpResidualStatsColumnMajorWithReservedWorkspace(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream,
+    bool assume_ordered_correspondences)
+{
+    return computeIcpResidualStatsColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        workspace,
+        stream,
+        false,
+        assume_ordered_correspondences);
 }
 
 IcpResidualStats<double> computeIcpResidualStatsColumnMajorWithReservedWorkspace(
@@ -7483,7 +7693,30 @@ IcpResidualStats<double> computeIcpResidualStatsColumnMajorWithReservedWorkspace
         max_correspondence_distance,
         workspace,
         stream,
+        false,
         false);
+}
+
+IcpResidualStats<double> computeIcpResidualStatsColumnMajorWithReservedWorkspace(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream,
+    bool assume_ordered_correspondences)
+{
+    return computeIcpResidualStatsColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        workspace,
+        stream,
+        false,
+        assume_ordered_correspondences);
 }
 
 IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(

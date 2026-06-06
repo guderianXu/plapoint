@@ -364,6 +364,18 @@ IcpResidualStats<float> computeIcpResidualStatsColumnMajor(
     cudaStream_t stream = 0);
 
 /// Compute only final residual metrics using caller-owned reusable device workspace.
+/// Set assume_ordered_correspondences when source[i] should be compared only with target[i] instead of nearest search.
+IcpResidualStats<float> computeIcpResidualStatsColumnMajor(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream,
+    bool assume_ordered_correspondences);
+
+/// Compute only final residual metrics using caller-owned reusable device workspace.
 IcpResidualStats<double> computeIcpResidualStatsColumnMajor(
     const double* d_source_points,
     int source_count,
@@ -372,6 +384,18 @@ IcpResidualStats<double> computeIcpResidualStatsColumnMajor(
     double max_correspondence_distance,
     IcpCorrespondenceStatsWorkspace& workspace,
     cudaStream_t stream = 0);
+
+/// Compute only final residual metrics using caller-owned reusable device workspace.
+/// Set assume_ordered_correspondences when source[i] should be compared only with target[i] instead of nearest search.
+IcpResidualStats<double> computeIcpResidualStatsColumnMajor(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream,
+    bool assume_ordered_correspondences);
 
 /// Transform points into caller-owned output storage and compute final residual metrics in one GPU pass.
 /// Throws if d_output_points aliases d_target_points because residual search must read the original target points.
@@ -711,6 +735,19 @@ IcpResidualStats<float> computeIcpResidualStatsColumnMajorWithReservedWorkspace(
 
 /// Compute final residual metrics using workspace already reserved for source_count.
 /// The caller must reserve residual-compatible partial and result storage first.
+/// Set assume_ordered_correspondences when source[i] should be compared only with target[i] instead of nearest search.
+IcpResidualStats<float> computeIcpResidualStatsColumnMajorWithReservedWorkspace(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream,
+    bool assume_ordered_correspondences);
+
+/// Compute final residual metrics using workspace already reserved for source_count.
+/// The caller must reserve residual-compatible partial and result storage first.
 IcpResidualStats<double> computeIcpResidualStatsColumnMajorWithReservedWorkspace(
     const double* d_source_points,
     int source_count,
@@ -719,6 +756,19 @@ IcpResidualStats<double> computeIcpResidualStatsColumnMajorWithReservedWorkspace
     double max_correspondence_distance,
     IcpCorrespondenceStatsWorkspace& workspace,
     cudaStream_t stream = 0);
+
+/// Compute final residual metrics using workspace already reserved for source_count.
+/// The caller must reserve residual-compatible partial and result storage first.
+/// Set assume_ordered_correspondences when source[i] should be compared only with target[i] instead of nearest search.
+IcpResidualStats<double> computeIcpResidualStatsColumnMajorWithReservedWorkspace(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream,
+    bool assume_ordered_correspondences);
 
 /// Transform points and compute final residual metrics using workspace already reserved for source_count.
 /// The caller must reserve residual-compatible partial and result storage first.

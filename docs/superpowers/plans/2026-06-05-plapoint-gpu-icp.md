@@ -6209,3 +6209,52 @@ Verification evidence:
   sparse unique-cell ranges. The stronger remaining performance lever is to use an ordered/exact residual path when the
   caller knows correspondences are same-index, since the transformed exact residual row is now below the generic cached
   grid residual scan.
+
+## Task 167: Add Ordered Hint For Direct Residual Stats
+
+- Goal: let direct `computeIcpResidualStatsColumnMajor()` callers opt into same-index residual metrics for finite-radius
+  ordered clouds, matching the ordered residual fast path already used by full GPU ICP terminal metrics. This avoids
+  building or probing target spatial grids when the caller knows `source[i]` should be compared only with `target[i]`.
+- RED check:
+  - Added `ICPGpuPathTest.ResidualStatsOrderedHintSkipsSpatialGridSearchForFiniteRadius`. The first build failed as
+    expected because `computeIcpResidualStatsColumnMajor(..., stream, true)` did not exist.
+- Implementation:
+  - Added ordered-hint overloads to the public residual-stats API and the reserved detail API while retaining the old
+    seven-argument overloads as explicit forwarding definitions for source and binary compatibility.
+  - Added an untransformed ordered residual kernel that compares same-index source/target rows, filters by finite max
+    correspondence distance, reports non-finite source rows as invalid, and treats non-finite target rows as inactive
+    correspondences.
+  - The ordered kernel skips target coordinate loads when source and target point to the same device buffer.
+  - The default `assume_ordered_correspondences=false` path is unchanged and still tries exact pointwise residual stats
+    before falling back to spatial-grid or tile-bounds nearest search.
+  - Added `gpu_icp_residual_stats_finite_radius_translation_ordered` to the benchmark binary and row-registration CTest.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.ResidualStatsOrderedHintSkipsSpatialGridSearchForFiniteRadius`:
+    failed before implementation at compile time, then passed after the API and kernel changes.
+  - Added `ICPGpuPathTest.ResidualStatsOrderedHintRejectsUnequalCountsBeforeEmptyReturn` after code review. It failed
+    before moving the ordered count mismatch check ahead of the empty-input return, then passed after the fix.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.ResidualStatsOrderedHintRejectsUnequalCountsBeforeEmptyReturn:ICPGpuPathTest.ResidualStatsOrderedHintSkipsSpatialGridSearchForFiniteRadius`:
+    2 tests, 0 failed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.ResidualStatsOrderedHintSkipsSpatialGridSearchForFiniteRadius:ICPGpuPathTest.TransformResidualStatsSkipsSearchForExactPointwiseMatches:ICPGpuPathTest.AlignUsesReservedWorkspaceForTerminalResidualStats:ICPGpuPathTest.AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput`:
+    4 tests, 0 failed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed after adding the benchmark row.
+- Full verification performed in this session:
+  - `git diff --check`: clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, 1 CUDA-only test skipped.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 301/301 passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+- Benchmark evidence so far:
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    ran successfully on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.523067 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid_reserved_workspace` = 0.523295 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_ordered` = 0.030454 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.522377 ms.
+- Current conclusion:
+  direct residual-stats callers now have the same ordered same-index fast path as full ICP final metrics. On the 100k
+  finite-radius translation benchmark, ordered residual stats avoids target-grid work and is about 17.2x faster than the
+  cached spatial-grid residual row.
