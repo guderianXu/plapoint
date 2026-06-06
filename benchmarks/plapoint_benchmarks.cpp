@@ -1484,6 +1484,55 @@ void benchmarkGpuIcpTransformResidualStatsFiniteRadiusTranslationCachedGrid(int 
     }
 }
 
+void benchmarkGpuIcpTransformResidualStatsTransformedExactPointwiseNewWorkspace(
+    int icp_points,
+    int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(
+            "gpu_icp_transform_residual_stats_transformed_exact_pointwise_new_workspace",
+            "no_usable_cuda_device");
+        return;
+    }
+
+    auto source_points = makeBinaryGridPoints<float>(icp_points);
+    auto transform_cpu = makeTranslationTransform<float>(0.125f, -0.25f, 0.375f);
+    auto target_points = plamatrix::transformPoints(transform_cpu, source_points);
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(source_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto transform = transform_cpu.toGpu();
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output(icp_points, 3);
+
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+        const auto stats = plapoint::gpu::transformPointsAndComputeIcpResidualStatsColumnMajor(
+            transform.data(),
+            source->points().data(),
+            static_cast<int>(source->size()),
+            target->points().data(),
+            static_cast<int>(target->size()),
+            0.5f,
+            output.data(),
+            stats_workspace);
+        sink += static_cast<std::size_t>(std::max(0, stats.active_count));
+    });
+    printResult(
+        "gpu_icp_transform_residual_stats_transformed_exact_pointwise_new_workspace",
+        icp_points,
+        iterations,
+        elapsed);
+    if (sink == 0)
+    {
+        std::cerr
+            << "gpu_icp_transform_residual_stats_transformed_exact_pointwise_new_workspace"
+            << " produced no correspondences\n";
+    }
+}
+
 void benchmarkGpuIcpStatsFallbackTileBoundsNewWorkspace(int icp_points, int iterations)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
@@ -1838,6 +1887,9 @@ int main(int argc, char** argv)
     benchmarkGpuIcpResidualStatsFiniteRadiusTranslationCachedGrid(options.icp_points, options.iterations);
     benchmarkGpuIcpTransformResidualStatsFiniteRadiusTranslationNewWorkspace(options.icp_points, options.iterations);
     benchmarkGpuIcpTransformResidualStatsFiniteRadiusTranslationCachedGrid(options.icp_points, options.iterations);
+    benchmarkGpuIcpTransformResidualStatsTransformedExactPointwiseNewWorkspace(
+        options.icp_points,
+        options.iterations);
     benchmarkGpuIcpStatsFallbackTileBoundsNewWorkspace(options.icp_points, options.iterations);
     benchmarkGpuIcpStatsFallbackTileBoundsCachedBounds(options.icp_points, options.iterations);
     benchmarkGpuIcpStatsStepFallbackTileBoundsNewWorkspace(options.icp_points, options.iterations);

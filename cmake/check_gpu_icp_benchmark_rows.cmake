@@ -56,6 +56,7 @@ set(expected_gpu_icp_rows
     gpu_icp_residual_stats_finite_radius_translation_cached_grid
     gpu_icp_transform_residual_stats_finite_radius_translation_new_workspace
     gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid
+    gpu_icp_transform_residual_stats_transformed_exact_pointwise_new_workspace
     gpu_icp_stats_fallback_tile_bounds_new_workspace
     gpu_icp_stats_fallback_tile_bounds_cached_bounds
     gpu_icp_stats_step_fallback_tile_bounds_new_workspace

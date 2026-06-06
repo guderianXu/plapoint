@@ -1615,6 +1615,78 @@ __global__ void collectTransformedExactPointwiseCorrespondenceStatsKernel(
     }
 }
 
+template <typename Scalar>
+__global__ void collectTransformedExactPointwiseResidualStatsKernel(
+    const Scalar* source_transform,
+    const Scalar* source_points,
+    int point_count,
+    const Scalar* target_points,
+    Scalar* output_points,
+    RawIcpResidualStats* __restrict__ partial_stats)
+{
+    const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int local_idx = threadIdx.x;
+    RawIcpResidualStats local{};
+    __shared__ Scalar block_transform[kIcpTransform3x4ValueCount];
+    loadColumnMajorTransform3x4Block(source_transform, block_transform, local_idx);
+
+    if (source_idx < point_count)
+    {
+        double sx = 0.0;
+        double sy = 0.0;
+        double sz = 0.0;
+        const bool source_valid = loadFiniteTransformedColumnMajorPoint(
+            source_points,
+            point_count,
+            source_idx,
+            block_transform,
+            sx,
+            sy,
+            sz);
+        if (output_points)
+        {
+            output_points[source_idx] = static_cast<Scalar>(sx);
+            output_points[point_count + source_idx] = static_cast<Scalar>(sy);
+            output_points[2 * point_count + source_idx] = static_cast<Scalar>(sz);
+        }
+
+        if (!source_valid)
+        {
+            local.invalid_source_count = 1;
+        }
+        else if (!tryAcceptTransformedExactPointwiseResidual<Scalar>(
+                     source_idx,
+                     point_count,
+                     target_points,
+                     point_count,
+                     sx,
+                     sy,
+                     sz,
+                     local))
+        {
+            local.residual_sq_sum = INFINITY;
+        }
+    }
+
+    __shared__ RawIcpResidualStats shared_stats[kIcpStatsBlockSize];
+    shared_stats[local_idx] = local;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            addRawIcpResidualStats(shared_stats[local_idx], shared_stats[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (local_idx == 0)
+    {
+        partial_stats[blockIdx.x] = shared_stats[0];
+    }
+}
+
 template <typename Scalar, bool SameBuffer>
 __global__ void collectExactPointwiseResidualStatsKernel(
     const Scalar* source_points,
@@ -4166,6 +4238,50 @@ bool launchTransformedExactPointwiseAlignmentStep(
 }
 
 template <typename Scalar>
+bool launchTransformedExactPointwiseResidualStats(
+    const Scalar* d_source_transform,
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar* d_output_points,
+    RawIcpResidualStats* d_partials,
+    int partial_count,
+    RawIcpResidualStats* d_stats,
+    cudaStream_t stream)
+{
+    if (!detail::canProbeTransformedExactPointwiseStats(
+            source_count,
+            d_target_points,
+            target_count,
+            nullptr))
+    {
+        return false;
+    }
+
+    constexpr int block_size = kIcpStatsBlockSize;
+    collectTransformedExactPointwiseResidualStatsKernel<Scalar>
+        <<<partial_count, block_size, 0, stream>>>(
+        d_source_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        d_output_points,
+        d_partials);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_transformed_exact_pointwise_residual_call_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    reduceRawIcpResidualStatsKernel<<<1, block_size, 0, stream>>>(
+        d_partials,
+        partial_count,
+        d_stats);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    return true;
+}
+
+template <typename Scalar>
 bool launchExactPointwiseResidualStats(
     const Scalar* d_source_points,
     int source_count,
@@ -4262,6 +4378,44 @@ bool tryComputeExactPointwiseResidualStats(
             d_target_points,
             target_count,
             max_correspondence_distance,
+            d_partials,
+            partial_count,
+            d_stats,
+            stream))
+    {
+        return false;
+    }
+
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_stats, d_stats, sizeof(RawIcpResidualStats),
+                                        cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    return std::isfinite(h_stats->residual_sq_sum);
+}
+
+template <typename Scalar>
+bool tryComputeTransformedExactPointwiseResidualStats(
+    const Scalar* d_source_transform,
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar* d_output_points,
+    RawIcpResidualStats* d_partials,
+    int partial_count,
+    RawIcpResidualStats* d_stats,
+    RawIcpResidualStats* h_stats,
+    cudaStream_t stream)
+{
+    if (!launchTransformedExactPointwiseResidualStats(
+            d_source_transform,
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            d_output_points,
             d_partials,
             partial_count,
             d_stats,
@@ -4770,6 +4924,33 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
     {
         throw std::invalid_argument("ICP GPU: residual-stats host result workspace is not reserved");
     }
+
+    const bool use_target_spatial_grid = shouldUseTargetSpatialGrid(max_correspondence_distance);
+    const double cell_size = static_cast<double>(max_correspondence_distance);
+    const bool target_grid_cache_matches =
+        use_target_spatial_grid &&
+        workspace.targetSpatialGridCacheMatchesForScalar<Scalar>(
+            d_target_points,
+            target_count,
+            cell_size);
+    if (use_target_spatial_grid &&
+        !target_grid_cache_matches &&
+        tryComputeTransformedExactPointwiseResidualStats(
+            d_transform,
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            d_output_points,
+            d_partials,
+            grid_size,
+            d_stats,
+            h_stats,
+            stream))
+    {
+        return makeHostResidualStats<Scalar>(*h_stats);
+    }
+
     const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
         d_target_points,
         target_count,

@@ -5623,3 +5623,42 @@ Verification evidence:
   points on the RTX 4060 Laptop GPU, this does not materially change wall time for the ordered benchmark; remaining time
   is dominated by alignment-step/final-residual reductions and host synchronization rather than final point
   materialization.
+
+## Task 156: Skip Target Grid Build For Transformed Exact Residual Stats
+
+- Goal: avoid preparing a target spatial grid when transformed source points are exactly the same-index target points.
+  Before this change, transformed residual stats could skip candidate search inside the residual kernel, but the generic
+  path still prepared and built the target spatial grid before that kernel was launched.
+- RED checks:
+  - Strengthened `ICPGpuPathTest.TransformResidualStatsSkipsSearchForExactPointwiseMatches` to also assert that target
+    spatial-grid prepare/build counts remain zero.
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformResidualStatsSkipsSearchForExactPointwiseMatches`:
+    failed as expected because the old transformed residual path reported target spatial-grid prepares = 1 and builds =
+    1 even though candidate search/grid lookup counts were already zero.
+  - Added `gpu_icp_transform_residual_stats_transformed_exact_pointwise_new_workspace` to the benchmark row-registration
+    check.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint.benchmarks.gpu_icp_rows_registered --output-on-failure`:
+    failed with the expected missing-row error for the new benchmark row.
+- Implementation:
+  - Added `collectTransformedExactPointwiseResidualStatsKernel()`, which transforms source points, optionally writes the
+    transformed output buffer, checks same-index target equality, and reduces residual stats.
+  - Added a transformed exact residual preflight before target spatial-grid preparation when finite spatial-grid search
+    would be used and the workspace does not already have a matching grid cache.
+  - Kept cache-hit transformed residual behavior on the existing cached-grid path to avoid adding an extra full exact
+    probe in steady-state cached workloads.
+  - Added a benchmark row using binary-spaced points and binary translation so GPU-transformed source points match
+    same-index targets exactly.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformResidualStatsSkipsSearchForExactPointwiseMatches`:
+    1 test, 0 failed after implementation.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) && ctest --test-dir build-codex-cuda-bench-only -R plapoint.benchmarks.gpu_icp_rows_registered --output-on-failure`:
+    passed after benchmark implementation.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_transform_residual_stats_finite_radius_translation_new_workspace` = 1.4799 ms,
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.52967 ms, and
+    `gpu_icp_transform_residual_stats_transformed_exact_pointwise_new_workspace` = 0.508194 ms.
+- Current conclusion:
+  exact transformed residual stats can now bypass target-grid preparation entirely on cache-miss/new-workspace paths.
+  At 100k points on the RTX 4060 Laptop GPU, the exact transformed residual row is about 2.9x faster than the generic
+  transformed residual new-workspace row and slightly faster than the cached-grid transformed residual row.

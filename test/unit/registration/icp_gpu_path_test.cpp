@@ -3818,6 +3818,8 @@ TEST(ICPGpuPathTest, TransformResidualStatsSkipsSearchForExactPointwiseMatches)
     plapoint::gpu::resetIcpFullDistanceEvaluationCountForTesting();
     plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
     plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
     const auto stats = plapoint::gpu::transformPointsAndComputeIcpResidualStatsColumnMajor(
         transform_gpu.data(),
         source_gpu.data(),
@@ -3833,6 +3835,8 @@ TEST(ICPGpuPathTest, TransformResidualStatsSkipsSearchForExactPointwiseMatches)
     EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
     EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 0ull);
     EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 0);
     EXPECT_EQ(stats.active_count, static_cast<int>(source_points.rows()));
     EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-8);
 }
