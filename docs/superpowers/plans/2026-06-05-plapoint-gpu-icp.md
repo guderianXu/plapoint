@@ -4570,3 +4570,47 @@ Verification evidence:
     reported that it could not communicate with the NVIDIA driver.
 - Follow-up required when a CUDA device is available:
   rerun the alignment-step benchmark rows on real hardware to quantify the smaller float result copy.
+
+## Task 133: Reserve Float-Sized Alignment-Step Workspace Results
+
+- Goal: carry the Task 132 float compact-result shrink into workspace reservation. Before this task, float GPU ICP
+  copied only the 24-byte raw alignment-step result but still reserved 32-byte device and pinned host result buffers via
+  the double-sized compatibility reserve path.
+- RED check:
+  - Added `FloatAlignmentStepWorkspaceReservesFloatSizedResultStorage`, which requires a fresh float alignment-step
+    workspace reserve to allocate result storage matching `IcpAlignmentStepRawResult<float>` instead of the double raw
+    size.
+  - Added the test first so `cmake --build build-codex-cuda -j$(nproc)` failed because
+    `IcpCorrespondenceStatsWorkspace::reserveFloatAlignmentStep()` did not exist.
+- Implementation:
+  - Added `reserveFloatAlignmentStep()` and `reserveDoubleAlignmentStep()` to `IcpCorrespondenceStatsWorkspace`.
+  - Kept the old `reserveAlignmentStep()` API as the double-sized compatibility path.
+  - Shared the reservation logic through a private `reserveAlignmentStepStorage()` member.
+  - Routed float `alignGpu()` and float `computeIcpAlignmentStepColumnMajor()` self-reservation through
+    `reserveFloatAlignmentStep()`, while double paths use `reserveDoubleAlignmentStep()`.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.FloatAlignmentStepWorkspaceReservesFloatSizedResultStorage:ICPGpuPathTest.CorrespondenceStatsWorkspaceCanReserveCompactAlignmentStepResult:ICPGpuPathTest.AlignmentStepWorkspaceReusesPinnedHostResultStorage:ICPGpuPathTest.FloatAlignmentStepRawResultUsesFloatSizedDelta`:
+    CUDA build passed. The byte-size test passed without CUDA runtime access; the workspace allocation tests were
+    discovered but skipped because no usable CUDA device is available in this session.
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.FloatAlignmentStepWorkspaceReservesFloatSizedResultStorage:ICPGpuPathTest.CorrespondenceStatsWorkspaceCanReserveCompactAlignmentStepResult:ICPGpuPathTest.AlignmentStepWorkspaceReusesPinnedHostResultStorage:ICPGpuPathTest.FloatAlignmentStepRawResultUsesFloatSizedDelta:ICPGpuPathTest.AlignChecksAlignmentStepWorkspaceOnceBeforeLoop`:
+    selected 5 tests; the no-device byte-size test passed, and the GPU-runtime workspace tests were skipped because
+    no usable CUDA device is available in this session.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    263 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `FloatAlignmentStepWorkspaceReservesFloatSizedResultStorage` and compare new-workspace float alignment-step
+  benchmark rows on real GPU hardware.

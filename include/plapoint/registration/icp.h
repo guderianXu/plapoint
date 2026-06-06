@@ -363,7 +363,14 @@ private:
         bool final_points_written_to_output = false;
 
         reserveGpuStepTransformBuffer();
-        _gpu_stats_workspace.reserveAlignmentStep(source_count);
+        if constexpr (std::is_same_v<Scalar, float>)
+        {
+            _gpu_stats_workspace.reserveFloatAlignmentStep(source_count);
+        }
+        else
+        {
+            _gpu_stats_workspace.reserveDoubleAlignmentStep(source_count);
+        }
 
         const Scalar* cur_points = _source->points().data();
         bool next_points_in_a = true;

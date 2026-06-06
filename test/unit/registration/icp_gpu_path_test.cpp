@@ -2163,6 +2163,25 @@ TEST(ICPGpuPathTest, CorrespondenceStatsWorkspaceCanReserveCompactAlignmentStepR
     EXPECT_LT(compact_workspace._stats_storage.size(), full_workspace._stats_storage.size());
 }
 
+TEST(ICPGpuPathTest, FloatAlignmentStepWorkspaceReservesFloatSizedResultStorage)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+    workspace.reserveFloatAlignmentStep(4);
+
+    EXPECT_NE(workspace.partialStorage(), nullptr);
+    EXPECT_NE(workspace.statsStorage(), nullptr);
+    EXPECT_EQ(workspace._stats_storage.size(), plapoint::gpu::icpFloatAlignmentStepRawResultByteCountForTesting());
+    EXPECT_EQ(workspace.hostResultStorageCapacity(),
+              plapoint::gpu::icpFloatAlignmentStepRawResultByteCountForTesting());
+    EXPECT_LT(workspace.hostResultStorageCapacity(),
+              plapoint::gpu::icpDoubleAlignmentStepRawResultByteCountForTesting());
+}
+
 TEST(ICPGpuPathTest, AlignmentStepWorkspaceReusesPinnedHostResultStorage)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

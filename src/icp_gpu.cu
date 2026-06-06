@@ -4395,7 +4395,14 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
 
     if (reserve_workspace)
     {
-        stats_workspace.reserveAlignmentStep(source_count);
+        if constexpr (std::is_same_v<Scalar, float>)
+        {
+            stats_workspace.reserveFloatAlignmentStep(source_count);
+        }
+        else
+        {
+            stats_workspace.reserveDoubleAlignmentStep(source_count);
+        }
     }
 
     constexpr int block_size = kIcpStatsBlockSize;
@@ -4848,7 +4855,9 @@ void IcpCorrespondenceStatsWorkspace::reserve(int source_count)
     reserveHostResultStorage(sizeof(RawIcpStats));
 }
 
-void IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(int source_count)
+void IcpCorrespondenceStatsWorkspace::reserveAlignmentStepStorage(
+    int source_count,
+    std::size_t result_byte_count)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_alignment_step_reserve_check_count.fetch_add(1, std::memory_order_relaxed);
@@ -4868,8 +4877,8 @@ void IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(int source_count)
         static_cast<std::size_t>(required_partials) * sizeof(RawIcpStats);
     if (partialCapacity() >= required_partials &&
         _partial_storage.size() >= required_partial_bytes &&
-        _stats_storage.size() >= sizeof(IcpAlignmentStepRawResult<double>) &&
-        _host_result_storage.size() >= sizeof(IcpAlignmentStepRawResult<double>))
+        _stats_storage.size() >= result_byte_count &&
+        _host_result_storage.size() >= result_byte_count)
     {
         return;
     }
@@ -4879,8 +4888,23 @@ void IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(int source_count)
 #endif
 
     reservePartialStorage(source_count, sizeof(RawIcpStats));
-    reserveStatsStorage(sizeof(IcpAlignmentStepRawResult<double>));
-    reserveHostResultStorage(sizeof(IcpAlignmentStepRawResult<double>));
+    reserveStatsStorage(result_byte_count);
+    reserveHostResultStorage(result_byte_count);
+}
+
+void IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(int source_count)
+{
+    reserveDoubleAlignmentStep(source_count);
+}
+
+void IcpCorrespondenceStatsWorkspace::reserveFloatAlignmentStep(int source_count)
+{
+    reserveAlignmentStepStorage(source_count, sizeof(IcpAlignmentStepRawResult<float>));
+}
+
+void IcpCorrespondenceStatsWorkspace::reserveDoubleAlignmentStep(int source_count)
+{
+    reserveAlignmentStepStorage(source_count, sizeof(IcpAlignmentStepRawResult<double>));
 }
 
 void IcpCorrespondenceStatsWorkspace::reserveStatsAndStep(int source_count)

@@ -76,8 +76,14 @@ public:
     /// Reserve enough storage for the supplied source point count. Throws for negative counts.
     void reserve(int source_count);
 
-    /// Reserve storage for correspondence partials and the compact alignment-step result.
+    /// Reserve storage for correspondence partials and the double-sized compact alignment-step result.
     void reserveAlignmentStep(int source_count);
+
+    /// Reserve storage for correspondence partials and the float compact alignment-step result.
+    void reserveFloatAlignmentStep(int source_count);
+
+    /// Reserve storage for correspondence partials and the double compact alignment-step result.
+    void reserveDoubleAlignmentStep(int source_count);
 
     /// Reserve storage for correspondence partials and a fused full-stats plus step-transform result.
     void reserveStatsAndStep(int source_count);
@@ -164,6 +170,7 @@ private:
     void reservePartialStorage(int source_count, std::size_t bytes_per_partial);
     void reserveStatsStorage(std::size_t byte_count);
     void reserveHostResultStorage(std::size_t byte_count);
+    void reserveAlignmentStepStorage(int source_count, std::size_t result_byte_count);
 
     DeviceBuffer<unsigned char> _partial_storage;
     DeviceBuffer<unsigned char> _stats_storage;
@@ -429,7 +436,7 @@ namespace detail
 {
 
 /// Compute the compact ICP alignment step using workspace already reserved for source_count.
-/// The caller must call IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(source_count) first.
+/// The caller must call IcpCorrespondenceStatsWorkspace::reserveFloatAlignmentStep(source_count) first.
 IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
     const float* d_source_points,
     int source_count,
@@ -441,7 +448,7 @@ IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajorWithReservedWork
     cudaStream_t stream = 0);
 
 /// Compute the compact ICP alignment step using workspace already reserved for source_count.
-/// The caller must call IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(source_count) first.
+/// The caller must call IcpCorrespondenceStatsWorkspace::reserveDoubleAlignmentStep(source_count) first.
 IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
     const double* d_source_points,
     int source_count,
