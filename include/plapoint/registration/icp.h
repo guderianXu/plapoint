@@ -388,8 +388,10 @@ private:
             gpu::IcpAlignmentStepResult<Scalar> stats_and_step;
             if (current_points_use_accumulated_transform)
             {
+                reserveGpuNextTransformBuffer();
                 stats_and_step =
-                    gpu::detail::computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(
+                    gpu::detail::
+                        computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
                         _gpu_T_acc->data(),
                         source_points,
                         source_count,
@@ -397,7 +399,9 @@ private:
                         target_count,
                         _max_corr_dist,
                         _gpu_stats_workspace,
-                        _gpu_T_step->data());
+                        _gpu_T_step->data(),
+                        _gpu_T_acc->data(),
+                        _gpu_next_T_acc->data());
             }
             else
             {
@@ -476,12 +480,15 @@ private:
                 }
                 else
                 {
-                    reserveGpuNextTransformBuffer();
-                    gpu::multiplyTransform4x4Async(
-                        step_transform,
-                        _gpu_T_acc->data(),
-                        _gpu_next_T_acc->data(),
-                        0);
+                    if (!current_points_use_accumulated_transform)
+                    {
+                        reserveGpuNextTransformBuffer();
+                        gpu::multiplyTransform4x4Async(
+                            step_transform,
+                            _gpu_T_acc->data(),
+                            _gpu_next_T_acc->data(),
+                            0);
+                    }
                     std::swap(_gpu_T_acc, _gpu_next_T_acc);
                 }
             }

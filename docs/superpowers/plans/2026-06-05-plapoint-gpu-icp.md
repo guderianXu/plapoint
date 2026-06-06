@@ -4659,3 +4659,52 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun `AlignSkipsNonTerminalPointTransformMaterialization` and compare multi-iteration `gpu_icp_*` rows on real GPU
   hardware to measure the removed non-terminal transform kernel.
+
+## Task 135: Fuse Transformed Alignment-Step Accumulated Transform Update
+
+- Goal: remove the standalone 4x4 transform-multiply kernel from GPU ICP iterations after the first. Once
+  non-terminal point materialization was skipped, later iterations already run a transformed alignment-step reduction;
+  this task lets that same reduction kernel compute `accumulated_transform = step * previous_accumulated` before the
+  compact host result copy.
+- RED check:
+  - Added `AlignFusesTransformedAlignmentStepWithAccumulatedTransformUpdate`, which expects a two-iteration translated
+    GPU ICP run to use one transformed accumulated alignment-step call and zero standalone transform-multiply calls.
+  - Added the test first so `cmake --build build-codex-cuda -j$(nproc)` failed at link time because
+    `resetIcpAccumulatedAlignmentStepCallCountForTesting()` and
+    `icpAccumulatedAlignmentStepCallCountForTesting()` did not exist.
+- Implementation:
+  - Added a single-thread device helper for 4x4 column-major transform multiplication inside existing one-block
+    alignment-step reductions.
+  - Added `reduceRawIcpStatsAndComputeAlignmentStepAccumulatedTransformKernel()` so the step transform and updated
+    accumulated transform are written by the same reduction kernel.
+  - Added `computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace()` for float and
+    double detail paths.
+  - Updated `alignGpu()` so iterations that read `accumulated_transform * original_source` also write the next
+    accumulated transform in the alignment-step kernel, then swap transform buffers without launching
+    `multiplyTransform4x4Async()`.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignFusesTransformedAlignmentStepWithAccumulatedTransformUpdate:ICPGpuPathTest.AlignSkipsNonTerminalPointTransformMaterialization:ICPGpuPathTest.AlignSkipsFinalStatsForNonTerminalGpuIterations`:
+    CUDA build passed. The selected GPU-runtime tests were discovered but skipped because no usable CUDA device is
+    available in this session.
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    265 test entries, no `Test Failed` or GoogleTest `[  FAILED  ]` entries in
+    `build-codex-cuda/Testing/Temporary/LastTest.log`; GPU-dependent tests skipped because the current session cannot
+    communicate with the NVIDIA driver. The new
+    `AlignFusesTransformedAlignmentStepWithAccumulatedTransformUpdate` test was discovered and skipped with the other
+    GPU-runtime tests.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `AlignFusesTransformedAlignmentStepWithAccumulatedTransformUpdate` on real GPU hardware and compare
+  multi-iteration GPU ICP benchmark rows before/after removing the standalone 4x4 multiply launch.
