@@ -702,7 +702,7 @@ __global__ void collectCorrespondenceStatsKernel(
     }
 }
 
-template <typename Scalar, bool FiniteCellBounds>
+template <typename Scalar, bool FiniteCellBounds, bool WriteCorrespondenceIndices>
 __global__ void collectCorrespondenceStatsSpatialGridKernel(
     const Scalar* source_points,
     int source_count,
@@ -723,7 +723,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
     {
         if (!loadFiniteColumnMajorPoint(source_points, source_count, source_idx, sx, sy, sz))
         {
-            if (correspondence_indices)
+            if constexpr (WriteCorrespondenceIndices)
             {
                 correspondence_indices[source_idx] = -1;
             }
@@ -763,7 +763,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
             max_z = source_key.z;
         }
 
-        const bool can_stop_after_exact_match = correspondence_indices == nullptr;
+        constexpr bool can_stop_after_exact_match = !WriteCorrespondenceIndices;
         bool stop_cell_scan = false;
 #pragma unroll
         for (int dx_offset_idx = 0; dx_offset_idx < 3; ++dx_offset_idx)
@@ -918,14 +918,14 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
 
         if (!accepted)
         {
-            if (correspondence_indices)
+            if constexpr (WriteCorrespondenceIndices)
             {
                 correspondence_indices[source_idx] = -1;
             }
         }
         else
         {
-            if (correspondence_indices)
+            if constexpr (WriteCorrespondenceIndices)
             {
                 if (best_idx < 0)
                 {
@@ -1710,23 +1710,49 @@ void launchCollectCorrespondenceStatsSpatialGridKernel(
 {
     if (target_grid.finite_cell_bounds)
     {
-        collectCorrespondenceStatsSpatialGridKernel<Scalar, true><<<grid_size, block_size, 0, stream>>>(
+        if (correspondence_indices)
+        {
+            collectCorrespondenceStatsSpatialGridKernel<Scalar, true, true><<<grid_size, block_size, 0, stream>>>(
+                source_points,
+                source_count,
+                max_correspondence_distance,
+                correspondence_indices,
+                target_grid,
+                partial_stats);
+        }
+        else
+        {
+            collectCorrespondenceStatsSpatialGridKernel<Scalar, true, false><<<grid_size, block_size, 0, stream>>>(
+                source_points,
+                source_count,
+                max_correspondence_distance,
+                correspondence_indices,
+                target_grid,
+                partial_stats);
+        }
+        return;
+    }
+
+    if (correspondence_indices)
+    {
+        collectCorrespondenceStatsSpatialGridKernel<Scalar, false, true><<<grid_size, block_size, 0, stream>>>(
             source_points,
             source_count,
             max_correspondence_distance,
             correspondence_indices,
             target_grid,
             partial_stats);
-        return;
     }
-
-    collectCorrespondenceStatsSpatialGridKernel<Scalar, false><<<grid_size, block_size, 0, stream>>>(
-        source_points,
-        source_count,
-        max_correspondence_distance,
-        correspondence_indices,
-        target_grid,
-        partial_stats);
+    else
+    {
+        collectCorrespondenceStatsSpatialGridKernel<Scalar, false, false><<<grid_size, block_size, 0, stream>>>(
+            source_points,
+            source_count,
+            max_correspondence_distance,
+            correspondence_indices,
+            target_grid,
+            partial_stats);
+    }
 }
 
 template <typename Scalar>
