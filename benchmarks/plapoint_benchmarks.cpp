@@ -671,6 +671,74 @@ void benchmarkGpuIcpStatsFiniteRadiusTranslationCachedGrid(int icp_points, int i
         std::cerr << "gpu_icp_stats_finite_radius_translation_cached_grid produced no correspondences\n";
     }
 }
+
+void benchmarkGpuIcpStatsFallbackTileBoundsNewWorkspace(int icp_points, int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped("gpu_icp_stats_fallback_tile_bounds_new_workspace", "no_usable_cuda_device");
+        return;
+    }
+
+    const int fallback_points = std::min(icp_points, 4096);
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(fallback_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(fallback_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+        const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+            source->points().data(),
+            static_cast<int>(source->size()),
+            target->points().data(),
+            static_cast<int>(target->size()),
+            0.0f,
+            nullptr,
+            stats_workspace);
+        sink += static_cast<std::size_t>(std::max(0, stats.active_count));
+    });
+    printResult("gpu_icp_stats_fallback_tile_bounds_new_workspace", fallback_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << "gpu_icp_stats_fallback_tile_bounds_new_workspace produced no correspondences\n";
+    }
+}
+
+void benchmarkGpuIcpStatsFallbackTileBoundsCachedBounds(int icp_points, int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped("gpu_icp_stats_fallback_tile_bounds_cached_bounds", "no_usable_cuda_device");
+        return;
+    }
+
+    const int fallback_points = std::min(icp_points, 4096);
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(fallback_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(fallback_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+            source->points().data(),
+            static_cast<int>(source->size()),
+            target->points().data(),
+            static_cast<int>(target->size()),
+            0.0f,
+            nullptr,
+            stats_workspace);
+        sink += static_cast<std::size_t>(std::max(0, stats.active_count));
+    });
+    printResult("gpu_icp_stats_fallback_tile_bounds_cached_bounds", fallback_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << "gpu_icp_stats_fallback_tile_bounds_cached_bounds produced no correspondences\n";
+    }
+}
 #endif
 
 } // namespace
@@ -731,6 +799,8 @@ int main(int argc, char** argv)
     benchmarkGpuIcpStatsStepFiniteRadiusTranslationNewWorkspace(options.icp_points, options.iterations);
     benchmarkGpuIcpStatsStepFiniteRadiusTranslationCachedGrid(options.icp_points, options.iterations);
     benchmarkGpuIcpStatsFiniteRadiusTranslationCachedGrid(options.icp_points, options.iterations);
+    benchmarkGpuIcpStatsFallbackTileBoundsNewWorkspace(options.icp_points, options.iterations);
+    benchmarkGpuIcpStatsFallbackTileBoundsCachedBounds(options.icp_points, options.iterations);
 #endif
     return 0;
 }

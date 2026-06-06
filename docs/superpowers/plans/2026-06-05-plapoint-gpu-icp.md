@@ -2334,6 +2334,41 @@ Verification evidence:
   rerun the new tile-bound reuse GPU test, full CUDA `ctest`, and fallback finite-radius ICP benchmarks to measure the
   precompute-kernel reduction on real hardware.
 
+## Task 92: Add GPU ICP Fallback Tile-Bounds Cache Benchmarks
+
+- Goal: make the Task 91 target tile-bound cache measurable. The existing finite-radius GPU ICP benchmark rows use a
+  positive radius and therefore exercise the spatial-grid path rather than the fallback tile-bound path.
+- Static RED:
+  - `test "$(rg -n "gpu_icp_stats_fallback_tile_bounds_(new_workspace|cached_bounds)" benchmarks/plapoint_benchmarks.cpp | wc -l)" -ge 4`:
+    failed before the change because no benchmark rows existed for fallback tile-bound stats calls.
+  - `test "$(rg -n "benchmarkGpuIcpStatsFallbackTileBounds" benchmarks/plapoint_benchmarks.cpp | wc -l)" -ge 2`:
+    failed before the change because the benchmark functions did not exist.
+- Implementation:
+  - Added `gpu_icp_stats_fallback_tile_bounds_new_workspace`, which creates a fresh stats workspace for each measured
+    call and therefore includes target tile-bound precompute cost.
+  - Added `gpu_icp_stats_fallback_tile_bounds_cached_bounds`, which reuses one stats workspace so the benchmark warm-up
+    builds the tile bounds and measured calls can reuse them.
+  - Both rows use distinct source/target device buffers and `max_correspondence_distance = 0.0f` to force the fallback
+    tile-bound path instead of same-buffer exact pointwise or positive-radius spatial-grid search.
+  - The fallback benchmark point count is capped at 4096 to avoid making the fallback O(N^2) path too expensive when
+    the standard smoke command passes `--icp-points 100000`.
+- Verification performed in this session:
+  - Both static RED commands passed after adding the benchmark rows.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran; the two new rows were printed and reported `skipped,no_usable_cuda_device` on this
+    machine.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    234 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the benchmark with enough iterations to compare the new-workspace and cached-bounds rows and quantify target
+  tile-bound cache savings.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell
