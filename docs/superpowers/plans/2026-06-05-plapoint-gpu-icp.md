@@ -5273,3 +5273,51 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   run `TransformedAlignmentStepSkipsSpatialGridSearchForExactPointwiseMatches` and compare multi-iteration finite-radius
   alignment-step benchmark rows to measure the saved grid lookups and candidate scans.
+
+## Task 148: Add Benchmark Row For Transformed Exact-Pointwise Alignment
+
+- Goal: make the transformed exact-pointwise GPU ICP alignment-step fast path measurable from the benchmark binary and
+  protected by the benchmark row registration CTest.
+- RED check:
+  - Added `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` to
+    `cmake/check_gpu_icp_benchmark_rows.cmake`.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint\\.benchmarks\\.gpu_icp_rows_registered --output-on-failure`:
+    failed with the expected missing-row error because `plapoint_benchmarks` did not yet emit the row.
+- Implementation:
+  - Added a binary-spaced benchmark point generator so the translated source can be transformed back to the target with
+    exact pointwise equality. This avoids measuring fallback behavior caused only by decimal grid rounding noise.
+  - Added a small 4x4 translation-transform helper for the benchmark setup.
+  - Added `benchmarkGpuIcpAlignmentStepTransformedExactPointwiseCachedGrid()`, which uses separate source and target
+    buffers, applies a source-to-target transform, reserves float alignment-step workspace, and calls
+    `detail::computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace()`.
+  - Registered the row next to the existing GPU ICP alignment-step exact-pointwise benchmark rows.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed after fixing the benchmark setup to move CPU matrices into `PointCloud`.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint\\.benchmarks\\.gpu_icp_rows_registered --output-on-failure`:
+    passed. On this machine the new row is emitted as `skipped,no_usable_cuda_device`.
+- Full verification performed in this session:
+  - `git diff --check`:
+    clean before this documentation update.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    277 test entries, 0 failed. GPU-dependent tests were discovered and skipped because the current session cannot
+    communicate with a usable CUDA device.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`:
+    1 test, 0 failed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran and emitted `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid`; GPU rows reported
+    `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  run the benchmark row on hardware and compare it against
+  `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace` to quantify the per-source search
+  work avoided by transformed exact-pointwise probing.

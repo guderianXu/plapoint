@@ -17,6 +17,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -107,6 +108,40 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslatedGridPoints(
         points(i, 2) += tz;
     }
     return points;
+}
+
+template <typename Scalar>
+plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeBinaryGridPoints(int count)
+{
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(count, 3);
+    for (int i = 0; i < count; ++i)
+    {
+        const int x = i % 257;
+        const int y = (i / 257) % 251;
+        const int z = (i / (257 * 251)) % 241;
+        points(i, 0) = static_cast<Scalar>(x) * Scalar(0.125);
+        points(i, 1) = static_cast<Scalar>(y) * Scalar(0.125);
+        points(i, 2) = static_cast<Scalar>(z) * Scalar(0.125);
+    }
+    return points;
+}
+
+template <typename Scalar>
+plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslationTransform(
+    Scalar tx,
+    Scalar ty,
+    Scalar tz)
+{
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> transform(4, 4);
+    transform.fill(Scalar(0));
+    transform.setValue(0, 0, Scalar(1));
+    transform.setValue(1, 1, Scalar(1));
+    transform.setValue(2, 2, Scalar(1));
+    transform.setValue(3, 3, Scalar(1));
+    transform.setValue(0, 3, tx);
+    transform.setValue(1, 3, ty);
+    transform.setValue(2, 3, tz);
+    return transform;
 }
 
 template <typename Scalar>
@@ -989,6 +1024,59 @@ void benchmarkGpuIcpAlignmentStepExactPointwiseSameBufferReservedWorkspace(int i
     }
 }
 
+void benchmarkGpuIcpAlignmentStepTransformedExactPointwiseCachedGrid(int icp_points, int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(
+            "gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid",
+            "no_usable_cuda_device");
+        return;
+    }
+
+    constexpr float source_tx = 0.5f;
+    constexpr float source_ty = -0.25f;
+    constexpr float source_tz = 0.125f;
+    auto target_points_cpu = makeBinaryGridPoints<float>(icp_points);
+    auto source_to_target_cpu = makeTranslationTransform<float>(-source_tx, -source_ty, -source_tz);
+    auto target_to_source_cpu = makeTranslationTransform<float>(source_tx, source_ty, source_tz);
+    auto source_points_cpu = plamatrix::transformPoints(target_to_source_cpu, target_points_cpu);
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(source_points_cpu));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(target_points_cpu));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto source_to_target_gpu = source_to_target_cpu.toGpu();
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    stats_workspace.reserveFloatAlignmentStep(static_cast<int>(source->size()));
+
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        const auto result =
+            plapoint::gpu::detail::computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(
+                source_to_target_gpu.data(),
+                source->points().data(),
+                static_cast<int>(source->size()),
+                target->points().data(),
+                static_cast<int>(target->size()),
+                0.02f,
+                stats_workspace,
+                step_transform.data());
+        sink += static_cast<std::size_t>(std::max(0, result.active_count));
+    });
+    printResult(
+        "gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid",
+        icp_points,
+        iterations,
+        elapsed);
+    if (sink == 0)
+    {
+        std::cerr
+            << "gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid"
+            << " produced no correspondences\n";
+    }
+}
+
 void benchmarkGpuIcpStatsFiniteRadiusTranslationCachedGrid(int icp_points, int iterations)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
@@ -1471,6 +1559,9 @@ int main(int argc, char** argv)
         options.iterations);
     benchmarkGpuIcpAlignmentStepExactPointwiseSameBuffer(options.icp_points, options.iterations);
     benchmarkGpuIcpAlignmentStepExactPointwiseSameBufferReservedWorkspace(
+        options.icp_points,
+        options.iterations);
+    benchmarkGpuIcpAlignmentStepTransformedExactPointwiseCachedGrid(
         options.icp_points,
         options.iterations);
     benchmarkGpuIcpStatsFiniteRadiusTranslationCachedGrid(options.icp_points, options.iterations);
