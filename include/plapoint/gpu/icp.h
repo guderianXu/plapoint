@@ -803,6 +803,7 @@ IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsColumnMajorWit
 /// Transform points and compute final residual metrics against same-index target points using reserved workspace.
 /// The caller must reserve residual-compatible partial and result storage first, and source_count must equal
 /// target_count.
+/// d_output_points may alias d_target_points; each source row reads its same-index target before writing output.
 /// d_output_points may be null to compute metrics without materializing transformed points.
 IcpResidualStats<float> transformPointsAndComputeOrderedIcpResidualStatsColumnMajorWithReservedWorkspace(
     const float* d_transform,
@@ -818,6 +819,7 @@ IcpResidualStats<float> transformPointsAndComputeOrderedIcpResidualStatsColumnMa
 /// Transform points and compute final residual metrics against same-index target points using reserved workspace.
 /// The caller must reserve residual-compatible partial and result storage first, and source_count must equal
 /// target_count.
+/// d_output_points may alias d_target_points; each source row reads its same-index target before writing output.
 /// d_output_points may be null to compute metrics without materializing transformed points.
 IcpResidualStats<double> transformPointsAndComputeOrderedIcpResidualStatsColumnMajorWithReservedWorkspace(
     const double* d_transform,

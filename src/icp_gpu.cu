@@ -469,6 +469,21 @@ __device__ __forceinline__ bool loadFiniteColumnMajorPoint(
 }
 
 template <typename Scalar>
+__device__ __forceinline__ bool loadFiniteColumnMajorPointFromWritableMemory(
+    const Scalar* points,
+    int point_count,
+    int idx,
+    double& x,
+    double& y,
+    double& z)
+{
+    x = static_cast<double>(points[idx]);
+    y = static_cast<double>(points[point_count + idx]);
+    z = static_cast<double>(points[2 * point_count + idx]);
+    return isfinite(x) && isfinite(y) && isfinite(z);
+}
+
+template <typename Scalar>
 __device__ __forceinline__ bool loadFiniteTransformedColumnMajorPoint(
     const Scalar* __restrict__ points,
     int point_count,
@@ -2850,26 +2865,35 @@ __global__ void transformAndCollectOrderedResidualStatsKernel(
         Scalar oy = Scalar(0);
         Scalar oz = Scalar(0);
         transformColumnMajorPoint3x4(block_transform, px, py, pz, ox, oy, oz);
-        if (output_points)
-        {
-            output_points[source_idx] = ox;
-            output_points[point_count + source_idx] = oy;
-            output_points[2 * point_count + source_idx] = oz;
-        }
-
         const double sx = static_cast<double>(ox);
         const double sy = static_cast<double>(oy);
         const double sz = static_cast<double>(oz);
         if (!isfinite(sx) || !isfinite(sy) || !isfinite(sz))
         {
             local.invalid_source_count = 1;
+            if (output_points)
+            {
+                output_points[source_idx] = ox;
+                output_points[point_count + source_idx] = oy;
+                output_points[2 * point_count + source_idx] = oz;
+            }
         }
         else
         {
             double tx = 0.0;
             double ty = 0.0;
             double tz = 0.0;
-            if (loadFiniteColumnMajorPoint(target_points, point_count, source_idx, tx, ty, tz))
+            const bool output_aliases_target = output_points == target_points;
+            const bool target_is_finite = output_aliases_target
+                ? loadFiniteColumnMajorPointFromWritableMemory(target_points, point_count, source_idx, tx, ty, tz)
+                : loadFiniteColumnMajorPoint(target_points, point_count, source_idx, tx, ty, tz);
+            if (output_points)
+            {
+                output_points[source_idx] = ox;
+                output_points[point_count + source_idx] = oy;
+                output_points[2 * point_count + source_idx] = oz;
+            }
+            if (target_is_finite)
             {
 #ifdef PLAPOINT_ENABLE_TESTING
                 atomicAdd(&g_icp_exact_pointwise_target_load_count, 3ull);
@@ -5772,11 +5796,6 @@ IcpResidualStats<Scalar> transformPointsAndComputeOrderedIcpResidualStatsColumnM
     {
         throw std::invalid_argument("ICP GPU: device pointers must not be null");
     }
-    if (d_output_points && d_output_points == d_target_points)
-    {
-        throw std::invalid_argument("ICP GPU: ordered residual output must not alias target points");
-    }
-
     if (reserve_workspace)
     {
         workspace.reserveResidualStats(source_count);

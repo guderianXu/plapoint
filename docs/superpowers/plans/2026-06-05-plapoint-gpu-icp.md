@@ -6258,3 +6258,54 @@ Verification evidence:
   direct residual-stats callers now have the same ordered same-index fast path as full ICP final metrics. On the 100k
   finite-radius translation benchmark, ordered residual stats avoids target-grid work and is about 17.2x faster than the
   cached spatial-grid residual row.
+
+## Task 168: Allow Ordered Terminal Metrics To Write Directly Into Target Output
+
+- Goal: remove the conservative scratch-and-copy path when ordered GPU ICP final metrics write the aligned output into
+  the target cloud itself. Ordered residual metrics only compare transformed `source[i]` with `target[i]`, so each CUDA
+  thread can read its same-index target row before writing output row `i`.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignWritesTerminalOrderedTransformDirectlyWhenOutputAliasesTarget`. It failed because
+    `alignGpu()` wrote the terminal ordered transform into `_gpu_points_a` and later copied scratch into the target.
+  - Added `ICPGpuPathTest.TransformOrderedResidualStatsAllowsTargetOutputAliasAfterTargetLoad`. It failed because the
+    ordered transform+residual API rejected `d_output_points == d_target_points`.
+  - Added `gpu_icp_finite_radius_translation_ordered_reuse_target_output` to the benchmark row-registration check. The
+    bench-only CTest failed with the expected missing-row error before the benchmark row was implemented.
+- Implementation:
+  - `alignGpu()` now treats ordered final metrics like cached target-grid snapshot metrics for target-output aliasing,
+    so it can pass a reusable target point buffer directly as the fused transform output.
+  - The ordered transform+residual kernel now loads the same-index target row before writing output, preserving residual
+    metrics against the original target values even when output aliases target.
+  - A code-review fix changed the target-output alias load to use ordinary global loads instead of `__ldg`, because
+    target memory is writable in this kernel when it aliases output.
+  - A second code-review fix keeps attributed or metadata-bearing target outputs on the scratch path; this avoids
+    replacing the target point buffer before the ordered residual kernel has read the original target values.
+  - The ordered transform+residual API documentation now states target-output aliasing is allowed for this ordered path.
+  - Added `gpu_icp_finite_radius_translation_ordered_reuse_target_output` to the benchmark executable.
+- Targeted verification performed in this session:
+  - Added `ICPGpuPathTest.AlignUsesScratchForTerminalOrderedTransformWhenAttributedOutputAliasesTarget` after code
+    review. It failed before the target-output reuse guard was tightened, then passed after the fix.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignWritesTerminalOrderedTransformDirectlyWhenOutputAliasesTarget:ICPGpuPathTest.AlignUsesScratchForTerminalOrderedTransformWhenAttributedOutputAliasesTarget:ICPGpuPathTest.TransformOrderedResidualStatsAllowsTargetOutputAliasAfterTargetLoad:ICPGpuPathTest.AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsUseSpatialGrid:ICPGpuPathTest.AlignUsesScratchForTerminalTransformWhenOutputAliasesTargetWithoutSpatialGridSnapshot`:
+    5 tests, 0 failed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: failed before benchmark implementation with a
+    missing row, then passed after adding the ordered target-output row.
+- Full verification performed in this session:
+  - `git diff --check`: clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, 1 CUDA-only test skipped.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 304/304 passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+- Benchmark evidence so far:
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`:
+    ran successfully on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.535959 ms,
+    `gpu_icp_finite_radius_translation_ordered_reuse_target_output` = 0.527083 ms,
+    `gpu_icp_finite_radius_translation_reuse_target_output` = 1.5495 ms, and
+    `gpu_icp_finite_radius_translation_reuse_target_output_skip_final_metrics` = 1.34675 ms.
+- Current conclusion:
+  ordered final metrics no longer pay scratch allocation and copy-back cost when the caller writes into a reusable target
+  cloud. The target-output ordered row is now in the same performance class as the regular ordered output row, while the
+  generic target-output path and non-reusable target outputs still use the conservative scratch path unless a cached
+  target snapshot is available.

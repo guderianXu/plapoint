@@ -507,9 +507,15 @@ private:
                 terminal_final_metrics_can_use_target_snapshot
                     ? _gpu_stats_workspace.targetSpatialGridCellCount()
                     : 0;
+            const bool terminal_ordered_final_metrics_can_overwrite_target_output =
+                terminal_final_metrics_can_use_ordered_correspondences &&
+                output_aliases_target &&
+                output &&
+                canReuseGpuOutputPointBuffer(*output, source_count);
             const bool terminal_output_needs_target_points =
                 output_aliases_target &&
                 _compute_final_metrics &&
+                !terminal_ordered_final_metrics_can_overwrite_target_output &&
                 !terminal_final_metrics_can_use_target_snapshot;
             Scalar* transform_output_points = nullptr;
             if (terminal_iteration && !terminal_identity_step && output && !terminal_output_needs_target_points)
