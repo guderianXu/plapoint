@@ -2591,6 +2591,15 @@ __global__ void multiplyTransform4x4Kernel(
     Scalar* __restrict__ C)
 {
     const int idx = threadIdx.x;
+    __shared__ Scalar shared_A[16];
+    __shared__ Scalar shared_B[16];
+    if (idx < 16)
+    {
+        shared_A[idx] = loadReadOnlyIcpValue(A + idx);
+        shared_B[idx] = loadReadOnlyIcpValue(B + idx);
+    }
+    __syncthreads();
+
     if (idx >= 16)
     {
         return;
@@ -2602,7 +2611,8 @@ __global__ void multiplyTransform4x4Kernel(
 #pragma unroll
     for (int k = 0; k < 4; ++k)
     {
-        sum += static_cast<double>(A[row + k * 4]) * static_cast<double>(B[k + col * 4]);
+        sum += static_cast<double>(shared_A[row + k * 4]) *
+            static_cast<double>(shared_B[k + col * 4]);
     }
     C[row + col * 4] = static_cast<Scalar>(sum);
 }

@@ -2255,6 +2255,42 @@ Verification evidence:
   rerun the selected step-transform GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime
   behavior and measure any call-overhead/code-size tradeoff on real hardware.
 
+## Task 90: Cache GPU ICP Transform Multiplication Inputs In Shared Memory
+
+- Goal: reduce repeated global-memory transform loads inside `multiplyTransform4x4Kernel()`. The kernel has one thread
+  per output matrix element, so the previous 4-term dot products repeatedly loaded the same A/B transform values across
+  the 16 threads.
+- Static RED:
+  - `test "$(sed -n '/__global__ void multiplyTransform4x4Kernel/,/template <typename Scalar>/p' src/icp_gpu.cu | rg -n "__shared__ Scalar shared_[AB]\\[16\\]" | wc -l)" -eq 2`:
+    failed before the change because the multiply kernel had no shared A/B transform cache.
+  - `test "$(sed -n '/__global__ void multiplyTransform4x4Kernel/,/template <typename Scalar>/p' src/icp_gpu.cu | rg -n "loadReadOnlyIcpValue\\((A|B) \\+ idx\\)" | wc -l)" -eq 2`:
+    failed before the change because the multiply kernel loaded A/B directly inside the dot-product loop.
+- Implementation:
+  - Added `shared_A[16]` and `shared_B[16]` to `multiplyTransform4x4Kernel()`.
+  - Populated the shared arrays once per block with `loadReadOnlyIcpValue()` and synchronized before the existing
+    per-element dot product.
+  - Kept column-major indexing, double accumulation, output layout, and launch shape unchanged.
+- Verification performed in this session:
+  - Both static RED commands passed after adding the shared transform cache.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.MultiplyTransform4x4UsesColumnMajorTransformComposition:ICPGpuPathTest.MultiplyTransform4x4AsyncUsesCallerStream:ICPGpuPathTest.TransformPointsColumnMajorWritesCallerOwnedOutput:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics:ICPTest.Multiply4x4RejectsUnrepresentableAccumulatedTransform:ICPValidation.RecoversKnownTransform`:
+    2 CPU tests passed; 4 selected GPU tests were discovered but skipped because the current session has no usable CUDA
+    device.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    233 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran, but all GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected transform-multiply GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm
+  runtime behavior and measure the transform-update impact.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell
