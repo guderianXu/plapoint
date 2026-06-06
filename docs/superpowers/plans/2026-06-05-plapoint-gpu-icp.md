@@ -7292,3 +7292,46 @@ Verification evidence:
   alignment-step host-result transfers now have a dedicated performance guard. Future changes that accidentally add
   extra compact result copies, fall back to stats-step, or add an input-transform copy in this path will be caught by
   targeted GPU tests.
+
+## Task 192: Avoid Duplicate Transform-Residual Output Writes After Preflight Miss
+
+- Goal: when transformed exact-pointwise residual preflight runs and misses, keep the transformed output that the
+  preflight kernel already wrote and avoid writing the same transformed points again in the following fallback
+  residual-stats kernel.
+- RED check:
+  - Added a testing-only `g_icp_transform_residual_output_point_write_count` device counter for transformed residual
+    output writes.
+  - Tightened
+    `ICPGpuPathTest.TransformResidualStatsFallbackSkipsDuplicateExactPointwiseProbeAfterPreflightMiss` to expect exactly
+    one output write per source point after a preflight miss.
+  - Before implementation, the test failed with output point write count 8 instead of 4 for the four-point fixture.
+- Implementation:
+  - After a transformed exact-pointwise residual preflight miss, pass `nullptr` as the fallback residual kernel output
+    pointer. The fallback kernel still recomputes transformed coordinates for residual search, but it no longer writes
+    them to output because the preflight output is already complete.
+  - Paths without a preflight miss keep the original output pointer, so exact-hit, counts-differ, ordered, snapshot, and
+    no-output paths preserve their previous behavior.
+  - Added `ICPGpuPathTest.StatsAndStepTransformReusesCachedSpatialGridAcrossCalls` as direct coverage for stats-step
+    cached-grid reuse: two permuted equal-count calls build/reserve the target spatial grid once and copy one host result
+    per call.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformResidualStatsFallbackSkipsDuplicateExactPointwiseProbeAfterPreflightMiss`:
+    failed before implementation with output point write count 8 versus expected 4, then passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.StatsAndStepTransformReusesCachedSpatialGridAcrossCalls:ICPGpuPathTest.TransformResidualStatsSkipsSearchForExactPointwiseMatches:ICPGpuPathTest.TransformResidualStatsFallbackSkipsDuplicateExactPointwiseProbeAfterPreflightMiss:ICPGpuPathTest.TransformResidualStatsSkipsExactPointwiseProbeWhenCountsDiffer:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.TransformOrderedResidualStatsAllowsTargetOutputAliasAfterTargetLoad:ICPGpuPathTest.TransformResidualStatsRejectsTargetOutputAliasBeforeCudaAllocation:ICPGpuPathTest.AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput:ICPGpuPathTest.AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsUseSpatialGrid:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics`:
+    10 stats-step cache and transform-residual tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 40 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_transform_residual_stats_(finite_radius_translation_cached_grid|transformed_exact_pointwise_new_workspace)|gpu_icp_finite_radius_(binary_translation_reuse_output_preflight|binary_translation_transform_only_preflight|nonrigid_transform_only_preflight)|gpu_icp_(stats_step|alignment_step)_finite_radius_translation_cached_grid'`:
+    ran successfully on the RTX 4060 Laptop GPU.
+  - Relevant rows:
+    `gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations` = 2.04358 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_preflight_two_iterations` = 0.951085 ms,
+    `gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations` = 0.964389 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.694148 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.695162 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace` = 0.694396 ms,
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.473828 ms, and
+    `gpu_icp_transform_residual_stats_transformed_exact_pointwise_new_workspace` = 0.509315 ms.
+- Current conclusion:
+  transformed residual fallback after a known exact-pointwise preflight miss now avoids a redundant full output write
+  while preserving residual search and transformed output contents.
