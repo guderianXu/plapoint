@@ -7584,3 +7584,62 @@ Verification evidence:
   public covariance output. On the 100k finite-radius translation benchmark, cached-grid stats/alignment steps improved
   from roughly 0.670 ms to roughly 0.612 ms, and exact/ordered alignment-step paths improved from roughly 0.16 ms to
   roughly 0.12 ms.
+
+## Task 198: Specialize Same-Buffer Exact Identity Alignment Stats
+
+- Goal: speed up the alignment-step fast path for `source_points == target_points`. This path only returns a compact
+  `IcpAlignmentStepRawResult` and an identity step transform, so it does not need the full `RawIcpStats` payload used by
+  public correspondence stats. It can collect source active/invalid counts, source geometry, and residual sum, then
+  mirror source geometry into the target geometry flag because source and target are the same buffer.
+- RED check:
+  - Added `g_icp_same_buffer_identity_alignment_step_count` with reset/get helpers.
+  - Tightened `ICPGpuPathTest.AlignmentStepPrefersSameBufferExactIdentityWhenOrdered` to require one hit of the
+    same-buffer identity alignment-step path while preserving the existing zero target-coordinate-load and identity-step
+    kernel checks.
+  - Before implementation, the test failed with same-buffer identity alignment-step count 0 instead of 1.
+- Implementation:
+  - Added `RawIcpIdentityStats`, which stores active/invalid counts, source sums, compact source outer sums, and
+    residual sum. The existing alignment-step partial workspace remains large enough to hold these smaller partials.
+  - Added `collectSameBufferIdentityAlignmentStatsKernel()` and
+    `reduceRawIcpIdentityStatsAndSetExactPointwiseIdentityAlignmentStepKernel()`.
+  - Updated only the same-buffer branch of `launchExactPointwiseAlignmentStep()` to use the identity-specialized
+    partial/reduce path. Public exact-pointwise stats and stats+step APIs still use full `RawIcpStats`, because they
+    return full source/target/cross covariance data.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignmentStepPrefersSameBufferExactIdentityWhenOrdered`:
+    failed before implementation with same-buffer identity alignment-step count 0, then passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignmentStepPrefersSameBufferExactIdentityWhenOrdered:ICPGpuPathTest.AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs:ICPGpuPathTest.AlignCanUseOrderedPointwiseCorrespondencesForFiniteRadiusTranslation:ICPGpuPathTest.AlignmentStepCompactResultMatchesFullStatsStepResult:ICPGpuPathTest.CorrespondenceStatsSameBufferExactPointwiseAvoidsTargetCoordinateLoads:ICPGpuPathTest.ResidualStatsUsesExactPointwiseFastPathForSameBuffer:ICPGpuPathTest.ExactPointwiseStatsPredicatesSeparateSameBufferFromEqualityProbe`:
+    7 exact/ordered alignment, public stats, and residual fast-path tests passed.
+  - Baseline before this task, using the current pushed Task 197 code:
+    `gpu_icp_alignment_step_exact_pointwise_same_buffer` = 0.117736 ms,
+    `gpu_icp_alignment_step_exact_pointwise_same_buffer_reserved_workspace` = 0.12066 ms,
+    `gpu_icp_alignment_step_ordered_same_buffer_finite_radius` = 0.120721 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.605054 ms, and
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.612491 ms.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 60 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(stats_step|alignment_step|stats)_finite_radius_translation_(cached_grid|cached_grid_reserved_workspace|ordered)|gpu_icp_alignment_step_(exact_pointwise_same_buffer|ordered_same_buffer_finite_radius)|gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics'`:
+    ran successfully on the RTX 4060 Laptop GPU after implementation.
+  - Relevant rows after implementation:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.03102 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.61413 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.605503 ms,
+    `gpu_icp_stats_step_finite_radius_translation_ordered` = 0.178113 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.612279 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace` = 0.612263 ms,
+    `gpu_icp_alignment_step_exact_pointwise_same_buffer` = 0.047018 ms,
+    `gpu_icp_alignment_step_exact_pointwise_same_buffer_reserved_workspace` = 0.046972 ms,
+    `gpu_icp_alignment_step_ordered_same_buffer_finite_radius` = 0.046675 ms, and
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.587753 ms.
+- Full verification after the same-buffer identity alignment specialization:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 319/319 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) &&
+    ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, with the expected CUDA-only
+    `PointCloudTest.GpuTransfer` skip in the CPU build.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+- Current conclusion:
+  same-buffer exact identity alignment-step paths now avoid full correspondence-stat partials when no public
+  covariance payload is needed. On the 100k same-buffer alignment-step benchmark, this reduces exact/ordered same-buffer
+  step time from roughly 0.12 ms to roughly 0.047 ms while leaving cached-grid stats/alignment timings essentially
+  unchanged.

@@ -180,6 +180,8 @@ void resetIcpExactPointwiseStepCallCountForTesting();
 int icpExactPointwiseStepCallCountForTesting();
 void resetIcpExactPointwiseIdentityStepKernelLaunchCountForTesting();
 int icpExactPointwiseIdentityStepKernelLaunchCountForTesting();
+void resetIcpSameBufferIdentityAlignmentStepCountForTesting();
+int icpSameBufferIdentityAlignmentStepCountForTesting();
 void resetIcpTransformedExactPointwiseAlignmentStepCallCountForTesting();
 int icpTransformedExactPointwiseAlignmentStepCallCountForTesting();
 void resetIcpTransformedExactPointwiseResidualCallCountForTesting();
@@ -4854,6 +4856,7 @@ TEST(ICPGpuPathTest, AlignmentStepPrefersSameBufferExactIdentityWhenOrdered)
     workspace.reserveFloatAlignmentStep(static_cast<int>(points.rows()));
 
     plapoint::gpu::resetIcpExactPointwiseIdentityStepKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpSameBufferIdentityAlignmentStepCountForTesting();
     plapoint::gpu::resetIcpExactPointwiseTargetLoadCountForTesting();
     const auto result = plapoint::gpu::detail::computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
         points.data(),
@@ -4871,6 +4874,7 @@ TEST(ICPGpuPathTest, AlignmentStepPrefersSameBufferExactIdentityWhenOrdered)
     EXPECT_NEAR(result.residual_sq_sum, 0.0, 1.0e-8);
     EXPECT_EQ(plapoint::gpu::icpExactPointwiseTargetLoadCountForTesting(), 0ull);
     EXPECT_EQ(plapoint::gpu::icpExactPointwiseIdentityStepKernelLaunchCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpSameBufferIdentityAlignmentStepCountForTesting(), 1);
 
     const auto step_cpu = step_transform.toCpu();
     for (int row = 0; row < 4; ++row)
