@@ -1705,6 +1705,45 @@ Verification evidence:
   rerun the selected fallback GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime behavior
   and performance impact.
 
+## Task 76: Specialize GPU ICP Fallback Correspondence Index Output
+
+- Goal: remove runtime correspondence-index output branches from the non-spatial shared-memory target-tiling stats
+  kernel, and let callers that omit index output stop scanning a source point once an exact target match has been found.
+  This mirrors the existing spatial-grid correspondence specialization while preserving requested-index behavior.
+- Implementation:
+  - Templated `collectCorrespondenceStatsKernel()` on `WriteCorrespondenceIndices`.
+  - Routed invalid-source, rejected-correspondence, and accepted-correspondence index writes through `if constexpr`.
+  - Added `launchCollectCorrespondenceStatsKernel()` to select indexed or unindexed kernel instances at launch time.
+  - Added exact-distance early stop to the unindexed fallback path only; indexed callers still scan all candidates needed
+    to preserve requested output and tie behavior.
+  - Updated `CorrespondenceStatsSkipsFarTargetTilesBeforeCandidateLoop` to request index output so it continues to verify
+    tile-level pruning rather than the new omitted-index exact-stop shortcut.
+  - Added `CorrespondenceStatsStopsNonSpatialScanAfterExactMatchWhenIndicesOmitted` to cover the new fallback behavior
+    and to confirm indexed callers still visit later candidates.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `rg -n "collectCorrespondenceStatsKernel<Scalar>" src/icp_gpu.cu`:
+    no old unspecialized fallback launches remain.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsStopsNonSpatialScanAfterExactMatchWhenIndicesOmitted:ICPGpuPathTest.CorrespondenceStatsSkipsFarTargetTilesBeforeCandidateLoop:ICPGpuPathTest.CorrespondenceStatsAllowOmittedIndexOutput:ICPGpuPathTest.CorrespondenceStatsStillWriteRequestedIndexOutput:ICPGpuPathTest.ResidualStatsStopsNonSpatialScanAfterExactMatch:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 5 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    228 test entries, 0 failed; GPU-dependent tests, including the new exact-stop test, were skipped because the
+    current session cannot communicate with the NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `ICPGpuPathTest.CorrespondenceStatsStopsNonSpatialScanAfterExactMatchWhenIndicesOmitted`, full CUDA `ctest`,
+  and the 100k-point ICP benchmark to confirm runtime behavior and performance impact.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell

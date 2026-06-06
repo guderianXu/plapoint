@@ -639,7 +639,7 @@ __global__ void computeTargetTileBoundsKernel(
     }
 }
 
-template <typename Scalar>
+template <typename Scalar, bool WriteCorrespondenceIndices>
 __global__ void collectCorrespondenceStatsKernel(
     const Scalar* source_points,
     int source_count,
@@ -662,7 +662,7 @@ __global__ void collectCorrespondenceStatsKernel(
     {
         if (!loadFiniteColumnMajorPoint(source_points, source_count, source_idx, sx, sy, sz))
         {
-            if (correspondence_indices)
+            if constexpr (WriteCorrespondenceIndices)
             {
                 correspondence_indices[source_idx] = -1;
             }
@@ -682,6 +682,7 @@ __global__ void collectCorrespondenceStatsKernel(
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
     const bool can_prune_by_radius = isfinite(max_dist) && max_dist >= 0.0;
+    bool stop_target_scan = false;
     __shared__ double target_tile_x[kIcpStatsBlockSize];
     __shared__ double target_tile_y[kIcpStatsBlockSize];
     __shared__ double target_tile_z[kIcpStatsBlockSize];
@@ -713,7 +714,7 @@ __global__ void collectCorrespondenceStatsKernel(
                 sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
         }
 
-        if (source_valid && tile_relevant)
+        if (source_valid && !stop_target_scan && tile_relevant)
         {
             const int tile_count = min(kIcpStatsBlockSize, target_count - tile_start);
             for (int tile_offset = 0; tile_offset < tile_count; ++tile_offset)
@@ -752,6 +753,14 @@ __global__ void collectCorrespondenceStatsKernel(
                     best_tx = target_tile_x[tile_offset];
                     best_ty = target_tile_y[tile_offset];
                     best_tz = target_tile_z[tile_offset];
+                    if constexpr (!WriteCorrespondenceIndices)
+                    {
+                        if (dist_sq <= 0.0)
+                        {
+                            stop_target_scan = true;
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -768,14 +777,14 @@ __global__ void collectCorrespondenceStatsKernel(
 
         if (!accepted)
         {
-            if (correspondence_indices)
+            if constexpr (WriteCorrespondenceIndices)
             {
                 correspondence_indices[source_idx] = -1;
             }
         }
         else
         {
-            if (correspondence_indices)
+            if constexpr (WriteCorrespondenceIndices)
             {
                 correspondence_indices[source_idx] = best_idx;
             }
@@ -1870,6 +1879,45 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
     {
         partial_stats[blockIdx.x] = shared_stats[0];
     }
+}
+
+template <typename Scalar>
+void launchCollectCorrespondenceStatsKernel(
+    int grid_size,
+    int block_size,
+    cudaStream_t stream,
+    const Scalar* source_points,
+    int source_count,
+    const Scalar* target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    int* correspondence_indices,
+    const IcpTargetTileBounds* target_tile_bounds,
+    RawIcpStats* partial_stats)
+{
+    if (correspondence_indices)
+    {
+        collectCorrespondenceStatsKernel<Scalar, true><<<grid_size, block_size, 0, stream>>>(
+            source_points,
+            source_count,
+            target_points,
+            target_count,
+            max_correspondence_distance,
+            correspondence_indices,
+            target_tile_bounds,
+            partial_stats);
+        return;
+    }
+
+    collectCorrespondenceStatsKernel<Scalar, false><<<grid_size, block_size, 0, stream>>>(
+        source_points,
+        source_count,
+        target_points,
+        target_count,
+        max_correspondence_distance,
+        correspondence_indices,
+        target_tile_bounds,
+        partial_stats);
 }
 
 template <typename Scalar>
@@ -3173,7 +3221,10 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
             active_workspace,
             stream);
 
-        collectCorrespondenceStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+        launchCollectCorrespondenceStatsKernel(
+            grid_size,
+            block_size,
+            stream,
             d_source_points,
             source_count,
             d_target_points,
@@ -3702,7 +3753,10 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
                 stats_workspace,
                 stream);
 
-            collectCorrespondenceStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+            launchCollectCorrespondenceStatsKernel(
+                grid_size,
+                block_size,
+                stream,
                 d_source_points,
                 source_count,
                 d_target_points,
@@ -3834,7 +3888,10 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
                 stats_workspace,
                 stream);
 
-            collectCorrespondenceStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+            launchCollectCorrespondenceStatsKernel(
+                grid_size,
+                block_size,
+                stream,
                 d_source_points,
                 source_count,
                 d_target_points,
