@@ -3258,7 +3258,7 @@ bool tryComputeExactPointwiseStats(
     RawIcpStats* d_partials,
     int partial_count,
     RawIcpStats* d_stats,
-    RawIcpStats& raw,
+    RawIcpStats* h_stats,
     cudaStream_t stream)
 {
     if (!launchExactPointwiseStats(
@@ -3276,13 +3276,13 @@ bool tryComputeExactPointwiseStats(
         return false;
     }
 
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_stats, d_stats, sizeof(RawIcpStats),
                                         cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
 #endif
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-    return std::isfinite(raw.residual_sq_sum);
+    return std::isfinite(h_stats->residual_sq_sum);
 }
 
 template <typename Scalar>
@@ -3295,7 +3295,7 @@ bool tryComputeExactPointwiseResidualStats(
     RawIcpResidualStats* d_partials,
     int partial_count,
     RawIcpResidualStats* d_stats,
-    RawIcpResidualStats& raw,
+    RawIcpResidualStats* h_stats,
     cudaStream_t stream)
 {
     if (!launchExactPointwiseResidualStats(
@@ -3312,13 +3312,13 @@ bool tryComputeExactPointwiseResidualStats(
         return false;
     }
 
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpResidualStats),
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_stats, d_stats, sizeof(RawIcpResidualStats),
                                         cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
 #endif
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-    return std::isfinite(raw.residual_sq_sum);
+    return std::isfinite(h_stats->residual_sq_sum);
 }
 
 template <typename Scalar>
@@ -3575,7 +3575,11 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
     const int grid_size = icpStatsPartialCount(source_count);
     auto* d_partials = reinterpret_cast<RawIcpStats*>(active_workspace.partialStorage());
     auto* d_stats = reinterpret_cast<RawIcpStats*>(active_workspace.statsStorage());
-    RawIcpStats raw{};
+    auto* h_stats = reinterpret_cast<RawIcpStats*>(active_workspace.hostResultStorage());
+    if (!h_stats)
+    {
+        throw std::invalid_argument("ICP GPU: stats host result workspace is not reserved");
+    }
     if (tryComputeExactPointwiseStats(
             d_source_points,
             source_count,
@@ -3586,10 +3590,10 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
             d_partials,
             grid_size,
             d_stats,
-            raw,
+            h_stats,
             stream))
     {
-        return makeHostStats<Scalar>(raw);
+        return makeHostStats<Scalar>(*h_stats);
     }
 
     const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
@@ -3642,13 +3646,13 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
         d_stats);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_stats, d_stats, sizeof(RawIcpStats),
                                         cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
 #endif
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-    return makeHostStats<Scalar>(raw);
+    return makeHostStats<Scalar>(*h_stats);
 }
 
 template <typename Scalar>
@@ -3681,7 +3685,11 @@ IcpResidualStats<Scalar> computeIcpResidualStatsColumnMajorImpl(
     const int grid_size = icpStatsPartialCount(source_count);
     auto* d_partials = reinterpret_cast<RawIcpResidualStats*>(workspace.partialStorage());
     auto* d_stats = reinterpret_cast<RawIcpResidualStats*>(workspace.statsStorage());
-    RawIcpResidualStats raw{};
+    auto* h_stats = reinterpret_cast<RawIcpResidualStats*>(workspace.hostResultStorage());
+    if (!h_stats)
+    {
+        throw std::invalid_argument("ICP GPU: residual-stats host result workspace is not reserved");
+    }
     if (tryComputeExactPointwiseResidualStats(
             d_source_points,
             source_count,
@@ -3691,10 +3699,10 @@ IcpResidualStats<Scalar> computeIcpResidualStatsColumnMajorImpl(
             d_partials,
             grid_size,
             d_stats,
-            raw,
+            h_stats,
             stream))
     {
-        return makeHostResidualStats<Scalar>(raw);
+        return makeHostResidualStats<Scalar>(*h_stats);
     }
 
     const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
@@ -3745,13 +3753,13 @@ IcpResidualStats<Scalar> computeIcpResidualStatsColumnMajorImpl(
         d_stats);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpResidualStats),
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_stats, d_stats, sizeof(RawIcpResidualStats),
                                         cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
 #endif
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-    return makeHostResidualStats<Scalar>(raw);
+    return makeHostResidualStats<Scalar>(*h_stats);
 }
 
 template <typename Scalar>
@@ -3793,6 +3801,11 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
     const int grid_size = icpStatsPartialCount(source_count);
     auto* d_partials = reinterpret_cast<RawIcpResidualStats*>(workspace.partialStorage());
     auto* d_stats = reinterpret_cast<RawIcpResidualStats*>(workspace.statsStorage());
+    auto* h_stats = reinterpret_cast<RawIcpResidualStats*>(workspace.hostResultStorage());
+    if (!h_stats)
+    {
+        throw std::invalid_argument("ICP GPU: residual-stats host result workspace is not reserved");
+    }
     const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
         d_target_points,
         target_count,
@@ -3845,14 +3858,13 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
         d_stats);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    RawIcpResidualStats raw{};
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpResidualStats),
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_stats, d_stats, sizeof(RawIcpResidualStats),
                                         cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
 #endif
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-    return makeHostResidualStats<Scalar>(raw);
+    return makeHostResidualStats<Scalar>(*h_stats);
 }
 
 template <typename Scalar>
@@ -3923,6 +3935,11 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
     const int grid_size = icpStatsPartialCount(source_count);
     auto* d_partials = reinterpret_cast<RawIcpResidualStats*>(workspace.partialStorage());
     auto* d_stats = reinterpret_cast<RawIcpResidualStats*>(workspace.statsStorage());
+    auto* h_stats = reinterpret_cast<RawIcpResidualStats*>(workspace.hostResultStorage());
+    if (!h_stats)
+    {
+        throw std::invalid_argument("ICP GPU: residual-stats host result workspace is not reserved");
+    }
     launchTransformAndCollectResidualStatsSpatialGridKernel(
         grid_size,
         block_size,
@@ -3942,14 +3959,13 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
         d_stats);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    RawIcpResidualStats raw{};
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpResidualStats),
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_stats, d_stats, sizeof(RawIcpResidualStats),
                                         cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
 #endif
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-    return makeHostResidualStats<Scalar>(raw);
+    return makeHostResidualStats<Scalar>(*h_stats);
 }
 
 template <typename Scalar>
@@ -4197,7 +4213,11 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
     auto* d_partials = reinterpret_cast<RawIcpStats*>(stats_workspace.partialStorage());
     auto* d_stats = reinterpret_cast<RawIcpStats*>(stats_workspace.statsStorage());
     auto* d_result = reinterpret_cast<IcpStepTransformRawResult*>(step_workspace.resultStorage());
-    RawIcpStats raw{};
+    auto* h_stats = reinterpret_cast<RawIcpStats*>(stats_workspace.hostResultStorage());
+    if (!h_stats)
+    {
+        throw std::invalid_argument("ICP GPU: stats host result workspace is not reserved");
+    }
     IcpStepTransformRawResult raw_result{};
     const bool exact_pointwise_stats = launchExactPointwiseStatsAndIdentityStep(
         d_source_points,
@@ -4215,7 +4235,7 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
 
     if (exact_pointwise_stats)
     {
-        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
+        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_stats, d_stats, sizeof(RawIcpStats),
                                             cudaMemcpyDeviceToHost, stream));
         PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpStepTransformRawResult),
                                             cudaMemcpyDeviceToHost, stream));
@@ -4223,10 +4243,10 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
         g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
 #endif
         PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-        if (std::isfinite(raw.residual_sq_sum))
+        if (std::isfinite(h_stats->residual_sq_sum))
         {
             IcpStatsAndStepTransformResult<Scalar> result;
-            result.stats = makeHostStats<Scalar>(raw);
+            result.stats = makeHostStats<Scalar>(*h_stats);
             result.step.delta = static_cast<Scalar>(raw_result.delta);
             result.step_valid = raw_result.valid != 0;
             return result;
@@ -4287,7 +4307,7 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
         PLAPOINT_CHECK_CUDA(cudaGetLastError());
     }
 
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_stats, d_stats, sizeof(RawIcpStats),
                                         cudaMemcpyDeviceToHost, stream));
     PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpStepTransformRawResult),
                                         cudaMemcpyDeviceToHost, stream));
@@ -4297,7 +4317,7 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
 
     IcpStatsAndStepTransformResult<Scalar> result;
-    result.stats = makeHostStats<Scalar>(raw);
+    result.stats = makeHostStats<Scalar>(*h_stats);
     result.step.delta = static_cast<Scalar>(raw_result.delta);
     result.step_valid = raw_result.valid != 0;
     return result;
@@ -4761,6 +4781,7 @@ void IcpCorrespondenceStatsWorkspace::reserve(int source_count)
 
     reservePartialStorage(source_count, sizeof(RawIcpStats));
     reserveStatsStorage(sizeof(RawIcpStats));
+    reserveHostResultStorage(sizeof(RawIcpStats));
 }
 
 void IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(int source_count)
@@ -4815,6 +4836,7 @@ void IcpCorrespondenceStatsWorkspace::reserveResidualStats(int source_count)
 
     reservePartialStorage(source_count, sizeof(RawIcpResidualStats));
     reserveStatsStorage(sizeof(RawIcpResidualStats));
+    reserveHostResultStorage(sizeof(RawIcpResidualStats));
 }
 
 void IcpCorrespondenceStatsWorkspace::reservePartialStorage(int source_count, std::size_t bytes_per_partial)

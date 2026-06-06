@@ -2107,6 +2107,30 @@ TEST(ICPGpuPathTest, AlignmentStepWorkspaceReusesPinnedHostResultStorage)
     EXPECT_EQ(plapoint::gpu::icpHostResultStorageAllocationCountForTesting(), 1);
 }
 
+TEST(ICPGpuPathTest, StatsWorkspaceReusesPinnedHostResultStorage)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+
+    plapoint::gpu::resetIcpHostResultStorageAllocationCountForTesting();
+    workspace.reserve(4);
+    auto* first_host_result = workspace.hostResultStorage();
+    const auto first_capacity = workspace.hostResultStorageCapacity();
+
+    ASSERT_NE(first_host_result, nullptr);
+    EXPECT_GT(first_capacity, std::size_t{0});
+    EXPECT_EQ(plapoint::gpu::icpHostResultStorageAllocationCountForTesting(), 1);
+
+    workspace.reserve(4);
+    EXPECT_EQ(workspace.hostResultStorage(), first_host_result);
+    EXPECT_EQ(workspace.hostResultStorageCapacity(), first_capacity);
+    EXPECT_EQ(plapoint::gpu::icpHostResultStorageAllocationCountForTesting(), 1);
+}
+
 TEST(ICPGpuPathTest, CorrespondenceStatsWorkspaceCanReserveCompactResidualStats)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
@@ -2125,6 +2149,30 @@ TEST(ICPGpuPathTest, CorrespondenceStatsWorkspaceCanReserveCompactResidualStats)
     EXPECT_EQ(residual_workspace.partialCapacity(), full_workspace.partialCapacity());
     EXPECT_LT(residual_workspace._partial_storage.size(), full_workspace._partial_storage.size());
     EXPECT_LT(residual_workspace._stats_storage.size(), full_workspace._stats_storage.size());
+}
+
+TEST(ICPGpuPathTest, ResidualStatsWorkspaceReusesPinnedHostResultStorage)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+
+    plapoint::gpu::resetIcpHostResultStorageAllocationCountForTesting();
+    workspace.reserveResidualStats(4);
+    auto* first_host_result = workspace.hostResultStorage();
+    const auto first_capacity = workspace.hostResultStorageCapacity();
+
+    ASSERT_NE(first_host_result, nullptr);
+    EXPECT_GT(first_capacity, std::size_t{0});
+    EXPECT_EQ(plapoint::gpu::icpHostResultStorageAllocationCountForTesting(), 1);
+
+    workspace.reserveResidualStats(4);
+    EXPECT_EQ(workspace.hostResultStorage(), first_host_result);
+    EXPECT_EQ(workspace.hostResultStorageCapacity(), first_capacity);
+    EXPECT_EQ(plapoint::gpu::icpHostResultStorageAllocationCountForTesting(), 1);
 }
 
 TEST(ICPGpuPathTest, AlignDoesNotPopulateGpuPointCpuCaches)

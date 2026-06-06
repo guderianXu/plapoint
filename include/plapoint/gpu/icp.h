@@ -124,8 +124,11 @@ public:
     /// Return the reusable final stats storage pointer, or null before reserve().
     unsigned char* statsStorage() { return _stats_storage.get(); }
 
-    /// Return the reusable pinned host result storage pointer, or null before reserveAlignmentStep().
+    /// Return the reusable pinned host result storage pointer, or null before a result-producing reserve call.
     unsigned char* hostResultStorage() { return _host_result_storage.get(); }
+
+    /// Return the currently reserved pinned host result storage capacity, in bytes.
+    std::size_t hostResultStorageCapacity() const { return _host_result_storage.size(); }
 
     /// Return the reusable target tile bounds storage pointer, or null before reserveTargetTileBounds().
     unsigned char* targetTileBoundsStorage() { return _target_tile_bounds_storage.get(); }

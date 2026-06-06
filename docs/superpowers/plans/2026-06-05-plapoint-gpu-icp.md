@@ -4325,3 +4325,42 @@ Verification evidence:
   rerun `AlignmentStepWorkspaceReusesPinnedHostResultStorage` on real GPU hardware and compare compact alignment-step
   benchmark rows before/after this commit. The expected behavior is one host-result allocation per workspace reservation
   size and the same host synchronization count as before.
+
+## Task 127: Reuse Pinned Host Storage For Stats And Residual Results
+
+- Goal: extend the pinned host result workspace from compact alignment-step results to the other small
+  `IcpCorrespondenceStatsWorkspace` result copies. This covers regular correspondence stats, residual stats,
+  transform+residual terminal metrics, and the stats half of the fused stats+step helper. The step-transform raw result
+  still belongs to `IcpStepTransformWorkspace` and remains a separate follow-up.
+- RED check:
+  - Added `StatsWorkspaceReusesPinnedHostResultStorage` and
+    `ResidualStatsWorkspaceReusesPinnedHostResultStorage`.
+  - Added the tests first so `cmake --build build-codex-cuda -j$(nproc)` failed because
+    `IcpCorrespondenceStatsWorkspace::hostResultStorageCapacity()` did not exist.
+- Implementation:
+  - Added `hostResultStorageCapacity()` to expose the pinned host result capacity for workspace reuse tests.
+  - Made `reserve()` allocate pinned host storage for `RawIcpStats`.
+  - Made `reserveResidualStats()` allocate pinned host storage for `RawIcpResidualStats`.
+  - Routed regular stats, residual stats, transform+residual stats, cached spatial-grid transform+residual stats, and
+    fused stats+step `RawIcpStats` D2H copies through `hostResultStorage()`.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.StatsWorkspaceReusesPinnedHostResultStorage:ICPGpuPathTest.ResidualStatsWorkspaceReusesPinnedHostResultStorage:ICPGpuPathTest.AlignmentStepWorkspaceReusesPinnedHostResultStorage:ICPGpuPathTest.AlignUsesReservedWorkspaceForTerminalResidualStats:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization`:
+    selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    257 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the two new workspace tests and compare the stats/residual benchmark rows on real GPU hardware. The next
+  narrow follow-up is adding pinned host result storage to `IcpStepTransformWorkspace` for its raw step result copies.
