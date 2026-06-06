@@ -407,6 +407,35 @@ IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajor(
     double* d_step_transform,
     cudaStream_t stream = 0);
 
+namespace detail
+{
+
+/// Compute the compact ICP alignment step using workspace already reserved for source_count.
+/// The caller must call IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(source_count) first.
+IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    cudaStream_t stream = 0);
+
+/// Compute the compact ICP alignment step using workspace already reserved for source_count.
+/// The caller must call IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(source_count) first.
+IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    cudaStream_t stream = 0);
+
+} // namespace detail
+
 /// Multiply two 4x4 column-major device transforms and write C = A * B.
 /// Throws if any device pointer is null or the CUDA launch fails.
 void multiplyTransform4x4(

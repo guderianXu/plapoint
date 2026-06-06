@@ -4026,3 +4026,47 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun `AlignChecksStepTransformBufferOnceBeforeLoop` on real GPU hardware to confirm the reserve-check counter is one
   while the compact alignment-step call counter is two.
+
+## Task 120: Move Alignment-Step Workspace Reserve Check Out Of GPU ICP Loop
+
+- Goal: remove another fixed CPU-side check from each `alignGpu()` iteration. The compact alignment-step helper still
+  called `IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(source_count)` on every iteration, even after the
+  workspace had enough partial/result capacity.
+- RED check:
+  - Added a test-only `g_icp_alignment_step_reserve_check_count` counter that increments whenever
+    `reserveAlignmentStep()` is entered.
+  - Updated `AlignChecksAlignmentStepWorkspaceOnceBeforeLoop` so a two-iteration GPU ICP run must execute two compact
+    alignment-step calls, perform one actual alignment-step reserve, and enter `reserveAlignmentStep()` only once.
+  - Before the implementation, static inspection showed the compact alignment-step helper still called
+    `stats_workspace.reserveAlignmentStep(source_count)` internally, so `alignGpu()` would enter that check once per
+    iteration on a real GPU.
+- Implementation:
+  - `alignGpu()` now calls `_gpu_stats_workspace.reserveAlignmentStep(source_count)` once before the iteration loop.
+  - Added `gpu::detail::computeIcpAlignmentStepColumnMajorWithReservedWorkspace()`, which reuses the existing compact
+    alignment-step implementation while skipping the internal workspace reserve check.
+  - Kept the public `computeIcpAlignmentStepColumnMajor()` overloads unchanged for direct callers; they still reserve
+    workspace internally before launching kernels.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `git diff --check`:
+    clean before the plan update.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignChecksAlignmentStepWorkspaceOnceBeforeLoop:ICPGpuPathTest.AlignChecksStepTransformBufferOnceBeforeLoop:ICPGpuPathTest.AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs`:
+    selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    250 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `AlignChecksAlignmentStepWorkspaceOnceBeforeLoop` on real GPU hardware to confirm the reserve-check counter is
+  one while the compact alignment-step call counter is two, then compare the alignment-step benchmark rows before/after
+  this commit for small-iteration CPU-side overhead.

@@ -363,6 +363,7 @@ private:
         bool final_points_written_to_output = false;
 
         reserveGpuStepTransformBuffer();
+        _gpu_stats_workspace.reserveAlignmentStep(source_count);
 
         const Scalar* cur_points = _source->points().data();
         bool next_points_in_a = true;
@@ -375,7 +376,7 @@ private:
 
         for (int iter = 0; iter < _max_iter; ++iter)
         {
-            const auto stats_and_step = gpu::computeIcpAlignmentStepColumnMajor(
+            const auto stats_and_step = gpu::detail::computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
                 cur_points,
                 source_count,
                 target_points,

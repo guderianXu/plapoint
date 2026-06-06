@@ -159,6 +159,7 @@ std::atomic<int> g_icp_exact_pointwise_step_call_count{0};
 std::atomic<int> g_icp_raw_stats_step_kernel_launch_count{0};
 std::atomic<int> g_icp_alignment_step_call_count{0};
 std::atomic<int> g_icp_alignment_step_reserve_count{0};
+std::atomic<int> g_icp_alignment_step_reserve_check_count{0};
 std::atomic<int> g_icp_host_synchronization_count{0};
 std::atomic<int> g_icp_target_spatial_grid_build_count{0};
 std::atomic<int> g_icp_fallback_tile_bound_kernel_launch_count{0};
@@ -4291,7 +4292,8 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
     Scalar max_correspondence_distance,
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     Scalar* d_step_transform,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    bool reserve_workspace)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
@@ -4313,7 +4315,10 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
         throw std::invalid_argument("ICP GPU: device pointers must not be null");
     }
 
-    stats_workspace.reserveAlignmentStep(source_count);
+    if (reserve_workspace)
+    {
+        stats_workspace.reserveAlignmentStep(source_count);
+    }
 
     constexpr int block_size = kIcpStatsBlockSize;
     const int grid_size = icpStatsPartialCount(source_count);
@@ -4558,6 +4563,16 @@ int icpAlignmentStepReserveCountForTesting()
     return g_icp_alignment_step_reserve_count.load(std::memory_order_relaxed);
 }
 
+void resetIcpAlignmentStepReserveCheckCountForTesting()
+{
+    g_icp_alignment_step_reserve_check_count.store(0, std::memory_order_relaxed);
+}
+
+int icpAlignmentStepReserveCheckCountForTesting()
+{
+    return g_icp_alignment_step_reserve_check_count.load(std::memory_order_relaxed);
+}
+
 void resetIcpHostSynchronizationCountForTesting()
 {
     g_icp_host_synchronization_count.store(0, std::memory_order_relaxed);
@@ -4696,6 +4711,10 @@ void IcpCorrespondenceStatsWorkspace::reserve(int source_count)
 
 void IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(int source_count)
 {
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_alignment_step_reserve_check_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+
     if (source_count < 0)
     {
         throw std::invalid_argument("ICP GPU: source point count must not be negative");
@@ -5227,7 +5246,8 @@ IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajor(
         max_correspondence_distance,
         stats_workspace,
         d_step_transform,
-        stream);
+        stream,
+        true);
 }
 
 IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajor(
@@ -5248,8 +5268,58 @@ IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajor(
         max_correspondence_distance,
         stats_workspace,
         d_step_transform,
-        stream);
+        stream,
+        true);
 }
+
+namespace detail
+{
+
+IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    cudaStream_t stream)
+{
+    return computeIcpAlignmentStepColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        d_step_transform,
+        stream,
+        false);
+}
+
+IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    cudaStream_t stream)
+{
+    return computeIcpAlignmentStepColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        d_step_transform,
+        stream,
+        false);
+}
+
+} // namespace detail
 
 void multiplyTransform4x4(
     const float* d_A,

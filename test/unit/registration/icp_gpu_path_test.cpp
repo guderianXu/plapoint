@@ -174,6 +174,8 @@ void resetIcpAlignmentStepCallCountForTesting();
 int icpAlignmentStepCallCountForTesting();
 void resetIcpAlignmentStepReserveCountForTesting();
 int icpAlignmentStepReserveCountForTesting();
+void resetIcpAlignmentStepReserveCheckCountForTesting();
+int icpAlignmentStepReserveCheckCountForTesting();
 void resetIcpHostSynchronizationCountForTesting();
 int icpHostSynchronizationCountForTesting();
 void resetIcpTargetTileBoundComputationCountForTesting();
@@ -2964,7 +2966,7 @@ TEST(ICPGpuPathTest, AlignSkipsInitialIdentityTransformWriteForNonIdentityFirstS
     EXPECT_EQ(output.size(), source->size());
 }
 
-TEST(ICPGpuPathTest, AlignReservesAlignmentStepWorkspaceOncePerCall)
+TEST(ICPGpuPathTest, AlignChecksAlignmentStepWorkspaceOnceBeforeLoop)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -2990,11 +2992,13 @@ TEST(ICPGpuPathTest, AlignReservesAlignmentStepWorkspaceOncePerCall)
 
     plapoint::gpu::resetIcpAlignmentStepCallCountForTesting();
     plapoint::gpu::resetIcpAlignmentStepReserveCountForTesting();
+    plapoint::gpu::resetIcpAlignmentStepReserveCheckCountForTesting();
     GpuCloud output;
     icp.align(output);
 
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepCallCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepReserveCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepReserveCheckCountForTesting(), 1);
     EXPECT_EQ(output.size(), source->size());
 }
 
