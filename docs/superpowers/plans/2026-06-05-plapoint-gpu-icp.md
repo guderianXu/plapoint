@@ -6635,3 +6635,45 @@ Verification evidence:
   direct-specialized kernels no longer repeat the active-state guard in the direct lookup XY base helper. The benchmark
   effect is again small and within noise, but the direct hot path is now consistently specialized from launcher through
   XY lookup.
+
+## Task 177: Skip Zero-Offset Neighbor Cell Overflow Checks
+
+- Goal: avoid calling `offsetGridCellCoordinate()` for the center X/Y/Z neighbor cell. A zero offset cannot overflow, so
+  direct center-cell exact matches should not pay the overflow-check helper cost before they can stop scanning.
+- RED check:
+  - Tightened `ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells` to expect zero
+    `g_icp_grid_cell_offset_count` calls on the direct center-cell exact-match path.
+  - Before implementation, correspondence stats, residual stats, and transform+residual stats each failed with offset
+    count 3 instead of 0.
+- Implementation:
+  - Added `neighborGridCellCoordinate()`, which returns the base coordinate directly for the center neighbor and keeps
+    the existing overflow-checked `offsetGridCellCoordinate()` path for lower/upper neighbors.
+  - Updated the correspondence-stats, residual-stats, and transform+residual spatial-grid kernels to use the helper for
+    X/Y neighbor loops and direct lookup Z probes.
+  - Left lower-bound min/max Z preparation unchanged, since those are non-zero offsets and still need overflow checks.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells`:
+    failed before implementation with offset count 3 versus expected 0 on all three checked paths, then passed after
+    implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells:ICPGpuPathTest.SpatialGridDirectLookupSpecializationSkipsActiveGuard:ICPGpuPathTest.SpatialGridDirectLookupUsesSpecializedKernelLaunches:ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn:ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath:ICPGpuPathTest.CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridXYLookupsBeforeSearch:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYExceedsRadius`:
+    12 targeted spatial-grid tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 20 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(finite_radius_translation_(reuse_output|reuse_output_skip_final_metrics|ordered_output|ordered_output_skip_final_metrics)|stats_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid_reserved_workspace|stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid_reserved_workspace|residual_stats_finite_radius_translation_ordered|transform_residual_stats_finite_radius_translation_cached_grid|alignment_step_transformed_exact_pointwise_cached_grid|alignment_step_transformed_exact_pointwise_cache_hit)'`:
+    ran successfully on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.46025 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.27596 ms,
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.534171 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.505503 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.735708 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.736028 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.210686 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.235332 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.710209 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.522722 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_ordered` = 0.031557 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.522752 ms.
+- Current conclusion:
+  center-neighbor probes now bypass the overflow-check helper while lower/upper neighbor probes retain overflow safety.
+  The broad 100k cached-grid benchmark remains within normal run-to-run noise, but the exact-match direct path has fewer
+  instructions before early exit.

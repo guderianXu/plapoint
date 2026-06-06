@@ -552,6 +552,17 @@ __device__ __forceinline__ int icpNeighborCellOffset(int offset_index)
     return offset_index == 0 ? 0 : (offset_index == 1 ? -1 : 1);
 }
 
+__device__ __forceinline__ bool neighborGridCellCoordinate(int base, int offset_index, int& result)
+{
+    const int offset = icpNeighborCellOffset(offset_index);
+    if (offset == 0)
+    {
+        result = base;
+        return true;
+    }
+    return offsetGridCellCoordinate(base, offset, result);
+}
+
 __device__ __forceinline__ IcpGridCellKey loadIcpGridCellKey(
     const IcpGridCellKey* __restrict__ cell_keys,
     int cell_idx)
@@ -1652,8 +1663,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                 break;
             }
             int query_x = 0;
-            const int dx_cell = icpNeighborCellOffset(dx_offset_idx);
-            if (!offsetGridCellCoordinate(source_key.x, dx_cell, query_x))
+            if (!neighborGridCellCoordinate(source_key.x, dx_offset_idx, query_x))
             {
                 continue;
             }
@@ -1665,8 +1675,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                     break;
                 }
                 int query_y = 0;
-                const int dy_cell = icpNeighborCellOffset(dy_offset_idx);
-                if (!offsetGridCellCoordinate(source_key.y, dy_cell, query_y))
+                if (!neighborGridCellCoordinate(source_key.y, dy_offset_idx, query_y))
                 {
                     continue;
                 }
@@ -1692,8 +1701,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                     for (int z_offset_idx = 0; z_offset_idx < 3 && !stop_cell_scan; ++z_offset_idx)
                     {
                         int query_z = 0;
-                        const int dz_cell = icpNeighborCellOffset(z_offset_idx);
-                        if (!offsetGridCellCoordinate(source_key.z, dz_cell, query_z))
+                        if (!neighborGridCellCoordinate(source_key.z, z_offset_idx, query_z))
                         {
                             continue;
                         }
@@ -2556,8 +2564,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
                 break;
             }
             int query_x = 0;
-            const int dx_cell = icpNeighborCellOffset(dx_offset_idx);
-            if (!offsetGridCellCoordinate(source_key.x, dx_cell, query_x))
+            if (!neighborGridCellCoordinate(source_key.x, dx_offset_idx, query_x))
             {
                 continue;
             }
@@ -2569,8 +2576,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
                     break;
                 }
                 int query_y = 0;
-                const int dy_cell = icpNeighborCellOffset(dy_offset_idx);
-                if (!offsetGridCellCoordinate(source_key.y, dy_cell, query_y))
+                if (!neighborGridCellCoordinate(source_key.y, dy_offset_idx, query_y))
                 {
                     continue;
                 }
@@ -2596,8 +2602,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
                     for (int z_offset_idx = 0; z_offset_idx < 3 && !stop_cell_scan; ++z_offset_idx)
                     {
                         int query_z = 0;
-                        const int dz_cell = icpNeighborCellOffset(z_offset_idx);
-                        if (!offsetGridCellCoordinate(source_key.z, dz_cell, query_z))
+                        if (!neighborGridCellCoordinate(source_key.z, z_offset_idx, query_z))
                         {
                             continue;
                         }
@@ -3095,8 +3100,7 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                 break;
             }
             int query_x = 0;
-            const int dx_cell = icpNeighborCellOffset(dx_offset_idx);
-            if (!offsetGridCellCoordinate(source_key.x, dx_cell, query_x))
+            if (!neighborGridCellCoordinate(source_key.x, dx_offset_idx, query_x))
             {
                 continue;
             }
@@ -3108,8 +3112,7 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                     break;
                 }
                 int query_y = 0;
-                const int dy_cell = icpNeighborCellOffset(dy_offset_idx);
-                if (!offsetGridCellCoordinate(source_key.y, dy_cell, query_y))
+                if (!neighborGridCellCoordinate(source_key.y, dy_offset_idx, query_y))
                 {
                     continue;
                 }
@@ -3135,8 +3138,7 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                     for (int z_offset_idx = 0; z_offset_idx < 3 && !stop_cell_scan; ++z_offset_idx)
                     {
                         int query_z = 0;
-                        const int dz_cell = icpNeighborCellOffset(z_offset_idx);
-                        if (!offsetGridCellCoordinate(source_key.z, dz_cell, query_z))
+                        if (!neighborGridCellCoordinate(source_key.z, z_offset_idx, query_z))
                         {
                             continue;
                         }
