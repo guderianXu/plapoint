@@ -827,10 +827,20 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                         {
                             continue;
                         }
+                        const double dx_sq = dx * dx;
+                        if (dx_sq > best_dist_sq)
+                        {
+                            continue;
+                        }
 
                         const double ty = loadSortedIcpTargetY(target_grid, sorted_offset);
                         const double dy = sy - ty;
                         if (fabs(dy) > max_dist)
+                        {
+                            continue;
+                        }
+                        const double xy_dist_sq = dx_sq + dy * dy;
+                        if (xy_dist_sq > best_dist_sq)
                         {
                             continue;
                         }
@@ -1245,10 +1255,20 @@ __global__ void collectResidualStatsSpatialGridKernel(
                         {
                             continue;
                         }
+                        const double dx_sq = dx * dx;
+                        if (dx_sq >= best_dist_sq)
+                        {
+                            continue;
+                        }
 
                         const double ty = loadSortedIcpTargetY(target_grid, sorted_offset);
                         const double dy = sy - ty;
                         if (fabs(dy) > max_dist)
+                        {
+                            continue;
+                        }
+                        const double xy_dist_sq = dx_sq + dy * dy;
+                        if (xy_dist_sq >= best_dist_sq)
                         {
                             continue;
                         }
@@ -1583,10 +1603,20 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                         {
                             continue;
                         }
+                        const double dx_sq = dx * dx;
+                        if (dx_sq >= best_dist_sq)
+                        {
+                            continue;
+                        }
 
                         const double ty = loadSortedIcpTargetY(target_grid, sorted_offset);
                         const double dy = sy - ty;
                         if (fabs(dy) > max_dist)
+                        {
+                            continue;
+                        }
+                        const double xy_dist_sq = dx_sq + dy * dy;
+                        if (xy_dist_sq >= best_dist_sq)
                         {
                             continue;
                         }

@@ -1531,3 +1531,35 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun the selected GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark before using Task 52 as confirmed
   performance evidence.
+
+## Task 53: Prune Spatial-Grid Candidate Coordinate Loads By Partial Distance
+
+- Goal: continue reducing sorted-coordinate memory traffic in finite-radius spatial-grid candidate loops. Once a best
+  distance exists, a candidate whose partial lower bound already exceeds that best distance cannot win, so later
+  coordinate loads can be skipped.
+- Implementation:
+  - In the correspondence spatial-grid kernel, after the x coordinate is loaded and radius-pruned, skip y/z loads when
+    `dx * dx > best_dist_sq`; after y is loaded, skip z when `dx * dx + dy * dy > best_dist_sq`.
+  - In the residual and transform+residual spatial-grid kernels, use the stricter `>= best_dist_sq` form because those
+    kernels only need strict residual improvement and do not perform target-index tie-breaking.
+  - Added `SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest`, which expects two candidate visits but only five
+    sorted-coordinate loads: x/y/z for the first best candidate and x/y only for the second candidate rejected by the
+    partial XY lower bound.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest:ICPGpuPathTest.SpatialGridCandidateLoadsYzCoordinatesOnlyAfterXPruning:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.ResidualStatsStopsSpatialGridLookupsAfterExactMatch`:
+    4 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    224 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran, but all GPU rows reported `skipped,no_usable_cuda_device`.
+- Follow-up required when a CUDA device is available:
+  rerun the selected GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime behavior and
+  performance impact.
