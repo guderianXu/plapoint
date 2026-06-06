@@ -1151,6 +1151,157 @@ TEST(ICPGpuPathTest, CorrespondenceStatsBatchesSpatialGridNeighborLookupsByXY)
     EXPECT_LE(plapoint::gpu::icpGridCellLookupCountForTesting(), 9ull);
 }
 
+TEST(ICPGpuPathTest, CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source(1, 3);
+    source.setValue(0, 0, 0.0f);
+    source.setValue(0, 1, 0.0f);
+    source.setValue(0, 2, 0.0f);
+
+    constexpr int target_count = 27;
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(target_count, 3);
+    int idx = 0;
+    for (int x = -1; x <= 1; ++x)
+    {
+        for (int y = -1; y <= 1; ++y)
+        {
+            for (int z = -1; z <= 1; ++z)
+            {
+                target.setValue(idx, 0, static_cast<float>(x));
+                target.setValue(idx, 1, static_cast<float>(y));
+                target.setValue(idx, 2, static_cast<float>(z));
+                ++idx;
+            }
+        }
+    }
+
+    auto source_gpu = source.toGpu();
+    auto target_gpu = target.toGpu();
+
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        nullptr,
+        workspace);
+
+    EXPECT_EQ(stats.active_count, 1);
+    EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-12);
+    EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
+}
+
+TEST(ICPGpuPathTest, ResidualStatsDoesNotBuildUnusedDirectSpatialGridLookup)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source(1, 3);
+    source.setValue(0, 0, 0.0f);
+    source.setValue(0, 1, 0.0f);
+    source.setValue(0, 2, 0.0f);
+
+    constexpr int target_count = 27;
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(target_count, 3);
+    int idx = 0;
+    for (int x = -1; x <= 1; ++x)
+    {
+        for (int y = -1; y <= 1; ++y)
+        {
+            for (int z = -1; z <= 1; ++z)
+            {
+                target.setValue(idx, 0, static_cast<float>(x));
+                target.setValue(idx, 1, static_cast<float>(y));
+                target.setValue(idx, 2, static_cast<float>(z));
+                ++idx;
+            }
+        }
+    }
+
+    auto source_gpu = source.toGpu();
+    auto target_gpu = target.toGpu();
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+    const auto stats = plapoint::gpu::computeIcpResidualStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        workspace);
+
+    EXPECT_EQ(stats.active_count, 1);
+    EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-12);
+    EXPECT_EQ(workspace.targetSpatialGridDirectLookupEntryCount(), 0);
+
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    const auto correspondence_stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        nullptr,
+        workspace);
+
+    EXPECT_EQ(correspondence_stats.active_count, 1);
+    EXPECT_NEAR(correspondence_stats.residual_sq_sum, 0.0, 1.0e-12);
+    EXPECT_GT(workspace.targetSpatialGridDirectLookupEntryCount(), 0);
+    EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
+}
+
+TEST(ICPGpuPathTest, CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source(1, 3);
+    source.setValue(0, 0, 0.0f);
+    source.setValue(0, 1, 0.0f);
+    source.setValue(0, 2, 0.0f);
+
+    constexpr int target_count = 2000;
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(target_count, 3);
+    for (int idx = 0; idx < target_count; ++idx)
+    {
+        target.setValue(idx, 0, 0.0f);
+        target.setValue(idx, 1, 0.0f);
+        target.setValue(idx, 2, 0.0f);
+    }
+    target.setValue(target_count - 1, 0, 2000.0f);
+
+    auto source_gpu = source.toGpu();
+    auto target_gpu = target.toGpu();
+
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        nullptr,
+        workspace);
+
+    EXPECT_EQ(stats.active_count, 1);
+    EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-12);
+    EXPECT_EQ(workspace.targetSpatialGridDirectLookupEntryCount(), 0);
+    EXPECT_GT(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
+}
+
 TEST(ICPGpuPathTest, CorrespondenceStatsPrunesSpatialGridXYLookupsBeforeSearch)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
@@ -2095,7 +2246,7 @@ TEST(ICPGpuPathTest, CorrespondenceStatsStopsSpatialGridAfterExactMatchWhenIndic
     EXPECT_EQ(stats.active_count, 1);
     EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-12);
     EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 1ull);
-    EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 1ull);
+    EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
 
     plapoint::gpu::DeviceBuffer<int> indices(static_cast<std::size_t>(source.rows()));
     plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();

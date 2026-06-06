@@ -129,6 +129,19 @@ public:
     /// Mark the reusable target spatial grid storage as containing the supplied target grid.
     void markTargetSpatialGridCache(const void* target_points, int target_count, double cell_size, int cell_count);
 
+    /// Reserve the optional dense target-grid cell lookup table.
+    void reserveTargetSpatialGridDirectLookup(int entry_count);
+
+    /// Mark the optional dense target-grid cell lookup metadata for the current cached spatial grid.
+    void markTargetSpatialGridDirectLookupCache(
+        int min_x,
+        int min_y,
+        int min_z,
+        int range_x,
+        int range_y,
+        int range_z,
+        int entry_count);
+
     /// Mark the reusable target tile bounds storage as containing bounds for the supplied target.
     void markTargetTileBoundsCache(const void* target_points, int target_count);
 
@@ -189,6 +202,36 @@ public:
     /// Return the reusable target-grid cell count storage pointer.
     unsigned char* targetSpatialGridCellCountsStorage() { return _target_spatial_grid_cell_counts_storage.get(); }
 
+    /// Return the reusable dense target-grid direct cell lookup storage pointer.
+    unsigned char* targetSpatialGridDirectLookupStorage() { return _target_spatial_grid_direct_lookup_storage.get(); }
+
+    /// Return the currently reserved dense target-grid direct lookup capacity, in entries.
+    int targetSpatialGridDirectLookupCapacity() const { return _target_spatial_grid_direct_lookup_capacity; }
+
+    /// Return the dense target-grid direct lookup entry count for the currently cached grid, or zero if inactive.
+    int targetSpatialGridDirectLookupEntryCount() const { return _target_spatial_grid_direct_lookup_entry_count; }
+
+    /// Return true once the current cached spatial grid has evaluated direct lookup eligibility.
+    bool targetSpatialGridDirectLookupEvaluated() const { return _target_spatial_grid_direct_lookup_evaluated; }
+
+    /// Return the minimum x-cell coordinate covered by the direct target-grid lookup table.
+    int targetSpatialGridDirectLookupMinX() const { return _target_spatial_grid_direct_lookup_min_x; }
+
+    /// Return the minimum y-cell coordinate covered by the direct target-grid lookup table.
+    int targetSpatialGridDirectLookupMinY() const { return _target_spatial_grid_direct_lookup_min_y; }
+
+    /// Return the minimum z-cell coordinate covered by the direct target-grid lookup table.
+    int targetSpatialGridDirectLookupMinZ() const { return _target_spatial_grid_direct_lookup_min_z; }
+
+    /// Return the x-cell count covered by the direct target-grid lookup table.
+    int targetSpatialGridDirectLookupRangeX() const { return _target_spatial_grid_direct_lookup_range_x; }
+
+    /// Return the y-cell count covered by the direct target-grid lookup table.
+    int targetSpatialGridDirectLookupRangeY() const { return _target_spatial_grid_direct_lookup_range_y; }
+
+    /// Return the z-cell count covered by the direct target-grid lookup table.
+    int targetSpatialGridDirectLookupRangeZ() const { return _target_spatial_grid_direct_lookup_range_z; }
+
 private:
     void reservePartialStorage(int source_count, std::size_t bytes_per_partial);
     void reserveStatsStorage(std::size_t byte_count);
@@ -213,6 +256,7 @@ private:
     DeviceBuffer<unsigned char> _target_spatial_grid_sorted_z_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_cell_starts_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_cell_counts_storage;
+    DeviceBuffer<unsigned char> _target_spatial_grid_direct_lookup_storage;
     int _partial_capacity = 0;
     int _target_tile_bound_capacity = 0;
     const void* _target_tile_bounds_points = nullptr;
@@ -225,6 +269,15 @@ private:
     double _target_spatial_grid_cell_size = 0.0;
     std::size_t _target_spatial_grid_coordinate_value_bytes = 0;
     bool _target_spatial_grid_cache_valid = false;
+    int _target_spatial_grid_direct_lookup_capacity = 0;
+    int _target_spatial_grid_direct_lookup_entry_count = 0;
+    int _target_spatial_grid_direct_lookup_min_x = 0;
+    int _target_spatial_grid_direct_lookup_min_y = 0;
+    int _target_spatial_grid_direct_lookup_min_z = 0;
+    int _target_spatial_grid_direct_lookup_range_x = 0;
+    int _target_spatial_grid_direct_lookup_range_y = 0;
+    int _target_spatial_grid_direct_lookup_range_z = 0;
+    bool _target_spatial_grid_direct_lookup_evaluated = false;
 };
 
 /// Reusable device storage for converting ICP correspondence stats into a 4x4 step transform.

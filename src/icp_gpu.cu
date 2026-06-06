@@ -19,6 +19,7 @@
 #include <thrust/sequence.h>
 #include <thrust/sort.h>
 #include <thrust/transform.h>
+#include <thrust/transform_reduce.h>
 
 #include <plapoint/gpu/cuda_check.h>
 #include <plapoint/gpu/icp.h>
@@ -68,6 +69,16 @@ struct IcpGridCellKey
     int z;
 };
 
+struct IcpGridCellBounds
+{
+    int min_x;
+    int min_y;
+    int min_z;
+    int max_x;
+    int max_y;
+    int max_z;
+};
+
 struct IcpGridCellKeyLess
 {
     __host__ __device__ __forceinline__ bool operator()(const IcpGridCellKey& lhs, const IcpGridCellKey& rhs) const
@@ -86,6 +97,43 @@ struct IcpGridCellKeyEqual
     }
 };
 
+struct IcpGridCellBoundsFromKey
+{
+    __host__ __device__ __forceinline__ IcpGridCellBounds operator()(const IcpGridCellKey& key) const
+    {
+        return {key.x, key.y, key.z, key.x, key.y, key.z};
+    }
+};
+
+struct IcpGridCellBoundsReduce
+{
+    __host__ __device__ __forceinline__ IcpGridCellBounds operator()(
+        const IcpGridCellBounds& lhs,
+        const IcpGridCellBounds& rhs) const
+    {
+        return {
+            lhs.min_x < rhs.min_x ? lhs.min_x : rhs.min_x,
+            lhs.min_y < rhs.min_y ? lhs.min_y : rhs.min_y,
+            lhs.min_z < rhs.min_z ? lhs.min_z : rhs.min_z,
+            lhs.max_x > rhs.max_x ? lhs.max_x : rhs.max_x,
+            lhs.max_y > rhs.max_y ? lhs.max_y : rhs.max_y,
+            lhs.max_z > rhs.max_z ? lhs.max_z : rhs.max_z
+        };
+    }
+};
+
+struct IcpDirectGridCellLookupShape
+{
+    int min_x = 0;
+    int min_y = 0;
+    int min_z = 0;
+    int range_x = 0;
+    int range_y = 0;
+    int range_z = 0;
+    int entry_count = 0;
+    bool active = false;
+};
+
 struct IcpTargetSpatialGrid
 {
     const void* target_points = nullptr;
@@ -97,9 +145,18 @@ struct IcpTargetSpatialGrid
     const void* __restrict__ sorted_target_z = nullptr;
     const int* __restrict__ cell_starts = nullptr;
     const int* __restrict__ cell_counts = nullptr;
+    const int* __restrict__ direct_lookup_cell_indices = nullptr;
     int cell_count = 0;
     double cell_size = 0.0;
+    int direct_lookup_min_x = 0;
+    int direct_lookup_min_y = 0;
+    int direct_lookup_min_z = 0;
+    int direct_lookup_range_x = 0;
+    int direct_lookup_range_y = 0;
+    int direct_lookup_range_z = 0;
+    int direct_lookup_entry_count = 0;
     bool finite_cell_bounds = false;
+    bool direct_lookup_active = false;
     bool active = false;
 };
 
@@ -477,6 +534,66 @@ __device__ __forceinline__ IcpGridCellKey loadIcpGridCellKey(
     };
 }
 
+IcpGridCellBounds emptyIcpGridCellBounds()
+{
+    return {INT_MAX, INT_MAX, INT_MAX, INT_MIN, INT_MIN, INT_MIN};
+}
+
+IcpDirectGridCellLookupShape makeIcpDirectGridCellLookupShape(
+    const IcpGridCellBounds& bounds,
+    int target_count,
+    int cell_count)
+{
+    IcpDirectGridCellLookupShape shape{};
+    if (target_count <= 0 || cell_count <= 0)
+    {
+        return shape;
+    }
+    if (bounds.min_x == INT_MIN || bounds.min_y == INT_MIN || bounds.min_z == INT_MIN ||
+        bounds.max_x == INT_MAX || bounds.max_y == INT_MAX || bounds.max_z == INT_MAX)
+    {
+        return shape;
+    }
+
+    const std::int64_t range_x = static_cast<std::int64_t>(bounds.max_x) - bounds.min_x + 1;
+    const std::int64_t range_y = static_cast<std::int64_t>(bounds.max_y) - bounds.min_y + 1;
+    const std::int64_t range_z = static_cast<std::int64_t>(bounds.max_z) - bounds.min_z + 1;
+    if (range_x <= 0 || range_y <= 0 || range_z <= 0 ||
+        range_x > INT_MAX || range_y > INT_MAX || range_z > INT_MAX)
+    {
+        return shape;
+    }
+    if (range_x > std::numeric_limits<std::int64_t>::max() / range_y)
+    {
+        return shape;
+    }
+    const std::int64_t xy_count = range_x * range_y;
+    if (xy_count > std::numeric_limits<std::int64_t>::max() / range_z)
+    {
+        return shape;
+    }
+    const std::int64_t entry_count = xy_count * range_z;
+    const std::int64_t max_entries_by_points =
+        std::max<std::int64_t>(1024, static_cast<std::int64_t>(target_count) * 4);
+    const std::int64_t max_entries_by_cells =
+        std::max<std::int64_t>(1024, static_cast<std::int64_t>(cell_count) * 4);
+    const std::int64_t max_entries = std::min(max_entries_by_points, max_entries_by_cells);
+    if (entry_count <= 0 || entry_count > INT_MAX || entry_count > max_entries)
+    {
+        return shape;
+    }
+
+    shape.min_x = bounds.min_x;
+    shape.min_y = bounds.min_y;
+    shape.min_z = bounds.min_z;
+    shape.range_x = static_cast<int>(range_x);
+    shape.range_y = static_cast<int>(range_y);
+    shape.range_z = static_cast<int>(range_z);
+    shape.entry_count = static_cast<int>(entry_count);
+    shape.active = true;
+    return shape;
+}
+
 template <typename Scalar>
 struct ComputeIcpTargetGridCellKey
 {
@@ -500,6 +617,41 @@ struct ComputeIcpTargetGridCellKey
         };
     }
 };
+
+__global__ void fillIcpDirectGridCellLookupKernel(
+    const IcpGridCellKey* __restrict__ cell_keys,
+    int cell_count,
+    int min_x,
+    int min_y,
+    int min_z,
+    int range_y,
+    int range_z,
+    int* __restrict__ direct_lookup_cell_indices,
+    int entry_count)
+{
+    const int cell_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (cell_idx >= cell_count)
+    {
+        return;
+    }
+
+    const IcpGridCellKey key = loadIcpGridCellKey(cell_keys, cell_idx);
+    const long long local_x = static_cast<long long>(key.x) - min_x;
+    const long long local_y = static_cast<long long>(key.y) - min_y;
+    const long long local_z = static_cast<long long>(key.z) - min_z;
+    if (local_x < 0 || local_y < 0 || local_z < 0 ||
+        local_y >= range_y || local_z >= range_z)
+    {
+        return;
+    }
+
+    const long long linear_idx = (local_x * range_y + local_y) * range_z + local_z;
+    if (linear_idx < 0 || linear_idx >= entry_count)
+    {
+        return;
+    }
+    direct_lookup_cell_indices[static_cast<int>(linear_idx)] = cell_idx;
+}
 
 template <typename Scalar>
 __global__ void gatherSortedIcpTargetPointsKernel(
@@ -566,6 +718,35 @@ __device__ __forceinline__ int loadIcpGridCellStart(const IcpTargetSpatialGrid& 
 __device__ __forceinline__ int loadIcpGridCellCount(const IcpTargetSpatialGrid& target_grid, int cell_idx)
 {
     return loadReadOnlyIcpValue(target_grid.cell_counts + cell_idx);
+}
+
+__device__ __forceinline__ int directLookupIcpGridCell(
+    const IcpTargetSpatialGrid& target_grid,
+    const IcpGridCellKey& query)
+{
+    if (!target_grid.direct_lookup_active || !target_grid.direct_lookup_cell_indices)
+    {
+        return -1;
+    }
+
+    const long long local_x = static_cast<long long>(query.x) - target_grid.direct_lookup_min_x;
+    const long long local_y = static_cast<long long>(query.y) - target_grid.direct_lookup_min_y;
+    const long long local_z = static_cast<long long>(query.z) - target_grid.direct_lookup_min_z;
+    if (local_x < 0 || local_y < 0 || local_z < 0 ||
+        local_x >= target_grid.direct_lookup_range_x ||
+        local_y >= target_grid.direct_lookup_range_y ||
+        local_z >= target_grid.direct_lookup_range_z)
+    {
+        return -1;
+    }
+
+    const long long linear_idx =
+        (local_x * target_grid.direct_lookup_range_y + local_y) * target_grid.direct_lookup_range_z + local_z;
+    if (linear_idx < 0 || linear_idx >= target_grid.direct_lookup_entry_count)
+    {
+        return -1;
+    }
+    return loadReadOnlyIcpValue(target_grid.direct_lookup_cell_indices + static_cast<int>(linear_idx));
 }
 
 template <typename Scalar>
@@ -808,6 +989,97 @@ __device__ __forceinline__ bool tryAcceptTransformedExactPointwiseCorrespondence
 
     recordAcceptedCorrespondence(local, sx, sy, sz, tx, ty, tz, 0.0);
     return true;
+}
+
+template <typename Scalar, bool CanStopAfterExactMatch>
+__device__ __forceinline__ void scanIcpGridCellCandidates(
+    const IcpTargetSpatialGrid& target_grid,
+    int cell_idx,
+    double sx,
+    double sy,
+    double sz,
+    double max_dist_sq,
+    double& best_dist_sq,
+    int& best_sorted_offset,
+    int& best_idx,
+    double& best_tx,
+    double& best_ty,
+    double& best_tz,
+    bool& stop_cell_scan)
+{
+    const int start = loadIcpGridCellStart(target_grid, cell_idx);
+    const int count = loadIcpGridCellCount(target_grid, cell_idx);
+    for (int offset = 0; offset < count; ++offset)
+    {
+        const int sorted_offset = start + offset;
+#ifdef PLAPOINT_ENABLE_TESTING
+        atomicAdd(&g_icp_target_candidate_visit_count, 1ull);
+#endif
+        const double tx = loadSortedIcpTargetX<Scalar>(target_grid, sorted_offset);
+        const double dx = sx - tx;
+        const double dx_sq = dx * dx;
+        if (dx_sq > max_dist_sq)
+        {
+            continue;
+        }
+        if (dx_sq > best_dist_sq)
+        {
+            continue;
+        }
+
+        const double ty = loadSortedIcpTargetY<Scalar>(target_grid, sorted_offset);
+        const double dy = sy - ty;
+        const double dy_sq = dy * dy;
+        const double xy_dist_sq = dx_sq + dy_sq;
+        if (xy_dist_sq > max_dist_sq)
+        {
+            continue;
+        }
+        if (xy_dist_sq > best_dist_sq)
+        {
+            continue;
+        }
+
+        const double tz = loadSortedIcpTargetZ<Scalar>(target_grid, sorted_offset);
+        const double dz = sz - tz;
+        const double dz_sq = dz * dz;
+        const double dist_sq = xy_dist_sq + dz_sq;
+        if (dist_sq > max_dist_sq)
+        {
+            continue;
+        }
+#ifdef PLAPOINT_ENABLE_TESTING
+        atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
+#endif
+        if (isfinite(dist_sq) && dist_sq <= best_dist_sq)
+        {
+            bool update_best = dist_sq < best_dist_sq || best_sorted_offset < 0;
+            int target_idx = -1;
+            if (!update_best)
+            {
+                target_idx = loadSortedIcpTargetIndex(target_grid, sorted_offset);
+                if (best_idx < 0)
+                {
+                    best_idx = loadSortedIcpTargetIndex(target_grid, best_sorted_offset);
+                }
+                update_best = target_idx < best_idx;
+            }
+            if (update_best)
+            {
+                best_dist_sq = dist_sq;
+                best_sorted_offset = sorted_offset;
+                best_idx = target_idx;
+                best_tx = tx;
+                best_ty = ty;
+                best_tz = tz;
+                if (CanStopAfterExactMatch && dist_sq <= 0.0)
+                {
+                    stop_cell_scan = true;
+                    return;
+                }
+            }
+        }
+    }
 }
 
 template <typename Scalar>
@@ -1264,100 +1536,85 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                     continue;
                 }
 
-                IcpGridCellKey query_key{query_x, query_y, min_z};
-                int cell_idx = lowerBoundIcpGridCell(target_grid.cell_keys, target_grid.cell_count, query_key);
-                while (cell_idx < target_grid.cell_count && !stop_cell_scan)
+                if (target_grid.direct_lookup_active)
                 {
-                    const IcpGridCellKey cell_key = loadIcpGridCellKey(target_grid.cell_keys, cell_idx);
-                    if (cell_key.x != query_x || cell_key.y != query_y || cell_key.z > max_z)
+                    int query_z = min_z;
+                    while (!stop_cell_scan)
                     {
-                        break;
-                    }
+                        const IcpGridCellKey query_key{query_x, query_y, query_z};
+                        const int cell_idx = directLookupIcpGridCell(target_grid, query_key);
+                        if (cell_idx >= 0)
+                        {
+                            const double min_cell_dist_sq =
+                                min_xy_dist_sq + minDistanceSqToIcpGridCellZ<FiniteCellBounds>(
+                                    sz,
+                                    query_z,
+                                    target_grid.cell_size);
+                            if (min_cell_dist_sq <= max_dist_sq && min_cell_dist_sq <= best_dist_sq)
+                            {
+                                scanIcpGridCellCandidates<Scalar, can_stop_after_exact_match>(
+                                    target_grid,
+                                    cell_idx,
+                                    sx,
+                                    sy,
+                                    sz,
+                                    max_dist_sq,
+                                    best_dist_sq,
+                                    best_sorted_offset,
+                                    best_idx,
+                                    best_tx,
+                                    best_ty,
+                                    best_tz,
+                                    stop_cell_scan);
+                            }
+                        }
 
-                    const double min_cell_dist_sq = min_xy_dist_sq + minDistanceSqToIcpGridCellZ<FiniteCellBounds>(
-                        sz,
-                        cell_key.z,
-                        target_grid.cell_size);
-                    if (min_cell_dist_sq > max_dist_sq || min_cell_dist_sq > best_dist_sq)
+                        if (query_z == max_z)
+                        {
+                            break;
+                        }
+                        ++query_z;
+                    }
+                }
+                else
+                {
+                    IcpGridCellKey query_key{query_x, query_y, min_z};
+                    int cell_idx = lowerBoundIcpGridCell(target_grid.cell_keys, target_grid.cell_count, query_key);
+                    while (cell_idx < target_grid.cell_count && !stop_cell_scan)
                     {
+                        const IcpGridCellKey cell_key = loadIcpGridCellKey(target_grid.cell_keys, cell_idx);
+                        if (cell_key.x != query_x || cell_key.y != query_y || cell_key.z > max_z)
+                        {
+                            break;
+                        }
+
+                        const double min_cell_dist_sq =
+                            min_xy_dist_sq + minDistanceSqToIcpGridCellZ<FiniteCellBounds>(
+                                sz,
+                                cell_key.z,
+                                target_grid.cell_size);
+                        if (min_cell_dist_sq > max_dist_sq || min_cell_dist_sq > best_dist_sq)
+                        {
+                            ++cell_idx;
+                            continue;
+                        }
+
+                        scanIcpGridCellCandidates<Scalar, can_stop_after_exact_match>(
+                            target_grid,
+                            cell_idx,
+                            sx,
+                            sy,
+                            sz,
+                            max_dist_sq,
+                            best_dist_sq,
+                            best_sorted_offset,
+                            best_idx,
+                            best_tx,
+                            best_ty,
+                            best_tz,
+                            stop_cell_scan);
                         ++cell_idx;
-                        continue;
                     }
-
-                    const int start = loadIcpGridCellStart(target_grid, cell_idx);
-                    const int count = loadIcpGridCellCount(target_grid, cell_idx);
-                    for (int offset = 0; offset < count; ++offset)
-                    {
-                        const int sorted_offset = start + offset;
-#ifdef PLAPOINT_ENABLE_TESTING
-                        atomicAdd(&g_icp_target_candidate_visit_count, 1ull);
-#endif
-                        const double tx = loadSortedIcpTargetX<Scalar>(target_grid, sorted_offset);
-                        const double dx = sx - tx;
-                        const double dx_sq = dx * dx;
-                        if (dx_sq > max_dist_sq)
-                        {
-                            continue;
-                        }
-                        if (dx_sq > best_dist_sq)
-                        {
-                            continue;
-                        }
-
-                        const double ty = loadSortedIcpTargetY<Scalar>(target_grid, sorted_offset);
-                        const double dy = sy - ty;
-                        const double dy_sq = dy * dy;
-                        const double xy_dist_sq = dx_sq + dy_sq;
-                        if (xy_dist_sq > max_dist_sq)
-                        {
-                            continue;
-                        }
-                        if (xy_dist_sq > best_dist_sq)
-                        {
-                            continue;
-                        }
-
-                        const double tz = loadSortedIcpTargetZ<Scalar>(target_grid, sorted_offset);
-                        const double dz = sz - tz;
-                        const double dz_sq = dz * dz;
-                        const double dist_sq = xy_dist_sq + dz_sq;
-                        if (dist_sq > max_dist_sq)
-                        {
-                            continue;
-                        }
-#ifdef PLAPOINT_ENABLE_TESTING
-                        atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
-#endif
-                        if (isfinite(dist_sq) && dist_sq <= best_dist_sq)
-                        {
-                            bool update_best = dist_sq < best_dist_sq || best_sorted_offset < 0;
-                            int target_idx = -1;
-                            if (!update_best)
-                            {
-                                target_idx = loadSortedIcpTargetIndex(target_grid, sorted_offset);
-                                if (best_idx < 0)
-                                {
-                                    best_idx = loadSortedIcpTargetIndex(target_grid, best_sorted_offset);
-                                }
-                                update_best = target_idx < best_idx;
-                            }
-                            if (update_best)
-                            {
-                                best_dist_sq = dist_sq;
-                                best_sorted_offset = sorted_offset;
-                                best_idx = target_idx;
-                                best_tx = tx;
-                                best_ty = ty;
-                                best_tz = tz;
-                                if (can_stop_after_exact_match && dist_sq <= 0.0)
-                                {
-                                    stop_cell_scan = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    ++cell_idx;
                 }
             }
         }
@@ -4625,13 +4882,95 @@ const IcpTargetTileBounds* prepareTargetTileBounds(
     return d_bounds;
 }
 
+void populateTargetSpatialGridDirectLookup(
+    IcpTargetSpatialGrid& grid,
+    IcpCorrespondenceStatsWorkspace& workspace)
+{
+    const int entry_count = workspace.targetSpatialGridDirectLookupEntryCount();
+    auto* d_direct_lookup = reinterpret_cast<int*>(workspace.targetSpatialGridDirectLookupStorage());
+    if (!d_direct_lookup || entry_count <= 0)
+    {
+        return;
+    }
+
+    grid.direct_lookup_cell_indices = d_direct_lookup;
+    grid.direct_lookup_min_x = workspace.targetSpatialGridDirectLookupMinX();
+    grid.direct_lookup_min_y = workspace.targetSpatialGridDirectLookupMinY();
+    grid.direct_lookup_min_z = workspace.targetSpatialGridDirectLookupMinZ();
+    grid.direct_lookup_range_x = workspace.targetSpatialGridDirectLookupRangeX();
+    grid.direct_lookup_range_y = workspace.targetSpatialGridDirectLookupRangeY();
+    grid.direct_lookup_range_z = workspace.targetSpatialGridDirectLookupRangeZ();
+    grid.direct_lookup_entry_count = entry_count;
+    grid.direct_lookup_active = true;
+}
+
+void buildTargetSpatialGridDirectLookup(
+    const IcpGridCellKey* d_cell_keys,
+    int cell_count,
+    int target_count,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream,
+    IcpTargetSpatialGrid& grid)
+{
+    if (cell_count <= 0)
+    {
+        return;
+    }
+
+    auto policy = thrust::cuda::par.on(stream);
+    auto cell_keys = thrust::device_pointer_cast(d_cell_keys);
+    const IcpGridCellBounds bounds = thrust::transform_reduce(
+        policy,
+        cell_keys,
+        cell_keys + cell_count,
+        IcpGridCellBoundsFromKey{},
+        emptyIcpGridCellBounds(),
+        IcpGridCellBoundsReduce{});
+    const IcpDirectGridCellLookupShape shape = makeIcpDirectGridCellLookupShape(bounds, target_count, cell_count);
+    if (!shape.active)
+    {
+        workspace.markTargetSpatialGridDirectLookupCache(0, 0, 0, 0, 0, 0, 0);
+        return;
+    }
+
+    workspace.reserveTargetSpatialGridDirectLookup(shape.entry_count);
+    auto* d_direct_lookup = reinterpret_cast<int*>(workspace.targetSpatialGridDirectLookupStorage());
+    PLAPOINT_CHECK_CUDA(cudaMemsetAsync(
+        d_direct_lookup,
+        0xff,
+        static_cast<std::size_t>(shape.entry_count) * sizeof(int),
+        stream));
+    fillIcpDirectGridCellLookupKernel<<<icpStatsPartialCount(cell_count), kIcpStatsBlockSize, 0, stream>>>(
+        d_cell_keys,
+        cell_count,
+        shape.min_x,
+        shape.min_y,
+        shape.min_z,
+        shape.range_y,
+        shape.range_z,
+        d_direct_lookup,
+        shape.entry_count);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    workspace.markTargetSpatialGridDirectLookupCache(
+        shape.min_x,
+        shape.min_y,
+        shape.min_z,
+        shape.range_x,
+        shape.range_y,
+        shape.range_z,
+        shape.entry_count);
+    populateTargetSpatialGridDirectLookup(grid, workspace);
+}
+
 template <typename Scalar>
 IcpTargetSpatialGrid prepareTargetSpatialGrid(
     const Scalar* d_target_points,
     int target_count,
     Scalar max_correspondence_distance,
     IcpCorrespondenceStatsWorkspace& workspace,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    bool build_direct_lookup)
 {
     IcpTargetSpatialGrid grid{};
     if (!shouldUseTargetSpatialGrid(max_correspondence_distance))
@@ -4670,6 +5009,14 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     if (workspace.targetSpatialGridCacheMatchesForScalar<Scalar>(d_target_points, target_count, cell_size))
     {
         grid.cell_count = workspace.targetSpatialGridCellCount();
+        if (build_direct_lookup)
+        {
+            if (!workspace.targetSpatialGridDirectLookupEvaluated())
+            {
+                buildTargetSpatialGridDirectLookup(d_unique_keys, grid.cell_count, target_count, workspace, stream, grid);
+            }
+            populateTargetSpatialGridDirectLookup(grid, workspace);
+        }
         grid.active = true;
         return grid;
     }
@@ -4723,6 +5070,10 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     grid.cell_count = cell_count;
     grid.active = true;
     workspace.markTargetSpatialGridCache(d_target_points, target_count, cell_size, cell_count);
+    if (build_direct_lookup)
+    {
+        buildTargetSpatialGridDirectLookup(d_unique_keys, cell_count, target_count, workspace, stream, grid);
+    }
     return grid;
 }
 
@@ -4877,7 +5228,8 @@ IcpCorrespondenceStats<Scalar> computeIcpCorrespondenceStatsColumnMajorImpl(
         target_count,
         max_correspondence_distance,
         active_workspace,
-        stream);
+        stream,
+        true);
 
     if (target_grid.active)
     {
@@ -4990,7 +5342,8 @@ IcpResidualStats<Scalar> computeIcpResidualStatsColumnMajorImpl(
         target_count,
         max_correspondence_distance,
         workspace,
-        stream);
+        stream,
+        false);
 
     if (target_grid.active)
     {
@@ -5122,7 +5475,8 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
         target_count,
         max_correspondence_distance,
         workspace,
-        stream);
+        stream,
+        false);
 
     if (target_grid.active)
     {
@@ -5695,7 +6049,8 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
             target_count,
             max_correspondence_distance,
             stats_workspace,
-            stream);
+            stream,
+            true);
 
         if (target_grid.active)
         {
@@ -5947,7 +6302,8 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
             target_count,
             max_correspondence_distance,
             stats_workspace,
-            stream);
+            stream,
+            true);
 
         if (target_grid.active)
         {
@@ -6655,6 +7011,14 @@ void IcpCorrespondenceStatsWorkspace::invalidateTargetSpatialGridCache()
     _target_spatial_grid_point_count = 0;
     _target_spatial_grid_cell_size = 0.0;
     _target_spatial_grid_cell_count = 0;
+    _target_spatial_grid_direct_lookup_entry_count = 0;
+    _target_spatial_grid_direct_lookup_min_x = 0;
+    _target_spatial_grid_direct_lookup_min_y = 0;
+    _target_spatial_grid_direct_lookup_min_z = 0;
+    _target_spatial_grid_direct_lookup_range_x = 0;
+    _target_spatial_grid_direct_lookup_range_y = 0;
+    _target_spatial_grid_direct_lookup_range_z = 0;
+    _target_spatial_grid_direct_lookup_evaluated = false;
 }
 
 bool IcpCorrespondenceStatsWorkspace::targetSpatialGridCacheMatches(
@@ -6698,6 +7062,72 @@ void IcpCorrespondenceStatsWorkspace::markTargetSpatialGridCache(
     _target_spatial_grid_point_count = target_count;
     _target_spatial_grid_cell_size = cell_size;
     _target_spatial_grid_cell_count = cell_count;
+    _target_spatial_grid_direct_lookup_entry_count = 0;
+    _target_spatial_grid_direct_lookup_min_x = 0;
+    _target_spatial_grid_direct_lookup_min_y = 0;
+    _target_spatial_grid_direct_lookup_min_z = 0;
+    _target_spatial_grid_direct_lookup_range_x = 0;
+    _target_spatial_grid_direct_lookup_range_y = 0;
+    _target_spatial_grid_direct_lookup_range_z = 0;
+    _target_spatial_grid_direct_lookup_evaluated = false;
+}
+
+void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGridDirectLookup(int entry_count)
+{
+    if (entry_count < 0)
+    {
+        throw std::invalid_argument("ICP GPU: target spatial-grid direct lookup count must not be negative");
+    }
+    if (entry_count == 0)
+    {
+        return;
+    }
+    if (targetSpatialGridDirectLookupCapacity() < entry_count)
+    {
+        _target_spatial_grid_direct_lookup_storage.allocate(static_cast<std::size_t>(entry_count) * sizeof(int));
+        _target_spatial_grid_direct_lookup_capacity = entry_count;
+    }
+    _target_spatial_grid_direct_lookup_entry_count = 0;
+}
+
+void IcpCorrespondenceStatsWorkspace::markTargetSpatialGridDirectLookupCache(
+    int min_x,
+    int min_y,
+    int min_z,
+    int range_x,
+    int range_y,
+    int range_z,
+    int entry_count)
+{
+    if (entry_count < 0 || entry_count > targetSpatialGridDirectLookupCapacity())
+    {
+        throw std::invalid_argument("ICP GPU: target spatial-grid direct lookup cache metadata is invalid");
+    }
+    if (entry_count == 0)
+    {
+        _target_spatial_grid_direct_lookup_entry_count = 0;
+        _target_spatial_grid_direct_lookup_min_x = 0;
+        _target_spatial_grid_direct_lookup_min_y = 0;
+        _target_spatial_grid_direct_lookup_min_z = 0;
+        _target_spatial_grid_direct_lookup_range_x = 0;
+        _target_spatial_grid_direct_lookup_range_y = 0;
+        _target_spatial_grid_direct_lookup_range_z = 0;
+        _target_spatial_grid_direct_lookup_evaluated = true;
+        return;
+    }
+    if (range_x <= 0 || range_y <= 0 || range_z <= 0)
+    {
+        throw std::invalid_argument("ICP GPU: target spatial-grid direct lookup range must be positive");
+    }
+
+    _target_spatial_grid_direct_lookup_min_x = min_x;
+    _target_spatial_grid_direct_lookup_min_y = min_y;
+    _target_spatial_grid_direct_lookup_min_z = min_z;
+    _target_spatial_grid_direct_lookup_range_x = range_x;
+    _target_spatial_grid_direct_lookup_range_y = range_y;
+    _target_spatial_grid_direct_lookup_range_z = range_z;
+    _target_spatial_grid_direct_lookup_entry_count = entry_count;
+    _target_spatial_grid_direct_lookup_evaluated = true;
 }
 
 void IcpCorrespondenceStatsWorkspace::markTargetTileBoundsCache(
