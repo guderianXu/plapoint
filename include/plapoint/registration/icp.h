@@ -749,7 +749,7 @@ private:
 
     bool gpuAlignmentStepWorkspaceReservationMatches(int source_count) const
     {
-        return _gpu_alignment_step_workspace_source_count == source_count;
+        return source_count > 0 && _gpu_alignment_step_workspace_source_capacity >= source_count;
     }
 
     void reserveGpuAlignmentStepWorkspace(int source_count)
@@ -766,7 +766,8 @@ private:
         {
             _gpu_stats_workspace.reserveDoubleAlignmentStep(source_count);
         }
-        _gpu_alignment_step_workspace_source_count = source_count;
+        _gpu_alignment_step_workspace_source_capacity =
+            std::max(_gpu_alignment_step_workspace_source_capacity, source_count);
     }
 
     void reserveGpuAccumulatedTransformBuffer()
@@ -1119,7 +1120,7 @@ private:
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_points_b;
     int _gpu_points_a_point_count = 0;
     int _gpu_points_b_point_count = 0;
-    int _gpu_alignment_step_workspace_source_count = 0;
+    int _gpu_alignment_step_workspace_source_capacity = 0;
     const void* _gpu_target_cache_points = nullptr;
     std::uint64_t _gpu_target_cache_points_version = 0;
     bool _final_T_gpu_valid = false;

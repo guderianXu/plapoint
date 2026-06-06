@@ -3426,14 +3426,16 @@ TEST(ICPGpuPathTest, AlignChecksAlignmentStepWorkspaceOnceBeforeLoop)
     EXPECT_EQ(output.size(), source->size());
 }
 
-TEST(ICPGpuPathTest, AlignmentStepWorkspaceReservationCacheMatchesPointCount)
+TEST(ICPGpuPathTest, AlignmentStepWorkspaceReservationCacheMatchesReservedCapacity)
 {
     plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
 
+    EXPECT_FALSE(icp.gpuAlignmentStepWorkspaceReservationMatches(0));
     EXPECT_FALSE(icp.gpuAlignmentStepWorkspaceReservationMatches(4));
 
-    icp._gpu_alignment_step_workspace_source_count = 4;
+    icp._gpu_alignment_step_workspace_source_capacity = 4;
 
+    EXPECT_TRUE(icp.gpuAlignmentStepWorkspaceReservationMatches(3));
     EXPECT_TRUE(icp.gpuAlignmentStepWorkspaceReservationMatches(4));
     EXPECT_FALSE(icp.gpuAlignmentStepWorkspaceReservationMatches(5));
 }
