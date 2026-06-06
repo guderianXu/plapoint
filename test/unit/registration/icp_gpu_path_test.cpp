@@ -1510,6 +1510,31 @@ TEST(ICPGpuPathTest, ResidualStatsUsesExactPointwiseFastPathForSameBuffer)
     EXPECT_EQ(plapoint::gpu::icpExactPointwiseTargetLoadCountForTesting(), 0ull);
 }
 
+TEST(ICPGpuPathTest, ResidualStatsReservedWorkspaceSkipsReserveCheck)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto source = makeTranslatedNonCollinearPoints(makeNonCollinearPoints(), 0.1f, -0.05f, 0.025f).toGpu();
+    auto target = makeNonCollinearPoints().toGpu();
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+    workspace.reserveResidualStats(static_cast<int>(source.rows()));
+
+    plapoint::gpu::resetIcpResidualStatsReserveCheckCountForTesting();
+    const auto stats = plapoint::gpu::detail::computeIcpResidualStatsColumnMajorWithReservedWorkspace(
+        source.data(),
+        static_cast<int>(source.rows()),
+        target.data(),
+        static_cast<int>(target.rows()),
+        2.0f,
+        workspace);
+
+    EXPECT_EQ(stats.active_count, static_cast<int>(source.rows()));
+    EXPECT_EQ(plapoint::gpu::icpResidualStatsReserveCheckCountForTesting(), 0);
+}
+
 TEST(ICPGpuPathTest, ExactPointwiseStatsPredicatesSeparateSameBufferFromEqualityProbe)
 {
     float source_points[3]{};

@@ -5860,3 +5860,54 @@ Verification evidence:
   ordered same-buffer alignment now reaches the exact identity-step cost class. On the 100k benchmark, it is effectively
   tied with the exact same-buffer reserved row and is about 26% faster than the ordered finite-radius translation
   stats+step row.
+
+## Task 161: Add Reserved Workspace Path For Residual-Only ICP Stats
+
+- Goal: let internal callers that already reserved `IcpCorrespondenceStatsWorkspace` compute residual-only ICP metrics
+  without paying another `reserveResidualStats()` check on every call. The public residual-stats API keeps its existing
+  auto-reserve behavior.
+- RED checks:
+  - Added `ICPGpuPathTest.ResidualStatsReservedWorkspaceSkipsReserveCheck`, which reserves residual workspace first,
+    calls a new detail reserved-workspace residual API, and expects
+    `icpResidualStatsReserveCheckCountForTesting() == 0`.
+  - The first CUDA build failed for the expected reason: `plapoint::gpu::detail` did not yet expose
+    `computeIcpResidualStatsColumnMajorWithReservedWorkspace`.
+  - Added benchmark row-registration expectation for
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid_reserved_workspace`.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure -R plapoint\.benchmarks\.gpu_icp_rows_registered`:
+    failed with the expected missing-row error for the new benchmark row.
+- Implementation:
+  - Added float and double detail overloads of
+    `computeIcpResidualStatsColumnMajorWithReservedWorkspace()`.
+  - Split `computeIcpResidualStatsColumnMajorImpl()` so public callers pass `reserve_workspace = true`, while the
+    reserved detail path passes `false`.
+  - Added a benchmark row comparing cached-grid residual stats with the residual workspace already reserved.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.ResidualStatsReservedWorkspaceSkipsReserveCheck`:
+    1 test, 0 failed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.ResidualStatsUsesExactPointwiseFastPathForSameBuffer:ICPGpuPathTest.AlignUsesReservedWorkspaceForTerminalResidualStats`:
+    2 tests, 0 failed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure -R plapoint\.benchmarks\.gpu_icp_rows_registered`:
+    1/1 passed after benchmark implementation.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_residual_stats_finite_radius_translation_new_workspace` = 1.44294 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.523041 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid_reserved_workspace` = 0.52222 ms,
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.530396 ms, and
+    `gpu_icp_transform_residual_stats_transformed_exact_pointwise_new_workspace` = 0.487677 ms.
+- Full verification performed in this session:
+  - `git diff --check`: clean.
+  - GPU: RTX 4060 Laptop GPU, driver 580.159.03.
+  - `cmake --build build-codex-cpu -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, 1 CUDA-only test skipped.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 291/291 passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+- Current conclusion:
+  residual-only ICP stats now has the same reserved-workspace detail surface as transformed residual stats and compact
+  alignment steps. The 100k benchmark shows this removes a small host-side reserve-check cost; the remaining runtime is
+  dominated by residual correspondence search, reduction, and host result synchronization.

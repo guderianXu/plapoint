@@ -4939,7 +4939,8 @@ IcpResidualStats<Scalar> computeIcpResidualStatsColumnMajorImpl(
     int target_count,
     Scalar max_correspondence_distance,
     IcpCorrespondenceStatsWorkspace& workspace,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    bool reserve_workspace)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
@@ -4955,7 +4956,10 @@ IcpResidualStats<Scalar> computeIcpResidualStatsColumnMajorImpl(
         throw std::invalid_argument("ICP GPU: device pointers must not be null");
     }
 
-    workspace.reserveResidualStats(source_count);
+    if (reserve_workspace)
+    {
+        workspace.reserveResidualStats(source_count);
+    }
 
     constexpr int block_size = kIcpStatsBlockSize;
     const int grid_size = icpStatsPartialCount(source_count);
@@ -6825,7 +6829,8 @@ IcpResidualStats<float> computeIcpResidualStatsColumnMajor(
         target_count,
         max_correspondence_distance,
         workspace,
-        stream);
+        stream,
+        true);
 }
 
 IcpResidualStats<double> computeIcpResidualStatsColumnMajor(
@@ -6844,7 +6849,8 @@ IcpResidualStats<double> computeIcpResidualStatsColumnMajor(
         target_count,
         max_correspondence_distance,
         workspace,
-        stream);
+        stream,
+        true);
 }
 
 IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsColumnMajor(
@@ -6941,6 +6947,46 @@ IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsWithTargetSpat
 
 namespace detail
 {
+
+IcpResidualStats<float> computeIcpResidualStatsColumnMajorWithReservedWorkspace(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+    return computeIcpResidualStatsColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        workspace,
+        stream,
+        false);
+}
+
+IcpResidualStats<double> computeIcpResidualStatsColumnMajorWithReservedWorkspace(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+    return computeIcpResidualStatsColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        workspace,
+        stream,
+        false);
+}
 
 IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
     const float* d_transform,

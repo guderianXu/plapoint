@@ -633,6 +633,28 @@ IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepAndAccumulateTr
     cudaStream_t stream = 0,
     bool assume_ordered_correspondences = false);
 
+/// Compute final residual metrics using workspace already reserved for source_count.
+/// The caller must reserve residual-compatible partial and result storage first.
+IcpResidualStats<float> computeIcpResidualStatsColumnMajorWithReservedWorkspace(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream = 0);
+
+/// Compute final residual metrics using workspace already reserved for source_count.
+/// The caller must reserve residual-compatible partial and result storage first.
+IcpResidualStats<double> computeIcpResidualStatsColumnMajorWithReservedWorkspace(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream = 0);
+
 /// Transform points and compute final residual metrics using workspace already reserved for source_count.
 /// The caller must reserve residual-compatible partial and result storage first.
 /// Throws if d_output_points aliases d_target_points because residual search must read the original target points.
