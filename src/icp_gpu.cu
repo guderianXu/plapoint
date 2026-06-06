@@ -2266,6 +2266,91 @@ __global__ void transformAndCollectResidualStatsKernel(
     }
 }
 
+template <typename Scalar>
+__global__ void transformAndCollectOrderedResidualStatsKernel(
+    const Scalar* __restrict__ transform,
+    const Scalar* source_points,
+    int point_count,
+    const Scalar* target_points,
+    Scalar max_correspondence_distance,
+    Scalar* output_points,
+    RawIcpResidualStats* __restrict__ partial_stats)
+{
+    const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int local_idx = threadIdx.x;
+    RawIcpResidualStats local{};
+    __shared__ Scalar block_transform[kIcpTransform3x4ValueCount];
+    loadColumnMajorTransform3x4Block(transform, block_transform, local_idx);
+
+    if (source_idx < point_count)
+    {
+        const Scalar px = loadReadOnlyIcpValue(source_points + source_idx);
+        const Scalar py = loadReadOnlyIcpValue(source_points + point_count + source_idx);
+        const Scalar pz = loadReadOnlyIcpValue(source_points + 2 * point_count + source_idx);
+
+        Scalar ox = Scalar(0);
+        Scalar oy = Scalar(0);
+        Scalar oz = Scalar(0);
+        transformColumnMajorPoint3x4(block_transform, px, py, pz, ox, oy, oz);
+        output_points[source_idx] = ox;
+        output_points[point_count + source_idx] = oy;
+        output_points[2 * point_count + source_idx] = oz;
+
+        const double sx = static_cast<double>(ox);
+        const double sy = static_cast<double>(oy);
+        const double sz = static_cast<double>(oz);
+        if (!isfinite(sx) || !isfinite(sy) || !isfinite(sz))
+        {
+            local.invalid_source_count = 1;
+        }
+        else
+        {
+            double tx = 0.0;
+            double ty = 0.0;
+            double tz = 0.0;
+            if (loadFiniteColumnMajorPoint(target_points, point_count, source_idx, tx, ty, tz))
+            {
+#ifdef PLAPOINT_ENABLE_TESTING
+                atomicAdd(&g_icp_exact_pointwise_target_load_count, 3ull);
+#endif
+                const double dx = sx - tx;
+                const double dy = sy - ty;
+                const double dz = sz - tz;
+                const double dist_sq = dx * dx + dy * dy + dz * dz;
+                const double max_dist = static_cast<double>(max_correspondence_distance);
+                bool accepted = isfinite(dist_sq);
+                if (accepted && isfinite(max_dist))
+                {
+                    accepted = dist_sq <= max_dist * max_dist;
+                }
+                if (accepted)
+                {
+                    local.active_count = 1;
+                    local.residual_sq_sum = dist_sq;
+                }
+            }
+        }
+    }
+
+    __shared__ RawIcpResidualStats shared_stats[kIcpStatsBlockSize];
+    shared_stats[local_idx] = local;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            addRawIcpResidualStats(shared_stats[local_idx], shared_stats[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (local_idx == 0)
+    {
+        partial_stats[blockIdx.x] = shared_stats[0];
+    }
+}
+
 template <typename Scalar, bool FiniteCellBounds>
 __global__ void transformAndCollectResidualStatsSpatialGridKernel(
     const Scalar* __restrict__ transform,
@@ -2745,6 +2830,29 @@ void launchTransformAndCollectResidualStatsKernel(
         max_correspondence_distance,
         output_points,
         target_tile_bounds,
+        partial_stats);
+}
+
+template <typename Scalar>
+void launchTransformAndCollectOrderedResidualStatsKernel(
+    int grid_size,
+    int block_size,
+    cudaStream_t stream,
+    const Scalar* transform,
+    const Scalar* source_points,
+    int point_count,
+    const Scalar* target_points,
+    Scalar max_correspondence_distance,
+    Scalar* output_points,
+    RawIcpResidualStats* partial_stats)
+{
+    transformAndCollectOrderedResidualStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+        transform,
+        source_points,
+        point_count,
+        target_points,
+        max_correspondence_distance,
+        output_points,
         partial_stats);
 }
 
@@ -4715,6 +4823,87 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
 }
 
 template <typename Scalar>
+IcpResidualStats<Scalar> transformPointsAndComputeOrderedIcpResidualStatsColumnMajorImpl(
+    const Scalar* d_transform,
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    Scalar* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream,
+    bool reserve_workspace)
+{
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_residual_stats_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_last_transform_output_pointer.store(
+        reinterpret_cast<std::uintptr_t>(d_output_points),
+        std::memory_order_relaxed);
+#endif
+
+    if (source_count <= 0 || target_count <= 0)
+    {
+        return {};
+    }
+    if (source_count != target_count)
+    {
+        throw std::invalid_argument("ICP GPU: ordered residual metrics require equal source and target counts");
+    }
+    if (!d_transform || !d_source_points || !d_target_points || !d_output_points)
+    {
+        throw std::invalid_argument("ICP GPU: device pointers must not be null");
+    }
+    if (d_output_points == d_target_points)
+    {
+        throw std::invalid_argument("ICP GPU: ordered residual output must not alias target points");
+    }
+
+    if (reserve_workspace)
+    {
+        workspace.reserveResidualStats(source_count);
+    }
+
+    constexpr int block_size = kIcpStatsBlockSize;
+    const int grid_size = icpStatsPartialCount(source_count);
+    auto* d_partials = reinterpret_cast<RawIcpResidualStats*>(workspace.partialStorage());
+    auto* d_stats = reinterpret_cast<RawIcpResidualStats*>(workspace.statsStorage());
+    auto* h_stats = reinterpret_cast<RawIcpResidualStats*>(workspace.hostResultStorage());
+    if (!h_stats)
+    {
+        throw std::invalid_argument("ICP GPU: residual-stats host result workspace is not reserved");
+    }
+
+    launchTransformAndCollectOrderedResidualStatsKernel(
+        grid_size,
+        block_size,
+        stream,
+        d_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        max_correspondence_distance,
+        d_output_points,
+        d_partials);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    reduceRawIcpResidualStatsKernel<<<1, block_size, 0, stream>>>(
+        d_partials,
+        grid_size,
+        d_stats);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_stats, d_stats, sizeof(RawIcpResidualStats),
+                                        cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    return makeHostResidualStats<Scalar>(*h_stats);
+}
+
+template <typename Scalar>
 IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorImpl(
     const Scalar* d_transform,
     const Scalar* d_source_points,
@@ -6365,6 +6554,54 @@ IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsColumnMajorWit
     cudaStream_t stream)
 {
     return transformPointsAndComputeIcpResidualStatsColumnMajorImpl(
+        d_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        d_output_points,
+        workspace,
+        stream,
+        false);
+}
+
+IcpResidualStats<float> transformPointsAndComputeOrderedIcpResidualStatsColumnMajorWithReservedWorkspace(
+    const float* d_transform,
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    float* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+    return transformPointsAndComputeOrderedIcpResidualStatsColumnMajorImpl(
+        d_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        d_output_points,
+        workspace,
+        stream,
+        false);
+}
+
+IcpResidualStats<double> transformPointsAndComputeOrderedIcpResidualStatsColumnMajorWithReservedWorkspace(
+    const double* d_transform,
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    double* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+    return transformPointsAndComputeOrderedIcpResidualStatsColumnMajorImpl(
         d_transform,
         d_source_points,
         source_count,

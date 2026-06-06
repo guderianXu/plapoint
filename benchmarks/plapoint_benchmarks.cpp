@@ -715,11 +715,12 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuseOutputSkipFinalMetricsOneIterati
     }
 }
 
-void benchmarkGpuIcpFiniteRadiusTranslationOrderedOutputSkipFinalMetrics(
+void benchmarkGpuIcpFiniteRadiusTranslationOrderedOutput(
     const char* benchmark_name,
     int icp_points,
     int icp_max_iterations,
-    int iterations)
+    int iterations,
+    bool compute_final_metrics)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -737,7 +738,10 @@ void benchmarkGpuIcpFiniteRadiusTranslationOrderedOutputSkipFinalMetrics(
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
     icp.setMaxIterations(icp_max_iterations);
-    icp.setComputeFinalMetrics(false);
+    if (!compute_final_metrics)
+    {
+        icp.setComputeFinalMetrics(false);
+    }
     icp.setGpuAssumeOrderedCorrespondences(true);
 
     Cloud<plamatrix::Device::GPU> output;
@@ -1724,16 +1728,30 @@ int main(int argc, char** argv)
     benchmarkGpuIcpFiniteRadiusTranslationReuseOutputSkipFinalMetricsOneIteration(
         options.icp_points,
         options.iterations);
-    benchmarkGpuIcpFiniteRadiusTranslationOrderedOutputSkipFinalMetrics(
+    benchmarkGpuIcpFiniteRadiusTranslationOrderedOutput(
+        "gpu_icp_finite_radius_translation_ordered_output",
+        options.icp_points,
+        options.icp_max_iterations,
+        options.iterations,
+        true);
+    benchmarkGpuIcpFiniteRadiusTranslationOrderedOutput(
+        "gpu_icp_finite_radius_translation_ordered_output_one_iteration",
+        options.icp_points,
+        1,
+        options.iterations,
+        true);
+    benchmarkGpuIcpFiniteRadiusTranslationOrderedOutput(
         "gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics",
         options.icp_points,
         options.icp_max_iterations,
-        options.iterations);
-    benchmarkGpuIcpFiniteRadiusTranslationOrderedOutputSkipFinalMetrics(
+        options.iterations,
+        false);
+    benchmarkGpuIcpFiniteRadiusTranslationOrderedOutput(
         "gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics_one_iteration",
         options.icp_points,
         1,
-        options.iterations);
+        options.iterations,
+        false);
     benchmarkGpuIcpFiniteRadiusTranslationTransformOnlySkipFinalMetrics(
         "gpu_icp_finite_radius_translation_transform_only_skip_final_metrics",
         options.icp_points,

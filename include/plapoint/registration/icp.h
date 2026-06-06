@@ -460,9 +460,15 @@ private:
             const Scalar* step_transform = _gpu_T_step->data();
             const bool terminal_iteration = step_result.delta < _eps || iter + 1 == _max_iter;
             const bool terminal_identity_step = terminal_iteration && step_result.delta == Scalar(0);
+            const bool terminal_final_metrics_can_use_ordered_correspondences =
+                terminal_iteration &&
+                _compute_final_metrics &&
+                _gpu_assume_ordered_correspondences &&
+                source_count == target_count;
             const bool terminal_final_metrics_can_use_target_snapshot =
                 terminal_iteration &&
                 _compute_final_metrics &&
+                !terminal_final_metrics_can_use_ordered_correspondences &&
                 gpuFinalMetricsCanUseCachedTargetSpatialGridSnapshot(target_points, target_count);
             const int target_spatial_grid_snapshot_cell_count =
                 terminal_final_metrics_can_use_target_snapshot
@@ -526,7 +532,20 @@ private:
             else if (terminal_iteration && _compute_final_metrics)
             {
                 gpu::IcpResidualStats<Scalar> final_stats;
-                if (terminal_final_metrics_can_use_target_snapshot)
+                if (terminal_final_metrics_can_use_ordered_correspondences)
+                {
+                    final_stats =
+                        gpu::detail::transformPointsAndComputeOrderedIcpResidualStatsColumnMajorWithReservedWorkspace(
+                            _gpu_T_acc->data(),
+                            source_points,
+                            source_count,
+                            target_points,
+                            target_count,
+                            _max_corr_dist,
+                            transform_output_points,
+                            _gpu_stats_workspace);
+                }
+                else if (terminal_final_metrics_can_use_target_snapshot)
                 {
                     final_stats =
                         gpu::detail::

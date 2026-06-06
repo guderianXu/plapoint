@@ -5536,3 +5536,45 @@ Verification evidence:
   points on the RTX 4060 Laptop GPU, the one-iteration path is about 3.35x faster and the three-iteration skip-final
   metrics path improves by about 41%. This is the strongest GPU ICP throughput improvement so far, but it must remain
   opt-in because same-index finite-radius pairs are not guaranteed nearest neighbors in general ICP inputs.
+
+## Task 154: Add Ordered Final-Metrics GPU ICP Fast Path
+
+- Goal: make the ordered-correspondence opt-in apply to terminal final residual metrics as well as the alignment step.
+  Before this change, ordered alignment skipped the first target search, but `compute_final_metrics=true` still built a
+  target spatial grid and searched nearest neighbors during final residual evaluation.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignOrderedFinalMetricsSkipTargetSpatialGridSearch`.
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignOrderedFinalMetricsSkipTargetSpatialGridSearch`:
+    failed as expected because final metrics still used the search path:
+    full-distance evaluations = 9, target-candidate visits = 16, grid-cell lookups = 14,
+    target spatial-grid prepares = 1, and target spatial-grid builds = 1.
+  - Added `gpu_icp_finite_radius_translation_ordered_output` and
+    `gpu_icp_finite_radius_translation_ordered_output_one_iteration` to the benchmark row-registration check.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint.benchmarks.gpu_icp_rows_registered --output-on-failure`:
+    failed with the expected missing-row error for `gpu_icp_finite_radius_translation_ordered_output`.
+- Implementation:
+  - Added `transformAndCollectOrderedResidualStatsKernel()`, which transforms each source point, compares it only to the
+    same-index target point, and reduces final residual stats without target grid preparation, grid lookup, or candidate
+    search.
+  - Added float/double detail entry points:
+    `transformPointsAndComputeOrderedIcpResidualStatsColumnMajorWithReservedWorkspace()`.
+  - Routed terminal GPU final metrics through the ordered residual path when
+    `setGpuAssumeOrderedCorrespondences(true)` is enabled and source/target point counts match.
+  - Extended the ordered benchmark helper to emit final-metrics-on rows alongside the existing skip-final rows.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignOrderedFinalMetricsSkipTargetSpatialGridSearch`:
+    1 test, 0 failed after implementation.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) && ctest --test-dir build-codex-cuda-bench-only -R plapoint.benchmarks.gpu_icp_rows_registered --output-on-failure`:
+    passed after benchmark implementation.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.65252 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.4872 ms,
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.906498 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.880052 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_one_iteration` = 0.282669 ms, and
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics_one_iteration` = 0.258934 ms.
+- Current conclusion:
+  ordered final metrics now add only about 0.024 ms over skip-final metrics at 100k points, instead of paying the
+  generic residual-search cost. Compared with the non-ordered final-metrics row, the ordered final-metrics path is about
+  45% faster for this paired-cloud benchmark while preserving the explicit opt-in requirement.
