@@ -358,7 +358,7 @@ private:
     {
         const int source_count = checkedInt(_source->size(), "ICP: source point count exceeds int range");
         const int target_count = checkedInt(_target->size(), "ICP: target point count exceeds int range");
-        const bool output_aliases_input = outputAliasesGpuInput(output);
+        const bool output_aliases_target = outputAliasesGpuTarget(output);
         bool final_points_written_to_output = false;
 
         const Scalar* cur_points = _source->points().data();
@@ -411,7 +411,7 @@ private:
             const bool terminal_iteration = step_result.delta < _eps || iter + 1 == _max_iter;
             const bool terminal_identity_step = terminal_iteration && step_result.delta == Scalar(0);
             Scalar* transform_output_points = nullptr;
-            if (terminal_iteration && !terminal_identity_step && !output_aliases_input)
+            if (terminal_iteration && !terminal_identity_step && !output_aliases_target)
             {
                 transform_output_points = prepareGpuOutputPointBuffer(output, source_count);
                 final_points_written_to_output = true;
@@ -539,10 +539,10 @@ private:
         return _gpu_points_b->data();
     }
 
-    bool outputAliasesGpuInput(const PointCloudType& output) const
+    bool outputAliasesGpuTarget(const PointCloudType& output) const
     {
         const auto* output_address = static_cast<const PointCloudType*>(&output);
-        return output_address == _source.get() || output_address == _target.get();
+        return output_address == _target.get();
     }
 
     template <plamatrix::Device D = Dev>
