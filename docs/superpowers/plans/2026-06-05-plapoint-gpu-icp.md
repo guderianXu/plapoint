@@ -2179,6 +2179,42 @@ Verification evidence:
   rerun the selected exact pointwise alignment GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm
   runtime behavior and measure the identity-step impact.
 
+## Task 88: Unroll GPU ICP 4x4 Eigen Solver Small Loops
+
+- Goal: reduce fixed-loop overhead inside the device-side 4x4 Jacobi eigenvector helper used when GPU ICP computes a
+  step transform from reduced correspondence statistics.
+- Static RED:
+  - `test "$(sed -n '/__device__ void jacobiRotate4x4/,/__device__ void largestEigenvectorSymmetric4x4/p' src/icp_gpu.cu | rg -n '#pragma unroll' | wc -l)" -ge 2`:
+    failed before the change because the two fixed 4-entry loops in `jacobiRotate4x4()` were not explicitly unrolled.
+  - `test "$(sed -n '/__device__ void largestEigenvectorSymmetric4x4/,/template <typename Scalar>/p' src/icp_gpu.cu | rg -n '#pragma unroll' | wc -l)" -ge 4`:
+    failed before the change because the fixed initialization, identity, best-index, and output-copy loops in
+    `largestEigenvectorSymmetric4x4()` were not explicitly unrolled.
+- Implementation:
+  - Added `#pragma unroll` to the two fixed 4-entry loops in `jacobiRotate4x4()`.
+  - Added `#pragma unroll` to the fixed 16-entry copy/zero loop, the 4-entry identity loop, the 3-comparison best-index
+    loop, and the 4-entry output-copy loop in `largestEigenvectorSymmetric4x4()`.
+  - Kept the 32-sweep Jacobi iteration loop unchanged to avoid unnecessary code-size growth.
+- Verification performed in this session:
+  - Both static RED commands passed after adding the unroll hints.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.StepTransformFromStatsWritesDeviceTransform:ICPGpuPathTest.AlignmentStepCompactResultMatchesFullStatsStepResult:ICPGpuPathTest.AlignComputesStepFromDeviceStatsWithoutHostInputCopy:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPTest.Multiply4x4RejectsUnrepresentableAccumulatedTransform:ICPValidation.RecoversKnownTransform`:
+    2 CPU tests passed; 4 selected GPU tests were discovered but skipped because the current session has no usable CUDA
+    device.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    233 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran, but all GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected step-transform GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime
+  behavior and measure the transform-solve impact.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell

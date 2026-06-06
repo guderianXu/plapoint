@@ -2652,6 +2652,7 @@ __device__ void jacobiRotate4x4(double A[16], double V[16], int p, int q)
     const double c = 1.0 / sqrt(1.0 + t * t);
     const double s = t * c;
 
+#pragma unroll
     for (int k = 0; k < 4; ++k)
     {
         if (k == p || k == q)
@@ -2673,6 +2674,7 @@ __device__ void jacobiRotate4x4(double A[16], double V[16], int p, int q)
     A[p * 4 + q] = 0.0;
     A[q * 4 + p] = 0.0;
 
+#pragma unroll
     for (int k = 0; k < 4; ++k)
     {
         const double vkp = V[k * 4 + p];
@@ -2686,11 +2688,13 @@ __device__ void largestEigenvectorSymmetric4x4(const double A_in[16], double eig
 {
     double A[16];
     double V[16];
+#pragma unroll
     for (int idx = 0; idx < 16; ++idx)
     {
         A[idx] = A_in[idx];
         V[idx] = 0.0;
     }
+#pragma unroll
     for (int i = 0; i < 4; ++i)
     {
         V[i * 4 + i] = 1.0;
@@ -2707,6 +2711,7 @@ __device__ void largestEigenvectorSymmetric4x4(const double A_in[16], double eig
     }
 
     int best = 0;
+#pragma unroll
     for (int i = 1; i < 4; ++i)
     {
         if (A[i * 4 + i] > A[best * 4 + best])
@@ -2714,6 +2719,7 @@ __device__ void largestEigenvectorSymmetric4x4(const double A_in[16], double eig
             best = i;
         }
     }
+#pragma unroll
     for (int i = 0; i < 4; ++i)
     {
         eigenvector[i] = V[i * 4 + best];
