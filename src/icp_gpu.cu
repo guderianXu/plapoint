@@ -279,6 +279,7 @@ __device__ unsigned long long g_icp_exact_pointwise_target_load_count;
 __device__ unsigned long long g_icp_grid_cell_lookup_count;
 __device__ unsigned long long g_icp_grid_cell_offset_count;
 __device__ unsigned long long g_icp_grid_cell_center_min_distance_count;
+__device__ unsigned long long g_icp_grid_cell_neighbor_min_distance_count;
 __device__ unsigned long long g_icp_direct_grid_lookup_xy_check_count;
 __device__ unsigned long long g_icp_direct_grid_lookup_active_guard_count;
 __device__ unsigned long long g_icp_direct_grid_lookup_xy_base_guard_count;
@@ -917,7 +918,7 @@ __device__ __forceinline__ double distanceOutsideFiniteIcpGridCellAxis(
     return 0.0;
 }
 
-__device__ __forceinline__ double minDistanceSqToIcpGridCellXY(
+[[maybe_unused]] __device__ __forceinline__ double minDistanceSqToIcpGridCellXY(
     double x,
     double y,
     int cell_x,
@@ -930,13 +931,17 @@ __device__ __forceinline__ double minDistanceSqToIcpGridCellXY(
     {
         atomicAdd(&g_icp_grid_cell_center_min_distance_count, 1ull);
     }
+    else
+    {
+        atomicAdd(&g_icp_grid_cell_neighbor_min_distance_count, 1ull);
+    }
 #endif
     const double dx = distanceOutsideIcpGridCellAxis(x, cell_x, cell_size);
     const double dy = distanceOutsideIcpGridCellAxis(y, cell_y, cell_size);
     return dx * dx + dy * dy;
 }
 
-__device__ __forceinline__ double minDistanceSqToFiniteIcpGridCellXY(
+[[maybe_unused]] __device__ __forceinline__ double minDistanceSqToFiniteIcpGridCellXY(
     double x,
     double y,
     int cell_x,
@@ -948,6 +953,10 @@ __device__ __forceinline__ double minDistanceSqToFiniteIcpGridCellXY(
         icpGridCellCoordinate(y, cell_size) == cell_y)
     {
         atomicAdd(&g_icp_grid_cell_center_min_distance_count, 1ull);
+    }
+    else
+    {
+        atomicAdd(&g_icp_grid_cell_neighbor_min_distance_count, 1ull);
     }
 #endif
     const double dx = distanceOutsideFiniteIcpGridCellAxis(x, cell_x, cell_size);
@@ -971,6 +980,40 @@ __device__ __forceinline__ double minDistanceSqToIcpGridCellXY(
 }
 
 template <bool FiniteCellBounds>
+__device__ __forceinline__ double distanceSqToIcpNeighborCellAxis(
+    double value,
+    int cell_coordinate,
+    double cell_size,
+    int offset_idx)
+{
+    if (offset_idx == 0)
+    {
+        return 0.0;
+    }
+
+    const double cell_min = static_cast<double>(cell_coordinate) * cell_size;
+    const double cell_max = cell_min + cell_size;
+    if constexpr (!FiniteCellBounds)
+    {
+        if (!isfinite(cell_min) || !isfinite(cell_max))
+        {
+            return 0.0;
+        }
+    }
+
+    double distance = 0.0;
+    if (offset_idx == 1)
+    {
+        distance = value > cell_max ? value - cell_max : 0.0;
+    }
+    else
+    {
+        distance = value < cell_min ? cell_min - value : 0.0;
+    }
+    return distance * distance;
+}
+
+template <bool FiniteCellBounds>
 __device__ __forceinline__ double minDistanceSqToIcpNeighborCellXY(
     double x,
     double y,
@@ -984,7 +1027,8 @@ __device__ __forceinline__ double minDistanceSqToIcpNeighborCellXY(
     {
         return 0.0;
     }
-    return minDistanceSqToIcpGridCellXY<FiniteCellBounds>(x, y, cell_x, cell_y, cell_size);
+    return distanceSqToIcpNeighborCellAxis<FiniteCellBounds>(x, cell_x, cell_size, dx_offset_idx) +
+        distanceSqToIcpNeighborCellAxis<FiniteCellBounds>(y, cell_y, cell_size, dy_offset_idx);
 }
 
 __device__ __forceinline__ double minDistanceSqToIcpGridCellZ(
@@ -996,6 +1040,10 @@ __device__ __forceinline__ double minDistanceSqToIcpGridCellZ(
     if (icpGridCellCoordinate(z, cell_size) == cell_z)
     {
         atomicAdd(&g_icp_grid_cell_center_min_distance_count, 1ull);
+    }
+    else
+    {
+        atomicAdd(&g_icp_grid_cell_neighbor_min_distance_count, 1ull);
     }
 #endif
     const double dz = distanceOutsideIcpGridCellAxis(z, cell_z, cell_size);
@@ -1011,6 +1059,10 @@ __device__ __forceinline__ double minDistanceSqToFiniteIcpGridCellZ(
     if (icpGridCellCoordinate(z, cell_size) == cell_z)
     {
         atomicAdd(&g_icp_grid_cell_center_min_distance_count, 1ull);
+    }
+    else
+    {
+        atomicAdd(&g_icp_grid_cell_neighbor_min_distance_count, 1ull);
     }
 #endif
     const double dz = distanceOutsideFiniteIcpGridCellAxis(z, cell_z, cell_size);
@@ -1041,7 +1093,7 @@ __device__ __forceinline__ double minDistanceSqToIcpNeighborCellZ(
     {
         return 0.0;
     }
-    return minDistanceSqToIcpGridCellZ<FiniteCellBounds>(z, cell_z, cell_size);
+    return distanceSqToIcpNeighborCellAxis<FiniteCellBounds>(z, cell_z, cell_size, z_offset_idx);
 }
 
 __device__ __forceinline__ void recordAcceptedCorrespondence(
@@ -7372,6 +7424,19 @@ unsigned long long icpGridCellCenterMinDistanceCountForTesting()
 {
     unsigned long long count = 0;
     PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_grid_cell_center_min_distance_count, sizeof(count)));
+    return count;
+}
+
+void resetIcpGridCellNeighborMinDistanceCountForTesting()
+{
+    const unsigned long long zero = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyToSymbol(g_icp_grid_cell_neighbor_min_distance_count, &zero, sizeof(zero)));
+}
+
+unsigned long long icpGridCellNeighborMinDistanceCountForTesting()
+{
+    unsigned long long count = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_grid_cell_neighbor_min_distance_count, sizeof(count)));
     return count;
 }
 
