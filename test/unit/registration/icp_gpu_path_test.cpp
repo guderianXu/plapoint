@@ -1199,7 +1199,7 @@ TEST(ICPGpuPathTest, CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompac
     EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
 }
 
-TEST(ICPGpuPathTest, ResidualStatsDoesNotBuildUnusedDirectSpatialGridLookup)
+TEST(ICPGpuPathTest, ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -1231,6 +1231,7 @@ TEST(ICPGpuPathTest, ResidualStatsDoesNotBuildUnusedDirectSpatialGridLookup)
     auto source_gpu = source.toGpu();
     auto target_gpu = target.toGpu();
 
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
     plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
     const auto stats = plapoint::gpu::computeIcpResidualStatsColumnMajor(
         source_gpu.data(),
@@ -1242,7 +1243,8 @@ TEST(ICPGpuPathTest, ResidualStatsDoesNotBuildUnusedDirectSpatialGridLookup)
 
     EXPECT_EQ(stats.active_count, 1);
     EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-12);
-    EXPECT_EQ(workspace.targetSpatialGridDirectLookupEntryCount(), 0);
+    EXPECT_GT(workspace.targetSpatialGridDirectLookupEntryCount(), 0);
+    EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
 
     plapoint::gpu::resetIcpGridCellLookupCountForTesting();
     const auto correspondence_stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
@@ -1256,6 +1258,59 @@ TEST(ICPGpuPathTest, ResidualStatsDoesNotBuildUnusedDirectSpatialGridLookup)
 
     EXPECT_EQ(correspondence_stats.active_count, 1);
     EXPECT_NEAR(correspondence_stats.residual_sq_sum, 0.0, 1.0e-12);
+    EXPECT_GT(workspace.targetSpatialGridDirectLookupEntryCount(), 0);
+    EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
+}
+
+TEST(ICPGpuPathTest, TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source(1, 3);
+    source.setValue(0, 0, 0.0f);
+    source.setValue(0, 1, 0.0f);
+    source.setValue(0, 2, 0.0f);
+
+    constexpr int target_count = 27;
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(target_count, 3);
+    int idx = 0;
+    for (int x = -1; x <= 1; ++x)
+    {
+        for (int y = -1; y <= 1; ++y)
+        {
+            for (int z = -1; z <= 1; ++z)
+            {
+                target.setValue(idx, 0, static_cast<float>(x));
+                target.setValue(idx, 1, static_cast<float>(y));
+                target.setValue(idx, 2, static_cast<float>(z));
+                ++idx;
+            }
+        }
+    }
+
+    auto identity = makeTranslationTransform(0.0f, 0.0f, 0.0f);
+    auto source_gpu = source.toGpu();
+    auto target_gpu = target.toGpu();
+    auto identity_gpu = identity.toGpu();
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output_gpu(source.rows(), 3);
+
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+    const auto stats = plapoint::gpu::transformPointsAndComputeIcpResidualStatsColumnMajor(
+        identity_gpu.data(),
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        output_gpu.data(),
+        workspace);
+
+    EXPECT_EQ(stats.active_count, 1);
+    EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-12);
     EXPECT_GT(workspace.targetSpatialGridDirectLookupEntryCount(), 0);
     EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
 }
@@ -1299,6 +1354,39 @@ TEST(ICPGpuPathTest, CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPa
     EXPECT_EQ(stats.active_count, 1);
     EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-12);
     EXPECT_EQ(workspace.targetSpatialGridDirectLookupEntryCount(), 0);
+    EXPECT_GT(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
+
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace residual_workspace;
+    const auto residual_stats = plapoint::gpu::computeIcpResidualStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        residual_workspace);
+    EXPECT_EQ(residual_stats.active_count, 1);
+    EXPECT_NEAR(residual_stats.residual_sq_sum, 0.0, 1.0e-12);
+    EXPECT_EQ(residual_workspace.targetSpatialGridDirectLookupEntryCount(), 0);
+    EXPECT_GT(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
+
+    auto identity = makeTranslationTransform(0.0f, 0.0f, 0.0f);
+    auto identity_gpu = identity.toGpu();
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output_gpu(source.rows(), 3);
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace transform_residual_workspace;
+    const auto transform_residual_stats = plapoint::gpu::transformPointsAndComputeIcpResidualStatsColumnMajor(
+        identity_gpu.data(),
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        output_gpu.data(),
+        transform_residual_workspace);
+    EXPECT_EQ(transform_residual_stats.active_count, 1);
+    EXPECT_NEAR(transform_residual_stats.residual_sq_sum, 0.0, 1.0e-12);
+    EXPECT_EQ(transform_residual_workspace.targetSpatialGridDirectLookupEntryCount(), 0);
     EXPECT_GT(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
 }
 

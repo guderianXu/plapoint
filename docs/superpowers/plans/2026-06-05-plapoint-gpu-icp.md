@@ -6153,3 +6153,59 @@ Verification evidence:
   improved from the previous Task 164 baseline of about 0.859 ms and 0.834 ms to about 0.736 ms and 0.711 ms.
   Residual-only kernels still use the old spatial-grid lookup path, but they no longer pay direct-table construction
   cost on first-use grids; applying the direct lookup helper there is the next local optimization candidate.
+
+## Task 166: Use Direct Cell Lookup In Cached Spatial Grid Residual Kernels
+
+- Goal: extend the compact direct cell lookup table from correspondence stats to residual-only and
+  transform-plus-residual spatial-grid kernels, so cached final-metric paths can avoid per-source binary cell searches
+  too.
+- RED checks:
+  - Updated the compact residual test to `ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget`.
+    Before the implementation it failed because residual stats left direct lookup metadata empty and performed one
+    `lowerBoundIcpGridCell()` lookup.
+  - Added `ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget`. Before the
+    implementation it failed for the same reason on the transformed residual path.
+  - Extended `ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath` so residual-only and
+    transformed residual calls also verify sparse unique-cell ranges keep direct lookup disabled and still exercise the
+    lower-bound path.
+- Implementation:
+  - Added `scanIcpResidualGridCellCandidates()` so residual and transformed residual kernels share the same candidate
+    scan logic while preserving strict residual semantics: axis pruning uses `>= best_dist_sq`, accepted candidates
+    require `dist_sq < best_dist_sq`, and exact zero residual stops the cell scan.
+  - Updated `collectResidualStatsSpatialGridKernel()` and `transformAndCollectResidualStatsSpatialGridKernel()` to use
+    direct lookup when the cached target grid has an active direct table, with the existing lower-bound scan kept for
+    sparse or saturated grids.
+  - Residual target-grid preparation now asks `prepareTargetSpatialGrid()` to evaluate/build direct lookup metadata.
+  - Tightened the device-side direct lookup helper to do int-range checks before int linear indexing, avoiding 64-bit
+    arithmetic in the per-source hot path. The range check uses unsigned local offsets instead of `min + range - 1`,
+    so the helper does not depend on signed overflow behavior at extreme cell coordinates.
+- Targeted verification performed in this session:
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget`:
+    failed before implementation, then passed after the residual direct lookup changes.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath`:
+    3 tests, 0 failed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsSpatialGridSkipsNonFiniteTargetInSaturatedCell:ICPGpuPathTest.CorrespondenceStatsBatchesSpatialGridNeighborLookupsByXY:ICPGpuPathTest.CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridXYLookupsBeforeSearch:ICPGpuPathTest.ResidualStatsStopsSpatialGridLookupsAfterExactMatch:ICPGpuPathTest.CorrespondenceStatsStopsSpatialGridAfterExactMatchWhenIndicesOmitted`:
+    9 tests, 0 failed.
+- Full verification performed in this session:
+  - `git diff --check`: clean.
+  - GPU: RTX 4060 Laptop GPU, driver 580.159.03.
+  - `cmake --build build-codex-cpu -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, 1 CUDA-only test skipped.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 299/299 passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran successfully on the RTX 4060 Laptop GPU after the final unsigned-offset direct-lookup change.
+    Relevant best rows:
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.703385 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.522202 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid_reserved_workspace` = 0.523067 ms,
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.523186 ms, and
+    `gpu_icp_transform_residual_stats_transformed_exact_pointwise_new_workspace` = 0.508319 ms.
+- Current conclusion:
+  compact cached spatial grids now avoid binary cell searches in both stats and residual final-metric paths. The
+  residual cached rows are roughly back to the Task 165 residual baseline while preserving the lower-bound fallback for
+  sparse unique-cell ranges. The stronger remaining performance lever is to use an ordered/exact residual path when the
+  caller knows correspondences are same-index, since the transformed exact residual row is now below the generic cached
+  grid residual scan.
