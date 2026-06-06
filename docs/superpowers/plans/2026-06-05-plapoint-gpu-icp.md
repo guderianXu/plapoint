@@ -4883,3 +4883,46 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   add or run a real GPU repeated-align case that first aligns a larger source cloud and then a smaller one with the same
   ICP object, and confirm the alignment-step reserve check count remains 1.
+
+## Task 140: Reuse Larger GPU ICP Point Scratch Buffers for Smaller Requests
+
+- Goal: reduce GPU allocation churn when ICP terminal/final-metric paths need temporary transformed point storage.
+  Scratch point buffers now behave as capacity caches, so a larger previously allocated scratch matrix can serve later
+  smaller requests from the same ICP object.
+- RED check:
+  - Added `GpuPointScratchReservationCacheMatchesReservedCapacity`, a no-device predicate test that expects a capacity
+    of 4 to match requests for 3 and 4 points, reject 5, and reject 0.
+  - Extended `GpuPointScratchBufferSkipsRepeatedReserveCheckForSameShape` so a real CUDA run will also confirm that a
+    buffer grown to 5 points is reused for a later 3-point scratch request without increasing the reserve-check count.
+  - Before the implementation, `cmake --build build-codex-cuda -j$(nproc)` failed because
+    `gpuPointScratchBufferReservationMatches()` did not exist.
+- Implementation:
+  - Renamed the two ICP scratch buffer point counters to point capacities.
+  - Added `gpuPointScratchBufferReservationMatches()` and used it in `reserveGpuPointScratchBuffer()`.
+  - Kept a null-buffer and shape guard in the reserve path, so stale or externally manipulated capacity state cannot
+    make `gpuPointScratchBuffer()` return a null or undersized matrix.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.GpuPointScratchReservationCacheMatchesReservedCapacity:ICPGpuPathTest.GpuPointScratchBufferSkipsRepeatedReserveCheckForSameShape`:
+    CUDA build passed. The no-device scratch capacity predicate test passed; the real GPU scratch pointer reuse test
+    was skipped because no usable CUDA device is available in this session.
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    270 test entries, 0 failed. GPU-dependent tests were discovered and skipped because the current session cannot
+    communicate with a usable CUDA device; the no-device scratch capacity predicate test ran and passed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `GpuPointScratchBufferSkipsRepeatedReserveCheckForSameShape` on real GPU hardware and compare terminal
+  target-output alias/final-metric paths that use scratch output after larger prior calls.

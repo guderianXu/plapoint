@@ -644,10 +644,10 @@ private:
     {
         if (use_first_buffer)
         {
-            reserveGpuPointScratchBuffer(point_count, _gpu_points_a, _gpu_points_a_point_count);
+            reserveGpuPointScratchBuffer(point_count, _gpu_points_a, _gpu_points_a_point_capacity);
             return _gpu_points_a->data();
         }
-        reserveGpuPointScratchBuffer(point_count, _gpu_points_b, _gpu_points_b_point_count);
+        reserveGpuPointScratchBuffer(point_count, _gpu_points_b, _gpu_points_b_point_capacity);
         return _gpu_points_b->data();
     }
 
@@ -726,13 +726,21 @@ private:
     void reserveGpuPointScratchBuffer(
         int point_count,
         std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>& buffer,
-        int& reserved_point_count)
+        int& reserved_point_capacity)
     {
-        if (!buffer || reserved_point_count != point_count)
+        if (!buffer ||
+            buffer->cols() != 3 ||
+            buffer->rows() < point_count ||
+            !gpuPointScratchBufferReservationMatches(point_count, reserved_point_capacity))
         {
             reserveGpuPointBuffer(point_count, buffer);
-            reserved_point_count = point_count;
+            reserved_point_capacity = std::max(reserved_point_capacity, point_count);
         }
+    }
+
+    bool gpuPointScratchBufferReservationMatches(int point_count, int reserved_point_capacity) const
+    {
+        return point_count > 0 && reserved_point_capacity >= point_count;
     }
 
     void reserveGpuStepTransformBuffer()
@@ -1118,8 +1126,8 @@ private:
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_T_step;
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_points_a;
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_points_b;
-    int _gpu_points_a_point_count = 0;
-    int _gpu_points_b_point_count = 0;
+    int _gpu_points_a_point_capacity = 0;
+    int _gpu_points_b_point_capacity = 0;
     int _gpu_alignment_step_workspace_source_capacity = 0;
     const void* _gpu_target_cache_points = nullptr;
     std::uint64_t _gpu_target_cache_points_version = 0;

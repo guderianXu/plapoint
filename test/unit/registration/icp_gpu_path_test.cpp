@@ -3558,6 +3558,22 @@ TEST(ICPGpuPathTest, GpuPointScratchBufferSkipsRepeatedReserveCheckForSameShape)
 
     static_cast<void>(icp.gpuPointScratchBuffer(5, true));
     EXPECT_EQ(icp._gpu_point_scratch_reserve_check_count, 3);
+
+    auto* grown_a = icp._gpu_points_a->data();
+    auto* smaller_a = icp.gpuPointScratchBuffer(3, true);
+    EXPECT_EQ(smaller_a, grown_a);
+    EXPECT_EQ(icp._gpu_point_scratch_reserve_check_count, 3);
+}
+
+TEST(ICPGpuPathTest, GpuPointScratchReservationCacheMatchesReservedCapacity)
+{
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+
+    EXPECT_FALSE(icp.gpuPointScratchBufferReservationMatches(0, 0));
+    EXPECT_FALSE(icp.gpuPointScratchBufferReservationMatches(4, 0));
+    EXPECT_TRUE(icp.gpuPointScratchBufferReservationMatches(3, 4));
+    EXPECT_TRUE(icp.gpuPointScratchBufferReservationMatches(4, 4));
+    EXPECT_FALSE(icp.gpuPointScratchBufferReservationMatches(5, 4));
 }
 
 TEST(ICPGpuPathTest, AlignSkipsNextTransformBufferAllocationForSingleIteration)
