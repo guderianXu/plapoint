@@ -342,6 +342,20 @@ TEST(ICPGpuPathTest, StepTransformFromStatsWritesDeviceTransform)
     }
 }
 
+TEST(ICPGpuPathTest, StepTransformWorkspaceCanReserveOnlyResultStorage)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plapoint::gpu::IcpStepTransformWorkspace workspace;
+    workspace.reserveResult();
+
+    EXPECT_EQ(workspace.inputStorage(), nullptr);
+    EXPECT_NE(workspace.resultStorage(), nullptr);
+}
+
 TEST(ICPGpuPathTest, AlignmentStepCompactResultMatchesFullStatsStepResult)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

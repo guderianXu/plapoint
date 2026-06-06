@@ -4001,7 +4001,7 @@ IcpStepTransformResult<Scalar> computeIcpStepTransformFromDeviceStatsImpl(
     }
     validateStepTransformStatsInput(stats);
 
-    step_workspace.reserve();
+    step_workspace.reserveResult();
 
     const auto* d_stats = reinterpret_cast<const RawIcpStats*>(stats_workspace.statsStorage());
     auto* d_result = reinterpret_cast<IcpStepTransformRawResult*>(step_workspace.resultStorage());
@@ -4063,7 +4063,7 @@ IcpStatsAndStepTransformResult<Scalar> computeIcpStatsAndStepTransformColumnMajo
     }
 
     stats_workspace.reserve(source_count);
-    step_workspace.reserve();
+    step_workspace.reserveResult();
 
     constexpr int block_size = kIcpStatsBlockSize;
     const int grid_size = icpStatsPartialCount(source_count);
@@ -4696,6 +4696,11 @@ void IcpStepTransformWorkspace::reserve()
     {
         _input_storage.allocate(sizeof(IcpStepTransformInput));
     }
+    reserveResult();
+}
+
+void IcpStepTransformWorkspace::reserveResult()
+{
     if (_result_storage.size() < sizeof(IcpStepTransformRawResult))
     {
         _result_storage.allocate(sizeof(IcpStepTransformRawResult));

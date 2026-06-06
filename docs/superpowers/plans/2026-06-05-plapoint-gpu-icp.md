@@ -2412,6 +2412,35 @@ Verification evidence:
   decide whether the next optimization should target tile-bound precompute reuse, fallback scan occupancy, or remaining
   host synchronization in the compact alignment-step path.
 
+## Task 94: Reserve Only GPU ICP Step Result Storage On Device-Stats Paths
+
+- Goal: avoid allocating the host-stats step input buffer on GPU step-transform paths that read device-reduced stats
+  directly and only need the small step-result buffer.
+- RED:
+  - Added `ICPGpuPathTest.StepTransformWorkspaceCanReserveOnlyResultStorage`.
+  - `cmake --build build-codex-cuda -j$(nproc)` failed before the implementation with
+    `IcpStepTransformWorkspace has no member named 'reserveResult'`.
+- Implementation:
+  - Added `IcpStepTransformWorkspace::reserveResult()`, which allocates only the reusable
+    `IcpStepTransformRawResult` device buffer.
+  - Kept `IcpStepTransformWorkspace::reserve()` as the full input+result reservation for
+    `computeIcpStepTransformFromStats()`, which still copies host-side step input.
+  - Changed `computeIcpStepTransformFromDeviceStatsImpl()` to call `reserveResult()` because it reads reduced
+    `RawIcpStats` from `IcpCorrespondenceStatsWorkspace` and never uses `inputStorage()`.
+  - Changed `computeIcpStatsAndStepTransformColumnMajorImpl()` to call `reserveResult()` because the fused stats+step
+    reducer writes directly to `resultStorage()` and does not need the host-stats input buffer.
+- Verification performed in this session:
+  - Static check:
+    `test "$(rg -n "step_workspace\\.reserveResult\\(\\)" src/icp_gpu.cu | wc -l)" -ge 2 &&
+    test "$(rg -n "step_workspace\\.reserve\\(\\)" src/icp_gpu.cu | wc -l)" -eq 0` passed after the change.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    CUDA test build succeeded after adding `reserveResult()`.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.StepTransformWorkspaceCanReserveOnlyResultStorage:ICPGpuPathTest.StepTransformFromStatsWritesDeviceTransform:ICPGpuPathTest.AlignmentStepCompactResultMatchesFullStatsStepResult`:
+    all 3 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+- Follow-up required when a CUDA device is available:
+  rerun the selected GPU tests and the fused stats+step fallback benchmark rows from Task 93 to confirm allocation
+  reduction and measure any effect on repeated new-workspace calls.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell

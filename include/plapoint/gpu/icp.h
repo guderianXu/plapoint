@@ -179,6 +179,9 @@ public:
     /// Reserve the fixed-size input and result buffers used by the GPU step solver.
     void reserve();
 
+    /// Reserve only the fixed-size result buffer used by device-stats step solvers.
+    void reserveResult();
+
     /// Return the reusable step input storage pointer, or null before reserve().
     unsigned char* inputStorage() { return _input_storage.get(); }
 
