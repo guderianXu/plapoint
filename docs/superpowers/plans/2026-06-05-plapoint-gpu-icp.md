@@ -4445,3 +4445,45 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun `StatsAndStepTransformCopiesOneHostResult` and compare
   `gpu_icp_stats_step_finite_radius_translation_cached_grid` before/after this commit on real GPU hardware.
+
+## Task 130: Compact Alignment-Step Host Result Flags
+
+- Goal: shrink the per-iteration compact alignment-step result copied from GPU to pinned host memory. The GPU ICP
+  alignment loop still needs active/invalid counts, residual sum, geometry flags, step validity, and delta, but the
+  three boolean state fields do not need separate 32-bit slots in the raw D2H payload.
+- RED check:
+  - Added `AlignmentStepRawResultFitsCompactHostCopy`, a CUDA-build test that does not require a usable CUDA device.
+  - Added the test first so `cmake --build build-codex-cuda -j$(nproc)` failed at link time because
+    `icpAlignmentStepRawResultByteCountForTesting()` did not exist.
+- Implementation:
+  - Replaced `IcpAlignmentStepRawResult`'s separate source-geometry, target-geometry, and step-valid integer fields
+    with a single `flags` bitmask.
+  - Updated device-side raw-result writing and host-side conversion to set/read the bitmask.
+  - Added a compile-time guard requiring the raw alignment-step result to stay at or below 32 bytes.
+  - Added `icpAlignmentStepRawResultByteCountForTesting()` for the no-device byte-size regression test.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignmentStepRawResultFitsCompactHostCopy`:
+    passed after implementation. The test runs without CUDA runtime access and verifies the raw alignment-step result
+    remains at most 32 bytes.
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignmentStepRawResultFitsCompactHostCopy:ICPGpuPathTest.AlignmentStepCompactResultMatchesFullStatsStepResult:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization`:
+    selected 3 tests; the no-device byte-size regression passed, and the 2 GPU-runtime tests were skipped because no
+    usable CUDA device is available in this session.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    260 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun alignment-step and full GPU ICP benchmark rows on real hardware to quantify the effect of reducing the
+  per-iteration compact result copy from the previous larger raw layout.

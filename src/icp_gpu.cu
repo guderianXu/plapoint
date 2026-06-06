@@ -114,13 +114,15 @@ struct IcpStepTransformRawResult
     int valid;
 };
 
+constexpr unsigned int kIcpAlignmentStepSrcNonCollinearFlag = 1u << 0;
+constexpr unsigned int kIcpAlignmentStepTgtNonCollinearFlag = 1u << 1;
+constexpr unsigned int kIcpAlignmentStepValidFlag = 1u << 2;
+
 struct IcpAlignmentStepRawResult
 {
     int active_count;
     int invalid_source_count;
-    int src_has_non_collinear_geometry;
-    int tgt_has_non_collinear_geometry;
-    int step_valid;
+    unsigned int flags;
     double residual_sq_sum;
     double delta;
 };
@@ -135,6 +137,8 @@ static_assert(sizeof(RawIcpStats) >= sizeof(RawIcpResidualStats),
               "ICP alignment-step partial workspace must cover residual-stats partials");
 static_assert(sizeof(IcpAlignmentStepRawResult) >= sizeof(RawIcpResidualStats),
               "ICP alignment-step result workspace must cover residual-stats results");
+static_assert(sizeof(IcpAlignmentStepRawResult) <= 32,
+              "ICP alignment-step host result should stay compact");
 static_assert(offsetof(IcpStatsAndStepRawResult, stats) == 0,
               "ICP stats-step result must expose RawIcpStats at the start of the storage");
 
@@ -276,11 +280,20 @@ __device__ __forceinline__ void writeAlignmentStepRawResultFields(
 {
     result->active_count = raw.active_count;
     result->invalid_source_count = raw.invalid_source_count;
-    result->src_has_non_collinear_geometry =
-        rawStatsCovarianceHasNonCollinearGeometry(raw.src_sum, raw.src_outer_sum, raw.active_count) ? 1 : 0;
-    result->tgt_has_non_collinear_geometry =
-        rawStatsCovarianceHasNonCollinearGeometry(raw.tgt_sum, raw.tgt_outer_sum, raw.active_count) ? 1 : 0;
-    result->step_valid = step_valid;
+    unsigned int flags = 0;
+    if (rawStatsCovarianceHasNonCollinearGeometry(raw.src_sum, raw.src_outer_sum, raw.active_count))
+    {
+        flags |= kIcpAlignmentStepSrcNonCollinearFlag;
+    }
+    if (rawStatsCovarianceHasNonCollinearGeometry(raw.tgt_sum, raw.tgt_outer_sum, raw.active_count))
+    {
+        flags |= kIcpAlignmentStepTgtNonCollinearFlag;
+    }
+    if (step_valid != 0)
+    {
+        flags |= kIcpAlignmentStepValidFlag;
+    }
+    result->flags = flags;
     result->residual_sq_sum = raw.residual_sq_sum;
     result->delta = delta;
 }
@@ -3524,10 +3537,10 @@ IcpAlignmentStepResult<Scalar> makeHostAlignmentStepResult(const IcpAlignmentSte
     result.active_count = raw.active_count;
     result.invalid_source_count = raw.invalid_source_count;
     result.residual_sq_sum = raw.residual_sq_sum;
-    result.src_has_non_collinear_geometry = raw.src_has_non_collinear_geometry != 0;
-    result.tgt_has_non_collinear_geometry = raw.tgt_has_non_collinear_geometry != 0;
+    result.src_has_non_collinear_geometry = (raw.flags & kIcpAlignmentStepSrcNonCollinearFlag) != 0;
+    result.tgt_has_non_collinear_geometry = (raw.flags & kIcpAlignmentStepTgtNonCollinearFlag) != 0;
     result.step.delta = static_cast<Scalar>(raw.delta);
-    result.step_valid = raw.step_valid != 0;
+    result.step_valid = (raw.flags & kIcpAlignmentStepValidFlag) != 0;
     return result;
 }
 
@@ -4646,6 +4659,11 @@ void resetIcpAlignmentStepReserveCheckCountForTesting()
 int icpAlignmentStepReserveCheckCountForTesting()
 {
     return g_icp_alignment_step_reserve_check_count.load(std::memory_order_relaxed);
+}
+
+std::size_t icpAlignmentStepRawResultByteCountForTesting()
+{
+    return sizeof(IcpAlignmentStepRawResult);
 }
 
 void resetIcpResidualStatsReserveCheckCountForTesting()
