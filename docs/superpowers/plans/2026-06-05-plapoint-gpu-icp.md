@@ -3804,3 +3804,45 @@ Verification evidence:
   rerun the benchmark on real GPU hardware and compare `gpu_icp_finite_radius_translation_reuse_output`,
   `gpu_icp_finite_radius_translation_reuse_target_output`, and
   `gpu_icp_finite_radius_translation_reuse_target_output_skip_final_metrics`.
+
+## Task 115: Benchmark Finite-Radius Compact Alignment Step
+
+- Goal: make the finite-radius spatial-grid path used by `alignGpu()` directly measurable. Existing finite-radius rows
+  covered full `computeIcpStatsAndStepTransformColumnMajor()` helpers, while the align loop uses the compact
+  `computeIcpAlignmentStepColumnMajor()` helper that avoids the full stats result shape.
+- RED check:
+  - Ran the benchmark smoke command and filtered for
+    `^gpu_icp_alignment_step_finite_radius_translation_cached_grid,`; the grep failed before the implementation
+    because the row did not exist.
+  - Searched `benchmarks/plapoint_benchmarks.cpp` for
+    `gpu_icp_alignment_step_finite_radius_translation` and
+    `benchmarkGpuIcpAlignmentStepFiniteRadiusTranslation`; both were absent before the implementation.
+- Implementation:
+  - Added `gpu_icp_alignment_step_finite_radius_translation_new_workspace`, which times
+    `computeIcpAlignmentStepColumnMajor()` with a new stats workspace and step-transform matrix per sample.
+  - Added `gpu_icp_alignment_step_finite_radius_translation_cached_grid`, which reuses the stats workspace and
+    step-transform matrix so repeated samples hit the cached finite-radius target spatial grid.
+  - Placed both rows next to the existing finite-radius full stats+step rows so real GPU runs can compare full and
+    compact step helpers directly.
+- Verification performed in this session:
+  - The targeted RED checks failed before the implementation and passed after rebuilding the benchmark binary:
+    `gpu_icp_alignment_step_finite_radius_translation_new_workspace,skipped,no_usable_cuda_device,` and
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid,skipped,no_usable_cuda_device,`.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `git diff --check`:
+    clean before the plan update.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    248 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran and printed both new finite-radius compact alignment-step rows.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  compare `gpu_icp_stats_step_finite_radius_translation_cached_grid` with
+  `gpu_icp_alignment_step_finite_radius_translation_cached_grid` to quantify the compact result format, then compare
+  new-workspace and cached-grid rows to decide whether the next optimization should target workspace setup or spatial
+  grid reuse.
