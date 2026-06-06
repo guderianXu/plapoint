@@ -2291,6 +2291,49 @@ Verification evidence:
   rerun the selected transform-multiply GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm
   runtime behavior and measure the transform-update impact.
 
+## Task 91: Reuse GPU ICP Target Tile Bounds Across Fallback Stats Calls
+
+- Goal: avoid recomputing finite-radius fallback target tile bounds when repeated stats/residual calls use the same
+  target point buffer and the same reusable `IcpCorrespondenceStatsWorkspace`. The tile bounds depend on target points
+  and tile partitioning, not on the correspondence radius.
+- Static RED:
+  - `test "$(rg -n "targetTileBoundsCacheMatches|markTargetTileBoundsCache|invalidateTargetTileBoundsCache" include/plapoint/gpu/icp.h src/icp_gpu.cu | wc -l)" -ge 6`:
+    failed before the change because workspace only cached target spatial grids, not target tile bounds.
+- Behavioral RED:
+  - Added `ICPGpuPathTest.CorrespondenceStatsReusesFiniteRadiusTargetTileBoundsForSameTarget`, which calls
+    `computeIcpCorrespondenceStatsColumnMajor()` twice with the same target, radius, and workspace, and expects the
+    tile-bound computation counter to remain at one 257-point, 3-tile precompute.
+  - On this machine the test is registered but skips at runtime because there is no usable CUDA device; on a CUDA
+    machine it would have failed before the cache.
+- Implementation:
+  - Added target tile-bound cache metadata to `IcpCorrespondenceStatsWorkspace`, keyed by target device pointer and
+    target point count.
+  - Added `targetTileBoundsCacheMatches()`, `markTargetTileBoundsCache()`, and
+    `invalidateTargetTileBoundsCache()`.
+  - `prepareTargetTileBounds()` now returns cached bounds when they match and only launches
+    `computeTargetTileBoundsKernel()` on cache miss.
+  - Target tile-bound cache is invalidated when tile-bound storage grows and when ICP target metadata is invalidated.
+- Verification performed in this session:
+  - The static RED command passed after adding the tile-bound cache API and implementation.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsReusesFiniteRadiusTargetTileBoundsForSameTarget:ICPGpuPathTest.CorrespondenceStatsPrecomputesFiniteRadiusTargetTileBoundsOnce:ICPGpuPathTest.FallbackStatsLaunchesTileBoundSpecializationsByRadius:ICPGpuPathTest.CorrespondenceStatsReusesFiniteRadiusSpatialGridForSameTarget:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 4 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    234 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran, but all GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the new tile-bound reuse GPU test, full CUDA `ctest`, and fallback finite-radius ICP benchmarks to measure the
+  precompute-kernel reduction on real hardware.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell

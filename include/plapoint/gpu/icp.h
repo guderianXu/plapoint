@@ -79,6 +79,9 @@ public:
     /// Reserve reusable target tile bounds storage for finite-radius pruning.
     void reserveTargetTileBounds(int target_count);
 
+    /// Clear cached target tile-bound metadata. Call this if target device contents mutate in place.
+    void invalidateTargetTileBoundsCache();
+
     /// Reserve reusable target spatial grid storage for finite-radius candidate search.
     void reserveTargetSpatialGrid(int target_count);
 
@@ -88,8 +91,14 @@ public:
     /// Return true when the cached target spatial grid matches the supplied target identity and cell size.
     bool targetSpatialGridCacheMatches(const void* target_points, int target_count, double cell_size) const;
 
+    /// Return true when the cached target tile bounds match the supplied target identity.
+    bool targetTileBoundsCacheMatches(const void* target_points, int target_count) const;
+
     /// Mark the reusable target spatial grid storage as containing the supplied target grid.
     void markTargetSpatialGridCache(const void* target_points, int target_count, double cell_size, int cell_count);
+
+    /// Mark the reusable target tile bounds storage as containing bounds for the supplied target.
+    void markTargetTileBoundsCache(const void* target_points, int target_count);
 
     /// Return the currently reserved partial reduction capacity, in blocks.
     int partialCapacity() const { return _partial_capacity; }
@@ -150,6 +159,9 @@ private:
     DeviceBuffer<unsigned char> _target_spatial_grid_cell_counts_storage;
     int _partial_capacity = 0;
     int _target_tile_bound_capacity = 0;
+    const void* _target_tile_bounds_points = nullptr;
+    int _target_tile_bounds_point_count = 0;
+    bool _target_tile_bounds_cache_valid = false;
     int _target_spatial_grid_capacity = 0;
     int _target_spatial_grid_cell_count = 0;
     const void* _target_spatial_grid_points = nullptr;

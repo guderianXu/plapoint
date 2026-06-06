@@ -34,6 +34,7 @@ public:
 #ifdef PLAPOINT_WITH_CUDA
         if constexpr (Dev == plamatrix::Device::GPU)
         {
+            _gpu_stats_workspace.invalidateTargetTileBoundsCache();
             _gpu_stats_workspace.invalidateTargetSpatialGridCache();
         }
 #endif

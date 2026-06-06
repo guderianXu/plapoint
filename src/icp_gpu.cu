@@ -3317,12 +3317,18 @@ const IcpTargetTileBounds* prepareTargetTileBounds(
 
     workspace.reserveTargetTileBounds(target_count);
     auto* d_bounds = reinterpret_cast<IcpTargetTileBounds*>(workspace.targetTileBoundsStorage());
+    if (workspace.targetTileBoundsCacheMatches(d_target_points, target_count))
+    {
+        return d_bounds;
+    }
+
     const int tile_count = icpTargetTileCount(target_count);
     computeTargetTileBoundsKernel<Scalar><<<tile_count, kIcpStatsBlockSize, 0, stream>>>(
         d_target_points,
         target_count,
         d_bounds);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    workspace.markTargetTileBoundsCache(d_target_points, target_count);
     return d_bounds;
 }
 
@@ -4584,10 +4590,18 @@ void IcpCorrespondenceStatsWorkspace::reserveTargetTileBounds(int target_count)
     const int required_tiles = icpTargetTileCount(target_count);
     if (targetTileBoundCapacity() < required_tiles)
     {
+        invalidateTargetTileBoundsCache();
         _target_tile_bounds_storage.allocate(
             static_cast<std::size_t>(required_tiles) * sizeof(IcpTargetTileBounds));
         _target_tile_bound_capacity = required_tiles;
     }
+}
+
+void IcpCorrespondenceStatsWorkspace::invalidateTargetTileBoundsCache()
+{
+    _target_tile_bounds_cache_valid = false;
+    _target_tile_bounds_points = nullptr;
+    _target_tile_bounds_point_count = 0;
 }
 
 void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGrid(int target_count)
@@ -4626,6 +4640,7 @@ void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGrid(int target_count)
 
 void IcpCorrespondenceStatsWorkspace::invalidateTargetSpatialGridCache()
 {
+    invalidateTargetTileBoundsCache();
     _target_spatial_grid_cache_valid = false;
     _target_spatial_grid_points = nullptr;
     _target_spatial_grid_point_count = 0;
@@ -4644,6 +4659,15 @@ bool IcpCorrespondenceStatsWorkspace::targetSpatialGridCacheMatches(
         _target_spatial_grid_cell_size == cell_size;
 }
 
+bool IcpCorrespondenceStatsWorkspace::targetTileBoundsCacheMatches(
+    const void* target_points,
+    int target_count) const
+{
+    return _target_tile_bounds_cache_valid &&
+        _target_tile_bounds_points == target_points &&
+        _target_tile_bounds_point_count == target_count;
+}
+
 void IcpCorrespondenceStatsWorkspace::markTargetSpatialGridCache(
     const void* target_points,
     int target_count,
@@ -4655,6 +4679,15 @@ void IcpCorrespondenceStatsWorkspace::markTargetSpatialGridCache(
     _target_spatial_grid_point_count = target_count;
     _target_spatial_grid_cell_size = cell_size;
     _target_spatial_grid_cell_count = cell_count;
+}
+
+void IcpCorrespondenceStatsWorkspace::markTargetTileBoundsCache(
+    const void* target_points,
+    int target_count)
+{
+    _target_tile_bounds_cache_valid = true;
+    _target_tile_bounds_points = target_points;
+    _target_tile_bounds_point_count = target_count;
 }
 
 void IcpStepTransformWorkspace::reserve()
