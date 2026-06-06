@@ -184,15 +184,17 @@ bool icpGridCellBoundsAreFinite(double cell_size)
         cell_size <= std::numeric_limits<double>::max() / max_abs_grid_coordinate;
 }
 
-__device__ void addRawIcpStats(RawIcpStats& dst, const RawIcpStats& src)
+__device__ __forceinline__ void addRawIcpStats(RawIcpStats& dst, const RawIcpStats& src)
 {
     dst.active_count += src.active_count;
     dst.invalid_source_count += src.invalid_source_count;
+#pragma unroll
     for (int c = 0; c < 3; ++c)
     {
         dst.src_sum[c] += src.src_sum[c];
         dst.tgt_sum[c] += src.tgt_sum[c];
     }
+#pragma unroll
     for (int idx = 0; idx < 9; ++idx)
     {
         dst.cross_sum[idx] += src.cross_sum[idx];
