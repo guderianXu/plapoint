@@ -90,6 +90,12 @@ public:
     /// Disable only for throughput paths that do not consume final metrics.
     void setComputeFinalMetrics(bool enabled) { _compute_final_metrics = enabled; }
 
+#ifdef PLAPOINT_WITH_CUDA
+    /// Enable a GPU-only fast path that treats source[i] as corresponding to target[i] when point counts match.
+    /// Use only for ordered or paired clouds where same-index correspondences are part of the input contract.
+    void setGpuAssumeOrderedCorrespondences(bool enabled) { _gpu_assume_ordered_correspondences = enabled; }
+#endif
+
     /// Align the source cloud to the target cloud and write the transformed source to output.
     /// Throws for missing/empty clouds, too few valid correspondences, or degenerate correspondence geometry.
     void align(PointCloudType& output)
@@ -422,7 +428,9 @@ private:
                     target_count,
                     _max_corr_dist,
                     _gpu_stats_workspace,
-                    _gpu_T_step->data());
+                    _gpu_T_step->data(),
+                    0,
+                    _gpu_assume_ordered_correspondences);
             }
             const auto& stats = stats_and_step;
             if (stats.invalid_source_count > 0)
@@ -1162,6 +1170,7 @@ private:
     const void* _gpu_target_cache_points = nullptr;
     std::uint64_t _gpu_target_cache_points_version = 0;
     bool _final_T_gpu_valid = false;
+    bool _gpu_assume_ordered_correspondences = false;
 #ifdef PLAPOINT_ENABLE_TESTING
     int _gpu_step_transform_reserve_check_count = 0;
     int _gpu_accumulated_transform_reserve_check_count = 0;

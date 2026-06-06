@@ -450,7 +450,8 @@ IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajor(
     float max_correspondence_distance,
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     float* d_step_transform,
-    cudaStream_t stream = 0);
+    cudaStream_t stream = 0,
+    bool assume_ordered_correspondences = false);
 
 /// Compute compact stats and the step transform needed by the GPU ICP alignment loop.
 /// Copies only the compact convergence/error summary and step delta back to host.
@@ -462,7 +463,8 @@ IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajor(
     double max_correspondence_distance,
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     double* d_step_transform,
-    cudaStream_t stream = 0);
+    cudaStream_t stream = 0,
+    bool assume_ordered_correspondences = false);
 
 namespace detail
 {
@@ -553,7 +555,8 @@ IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajorWithReservedWork
     float max_correspondence_distance,
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     float* d_step_transform,
-    cudaStream_t stream = 0);
+    cudaStream_t stream = 0,
+    bool assume_ordered_correspondences = false);
 
 /// Compute the compact ICP alignment step using workspace already reserved for source_count.
 /// The caller must call IcpCorrespondenceStatsWorkspace::reserveDoubleAlignmentStep(source_count) first.
@@ -565,7 +568,8 @@ IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajorWithReservedWor
     double max_correspondence_distance,
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     double* d_step_transform,
-    cudaStream_t stream = 0);
+    cudaStream_t stream = 0,
+    bool assume_ordered_correspondences = false);
 
 /// Compute the compact ICP alignment step from source points transformed by d_source_transform.
 /// The caller must call IcpCorrespondenceStatsWorkspace::reserveFloatAlignmentStep(source_count) first.

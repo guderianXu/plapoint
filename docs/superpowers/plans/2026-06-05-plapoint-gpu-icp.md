@@ -5490,3 +5490,49 @@ Verification evidence:
   about 0.006 ms, so this is a useful API/behavior cleanup but not the next major performance lever. The larger remaining
   wins are still in reducing iteration count, lowering per-iteration correspondence search cost, and trimming host
   synchronization around convergence.
+
+## Task 153: Add Ordered Correspondence GPU ICP Fast Path
+
+- Goal: speed up paired or ordered point-cloud workloads where `source[i]` is known to correspond to `target[i]`. This
+  is not valid for general nearest-neighbor ICP, so the new behavior is an explicit GPU opt-in rather than a default
+  heuristic.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignCanUseOrderedPointwiseCorrespondencesForFiniteRadiusTranslation`.
+  - `cmake --build build-codex-cuda -j$(nproc)` failed with the expected compile error because
+    `IterativeClosestPoint<float, Device::GPU>` had no `setGpuAssumeOrderedCorrespondences()` API.
+  - Added ordered benchmark rows to `cmake/check_gpu_icp_benchmark_rows.cmake`.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint\\.benchmarks\\.gpu_icp_rows_registered --output-on-failure`
+    failed with the expected missing-row error for
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics`.
+- Implementation:
+  - Added `setGpuAssumeOrderedCorrespondences(bool)`. The name is intentionally GPU-specific because the optimization
+    only changes the CUDA alignment-step path.
+  - Added `collectOrderedPointwiseCorrespondenceStatsKernel()`, which checks same-index source/target pairs against the
+    configured correspondence radius and accumulates raw correspondence stats without target spatial-grid construction
+    or nearest-neighbor search.
+  - Routed opt-in untransformed GPU alignment steps through ordered pointwise stats plus the existing
+    `reduceRawIcpStatsAndComputeAlignmentStepKernel()`, so non-zero translations compute a real step transform instead
+    of the identity-only exact-pointwise reduction.
+  - Kept default finite-radius behavior unchanged; callers must opt in when same-index correspondences are part of the
+    data contract.
+  - Added benchmark rows:
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` and
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics_one_iteration`.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignCanUseOrderedPointwiseCorrespondencesForFiniteRadiusTranslation:ICPGpuPathTest.AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs:ICPGpuPathTest.TransformedAlignmentStepSkipsSpatialGridSearchForExactPointwiseMatches`:
+    3 tests, 0 failed.
+  - `ctest --test-dir build-codex-cuda-bench-only -R plapoint\\.benchmarks\\.gpu_icp_rows_registered --output-on-failure`:
+    passed after benchmark implementation.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.45447 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.860446 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.84628 ms, and
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics_one_iteration` = 0.253094 ms.
+- Current conclusion:
+  ordered correspondence opt-in removes the expensive first finite-radius target-grid search for paired clouds. At 100k
+  points on the RTX 4060 Laptop GPU, the one-iteration path is about 3.35x faster and the three-iteration skip-final
+  metrics path improves by about 41%. This is the strongest GPU ICP throughput improvement so far, but it must remain
+  opt-in because same-index finite-radius pairs are not guaranteed nearest neighbors in general ICP inputs.
