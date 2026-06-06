@@ -212,8 +212,8 @@ __device__ __forceinline__ void addRawIcpResidualStats(RawIcpResidualStats& dst,
 }
 
 template <typename Scalar>
-__device__ bool loadFiniteColumnMajorPoint(const Scalar* points, int point_count, int idx,
-                                           double& x, double& y, double& z)
+__device__ __forceinline__ bool loadFiniteColumnMajorPoint(const Scalar* points, int point_count, int idx,
+                                                           double& x, double& y, double& z)
 {
     x = static_cast<double>(points[idx]);
     y = static_cast<double>(points[point_count + idx]);
@@ -221,7 +221,7 @@ __device__ bool loadFiniteColumnMajorPoint(const Scalar* points, int point_count
     return isfinite(x) && isfinite(y) && isfinite(z);
 }
 
-__host__ __device__ int icpGridCellCoordinate(double value, double cell_size)
+__host__ __device__ __forceinline__ int icpGridCellCoordinate(double value, double cell_size)
 {
     const double coordinate = floor(value / cell_size);
     if (coordinate <= static_cast<double>(INT_MIN))

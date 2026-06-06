@@ -1807,6 +1807,38 @@ Verification evidence:
   rerun the selected GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime behavior and
   performance impact.
 
+## Task 64: Force-Inline GPU ICP Point Load And Grid Coordinate Helpers
+
+- Goal: reduce device call overhead in helpers shared by the GPU ICP pointwise and spatial-grid paths. The finite point
+  loader is used by correspondence, residual, transform+residual, and target-tile-bound kernels; the grid coordinate
+  helper is used during target-grid construction and per-source spatial-grid lookup.
+- Implementation:
+  - Marked `loadFiniteColumnMajorPoint()` as `__forceinline__`.
+  - Marked `icpGridCellCoordinate()` as `__forceinline__` while keeping it `__host__ __device__` for Thrust and host
+    callable code paths.
+  - Kept all column-major loads, finite checks, floor behavior, and INT_MIN/INT_MAX clamping unchanged.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.CorrespondenceStatsUsesFiniteRadiusSpatialGridCandidates:ICPGpuPathTest.CorrespondenceStatsSpatialGridSkipsNonFiniteTargetInSaturatedCell:ICPGpuPathTest.ResidualStatsStopsSpatialGridLookupsAfterExactMatch:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 4 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    225 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran, but all GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi || true`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime behavior and
+  performance impact.
+
 ## Task 54: Reuse Spatial-Grid Candidate Squared Distances
 
 - Goal: reduce per-candidate arithmetic in the finite-radius spatial-grid kernels. After Task 53, the hot loops already
