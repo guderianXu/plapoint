@@ -6859,3 +6859,50 @@ Verification evidence:
   spatial-grid direct and lower-bound kernels now use offset-aware axis distances instead of generic cell-bound distance
   helpers for neighbor probes. This is the first recent micro-optimization in this sequence with a clear repeated
   benchmark improvement on the 100k cached-grid rows.
+
+## Task 182: Skip Direct Lookup XY Distance for Absent Columns
+
+- Goal: in compact direct lookup kernels, reject XY neighbor columns that are outside the direct lookup table before
+  computing the neighbor XY minimum distance. Sparse compact targets can then skip the double-distance work for absent
+  XY columns while still probing valid columns normally.
+- RED check:
+  - Added a testing-only `g_icp_grid_cell_neighbor_xy_distance_count` counter behind
+    `minDistanceSqToIcpNeighborCellXY()`.
+  - Tightened `ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn` to expect zero non-center XY
+    distance computations for correspondence stats, residual stats, and transform+residual stats when only the center
+    XY column exists in the compact direct lookup table.
+  - Before implementation, all three checked paths failed with neighbor XY distance count 8 instead of the expected 0.
+- Implementation:
+  - Reordered the direct spatial-grid branches so `directLookupIcpGridCellXyBase<false, false>()` rejects absent compact
+    XY columns before `minDistanceSqToIcpNeighborCellXY()` is called.
+  - Kept lower-bound spatial-grid branches on the previous order because they still need the XY distance bound before
+    deciding whether to perform the lower-bound cell search.
+  - Moved the testing-only direct XY lookup counter after XY range validation, so it counts valid compact XY base
+    computations instead of every attempted range probe.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn`:
+    failed before implementation with neighbor XY distance count 8 versus expected 0 on all three checked paths, then
+    passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn:ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells:ICPGpuPathTest.SpatialGridDirectLookupSpecializationSkipsXyBaseGuard:ICPGpuPathTest.SpatialGridDirectLookupSpecializationSkipsActiveGuard:ICPGpuPathTest.SpatialGridDirectLookupUsesSpecializedKernelLaunches:ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath:ICPGpuPathTest.CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridXYLookupsBeforeSearch:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYExceedsRadius`:
+    13 targeted spatial-grid tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 20 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(finite_radius_translation_(reuse_output|reuse_output_skip_final_metrics|ordered_output|ordered_output_skip_final_metrics)|stats_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid_reserved_workspace|stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid_reserved_workspace|residual_stats_finite_radius_translation_ordered|transform_residual_stats_finite_radius_translation_cached_grid|alignment_step_transformed_exact_pointwise_cached_grid|alignment_step_transformed_exact_pointwise_cache_hit)'`:
+    ran successfully on the RTX 4060 Laptop GPU.
+  - A second benchmark run confirmed the cached-grid rows stayed at the prior level. Relevant second-run rows:
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.54479 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.35844 ms,
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.536432 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.506509 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.694899 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.695008 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.21163 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.231367 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.670457 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.474121 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_ordered` = 0.031485 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.482101 ms.
+- Current conclusion:
+  sparse compact direct lookup paths now avoid XY distance work for absent neighbor columns. The dense 100k cached-grid
+  benchmark remains essentially unchanged, which is expected because that dataset does not emphasize missing compact XY
+  columns.

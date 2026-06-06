@@ -280,6 +280,7 @@ __device__ unsigned long long g_icp_grid_cell_lookup_count;
 __device__ unsigned long long g_icp_grid_cell_offset_count;
 __device__ unsigned long long g_icp_grid_cell_center_min_distance_count;
 __device__ unsigned long long g_icp_grid_cell_neighbor_min_distance_count;
+__device__ unsigned long long g_icp_grid_cell_neighbor_xy_distance_count;
 __device__ unsigned long long g_icp_direct_grid_lookup_xy_check_count;
 __device__ unsigned long long g_icp_direct_grid_lookup_active_guard_count;
 __device__ unsigned long long g_icp_direct_grid_lookup_xy_base_guard_count;
@@ -783,10 +784,6 @@ __device__ __forceinline__ bool directLookupIcpGridCellXyBase(
         }
     }
 
-#ifdef PLAPOINT_ENABLE_TESTING
-    atomicAdd(&g_icp_direct_grid_lookup_xy_check_count, 1ull);
-#endif
-
     if (query_x < target_grid.direct_lookup_min_x ||
         query_y < target_grid.direct_lookup_min_y)
     {
@@ -802,6 +799,10 @@ __device__ __forceinline__ bool directLookupIcpGridCellXyBase(
     {
         return false;
     }
+
+#ifdef PLAPOINT_ENABLE_TESTING
+    atomicAdd(&g_icp_direct_grid_lookup_xy_check_count, 1ull);
+#endif
 
     const int local_x = static_cast<int>(local_x_u);
     const int local_y = static_cast<int>(local_y_u);
@@ -1027,6 +1028,9 @@ __device__ __forceinline__ double minDistanceSqToIcpNeighborCellXY(
     {
         return 0.0;
     }
+#ifdef PLAPOINT_ENABLE_TESTING
+    atomicAdd(&g_icp_grid_cell_neighbor_xy_distance_count, 1ull);
+#endif
     return distanceSqToIcpNeighborCellAxis<FiniteCellBounds>(x, cell_x, cell_size, dx_offset_idx) +
         distanceSqToIcpNeighborCellAxis<FiniteCellBounds>(y, cell_y, cell_size, dy_offset_idx);
 }
@@ -1805,19 +1809,6 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                     continue;
                 }
 
-                const double min_xy_dist_sq = minDistanceSqToIcpNeighborCellXY<FiniteCellBounds>(
-                    sx,
-                    sy,
-                    query_x,
-                    query_y,
-                    target_grid.cell_size,
-                    dx_offset_idx,
-                    dy_offset_idx);
-                if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq > best_dist_sq)
-                {
-                    continue;
-                }
-
                 if constexpr (DirectLookup)
                 {
                     int direct_lookup_xy_base = 0;
@@ -1826,6 +1817,18 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                             query_x,
                             query_y,
                             direct_lookup_xy_base))
+                    {
+                        continue;
+                    }
+                    const double min_xy_dist_sq = minDistanceSqToIcpNeighborCellXY<FiniteCellBounds>(
+                        sx,
+                        sy,
+                        query_x,
+                        query_y,
+                        target_grid.cell_size,
+                        dx_offset_idx,
+                        dy_offset_idx);
+                    if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq > best_dist_sq)
                     {
                         continue;
                     }
@@ -1868,6 +1871,19 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                 }
                 else
                 {
+                    const double min_xy_dist_sq = minDistanceSqToIcpNeighborCellXY<FiniteCellBounds>(
+                        sx,
+                        sy,
+                        query_x,
+                        query_y,
+                        target_grid.cell_size,
+                        dx_offset_idx,
+                        dy_offset_idx);
+                    if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq > best_dist_sq)
+                    {
+                        continue;
+                    }
+
                     IcpGridCellKey query_key{query_x, query_y, min_z};
                     int cell_idx = lowerBoundIcpGridCell(target_grid.cell_keys, target_grid.cell_count, query_key);
                     while (cell_idx < target_grid.cell_count && !stop_cell_scan)
@@ -2713,19 +2729,6 @@ __global__ void collectResidualStatsSpatialGridKernel(
                     continue;
                 }
 
-                const double min_xy_dist_sq = minDistanceSqToIcpNeighborCellXY<FiniteCellBounds>(
-                    sx,
-                    sy,
-                    query_x,
-                    query_y,
-                    target_grid.cell_size,
-                    dx_offset_idx,
-                    dy_offset_idx);
-                if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq >= best_dist_sq)
-                {
-                    continue;
-                }
-
                 if constexpr (DirectLookup)
                 {
                     int direct_lookup_xy_base = 0;
@@ -2734,6 +2737,18 @@ __global__ void collectResidualStatsSpatialGridKernel(
                             query_x,
                             query_y,
                             direct_lookup_xy_base))
+                    {
+                        continue;
+                    }
+                    const double min_xy_dist_sq = minDistanceSqToIcpNeighborCellXY<FiniteCellBounds>(
+                        sx,
+                        sy,
+                        query_x,
+                        query_y,
+                        target_grid.cell_size,
+                        dx_offset_idx,
+                        dy_offset_idx);
+                    if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq >= best_dist_sq)
                     {
                         continue;
                     }
@@ -2771,6 +2786,19 @@ __global__ void collectResidualStatsSpatialGridKernel(
                 }
                 else
                 {
+                    const double min_xy_dist_sq = minDistanceSqToIcpNeighborCellXY<FiniteCellBounds>(
+                        sx,
+                        sy,
+                        query_x,
+                        query_y,
+                        target_grid.cell_size,
+                        dx_offset_idx,
+                        dy_offset_idx);
+                    if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq >= best_dist_sq)
+                    {
+                        continue;
+                    }
+
                     IcpGridCellKey query_key{query_x, query_y, min_z};
                     int cell_idx = lowerBoundIcpGridCell(target_grid.cell_keys, target_grid.cell_count, query_key);
                     while (cell_idx < target_grid.cell_count && !stop_cell_scan)
@@ -3256,19 +3284,6 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                     continue;
                 }
 
-                const double min_xy_dist_sq = minDistanceSqToIcpNeighborCellXY<FiniteCellBounds>(
-                    sx,
-                    sy,
-                    query_x,
-                    query_y,
-                    target_grid.cell_size,
-                    dx_offset_idx,
-                    dy_offset_idx);
-                if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq >= best_dist_sq)
-                {
-                    continue;
-                }
-
                 if constexpr (DirectLookup)
                 {
                     int direct_lookup_xy_base = 0;
@@ -3277,6 +3292,18 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                             query_x,
                             query_y,
                             direct_lookup_xy_base))
+                    {
+                        continue;
+                    }
+                    const double min_xy_dist_sq = minDistanceSqToIcpNeighborCellXY<FiniteCellBounds>(
+                        sx,
+                        sy,
+                        query_x,
+                        query_y,
+                        target_grid.cell_size,
+                        dx_offset_idx,
+                        dy_offset_idx);
+                    if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq >= best_dist_sq)
                     {
                         continue;
                     }
@@ -3314,6 +3341,19 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                 }
                 else
                 {
+                    const double min_xy_dist_sq = minDistanceSqToIcpNeighborCellXY<FiniteCellBounds>(
+                        sx,
+                        sy,
+                        query_x,
+                        query_y,
+                        target_grid.cell_size,
+                        dx_offset_idx,
+                        dy_offset_idx);
+                    if (min_xy_dist_sq > max_dist_sq || min_xy_dist_sq >= best_dist_sq)
+                    {
+                        continue;
+                    }
+
                     IcpGridCellKey query_key{query_x, query_y, min_z};
                     int cell_idx = lowerBoundIcpGridCell(target_grid.cell_keys, target_grid.cell_count, query_key);
                     while (cell_idx < target_grid.cell_count && !stop_cell_scan)
@@ -7437,6 +7477,19 @@ unsigned long long icpGridCellNeighborMinDistanceCountForTesting()
 {
     unsigned long long count = 0;
     PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_grid_cell_neighbor_min_distance_count, sizeof(count)));
+    return count;
+}
+
+void resetIcpGridCellNeighborXyDistanceCountForTesting()
+{
+    const unsigned long long zero = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyToSymbol(g_icp_grid_cell_neighbor_xy_distance_count, &zero, sizeof(zero)));
+}
+
+unsigned long long icpGridCellNeighborXyDistanceCountForTesting()
+{
+    unsigned long long count = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_grid_cell_neighbor_xy_distance_count, sizeof(count)));
     return count;
 }
 
