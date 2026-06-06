@@ -87,13 +87,13 @@ struct IcpGridCellKeyEqual
 
 struct IcpTargetSpatialGrid
 {
-    const IcpGridCellKey* cell_keys = nullptr;
-    const int* sorted_target_indices = nullptr;
-    const double* sorted_target_x = nullptr;
-    const double* sorted_target_y = nullptr;
-    const double* sorted_target_z = nullptr;
-    const int* cell_starts = nullptr;
-    const int* cell_counts = nullptr;
+    const IcpGridCellKey* __restrict__ cell_keys = nullptr;
+    const int* __restrict__ sorted_target_indices = nullptr;
+    const double* __restrict__ sorted_target_x = nullptr;
+    const double* __restrict__ sorted_target_y = nullptr;
+    const double* __restrict__ sorted_target_z = nullptr;
+    const int* __restrict__ cell_starts = nullptr;
+    const int* __restrict__ cell_counts = nullptr;
     int cell_count = 0;
     double cell_size = 0.0;
     bool finite_cell_bounds = false;
@@ -129,20 +129,20 @@ constexpr int kIcpStatsBlockSize = 128;
 template <typename Scalar>
 __device__ void computeStepTransformFromInput(
     const IcpStepTransformInput& input,
-    Scalar* step_transform,
-    IcpStepTransformRawResult* result);
+    Scalar* __restrict__ step_transform,
+    IcpStepTransformRawResult* __restrict__ result);
 
 template <typename Scalar>
 __device__ void computeStepTransformFromRawStatsValue(
     const RawIcpStats& raw,
-    Scalar* step_transform,
-    IcpStepTransformRawResult* result);
+    Scalar* __restrict__ step_transform,
+    IcpStepTransformRawResult* __restrict__ result);
 
 template <typename Scalar>
 __device__ void writeAlignmentStepRawResultFromRawStats(
     const RawIcpStats& raw,
-    Scalar* step_transform,
-    IcpAlignmentStepRawResult* result,
+    Scalar* __restrict__ step_transform,
+    IcpAlignmentStepRawResult* __restrict__ result,
     bool exact_identity_step);
 
 #ifdef PLAPOINT_ENABLE_TESTING
@@ -211,13 +211,28 @@ __device__ __forceinline__ void addRawIcpResidualStats(RawIcpResidualStats& dst,
     dst.residual_sq_sum += src.residual_sq_sum;
 }
 
-template <typename Scalar>
-__device__ __forceinline__ bool loadFiniteColumnMajorPoint(const Scalar* points, int point_count, int idx,
-                                                           double& x, double& y, double& z)
+template <typename Value>
+__device__ __forceinline__ Value loadReadOnlyIcpValue(const Value* __restrict__ value)
 {
-    x = static_cast<double>(points[idx]);
-    y = static_cast<double>(points[point_count + idx]);
-    z = static_cast<double>(points[2 * point_count + idx]);
+#if defined(__CUDA_ARCH__)
+    return __ldg(value);
+#else
+    return *value;
+#endif
+}
+
+template <typename Scalar>
+__device__ __forceinline__ bool loadFiniteColumnMajorPoint(
+    const Scalar* __restrict__ points,
+    int point_count,
+    int idx,
+    double& x,
+    double& y,
+    double& z)
+{
+    x = static_cast<double>(loadReadOnlyIcpValue(points + idx));
+    y = static_cast<double>(loadReadOnlyIcpValue(points + point_count + idx));
+    z = static_cast<double>(loadReadOnlyIcpValue(points + 2 * point_count + idx));
     return isfinite(x) && isfinite(y) && isfinite(z);
 }
 
@@ -250,21 +265,11 @@ __device__ __forceinline__ int icpNeighborCellOffset(int offset_index)
     return offset_index == 0 ? 0 : (offset_index == 1 ? -1 : 1);
 }
 
-template <typename Value>
-__device__ __forceinline__ Value loadReadOnlyIcpValue(const Value* value)
-{
-#if defined(__CUDA_ARCH__)
-    return __ldg(value);
-#else
-    return *value;
-#endif
-}
-
 __device__ __forceinline__ IcpGridCellKey loadIcpGridCellKey(
-    const IcpGridCellKey* cell_keys,
+    const IcpGridCellKey* __restrict__ cell_keys,
     int cell_idx)
 {
-    const IcpGridCellKey* key = cell_keys + cell_idx;
+    const IcpGridCellKey* __restrict__ key = cell_keys + cell_idx;
     return {
         loadReadOnlyIcpValue(&key->x),
         loadReadOnlyIcpValue(&key->y),
@@ -275,7 +280,7 @@ __device__ __forceinline__ IcpGridCellKey loadIcpGridCellKey(
 template <typename Scalar>
 struct ComputeIcpTargetGridCellKey
 {
-    const Scalar* points;
+    const Scalar* __restrict__ points;
     int point_count;
     double cell_size;
 
@@ -298,12 +303,12 @@ struct ComputeIcpTargetGridCellKey
 
 template <typename Scalar>
 __global__ void gatherSortedIcpTargetPointsKernel(
-    const Scalar* target_points,
+    const Scalar* __restrict__ target_points,
     int target_count,
-    const int* sorted_target_indices,
-    double* sorted_x,
-    double* sorted_y,
-    double* sorted_z)
+    const int* __restrict__ sorted_target_indices,
+    double* __restrict__ sorted_x,
+    double* __restrict__ sorted_y,
+    double* __restrict__ sorted_z)
 {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= target_count)
@@ -318,7 +323,7 @@ __global__ void gatherSortedIcpTargetPointsKernel(
 }
 
 __device__ __forceinline__ int lowerBoundIcpGridCell(
-    const IcpGridCellKey* cell_keys,
+    const IcpGridCellKey* __restrict__ cell_keys,
     int cell_count,
     const IcpGridCellKey& query)
 {
@@ -516,9 +521,9 @@ __device__ __forceinline__ void recordAcceptedCorrespondence(
 
 template <typename Scalar>
 __global__ void computeTargetTileBoundsKernel(
-    const Scalar* target_points,
+    const Scalar* __restrict__ target_points,
     int target_count,
-    IcpTargetTileBounds* target_tile_bounds)
+    IcpTargetTileBounds* __restrict__ target_tile_bounds)
 {
     const int local_idx = threadIdx.x;
     const int tile_start = static_cast<int>(blockIdx.x) * kIcpStatsBlockSize;
@@ -583,9 +588,9 @@ __global__ void collectCorrespondenceStatsKernel(
     const Scalar* target_points,
     int target_count,
     Scalar max_correspondence_distance,
-    int* correspondence_indices,
-    const IcpTargetTileBounds* target_tile_bounds,
-    RawIcpStats* partial_stats)
+    int* __restrict__ correspondence_indices,
+    const IcpTargetTileBounds* __restrict__ target_tile_bounds,
+    RawIcpStats* __restrict__ partial_stats)
 {
     const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int local_idx = threadIdx.x;
@@ -740,12 +745,12 @@ __global__ void collectCorrespondenceStatsKernel(
 
 template <typename Scalar, bool FiniteCellBounds, bool WriteCorrespondenceIndices>
 __global__ void collectCorrespondenceStatsSpatialGridKernel(
-    const Scalar* source_points,
+    const Scalar* __restrict__ source_points,
     int source_count,
     Scalar max_correspondence_distance,
-    int* correspondence_indices,
+    int* __restrict__ correspondence_indices,
     IcpTargetSpatialGrid target_grid,
-    RawIcpStats* partial_stats)
+    RawIcpStats* __restrict__ partial_stats)
 {
     const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int local_idx = threadIdx.x;
@@ -991,7 +996,7 @@ __global__ void collectExactPointwiseCorrespondenceStatsKernel(
     const Scalar* source_points,
     const Scalar* target_points,
     int point_count,
-    RawIcpStats* partial_stats)
+    RawIcpStats* __restrict__ partial_stats)
 {
     const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int local_idx = threadIdx.x;
@@ -1052,8 +1057,8 @@ __global__ void collectResidualStatsKernel(
     const Scalar* target_points,
     int target_count,
     Scalar max_correspondence_distance,
-    const IcpTargetTileBounds* target_tile_bounds,
-    RawIcpResidualStats* partial_stats)
+    const IcpTargetTileBounds* __restrict__ target_tile_bounds,
+    RawIcpResidualStats* __restrict__ partial_stats)
 {
     const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int local_idx = threadIdx.x;
@@ -1180,11 +1185,11 @@ __global__ void collectResidualStatsKernel(
 
 template <typename Scalar, bool FiniteCellBounds>
 __global__ void collectResidualStatsSpatialGridKernel(
-    const Scalar* source_points,
+    const Scalar* __restrict__ source_points,
     int source_count,
     Scalar max_correspondence_distance,
     IcpTargetSpatialGrid target_grid,
-    RawIcpResidualStats* partial_stats)
+    RawIcpResidualStats* __restrict__ partial_stats)
 {
     const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int local_idx = threadIdx.x;
@@ -1370,15 +1375,15 @@ __global__ void collectResidualStatsSpatialGridKernel(
 
 template <typename Scalar>
 __global__ void transformAndCollectResidualStatsKernel(
-    const Scalar* transform,
+    const Scalar* __restrict__ transform,
     const Scalar* source_points,
     int source_count,
     const Scalar* target_points,
     int target_count,
     Scalar max_correspondence_distance,
     Scalar* output_points,
-    const IcpTargetTileBounds* target_tile_bounds,
-    RawIcpResidualStats* partial_stats)
+    const IcpTargetTileBounds* __restrict__ target_tile_bounds,
+    RawIcpResidualStats* __restrict__ partial_stats)
 {
     const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int local_idx = threadIdx.x;
@@ -1519,13 +1524,13 @@ __global__ void transformAndCollectResidualStatsKernel(
 
 template <typename Scalar, bool FiniteCellBounds>
 __global__ void transformAndCollectResidualStatsSpatialGridKernel(
-    const Scalar* transform,
+    const Scalar* __restrict__ transform,
     const Scalar* source_points,
     int source_count,
     Scalar max_correspondence_distance,
     Scalar* output_points,
     IcpTargetSpatialGrid target_grid,
-    RawIcpResidualStats* partial_stats)
+    RawIcpResidualStats* __restrict__ partial_stats)
 {
     const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int local_idx = threadIdx.x;
@@ -1849,9 +1854,9 @@ void launchTransformAndCollectResidualStatsSpatialGridKernel(
 }
 
 __global__ void reduceRawIcpStatsKernel(
-    const RawIcpStats* partial_stats,
+    const RawIcpStats* __restrict__ partial_stats,
     int partial_count,
-    RawIcpStats* stats)
+    RawIcpStats* __restrict__ stats)
 {
     const int local_idx = threadIdx.x;
     RawIcpStats local{};
@@ -1881,11 +1886,11 @@ __global__ void reduceRawIcpStatsKernel(
 
 template <typename Scalar>
 __global__ void reduceRawIcpStatsAndSetExactPointwiseIdentityStepKernel(
-    const RawIcpStats* partial_stats,
+    const RawIcpStats* __restrict__ partial_stats,
     int partial_count,
-    RawIcpStats* stats,
-    Scalar* step_transform,
-    IcpStepTransformRawResult* result)
+    RawIcpStats* __restrict__ stats,
+    Scalar* __restrict__ step_transform,
+    IcpStepTransformRawResult* __restrict__ result)
 {
     const int local_idx = threadIdx.x;
     RawIcpStats local{};
@@ -1925,10 +1930,10 @@ __global__ void reduceRawIcpStatsAndSetExactPointwiseIdentityStepKernel(
 
 template <typename Scalar>
 __global__ void reduceRawIcpStatsAndSetExactPointwiseIdentityAlignmentStepKernel(
-    const RawIcpStats* partial_stats,
+    const RawIcpStats* __restrict__ partial_stats,
     int partial_count,
-    Scalar* step_transform,
-    IcpAlignmentStepRawResult* result)
+    Scalar* __restrict__ step_transform,
+    IcpAlignmentStepRawResult* __restrict__ result)
 {
     const int local_idx = threadIdx.x;
     RawIcpStats local{};
@@ -1958,11 +1963,11 @@ __global__ void reduceRawIcpStatsAndSetExactPointwiseIdentityAlignmentStepKernel
 
 template <typename Scalar>
 __global__ void reduceRawIcpStatsAndComputeStepTransformKernel(
-    const RawIcpStats* partial_stats,
+    const RawIcpStats* __restrict__ partial_stats,
     int partial_count,
-    RawIcpStats* stats,
-    Scalar* step_transform,
-    IcpStepTransformRawResult* result)
+    RawIcpStats* __restrict__ stats,
+    Scalar* __restrict__ step_transform,
+    IcpStepTransformRawResult* __restrict__ result)
 {
     const int local_idx = threadIdx.x;
     RawIcpStats local{};
@@ -1994,10 +1999,10 @@ __global__ void reduceRawIcpStatsAndComputeStepTransformKernel(
 
 template <typename Scalar>
 __global__ void reduceRawIcpStatsAndComputeAlignmentStepKernel(
-    const RawIcpStats* partial_stats,
+    const RawIcpStats* __restrict__ partial_stats,
     int partial_count,
-    Scalar* step_transform,
-    IcpAlignmentStepRawResult* result)
+    Scalar* __restrict__ step_transform,
+    IcpAlignmentStepRawResult* __restrict__ result)
 {
     const int local_idx = threadIdx.x;
     RawIcpStats local{};
@@ -2026,9 +2031,9 @@ __global__ void reduceRawIcpStatsAndComputeAlignmentStepKernel(
 }
 
 __global__ void reduceRawIcpResidualStatsKernel(
-    const RawIcpResidualStats* partial_stats,
+    const RawIcpResidualStats* __restrict__ partial_stats,
     int partial_count,
-    RawIcpResidualStats* stats)
+    RawIcpResidualStats* __restrict__ stats)
 {
     const int local_idx = threadIdx.x;
     RawIcpResidualStats local{};
@@ -2057,7 +2062,7 @@ __global__ void reduceRawIcpResidualStatsKernel(
 }
 
 template <typename Scalar>
-__global__ void setIdentityTransform4x4Kernel(Scalar* transform)
+__global__ void setIdentityTransform4x4Kernel(Scalar* __restrict__ transform)
 {
     const int idx = threadIdx.x;
     if (idx >= 16)
@@ -2071,7 +2076,10 @@ __global__ void setIdentityTransform4x4Kernel(Scalar* transform)
 }
 
 template <typename Scalar>
-__global__ void multiplyTransform4x4Kernel(const Scalar* A, const Scalar* B, Scalar* C)
+__global__ void multiplyTransform4x4Kernel(
+    const Scalar* __restrict__ A,
+    const Scalar* __restrict__ B,
+    Scalar* __restrict__ C)
 {
     const int idx = threadIdx.x;
     if (idx >= 16)
@@ -2092,7 +2100,7 @@ __global__ void multiplyTransform4x4Kernel(const Scalar* A, const Scalar* B, Sca
 
 template <typename Scalar>
 __global__ void transformPointsColumnMajorKernel(
-    const Scalar* transform,
+    const Scalar* __restrict__ transform,
     const Scalar* points,
     int point_count,
     Scalar* output_points)
@@ -2226,8 +2234,8 @@ __device__ Scalar checkedDeviceScalar(double value, int& valid)
 template <typename Scalar>
 __device__ void computeStepTransformFromInput(
     const IcpStepTransformInput& input,
-    Scalar* step_transform,
-    IcpStepTransformRawResult* result)
+    Scalar* __restrict__ step_transform,
+    IcpStepTransformRawResult* __restrict__ result)
 {
     const double* h = input.cross_covariance;
     double N[16];
@@ -2312,9 +2320,9 @@ __device__ void computeStepTransformFromInput(
 
 template <typename Scalar>
 __global__ void computeStepTransformFromStatsKernel(
-    const IcpStepTransformInput* input,
-    Scalar* step_transform,
-    IcpStepTransformRawResult* result)
+    const IcpStepTransformInput* __restrict__ input,
+    Scalar* __restrict__ step_transform,
+    IcpStepTransformRawResult* __restrict__ result)
 {
     if (threadIdx.x != 0 || blockIdx.x != 0)
     {
@@ -2326,9 +2334,9 @@ __global__ void computeStepTransformFromStatsKernel(
 
 template <typename Scalar>
 __global__ void computeStepTransformFromRawStatsKernel(
-    const RawIcpStats* raw_stats,
-    Scalar* step_transform,
-    IcpStepTransformRawResult* result)
+    const RawIcpStats* __restrict__ raw_stats,
+    Scalar* __restrict__ step_transform,
+    IcpStepTransformRawResult* __restrict__ result)
 {
     if (threadIdx.x != 0 || blockIdx.x != 0)
     {
@@ -2341,8 +2349,8 @@ __global__ void computeStepTransformFromRawStatsKernel(
 template <typename Scalar>
 __device__ void computeStepTransformFromRawStatsValue(
     const RawIcpStats& raw,
-    Scalar* step_transform,
-    IcpStepTransformRawResult* result)
+    Scalar* __restrict__ step_transform,
+    IcpStepTransformRawResult* __restrict__ result)
 {
     if (raw.active_count <= 0)
     {
@@ -2410,8 +2418,8 @@ __device__ bool rawStatsCovarianceHasNonCollinearGeometry(
 template <typename Scalar>
 __device__ void writeAlignmentStepRawResultFromRawStats(
     const RawIcpStats& raw,
-    Scalar* step_transform,
-    IcpAlignmentStepRawResult* result,
+    Scalar* __restrict__ step_transform,
+    IcpAlignmentStepRawResult* __restrict__ result,
     bool exact_identity_step)
 {
     IcpStepTransformRawResult step_result{};
