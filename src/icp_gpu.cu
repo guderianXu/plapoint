@@ -369,45 +369,6 @@ __device__ double distanceOutsideFiniteIcpGridCellAxis(double value, int cell_co
     return 0.0;
 }
 
-__device__ double minDistanceSqToIcpGridCell(
-    double x,
-    double y,
-    double z,
-    const IcpGridCellKey& cell_key,
-    double cell_size)
-{
-    const double dx = distanceOutsideIcpGridCellAxis(x, cell_key.x, cell_size);
-    const double dy = distanceOutsideIcpGridCellAxis(y, cell_key.y, cell_size);
-    const double dz = distanceOutsideIcpGridCellAxis(z, cell_key.z, cell_size);
-    return dx * dx + dy * dy + dz * dz;
-}
-
-__device__ double minDistanceSqToFiniteIcpGridCell(
-    double x,
-    double y,
-    double z,
-    const IcpGridCellKey& cell_key,
-    double cell_size)
-{
-    const double dx = distanceOutsideFiniteIcpGridCellAxis(x, cell_key.x, cell_size);
-    const double dy = distanceOutsideFiniteIcpGridCellAxis(y, cell_key.y, cell_size);
-    const double dz = distanceOutsideFiniteIcpGridCellAxis(z, cell_key.z, cell_size);
-    return dx * dx + dy * dy + dz * dz;
-}
-
-__device__ double minDistanceSqToIcpGridCell(
-    double x,
-    double y,
-    double z,
-    const IcpGridCellKey& cell_key,
-    double cell_size,
-    bool finite_cell_bounds)
-{
-    return finite_cell_bounds ?
-        minDistanceSqToFiniteIcpGridCell(x, y, z, cell_key, cell_size) :
-        minDistanceSqToIcpGridCell(x, y, z, cell_key, cell_size);
-}
-
 __device__ double minDistanceSqToIcpGridCellXY(
     double x,
     double y,
@@ -443,6 +404,35 @@ __device__ double minDistanceSqToIcpGridCellXY(
     return finite_cell_bounds ?
         minDistanceSqToFiniteIcpGridCellXY(x, y, cell_x, cell_y, cell_size) :
         minDistanceSqToIcpGridCellXY(x, y, cell_x, cell_y, cell_size);
+}
+
+__device__ double minDistanceSqToIcpGridCellZ(
+    double z,
+    int cell_z,
+    double cell_size)
+{
+    const double dz = distanceOutsideIcpGridCellAxis(z, cell_z, cell_size);
+    return dz * dz;
+}
+
+__device__ double minDistanceSqToFiniteIcpGridCellZ(
+    double z,
+    int cell_z,
+    double cell_size)
+{
+    const double dz = distanceOutsideFiniteIcpGridCellAxis(z, cell_z, cell_size);
+    return dz * dz;
+}
+
+__device__ double minDistanceSqToIcpGridCellZ(
+    double z,
+    int cell_z,
+    double cell_size,
+    bool finite_cell_bounds)
+{
+    return finite_cell_bounds ?
+        minDistanceSqToFiniteIcpGridCellZ(z, cell_z, cell_size) :
+        minDistanceSqToIcpGridCellZ(z, cell_z, cell_size);
 }
 
 __device__ void recordAcceptedCorrespondence(
@@ -800,11 +790,9 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                         break;
                     }
 
-                    const double min_cell_dist_sq = minDistanceSqToIcpGridCell(
-                        sx,
-                        sy,
+                    const double min_cell_dist_sq = min_xy_dist_sq + minDistanceSqToIcpGridCellZ(
                         sz,
-                        cell_key,
+                        cell_key.z,
                         target_grid.cell_size,
                         target_grid.finite_cell_bounds);
                     if (min_cell_dist_sq > max_dist_sq || min_cell_dist_sq > best_dist_sq)
@@ -1233,11 +1221,9 @@ __global__ void collectResidualStatsSpatialGridKernel(
                         break;
                     }
 
-                    const double min_cell_dist_sq = minDistanceSqToIcpGridCell(
-                        sx,
-                        sy,
+                    const double min_cell_dist_sq = min_xy_dist_sq + minDistanceSqToIcpGridCellZ(
                         sz,
-                        cell_key,
+                        cell_key.z,
                         target_grid.cell_size,
                         target_grid.finite_cell_bounds);
                     if (min_cell_dist_sq > max_dist_sq || min_cell_dist_sq >= best_dist_sq)
@@ -1583,11 +1569,9 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                         break;
                     }
 
-                    const double min_cell_dist_sq = minDistanceSqToIcpGridCell(
-                        sx,
-                        sy,
+                    const double min_cell_dist_sq = min_xy_dist_sq + minDistanceSqToIcpGridCellZ(
                         sz,
-                        cell_key,
+                        cell_key.z,
                         target_grid.cell_size,
                         target_grid.finite_cell_bounds);
                     if (min_cell_dist_sq > max_dist_sq || min_cell_dist_sq >= best_dist_sq)
