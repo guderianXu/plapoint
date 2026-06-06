@@ -416,6 +416,10 @@ private:
             if (terminal_iteration && !terminal_identity_step && !terminal_output_needs_target_points)
             {
                 transform_output_points = prepareGpuOutputPointBuffer(output, source_count);
+                if (output_aliases_target)
+                {
+                    invalidateGpuTargetWorkspaceCache();
+                }
                 final_points_written_to_output = true;
             }
             else if (!terminal_identity_step)
@@ -521,16 +525,16 @@ private:
             Scalar* output_points = prepareGpuOutputPointBuffer(output, source_count);
             if (output_points != cur_points)
             {
+                if (output_aliases_target)
+                {
+                    invalidateGpuTargetWorkspaceCache();
+                }
                 PLAPOINT_CHECK_CUDA(cudaMemcpy(
                     output_points,
                     cur_points,
                     static_cast<std::size_t>(source_count) * 3u * sizeof(Scalar),
                     cudaMemcpyDeviceToDevice));
             }
-        }
-        if (output_aliases_target)
-        {
-            invalidateGpuTargetWorkspaceCache();
         }
     }
 

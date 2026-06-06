@@ -3594,3 +3594,46 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun the mutable-target cache invalidation test on GPU hardware and verify unchanged-target cache reuse still builds
   the finite-radius spatial grid only once.
+
+## Task 110: Invalidate GPU Target Cache Before Target-Output Writes
+
+- Goal: make target-aliased GPU ICP output cache invalidation exception-safe. When `align(*target)` writes into the
+  target point buffer, the persistent target spatial-grid and tile-bound caches must be invalidated before the write is
+  attempted so a later exception cannot leave mutated target contents paired with stale cache metadata. Avoid
+  invalidating the cache when the output buffer already aliases the current points and no target write occurs.
+- RED check:
+  - A static check against the terminal direct-output branch failed before the implementation because
+    `invalidateGpuTargetWorkspaceCache()` did not appear before `gpu::transformPointsColumnMajor(...)`.
+  - A static check against the final copy branch failed before the implementation because
+    `invalidateGpuTargetWorkspaceCache()` did not appear before the final `cudaMemcpy(...)` into output storage.
+- Implementation:
+  - Moved target-cache invalidation into the terminal direct-output branch immediately after preparing the target
+    output buffer and before launching the transform write.
+  - Moved target-cache invalidation into the final device-to-device copy branch immediately before copying into target
+    output storage.
+  - Removed the unconditional end-of-align target-alias invalidation so equal-buffer no-write cases keep their valid
+    target cache.
+- Verification performed in this session:
+  - Both static RED checks failed before the implementation and passed after the implementation.
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignInvalidatesPersistentGpuTargetSpatialGridCacheAfterTargetAliasedOutput:ICPGpuPathTest.AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsDisabled:ICPGpuPathTest.SetInputTargetKeepsPersistentGpuTargetSpatialGridCacheForSameTarget`:
+    3 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `git diff --check`:
+    clean before the plan update.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    246 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the target-output cache invalidation cases on real GPU hardware, including the skip-final-metrics direct target
+  output path and the same-buffer no-write path.
