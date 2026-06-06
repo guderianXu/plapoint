@@ -1635,6 +1635,42 @@ Verification evidence:
   rerun the selected GPU transform/residual tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm
   runtime behavior and performance impact.
 
+## Task 72: Stop Non-Spatial Residual Scans After Exact Matches
+
+- Goal: reduce residual-only nearest-neighbor work when the non-spatial-grid residual kernels find an exact target match.
+  Residual metrics do not need correspondence index tie-breaking, so once a zero squared distance is found for a source
+  point no later target can improve that source's residual.
+- Implementation:
+  - Added a per-source `stop_target_scan` flag to `collectResidualStatsKernel()`.
+  - Added the same early-scan skip to `transformAndCollectResidualStatsKernel()`.
+  - Kept all threads participating in the target-tile load loop and `__syncthreads()` calls to avoid divergent block
+    synchronization; only later per-source candidate evaluation is skipped.
+  - Counted non-spatial residual full-distance evaluations under `PLAPOINT_ENABLE_TESTING`.
+  - Added `ResidualStatsStopsNonSpatialScanAfterExactMatch`, which forces the non-spatial residual path with infinite
+    correspondence radius and unequal source/target counts, then expects only one full-distance evaluation after the
+    first exact match.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.ResidualStatsStopsNonSpatialScanAfterExactMatch:ICPGpuPathTest.ResidualStatsUsesExactPointwiseFastPathForSameBuffer:ICPGpuPathTest.ResidualStatsStopsSpatialGridLookupsAfterExactMatch:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 4 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:
+    227 test entries, 0 failed; GPU-dependent tests, including the new non-spatial residual fast-path test, were
+    skipped because the current session cannot communicate with the NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi || true`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `ICPGpuPathTest.ResidualStatsStopsNonSpatialScanAfterExactMatch`, full CUDA `ctest`, and the 100k-point ICP
+  benchmark to confirm runtime behavior and performance impact.
+
 ## Task 69: Add Safe Alias Hints To GPU ICP Workspace Paths
 
 - Goal: give nvcc stronger aliasing and read-only load information in GPU ICP kernels without changing public

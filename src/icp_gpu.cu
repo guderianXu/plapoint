@@ -1190,6 +1190,7 @@ __global__ void collectResidualStatsKernel(
     double best_dist_sq = INFINITY;
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const bool can_prune_by_radius = isfinite(max_dist) && max_dist >= 0.0;
+    bool stop_target_scan = false;
     __shared__ double target_tile_x[kIcpStatsBlockSize];
     __shared__ double target_tile_y[kIcpStatsBlockSize];
     __shared__ double target_tile_z[kIcpStatsBlockSize];
@@ -1221,7 +1222,7 @@ __global__ void collectResidualStatsKernel(
                 sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
         }
 
-        if (source_valid && tile_relevant)
+        if (source_valid && !stop_target_scan && tile_relevant)
         {
             const int tile_count = min(kIcpStatsBlockSize, target_count - tile_start);
             for (int tile_offset = 0; tile_offset < tile_count; ++tile_offset)
@@ -1248,9 +1249,17 @@ __global__ void collectResidualStatsKernel(
                 }
 
                 const double dist_sq = dx * dx + dy * dy + dz * dz;
+#ifdef PLAPOINT_ENABLE_TESTING
+                atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
+#endif
                 if (isfinite(dist_sq) && dist_sq < best_dist_sq)
                 {
                     best_dist_sq = dist_sq;
+                    if (dist_sq <= 0.0)
+                    {
+                        stop_target_scan = true;
+                        break;
+                    }
                 }
             }
         }
@@ -1532,6 +1541,7 @@ __global__ void transformAndCollectResidualStatsKernel(
     double best_dist_sq = INFINITY;
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const bool can_prune_by_radius = isfinite(max_dist) && max_dist >= 0.0;
+    bool stop_target_scan = false;
     __shared__ double target_tile_x[kIcpStatsBlockSize];
     __shared__ double target_tile_y[kIcpStatsBlockSize];
     __shared__ double target_tile_z[kIcpStatsBlockSize];
@@ -1563,7 +1573,7 @@ __global__ void transformAndCollectResidualStatsKernel(
                 sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
         }
 
-        if (source_valid && tile_relevant)
+        if (source_valid && !stop_target_scan && tile_relevant)
         {
             const int tile_count = min(kIcpStatsBlockSize, target_count - tile_start);
             for (int tile_offset = 0; tile_offset < tile_count; ++tile_offset)
@@ -1590,9 +1600,17 @@ __global__ void transformAndCollectResidualStatsKernel(
                 }
 
                 const double dist_sq = dx * dx + dy * dy + dz * dz;
+#ifdef PLAPOINT_ENABLE_TESTING
+                atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
+#endif
                 if (isfinite(dist_sq) && dist_sq < best_dist_sq)
                 {
                     best_dist_sq = dist_sq;
+                    if (dist_sq <= 0.0)
+                    {
+                        stop_target_scan = true;
+                        break;
+                    }
                 }
             }
         }
