@@ -276,6 +276,7 @@ __device__ unsigned long long g_icp_sorted_target_coordinate_load_count;
 __device__ unsigned long long g_icp_target_tile_bound_computation_count;
 __device__ unsigned long long g_icp_target_tile_load_count;
 __device__ unsigned long long g_icp_exact_pointwise_target_load_count;
+__device__ unsigned long long g_icp_transformed_exact_pointwise_residual_probe_count;
 __device__ unsigned long long g_icp_grid_cell_lookup_count;
 __device__ unsigned long long g_icp_grid_cell_offset_count;
 __device__ unsigned long long g_icp_grid_cell_center_min_distance_count;
@@ -1141,6 +1142,9 @@ __device__ __forceinline__ bool tryAcceptTransformedExactPointwiseResidual(
     double sz,
     RawIcpResidualStats& local)
 {
+#ifdef PLAPOINT_ENABLE_TESTING
+    atomicAdd(&g_icp_transformed_exact_pointwise_residual_probe_count, 1ull);
+#endif
     if (!target_points_raw || source_count != target_count)
     {
         return false;
@@ -2861,7 +2865,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
     }
 }
 
-template <typename Scalar, bool UseTargetTileBounds>
+template <typename Scalar, bool UseTargetTileBounds, bool TryTransformedExactPointwise>
 __global__ void transformAndCollectResidualStatsKernel(
     const Scalar* __restrict__ transform,
     const Scalar* source_points,
@@ -2910,17 +2914,20 @@ __global__ void transformAndCollectResidualStatsKernel(
         else
         {
             source_valid = true;
-            if (tryAcceptTransformedExactPointwiseResidual<Scalar>(
-                    source_idx,
-                    source_count,
-                    target_points,
-                    target_count,
-                    sx,
-                    sy,
-                    sz,
-                    local))
+            if constexpr (TryTransformedExactPointwise)
             {
-                source_valid = false;
+                if (tryAcceptTransformedExactPointwiseResidual<Scalar>(
+                        source_idx,
+                        source_count,
+                        target_points,
+                        target_count,
+                        sx,
+                        sy,
+                        sz,
+                        local))
+                {
+                    source_valid = false;
+                }
             }
         }
     }
@@ -3170,7 +3177,7 @@ __global__ void transformAndCollectOrderedResidualStatsKernel(
     }
 }
 
-template <typename Scalar, bool FiniteCellBounds, bool DirectLookup>
+template <typename Scalar, bool FiniteCellBounds, bool DirectLookup, bool TryTransformedExactPointwise>
 __global__ void transformAndCollectResidualStatsSpatialGridKernel(
     const Scalar* __restrict__ transform,
     const Scalar* source_points,
@@ -3217,17 +3224,20 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
         else
         {
             source_valid = true;
-            if (tryAcceptTransformedExactPointwiseResidual<Scalar>(
-                    source_idx,
-                    source_count,
-                    target_grid.target_points,
-                    target_grid.target_count,
-                    sx,
-                    sy,
-                    sz,
-                    local))
+            if constexpr (TryTransformedExactPointwise)
             {
-                source_valid = false;
+                if (tryAcceptTransformedExactPointwiseResidual<Scalar>(
+                        source_idx,
+                        source_count,
+                        target_grid.target_points,
+                        target_grid.target_count,
+                        sx,
+                        sy,
+                        sz,
+                        local))
+                {
+                    source_valid = false;
+                }
             }
         }
     }
@@ -3625,6 +3635,81 @@ void launchCollectResidualStatsKernel(
 }
 
 template <typename Scalar>
+void launchTransformAndCollectResidualStatsKernelWithExactPointwiseProbe(
+    int grid_size,
+    int block_size,
+    cudaStream_t stream,
+    const Scalar* transform,
+    const Scalar* source_points,
+    int source_count,
+    const Scalar* target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    Scalar* output_points,
+    const IcpTargetTileBounds* target_tile_bounds,
+    RawIcpResidualStats* partial_stats,
+    bool try_transformed_exact_pointwise)
+{
+    if (target_tile_bounds)
+    {
+        if (try_transformed_exact_pointwise)
+        {
+            transformAndCollectResidualStatsKernel<Scalar, true, true><<<grid_size, block_size, 0, stream>>>(
+                transform,
+                source_points,
+                source_count,
+                target_points,
+                target_count,
+                max_correspondence_distance,
+                output_points,
+                target_tile_bounds,
+                partial_stats);
+        }
+        else
+        {
+            transformAndCollectResidualStatsKernel<Scalar, true, false><<<grid_size, block_size, 0, stream>>>(
+                transform,
+                source_points,
+                source_count,
+                target_points,
+                target_count,
+                max_correspondence_distance,
+                output_points,
+                target_tile_bounds,
+                partial_stats);
+        }
+        return;
+    }
+
+    if (try_transformed_exact_pointwise)
+    {
+        transformAndCollectResidualStatsKernel<Scalar, false, true><<<grid_size, block_size, 0, stream>>>(
+            transform,
+            source_points,
+            source_count,
+            target_points,
+            target_count,
+            max_correspondence_distance,
+            output_points,
+            target_tile_bounds,
+            partial_stats);
+    }
+    else
+    {
+        transformAndCollectResidualStatsKernel<Scalar, false, false><<<grid_size, block_size, 0, stream>>>(
+            transform,
+            source_points,
+            source_count,
+            target_points,
+            target_count,
+            max_correspondence_distance,
+            output_points,
+            target_tile_bounds,
+            partial_stats);
+    }
+}
+
+template <typename Scalar>
 void launchTransformAndCollectResidualStatsKernel(
     int grid_size,
     int block_size,
@@ -3639,27 +3724,17 @@ void launchTransformAndCollectResidualStatsKernel(
     const IcpTargetTileBounds* target_tile_bounds,
     RawIcpResidualStats* partial_stats)
 {
+    const bool try_transformed_exact_pointwise =
+        detail::canProbeTransformedExactPointwiseStats(source_count, target_points, target_count, nullptr);
 #ifdef PLAPOINT_ENABLE_TESTING
     recordFallbackKernelLaunchForTesting(target_tile_bounds != nullptr);
-    recordTransformedExactPointwiseResidualCallForTesting(source_count == target_count);
+    recordTransformedExactPointwiseResidualCallForTesting(try_transformed_exact_pointwise);
 #endif
 
-    if (target_tile_bounds)
-    {
-        transformAndCollectResidualStatsKernel<Scalar, true><<<grid_size, block_size, 0, stream>>>(
-            transform,
-            source_points,
-            source_count,
-            target_points,
-            target_count,
-            max_correspondence_distance,
-            output_points,
-            target_tile_bounds,
-            partial_stats);
-        return;
-    }
-
-    transformAndCollectResidualStatsKernel<Scalar, false><<<grid_size, block_size, 0, stream>>>(
+    launchTransformAndCollectResidualStatsKernelWithExactPointwiseProbe(
+        grid_size,
+        block_size,
+        stream,
         transform,
         source_points,
         source_count,
@@ -3668,7 +3743,8 @@ void launchTransformAndCollectResidualStatsKernel(
         max_correspondence_distance,
         output_points,
         target_tile_bounds,
-        partial_stats);
+        partial_stats,
+        try_transformed_exact_pointwise);
 }
 
 template <typename Scalar>
@@ -4023,7 +4099,7 @@ void launchCollectResidualStatsSpatialGridKernel(
 }
 
 template <typename Scalar>
-void launchTransformAndCollectResidualStatsSpatialGridKernel(
+void launchTransformAndCollectResidualStatsSpatialGridKernelWithExactPointwiseProbe(
     int grid_size,
     int block_size,
     cudaStream_t stream,
@@ -4033,19 +4109,41 @@ void launchTransformAndCollectResidualStatsSpatialGridKernel(
     Scalar max_correspondence_distance,
     Scalar* output_points,
     const IcpTargetSpatialGrid& target_grid,
-    RawIcpResidualStats* partial_stats)
+    RawIcpResidualStats* partial_stats,
+    bool try_transformed_exact_pointwise)
 {
-#ifdef PLAPOINT_ENABLE_TESTING
-    recordTransformedExactPointwiseResidualCallForTesting(
-        target_grid.target_points != nullptr && source_count == target_grid.target_count);
-    recordDirectSpatialGridKernelLaunchForTesting(target_grid.direct_lookup_active);
-#endif
-
     if (target_grid.finite_cell_bounds)
     {
         if (target_grid.direct_lookup_active)
         {
-            transformAndCollectResidualStatsSpatialGridKernel<Scalar, true, true>
+            if (try_transformed_exact_pointwise)
+            {
+                transformAndCollectResidualStatsSpatialGridKernel<Scalar, true, true, true>
+                    <<<grid_size, block_size, 0, stream>>>(
+                    transform,
+                    source_points,
+                    source_count,
+                    max_correspondence_distance,
+                    output_points,
+                    target_grid,
+                    partial_stats);
+            }
+            else
+            {
+                transformAndCollectResidualStatsSpatialGridKernel<Scalar, true, true, false>
+                    <<<grid_size, block_size, 0, stream>>>(
+                    transform,
+                    source_points,
+                    source_count,
+                    max_correspondence_distance,
+                    output_points,
+                    target_grid,
+                    partial_stats);
+            }
+        }
+        else if (try_transformed_exact_pointwise)
+        {
+            transformAndCollectResidualStatsSpatialGridKernel<Scalar, true, false, true>
                 <<<grid_size, block_size, 0, stream>>>(
                 transform,
                 source_points,
@@ -4057,7 +4155,7 @@ void launchTransformAndCollectResidualStatsSpatialGridKernel(
         }
         else
         {
-            transformAndCollectResidualStatsSpatialGridKernel<Scalar, true, false>
+            transformAndCollectResidualStatsSpatialGridKernel<Scalar, true, false, false>
                 <<<grid_size, block_size, 0, stream>>>(
                 transform,
                 source_points,
@@ -4072,7 +4170,34 @@ void launchTransformAndCollectResidualStatsSpatialGridKernel(
 
     if (target_grid.direct_lookup_active)
     {
-        transformAndCollectResidualStatsSpatialGridKernel<Scalar, false, true>
+        if (try_transformed_exact_pointwise)
+        {
+            transformAndCollectResidualStatsSpatialGridKernel<Scalar, false, true, true>
+                <<<grid_size, block_size, 0, stream>>>(
+                transform,
+                source_points,
+                source_count,
+                max_correspondence_distance,
+                output_points,
+                target_grid,
+                partial_stats);
+        }
+        else
+        {
+            transformAndCollectResidualStatsSpatialGridKernel<Scalar, false, true, false>
+                <<<grid_size, block_size, 0, stream>>>(
+                transform,
+                source_points,
+                source_count,
+                max_correspondence_distance,
+                output_points,
+                target_grid,
+                partial_stats);
+        }
+    }
+    else if (try_transformed_exact_pointwise)
+    {
+        transformAndCollectResidualStatsSpatialGridKernel<Scalar, false, false, true>
             <<<grid_size, block_size, 0, stream>>>(
             transform,
             source_points,
@@ -4084,7 +4209,7 @@ void launchTransformAndCollectResidualStatsSpatialGridKernel(
     }
     else
     {
-        transformAndCollectResidualStatsSpatialGridKernel<Scalar, false, false>
+        transformAndCollectResidualStatsSpatialGridKernel<Scalar, false, false, false>
             <<<grid_size, block_size, 0, stream>>>(
             transform,
             source_points,
@@ -4094,6 +4219,44 @@ void launchTransformAndCollectResidualStatsSpatialGridKernel(
             target_grid,
             partial_stats);
     }
+}
+
+template <typename Scalar>
+void launchTransformAndCollectResidualStatsSpatialGridKernel(
+    int grid_size,
+    int block_size,
+    cudaStream_t stream,
+    const Scalar* transform,
+    const Scalar* source_points,
+    int source_count,
+    Scalar max_correspondence_distance,
+    Scalar* output_points,
+    const IcpTargetSpatialGrid& target_grid,
+    RawIcpResidualStats* partial_stats)
+{
+    const bool try_transformed_exact_pointwise =
+        detail::canProbeTransformedExactPointwiseStats(
+            source_count,
+            target_grid.target_points,
+            target_grid.target_count,
+            nullptr);
+#ifdef PLAPOINT_ENABLE_TESTING
+    recordTransformedExactPointwiseResidualCallForTesting(try_transformed_exact_pointwise);
+    recordDirectSpatialGridKernelLaunchForTesting(target_grid.direct_lookup_active);
+#endif
+
+    launchTransformAndCollectResidualStatsSpatialGridKernelWithExactPointwiseProbe(
+        grid_size,
+        block_size,
+        stream,
+        transform,
+        source_points,
+        source_count,
+        max_correspondence_distance,
+        output_points,
+        target_grid,
+        partial_stats,
+        try_transformed_exact_pointwise);
 }
 
 __global__ void reduceRawIcpStatsKernel(
@@ -7212,6 +7375,20 @@ void resetIcpTransformedExactPointwiseResidualCallCountForTesting()
 int icpTransformedExactPointwiseResidualCallCountForTesting()
 {
     return g_icp_transformed_exact_pointwise_residual_call_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpTransformedExactPointwiseResidualProbeCountForTesting()
+{
+    const unsigned long long zero = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyToSymbol(g_icp_transformed_exact_pointwise_residual_probe_count, &zero, sizeof(zero)));
+}
+
+unsigned long long icpTransformedExactPointwiseResidualProbeCountForTesting()
+{
+    unsigned long long count = 0;
+    PLAPOINT_CHECK_CUDA(
+        cudaMemcpyFromSymbol(&count, g_icp_transformed_exact_pointwise_residual_probe_count, sizeof(count)));
+    return count;
 }
 
 void resetIcpExactPointwiseTargetLoadCountForTesting()

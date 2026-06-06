@@ -6906,3 +6906,50 @@ Verification evidence:
   sparse compact direct lookup paths now avoid XY distance work for absent neighbor columns. The dense 100k cached-grid
   benchmark remains essentially unchanged, which is expected because that dataset does not emphasize missing compact XY
   columns.
+
+## Task 183: Skip Transform Residual Exact-Pointwise Probe When Counts Differ
+
+- Goal: transform+residual kernels should not execute the per-point transformed exact-pointwise probe when
+  `source_count != target_count`, because the probe can only reject immediately in that case. The launch path can decide
+  this once and select a kernel specialization without the probe branch.
+- RED check:
+  - Added a testing-only `g_icp_transformed_exact_pointwise_residual_probe_count` counter at the
+    `tryAcceptTransformedExactPointwiseResidual()` entry.
+  - Added `ICPGpuPathTest.TransformResidualStatsSkipsExactPointwiseProbeWhenCountsDiffer`, which runs finite-radius
+    transform+residual stats with two source points and three target points.
+  - Before implementation, the test failed with transformed exact-pointwise residual probe count 2 instead of the
+    expected 0.
+- Implementation:
+  - Added a `TryTransformedExactPointwise` template parameter to both transform+residual kernels:
+    `transformAndCollectResidualStatsKernel()` and `transformAndCollectResidualStatsSpatialGridKernel()`.
+  - Updated fallback and spatial-grid launch dispatch to call
+    `detail::canProbeTransformedExactPointwiseStats()` once on the host and instantiate probe-enabled or probe-disabled
+    kernels accordingly.
+  - Kept the exact-pointwise path enabled for equal-count source/target inputs, preserving the existing exact-hit
+    shortcut and its testing counters.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformResidualStatsSkipsExactPointwiseProbeWhenCountsDiffer`:
+    failed before implementation with probe count 2 versus expected 0, then passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformResidualStatsSkipsExactPointwiseProbeWhenCountsDiffer:ICPGpuPathTest.TransformResidualStatsSkipsSearchForExactPointwiseMatches:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.ResidualStatsOrderedHintSkipsSpatialGridSearchForFiniteRadius:ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn:ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells`:
+    6 targeted transform residual / spatial-grid tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 20 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(finite_radius_translation_(reuse_output|reuse_output_skip_final_metrics|ordered_output|ordered_output_skip_final_metrics)|stats_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid_reserved_workspace|stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid_reserved_workspace|residual_stats_finite_radius_translation_ordered|transform_residual_stats_finite_radius_translation_cached_grid|alignment_step_transformed_exact_pointwise_cached_grid|alignment_step_transformed_exact_pointwise_cache_hit)'`:
+    ran successfully on the RTX 4060 Laptop GPU.
+  - Relevant second-run rows:
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.54491 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.22208 ms,
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.536335 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.506059 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.695046 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.6954 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.210539 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.235686 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.670499 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.474023 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_ordered` = 0.031519 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.481864 ms.
+- Current conclusion:
+  transform+residual kernels now avoid impossible exact-pointwise residual probes for unequal source/target counts.
+  Equal-count benchmark rows remain at the prior level, which is expected because the probe is still intentionally
+  enabled for those cases.
