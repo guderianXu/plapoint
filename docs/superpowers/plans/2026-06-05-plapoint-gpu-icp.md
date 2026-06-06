@@ -4193,3 +4193,47 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun `GpuTransformBuffersSkipRepeatedReserveChecks` and multi-iteration GPU ICP benchmarks on real hardware to
   quantify the CPU-side helper overhead removed from repeated transform-buffer reserve calls.
+
+## Task 124: Use Reserved Workspace For Terminal GPU ICP Residual Metrics
+
+- Goal: remove another CPU-side workspace reserve check from the GPU ICP terminal final-metrics path. `alignGpu()`
+  already reserves alignment-step workspace for `source_count` before the iteration loop; that partial/result storage is
+  larger than the compact residual-stats storage needed by terminal transform+residual helpers.
+- RED check:
+  - Added test-only `g_icp_residual_stats_reserve_check_count` with reset/read accessors.
+  - Added `AlignUsesReservedWorkspaceForTerminalResidualStats`, requiring a non-identity single-iteration GPU align to
+    call residual stats once while entering `reserveResidualStats()` zero times.
+  - Before the implementation, `cmake --build build-codex-cuda -j$(nproc)` failed at link time because the new test
+    referenced the missing residual reserve-check hook. Static inspection also showed both terminal transform+residual
+    helpers called `workspace.reserveResidualStats(source_count)` internally.
+- Implementation:
+  - Added `detail::transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace()` for float and double.
+  - Added
+    `detail::transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace()`
+    for float and double.
+  - Public transform+residual helpers keep their existing self-reserving behavior for direct callers.
+  - `alignGpu()` now uses the reserved-workspace detail helpers for terminal final metrics, relying on the existing
+    pre-loop alignment-step reservation. Static assertions in `src/icp_gpu.cu` guard the required raw workspace size
+    relationship.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignUsesReservedWorkspaceForTerminalResidualStats:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics:ICPGpuPathTest.AlignChecksAlignmentStepWorkspaceOnceBeforeLoop:ICPGpuPathTest.AlignReusesGpuWorkspacesAcrossRepeatedCalls`:
+    selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    253 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `AlignUsesReservedWorkspaceForTerminalResidualStats` and compare terminal final-metrics benchmark rows on real
+  GPU hardware. The next likely optimization is to let non-target-alias terminal final metrics reuse a cached target
+  spatial-grid snapshot whenever the cache matches, not only when output aliases the target.

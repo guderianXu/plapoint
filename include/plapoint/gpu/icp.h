@@ -434,6 +434,58 @@ IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajorWithReservedWor
     double* d_step_transform,
     cudaStream_t stream = 0);
 
+/// Transform points and compute final residual metrics using workspace already reserved for source_count.
+/// The caller must reserve residual-compatible partial and result storage first.
+IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
+    const float* d_transform,
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    float* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream = 0);
+
+/// Transform points and compute final residual metrics using workspace already reserved for source_count.
+/// The caller must reserve residual-compatible partial and result storage first.
+IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
+    const double* d_transform,
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    double* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream = 0);
+
+/// Transform points and compute final residual metrics against a cached target spatial-grid snapshot using reserved
+/// residual-compatible partial and result storage.
+IcpResidualStats<float>
+transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
+    const float* d_transform,
+    const float* d_source_points,
+    int source_count,
+    float max_correspondence_distance,
+    float* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    int target_spatial_grid_cell_count,
+    cudaStream_t stream = 0);
+
+/// Transform points and compute final residual metrics against a cached target spatial-grid snapshot using reserved
+/// residual-compatible partial and result storage.
+IcpResidualStats<double>
+transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
+    const double* d_transform,
+    const double* d_source_points,
+    int source_count,
+    double max_correspondence_distance,
+    double* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    int target_spatial_grid_cell_count,
+    cudaStream_t stream = 0);
+
 } // namespace detail
 
 /// Multiply two 4x4 column-major device transforms and write C = A * B.

@@ -124,6 +124,11 @@ struct IcpAlignmentStepRawResult
     double delta;
 };
 
+static_assert(sizeof(RawIcpStats) >= sizeof(RawIcpResidualStats),
+              "ICP alignment-step partial workspace must cover residual-stats partials");
+static_assert(sizeof(IcpAlignmentStepRawResult) >= sizeof(RawIcpResidualStats),
+              "ICP alignment-step result workspace must cover residual-stats results");
+
 constexpr int kIcpStatsBlockSize = 128;
 constexpr int kIcpTransform3x4ValueCount = 12;
 
@@ -160,6 +165,7 @@ std::atomic<int> g_icp_raw_stats_step_kernel_launch_count{0};
 std::atomic<int> g_icp_alignment_step_call_count{0};
 std::atomic<int> g_icp_alignment_step_reserve_count{0};
 std::atomic<int> g_icp_alignment_step_reserve_check_count{0};
+std::atomic<int> g_icp_residual_stats_reserve_check_count{0};
 std::atomic<int> g_icp_host_synchronization_count{0};
 std::atomic<int> g_icp_target_spatial_grid_build_count{0};
 std::atomic<int> g_icp_fallback_tile_bound_kernel_launch_count{0};
@@ -3752,7 +3758,8 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
     Scalar max_correspondence_distance,
     Scalar* d_output_points,
     IcpCorrespondenceStatsWorkspace& workspace,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    bool reserve_workspace)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
@@ -3771,7 +3778,10 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
         throw std::invalid_argument("ICP GPU: device pointers must not be null");
     }
 
-    workspace.reserveResidualStats(source_count);
+    if (reserve_workspace)
+    {
+        workspace.reserveResidualStats(source_count);
+    }
 
     constexpr int block_size = kIcpStatsBlockSize;
     const int grid_size = icpStatsPartialCount(source_count);
@@ -3848,7 +3858,8 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
     Scalar* d_output_points,
     IcpCorrespondenceStatsWorkspace& workspace,
     int target_spatial_grid_cell_count,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    bool reserve_workspace)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
@@ -3884,7 +3895,10 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
         throw std::invalid_argument("ICP GPU: cached target spatial grid snapshot is not available");
     }
 
-    workspace.reserveResidualStats(source_count);
+    if (reserve_workspace)
+    {
+        workspace.reserveResidualStats(source_count);
+    }
 
     IcpTargetSpatialGrid target_grid{};
     target_grid.active = true;
@@ -4573,6 +4587,16 @@ int icpAlignmentStepReserveCheckCountForTesting()
     return g_icp_alignment_step_reserve_check_count.load(std::memory_order_relaxed);
 }
 
+void resetIcpResidualStatsReserveCheckCountForTesting()
+{
+    g_icp_residual_stats_reserve_check_count.store(0, std::memory_order_relaxed);
+}
+
+int icpResidualStatsReserveCheckCountForTesting()
+{
+    return g_icp_residual_stats_reserve_check_count.load(std::memory_order_relaxed);
+}
+
 void resetIcpHostSynchronizationCountForTesting()
 {
     g_icp_host_synchronization_count.store(0, std::memory_order_relaxed);
@@ -4744,6 +4768,10 @@ void IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(int source_count)
 
 void IcpCorrespondenceStatsWorkspace::reserveResidualStats(int source_count)
 {
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_residual_stats_reserve_check_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+
     if (source_count < 0)
     {
         throw std::invalid_argument("ICP GPU: source point count must not be negative");
@@ -5050,7 +5078,8 @@ IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsColumnMajor(
         max_correspondence_distance,
         d_output_points,
         workspace,
-        stream);
+        stream,
+        true);
 }
 
 IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsColumnMajor(
@@ -5073,7 +5102,8 @@ IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsColumnMajor(
         max_correspondence_distance,
         d_output_points,
         workspace,
-        stream);
+        stream,
+        true);
 }
 
 IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajor(
@@ -5094,7 +5124,8 @@ IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsWithTargetSpati
         d_output_points,
         workspace,
         target_spatial_grid_cell_count,
-        stream);
+        stream,
+        true);
 }
 
 IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajor(
@@ -5115,8 +5146,108 @@ IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsWithTargetSpat
         d_output_points,
         workspace,
         target_spatial_grid_cell_count,
-        stream);
+        stream,
+        true);
 }
+
+namespace detail
+{
+
+IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
+    const float* d_transform,
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    float* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+    return transformPointsAndComputeIcpResidualStatsColumnMajorImpl(
+        d_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        d_output_points,
+        workspace,
+        stream,
+        false);
+}
+
+IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
+    const double* d_transform,
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    double* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+    return transformPointsAndComputeIcpResidualStatsColumnMajorImpl(
+        d_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        d_output_points,
+        workspace,
+        stream,
+        false);
+}
+
+IcpResidualStats<float>
+transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
+    const float* d_transform,
+    const float* d_source_points,
+    int source_count,
+    float max_correspondence_distance,
+    float* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    int target_spatial_grid_cell_count,
+    cudaStream_t stream)
+{
+    return transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorImpl(
+        d_transform,
+        d_source_points,
+        source_count,
+        max_correspondence_distance,
+        d_output_points,
+        workspace,
+        target_spatial_grid_cell_count,
+        stream,
+        false);
+}
+
+IcpResidualStats<double>
+transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
+    const double* d_transform,
+    const double* d_source_points,
+    int source_count,
+    double max_correspondence_distance,
+    double* d_output_points,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    int target_spatial_grid_cell_count,
+    cudaStream_t stream)
+{
+    return transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorImpl(
+        d_transform,
+        d_source_points,
+        source_count,
+        max_correspondence_distance,
+        d_output_points,
+        workspace,
+        target_spatial_grid_cell_count,
+        stream,
+        false);
+}
+
+} // namespace detail
 
 IcpStepTransformResult<float> computeIcpStepTransformFromStats(
     const IcpCorrespondenceStats<float>& stats,
