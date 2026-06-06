@@ -4282,3 +4282,46 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun `AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput` and compare
   `gpu_icp_finite_radius_translation_reuse_output` before/after this commit on real GPU hardware.
+
+## Task 126: Reuse Pinned Host Storage For Compact Alignment-Step Result
+
+- Goal: avoid pageable host staging for the compact per-iteration alignment-step result copied from device to host.
+  The host synchronization count is intentionally unchanged; this task only replaces the small stack result object with
+  reusable pinned host storage owned by `IcpCorrespondenceStatsWorkspace`.
+- RED check:
+  - Added test-only `g_icp_host_result_storage_allocation_count` with reset/read accessors.
+  - Added `AlignmentStepWorkspaceReusesPinnedHostResultStorage`, which reserves compact alignment-step workspace twice
+    for the same source count and requires the pinned host result pointer and allocation counter to remain unchanged on
+    the second reserve.
+  - Before the implementation, `cmake --build build-codex-cuda -j$(nproc)` failed because
+    `IcpCorrespondenceStatsWorkspace::hostResultStorage()` did not exist.
+- Implementation:
+  - Added `gpu::HostPinnedBuffer<T>` as a small move-only RAII wrapper around `cudaHostAlloc()` and `cudaFreeHost()`.
+  - Added `_host_result_storage`, `hostResultStorage()`, and `reserveHostResultStorage()` to
+    `IcpCorrespondenceStatsWorkspace`.
+  - Made `reserveAlignmentStep()` reserve the host result buffer together with compact partial/result device storage
+    and include it in the fast reuse check.
+  - Made `computeIcpAlignmentStepColumnMajorImpl()` copy `IcpAlignmentStepRawResult` into the reusable pinned host
+    result workspace before synchronizing and converting it to the public result.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignmentStepWorkspaceReusesPinnedHostResultStorage:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPGpuPathTest.AlignChecksAlignmentStepWorkspaceOnceBeforeLoop`:
+    selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    255 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `AlignmentStepWorkspaceReusesPinnedHostResultStorage` on real GPU hardware and compare compact alignment-step
+  benchmark rows before/after this commit. The expected behavior is one host-result allocation per workspace reservation
+  size and the same host synchronization count as before.

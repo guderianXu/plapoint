@@ -104,6 +104,77 @@ private:
     std::size_t m_count = 0;
 };
 
+template <typename T>
+class HostPinnedBuffer
+{
+public:
+    HostPinnedBuffer() = default;
+
+    explicit HostPinnedBuffer(std::size_t count)
+    {
+        allocate(count);
+    }
+
+    HostPinnedBuffer(const HostPinnedBuffer&) = delete;
+    HostPinnedBuffer& operator=(const HostPinnedBuffer&) = delete;
+
+    HostPinnedBuffer(HostPinnedBuffer&& other) noexcept
+        : m_ptr(other.m_ptr)
+        , m_count(other.m_count)
+    {
+        other.m_ptr = nullptr;
+        other.m_count = 0;
+    }
+
+    HostPinnedBuffer& operator=(HostPinnedBuffer&& other) noexcept
+    {
+        if (this != &other)
+        {
+            reset();
+            m_ptr = other.m_ptr;
+            m_count = other.m_count;
+            other.m_ptr = nullptr;
+            other.m_count = 0;
+        }
+        return *this;
+    }
+
+    ~HostPinnedBuffer()
+    {
+        reset();
+    }
+
+    void allocate(std::size_t count)
+    {
+        reset();
+        if (count == 0)
+        {
+            return;
+        }
+
+        PLAPOINT_CHECK_CUDA(cudaHostAlloc(&m_ptr, count * sizeof(T), cudaHostAllocDefault));
+        m_count = count;
+    }
+
+    void reset() noexcept
+    {
+        if (m_ptr)
+        {
+            static_cast<void>(cudaFreeHost(m_ptr));
+            m_ptr = nullptr;
+            m_count = 0;
+        }
+    }
+
+    T* get() { return m_ptr; }
+    const T* get() const { return m_ptr; }
+    std::size_t size() const { return m_count; }
+
+private:
+    T* m_ptr = nullptr;
+    std::size_t m_count = 0;
+};
+
 } // namespace gpu
 } // namespace plapoint
 

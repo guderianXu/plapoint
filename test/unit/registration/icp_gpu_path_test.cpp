@@ -180,6 +180,8 @@ void resetIcpAlignmentStepReserveCheckCountForTesting();
 int icpAlignmentStepReserveCheckCountForTesting();
 void resetIcpHostSynchronizationCountForTesting();
 int icpHostSynchronizationCountForTesting();
+void resetIcpHostResultStorageAllocationCountForTesting();
+int icpHostResultStorageAllocationCountForTesting();
 void resetIcpTargetTileBoundComputationCountForTesting();
 unsigned long long icpTargetTileBoundComputationCountForTesting();
 void resetIcpTargetTileLoadCountForTesting();
@@ -2082,6 +2084,27 @@ TEST(ICPGpuPathTest, CorrespondenceStatsWorkspaceCanReserveCompactAlignmentStepR
     EXPECT_NE(compact_workspace.statsStorage(), nullptr);
     EXPECT_EQ(compact_workspace.partialCapacity(), full_workspace.partialCapacity());
     EXPECT_LT(compact_workspace._stats_storage.size(), full_workspace._stats_storage.size());
+}
+
+TEST(ICPGpuPathTest, AlignmentStepWorkspaceReusesPinnedHostResultStorage)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+
+    plapoint::gpu::resetIcpHostResultStorageAllocationCountForTesting();
+    workspace.reserveAlignmentStep(4);
+    auto* first_host_result = workspace.hostResultStorage();
+
+    ASSERT_NE(first_host_result, nullptr);
+    EXPECT_EQ(plapoint::gpu::icpHostResultStorageAllocationCountForTesting(), 1);
+
+    workspace.reserveAlignmentStep(4);
+    EXPECT_EQ(workspace.hostResultStorage(), first_host_result);
+    EXPECT_EQ(plapoint::gpu::icpHostResultStorageAllocationCountForTesting(), 1);
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsWorkspaceCanReserveCompactResidualStats)

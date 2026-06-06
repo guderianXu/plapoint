@@ -124,6 +124,9 @@ public:
     /// Return the reusable final stats storage pointer, or null before reserve().
     unsigned char* statsStorage() { return _stats_storage.get(); }
 
+    /// Return the reusable pinned host result storage pointer, or null before reserveAlignmentStep().
+    unsigned char* hostResultStorage() { return _host_result_storage.get(); }
+
     /// Return the reusable target tile bounds storage pointer, or null before reserveTargetTileBounds().
     unsigned char* targetTileBoundsStorage() { return _target_tile_bounds_storage.get(); }
 
@@ -154,9 +157,11 @@ public:
 private:
     void reservePartialStorage(int source_count, std::size_t bytes_per_partial);
     void reserveStatsStorage(std::size_t byte_count);
+    void reserveHostResultStorage(std::size_t byte_count);
 
     DeviceBuffer<unsigned char> _partial_storage;
     DeviceBuffer<unsigned char> _stats_storage;
+    HostPinnedBuffer<unsigned char> _host_result_storage;
     DeviceBuffer<unsigned char> _target_tile_bounds_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_keys_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_unique_keys_storage;

@@ -175,6 +175,7 @@ std::atomic<int> g_icp_transform_points_call_count{0};
 std::atomic<int> g_icp_transform_multiply_call_count{0};
 std::atomic<int> g_icp_identity_transform_write_count{0};
 std::atomic<int> g_icp_target_spatial_grid_prepare_count{0};
+std::atomic<int> g_icp_host_result_storage_allocation_count{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
 __device__ unsigned long long g_icp_target_candidate_visit_count;
 __device__ unsigned long long g_icp_target_index_load_count;
@@ -4343,7 +4344,11 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
     const int grid_size = icpStatsPartialCount(source_count);
     auto* d_partials = reinterpret_cast<RawIcpStats*>(stats_workspace.partialStorage());
     auto* d_result = reinterpret_cast<IcpAlignmentStepRawResult*>(stats_workspace.statsStorage());
-    IcpAlignmentStepRawResult raw_result{};
+    auto* h_result = reinterpret_cast<IcpAlignmentStepRawResult*>(stats_workspace.hostResultStorage());
+    if (!h_result)
+    {
+        throw std::invalid_argument("ICP GPU: alignment-step host result workspace is not reserved");
+    }
 
     const bool exact_pointwise_stats = launchExactPointwiseAlignmentStep(
         d_source_points,
@@ -4359,15 +4364,15 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
 
     if (exact_pointwise_stats)
     {
-        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpAlignmentStepRawResult),
+        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(IcpAlignmentStepRawResult),
                                             cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
         g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
 #endif
         PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-        if (std::isfinite(raw_result.residual_sq_sum))
+        if (std::isfinite(h_result->residual_sq_sum))
         {
-            return makeHostAlignmentStepResult<Scalar>(raw_result);
+            return makeHostAlignmentStepResult<Scalar>(*h_result);
         }
     }
 
@@ -4424,13 +4429,13 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
         PLAPOINT_CHECK_CUDA(cudaGetLastError());
     }
 
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw_result, d_result, sizeof(IcpAlignmentStepRawResult),
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(IcpAlignmentStepRawResult),
                                         cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
 #endif
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-    return makeHostAlignmentStepResult<Scalar>(raw_result);
+    return makeHostAlignmentStepResult<Scalar>(*h_result);
 }
 
 } // namespace
@@ -4612,6 +4617,16 @@ int icpHostSynchronizationCountForTesting()
     return g_icp_host_synchronization_count.load(std::memory_order_relaxed);
 }
 
+void resetIcpHostResultStorageAllocationCountForTesting()
+{
+    g_icp_host_result_storage_allocation_count.store(0, std::memory_order_relaxed);
+}
+
+int icpHostResultStorageAllocationCountForTesting()
+{
+    return g_icp_host_result_storage_allocation_count.load(std::memory_order_relaxed);
+}
+
 void resetIcpIdentityTransformWriteCountForTesting()
 {
     g_icp_identity_transform_write_count.store(0, std::memory_order_relaxed);
@@ -4768,7 +4783,8 @@ void IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(int source_count)
         static_cast<std::size_t>(required_partials) * sizeof(RawIcpStats);
     if (partialCapacity() >= required_partials &&
         _partial_storage.size() >= required_partial_bytes &&
-        _stats_storage.size() >= sizeof(IcpAlignmentStepRawResult))
+        _stats_storage.size() >= sizeof(IcpAlignmentStepRawResult) &&
+        _host_result_storage.size() >= sizeof(IcpAlignmentStepRawResult))
     {
         return;
     }
@@ -4779,6 +4795,7 @@ void IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(int source_count)
 
     reservePartialStorage(source_count, sizeof(RawIcpStats));
     reserveStatsStorage(sizeof(IcpAlignmentStepRawResult));
+    reserveHostResultStorage(sizeof(IcpAlignmentStepRawResult));
 }
 
 void IcpCorrespondenceStatsWorkspace::reserveResidualStats(int source_count)
@@ -4819,6 +4836,17 @@ void IcpCorrespondenceStatsWorkspace::reserveStatsStorage(std::size_t byte_count
     if (_stats_storage.size() < byte_count)
     {
         _stats_storage.allocate(byte_count);
+    }
+}
+
+void IcpCorrespondenceStatsWorkspace::reserveHostResultStorage(std::size_t byte_count)
+{
+    if (_host_result_storage.size() < byte_count)
+    {
+        _host_result_storage.allocate(byte_count);
+#ifdef PLAPOINT_ENABLE_TESTING
+        g_icp_host_result_storage_allocation_count.fetch_add(1, std::memory_order_relaxed);
+#endif
     }
 }
 
