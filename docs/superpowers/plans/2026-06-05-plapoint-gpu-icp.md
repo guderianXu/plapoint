@@ -5811,3 +5811,52 @@ Verification evidence:
   direct full stats+step callers can now opt into ordered correspondences and avoid target-grid work. On the 100k
   finite-radius translation benchmark, the ordered full stats+step path is about 3.4x faster than the cached-grid
   full stats+step path and about 6.9x faster than the new-workspace path.
+
+## Task 160: Prefer Same-Buffer Exact Identity For Ordered Alignment Steps
+
+- Goal: avoid the generic ordered alignment-step solve when `assume_ordered_correspondences` is enabled but source and
+  target already point at the same GPU buffer. The ordered path already avoided target coordinate loads in this case,
+  but still launched the general step-solver reduce instead of the exact identity-step reduce.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignmentStepPrefersSameBufferExactIdentityWhenOrdered`, calling
+    `computeIcpAlignmentStepColumnMajorWithReservedWorkspace(..., true)` with source and target set to the same GPU
+    point buffer and a finite correspondence radius.
+  - The first build failed with missing test counter symbols for the exact identity-step kernel launch.
+  - Added the test-only identity-step kernel launch counter, without changing branch selection; the test then failed
+    as expected with `icpExactPointwiseIdentityStepKernelLaunchCountForTesting() == 0`.
+  - Added benchmark row-registration expectation for
+    `gpu_icp_alignment_step_ordered_same_buffer_finite_radius`; the row-registration CTest failed with the expected
+    missing-row error.
+- Implementation:
+  - In `launchExactPointwiseAlignmentStep()`, same-buffer exact pointwise stats now take precedence before the ordered
+    finite-radius path.
+  - Added test-only accounting for exact identity-step reduce kernel launches.
+  - Added `gpu_icp_alignment_step_ordered_same_buffer_finite_radius`, using the ordered direct alignment-step API with
+    source and target sharing the same device buffer.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignmentStepPrefersSameBufferExactIdentityWhenOrdered`:
+    1 test, 0 failed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignmentStepPrefersSameBufferExactIdentityWhenOrdered:ICPGpuPathTest.AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs:ICPGpuPathTest.AlignCanUseOrderedPointwiseCorrespondencesForFiniteRadiusTranslation:ICPGpuPathTest.AlignmentStepCompactResultMatchesFullStatsStepResult:ICPGpuPathTest.StatsAndStepCanUseOrderedCorrespondencesForFiniteRadiusTranslation`:
+    5 tests, 0 failed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) && ctest --test-dir build-codex-cuda-bench-only -R plapoint.benchmarks.gpu_icp_rows_registered --output-on-failure`:
+    passed after benchmark implementation.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 50 --icp-points 100000 --icp-max-iterations 1 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_alignment_step_exact_pointwise_same_buffer` = 0.180293 ms,
+    `gpu_icp_alignment_step_exact_pointwise_same_buffer_reserved_workspace` = 0.185879 ms,
+    `gpu_icp_alignment_step_ordered_same_buffer_finite_radius` = 0.186146 ms,
+    `gpu_icp_stats_step_finite_radius_translation_ordered` = 0.251675 ms, and
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics_one_iteration` = 0.253629 ms.
+- Full verification performed in this session:
+  - `git diff --check`: clean.
+  - GPU: RTX 4060 Laptop GPU, driver 580.159.03, NVIDIA-SMI CUDA version 13.0.
+  - `cmake --build build-codex-cpu -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, 1 CUDA-only test skipped.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 290/290 passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+- Current conclusion:
+  ordered same-buffer alignment now reaches the exact identity-step cost class. On the 100k benchmark, it is effectively
+  tied with the exact same-buffer reserved row and is about 26% faster than the ordered finite-radius translation
+  stats+step row.

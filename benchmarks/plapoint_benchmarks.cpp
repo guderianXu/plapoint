@@ -1278,6 +1278,49 @@ void benchmarkGpuIcpAlignmentStepExactPointwiseSameBufferReservedWorkspace(int i
     }
 }
 
+void benchmarkGpuIcpAlignmentStepOrderedSameBufferFiniteRadius(int icp_points, int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(
+            "gpu_icp_alignment_step_ordered_same_buffer_finite_radius",
+            "no_usable_cuda_device");
+        return;
+    }
+
+    auto cpu_points = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto points = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_points->toGpu());
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    stats_workspace.reserveAlignmentStep(static_cast<int>(points->size()));
+
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        const auto result = plapoint::gpu::detail::computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
+            points->points().data(),
+            static_cast<int>(points->size()),
+            points->points().data(),
+            static_cast<int>(points->size()),
+            0.02f,
+            stats_workspace,
+            step_transform.data(),
+            0,
+            true);
+        sink += static_cast<std::size_t>(std::max(0, result.active_count));
+    });
+    printResult(
+        "gpu_icp_alignment_step_ordered_same_buffer_finite_radius",
+        icp_points,
+        iterations,
+        elapsed);
+    if (sink == 0)
+    {
+        std::cerr
+            << "gpu_icp_alignment_step_ordered_same_buffer_finite_radius"
+            << " produced no correspondences\n";
+    }
+}
+
 void benchmarkGpuIcpAlignmentStepTransformedExactPointwiseCachedGrid(int icp_points, int iterations)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
@@ -1982,6 +2025,9 @@ int main(int argc, char** argv)
         options.iterations);
     benchmarkGpuIcpAlignmentStepExactPointwiseSameBuffer(options.icp_points, options.iterations);
     benchmarkGpuIcpAlignmentStepExactPointwiseSameBufferReservedWorkspace(
+        options.icp_points,
+        options.iterations);
+    benchmarkGpuIcpAlignmentStepOrderedSameBufferFiniteRadius(
         options.icp_points,
         options.iterations);
     benchmarkGpuIcpAlignmentStepTransformedExactPointwiseCachedGrid(

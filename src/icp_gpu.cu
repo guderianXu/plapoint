@@ -190,6 +190,7 @@ std::atomic<int> g_icp_residual_stats_call_count{0};
 std::atomic<std::uintptr_t> g_icp_first_stats_source_pointer{0};
 std::atomic<int> g_icp_step_transform_input_copy_count{0};
 std::atomic<int> g_icp_exact_pointwise_step_call_count{0};
+std::atomic<int> g_icp_exact_pointwise_identity_step_kernel_launch_count{0};
 std::atomic<int> g_icp_transformed_exact_pointwise_alignment_step_call_count{0};
 std::atomic<int> g_icp_raw_stats_step_kernel_launch_count{0};
 std::atomic<int> g_icp_stats_step_host_result_copy_count{0};
@@ -4166,6 +4167,7 @@ bool launchExactPointwiseStatsAndIdentityStep(
 
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_exact_pointwise_step_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_exact_pointwise_identity_step_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
 #endif
     reduceRawIcpStatsAndSetExactPointwiseIdentityStepKernel<Scalar><<<1, block_size, 0, stream>>>(
         d_partials,
@@ -4191,6 +4193,34 @@ bool launchExactPointwiseAlignmentStep(
     bool assume_ordered_correspondences)
 {
     constexpr int block_size = kIcpStatsBlockSize;
+    if (detail::canUseSameBufferExactPointwiseStats(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            nullptr))
+    {
+        launchExactPointwiseCorrespondencePartials<Scalar>(
+            d_source_points,
+            d_target_points,
+            source_count,
+            d_partials,
+            partial_count,
+            stream);
+
+#ifdef PLAPOINT_ENABLE_TESTING
+        g_icp_exact_pointwise_step_call_count.fetch_add(1, std::memory_order_relaxed);
+        g_icp_exact_pointwise_identity_step_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+        reduceRawIcpStatsAndSetExactPointwiseIdentityAlignmentStepKernel<Scalar><<<1, block_size, 0, stream>>>(
+            d_partials,
+            partial_count,
+            d_step_transform,
+            d_result);
+        PLAPOINT_CHECK_CUDA(cudaGetLastError());
+        return true;
+    }
+
     if (assume_ordered_correspondences)
     {
         if (source_count != target_count)
@@ -4240,6 +4270,7 @@ bool launchExactPointwiseAlignmentStep(
 
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_exact_pointwise_step_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_exact_pointwise_identity_step_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
 #endif
     reduceRawIcpStatsAndSetExactPointwiseIdentityAlignmentStepKernel<Scalar><<<1, block_size, 0, stream>>>(
         d_partials,
@@ -4286,6 +4317,7 @@ bool launchTransformedExactPointwiseAlignmentStep(
 
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_transformed_exact_pointwise_alignment_step_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_exact_pointwise_identity_step_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
 #endif
     if constexpr (AccumulateTransform)
     {
@@ -6116,6 +6148,16 @@ void resetIcpExactPointwiseStepCallCountForTesting()
 int icpExactPointwiseStepCallCountForTesting()
 {
     return g_icp_exact_pointwise_step_call_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpExactPointwiseIdentityStepKernelLaunchCountForTesting()
+{
+    g_icp_exact_pointwise_identity_step_kernel_launch_count.store(0, std::memory_order_relaxed);
+}
+
+int icpExactPointwiseIdentityStepKernelLaunchCountForTesting()
+{
+    return g_icp_exact_pointwise_identity_step_kernel_launch_count.load(std::memory_order_relaxed);
 }
 
 void resetIcpTransformedExactPointwiseAlignmentStepCallCountForTesting()

@@ -178,6 +178,8 @@ void resetIcpStepTransformInputCopyCountForTesting();
 int icpStepTransformInputCopyCountForTesting();
 void resetIcpExactPointwiseStepCallCountForTesting();
 int icpExactPointwiseStepCallCountForTesting();
+void resetIcpExactPointwiseIdentityStepKernelLaunchCountForTesting();
+int icpExactPointwiseIdentityStepKernelLaunchCountForTesting();
 void resetIcpTransformedExactPointwiseAlignmentStepCallCountForTesting();
 int icpTransformedExactPointwiseAlignmentStepCallCountForTesting();
 void resetIcpTransformedExactPointwiseResidualCallCountForTesting();
@@ -3704,6 +3706,48 @@ TEST(ICPGpuPathTest, AlignCanUseOrderedPointwiseCorrespondencesForFiniteRadiusTr
     EXPECT_NEAR(final_transform.getValue(1, 3), 0.05f, 1.0e-5f);
     EXPECT_NEAR(final_transform.getValue(2, 3), -0.025f, 1.0e-5f);
     EXPECT_EQ(output.size(), source->size());
+}
+
+TEST(ICPGpuPathTest, AlignmentStepPrefersSameBufferExactIdentityWhenOrdered)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto points = makeNonCollinearPoints().toGpu();
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+    workspace.reserveFloatAlignmentStep(static_cast<int>(points.rows()));
+
+    plapoint::gpu::resetIcpExactPointwiseIdentityStepKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpExactPointwiseTargetLoadCountForTesting();
+    const auto result = plapoint::gpu::detail::computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
+        points.data(),
+        static_cast<int>(points.rows()),
+        points.data(),
+        static_cast<int>(points.rows()),
+        2.0f,
+        workspace,
+        step_transform.data(),
+        0,
+        true);
+
+    EXPECT_EQ(result.active_count, static_cast<int>(points.rows()));
+    EXPECT_TRUE(result.step_valid);
+    EXPECT_NEAR(result.residual_sq_sum, 0.0, 1.0e-8);
+    EXPECT_EQ(plapoint::gpu::icpExactPointwiseTargetLoadCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpExactPointwiseIdentityStepKernelLaunchCountForTesting(), 1);
+
+    const auto step_cpu = step_transform.toCpu();
+    for (int row = 0; row < 4; ++row)
+    {
+        for (int col = 0; col < 4; ++col)
+        {
+            const float expected = row == col ? 1.0f : 0.0f;
+            EXPECT_NEAR(step_cpu.getValue(row, col), expected, 1.0e-6f);
+        }
+    }
 }
 
 TEST(ICPGpuPathTest, AlignPropagatesOrderedCorrespondencesToTransformedIterations)
