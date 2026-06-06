@@ -1597,6 +1597,35 @@ Verification evidence:
   rerun the selected GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime behavior and
   performance impact.
 
+## Task 58: Unroll Spatial-Grid XY Neighbor Offset Loops
+
+- Goal: reduce small per-thread overhead in the finite-radius spatial-grid candidate search. The correspondence,
+  residual, and transform+residual spatial-grid kernels each used a local `offset_order[3]` array and short dynamic
+  loop condition while scanning the fixed `{0, -1, 1}` XY neighbor cells.
+- Implementation:
+  - Added `icpNeighborCellOffset()` as a small `__forceinline__` device helper for the fixed neighbor offset order.
+  - Removed the three per-kernel `offset_order` local arrays.
+  - Changed the three XY neighbor loops to canonical fixed-trip-count loops with `#pragma unroll`, preserving the
+    existing early stop after exact matches via explicit `break` checks.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYExceedsRadius:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest:ICPGpuPathTest.ResidualStatsStopsSpatialGridLookupsAfterExactMatch`:
+    4 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    225 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran, but all GPU rows reported `skipped,no_usable_cuda_device`.
+- Follow-up required when a CUDA device is available:
+  rerun the selected GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime behavior and
+  performance impact.
+
 ## Task 56: Force-Inline GPU ICP Spatial-Grid Helpers
 
 - Goal: reduce device-side call overhead in the finite-radius spatial-grid ICP hot path without changing algorithmic

@@ -243,6 +243,11 @@ __device__ __forceinline__ bool offsetGridCellCoordinate(int base, int offset, i
     return true;
 }
 
+__device__ __forceinline__ int icpNeighborCellOffset(int offset_index)
+{
+    return offset_index == 0 ? 0 : (offset_index == 1 ? -1 : 1);
+}
+
 template <typename Scalar>
 struct ComputeIcpTargetGridCellKey
 {
@@ -758,21 +763,30 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
             max_z = source_key.z;
         }
 
-        const int offset_order[3]{0, -1, 1};
         const bool can_stop_after_exact_match = correspondence_indices == nullptr;
         bool stop_cell_scan = false;
-        for (int dx_offset_idx = 0; dx_offset_idx < 3 && !stop_cell_scan; ++dx_offset_idx)
+#pragma unroll
+        for (int dx_offset_idx = 0; dx_offset_idx < 3; ++dx_offset_idx)
         {
+            if (stop_cell_scan)
+            {
+                break;
+            }
             int query_x = 0;
-            const int dx_cell = offset_order[dx_offset_idx];
+            const int dx_cell = icpNeighborCellOffset(dx_offset_idx);
             if (!offsetGridCellCoordinate(source_key.x, dx_cell, query_x))
             {
                 continue;
             }
-            for (int dy_offset_idx = 0; dy_offset_idx < 3 && !stop_cell_scan; ++dy_offset_idx)
+#pragma unroll
+            for (int dy_offset_idx = 0; dy_offset_idx < 3; ++dy_offset_idx)
             {
+                if (stop_cell_scan)
+                {
+                    break;
+                }
                 int query_y = 0;
-                const int dy_cell = offset_order[dy_offset_idx];
+                const int dy_cell = icpNeighborCellOffset(dy_offset_idx);
                 if (!offsetGridCellCoordinate(source_key.y, dy_cell, query_y))
                 {
                     continue;
@@ -1188,20 +1202,29 @@ __global__ void collectResidualStatsSpatialGridKernel(
             max_z = source_key.z;
         }
 
-        const int offset_order[3]{0, -1, 1};
         bool stop_cell_scan = false;
-        for (int dx_offset_idx = 0; dx_offset_idx < 3 && !stop_cell_scan; ++dx_offset_idx)
+#pragma unroll
+        for (int dx_offset_idx = 0; dx_offset_idx < 3; ++dx_offset_idx)
         {
+            if (stop_cell_scan)
+            {
+                break;
+            }
             int query_x = 0;
-            const int dx_cell = offset_order[dx_offset_idx];
+            const int dx_cell = icpNeighborCellOffset(dx_offset_idx);
             if (!offsetGridCellCoordinate(source_key.x, dx_cell, query_x))
             {
                 continue;
             }
-            for (int dy_offset_idx = 0; dy_offset_idx < 3 && !stop_cell_scan; ++dy_offset_idx)
+#pragma unroll
+            for (int dy_offset_idx = 0; dy_offset_idx < 3; ++dy_offset_idx)
             {
+                if (stop_cell_scan)
+                {
+                    break;
+                }
                 int query_y = 0;
-                const int dy_cell = offset_order[dy_offset_idx];
+                const int dy_cell = icpNeighborCellOffset(dy_offset_idx);
                 if (!offsetGridCellCoordinate(source_key.y, dy_cell, query_y))
                 {
                     continue;
@@ -1534,20 +1557,29 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
             max_z = source_key.z;
         }
 
-        const int offset_order[3]{0, -1, 1};
         bool stop_cell_scan = false;
-        for (int dx_offset_idx = 0; dx_offset_idx < 3 && !stop_cell_scan; ++dx_offset_idx)
+#pragma unroll
+        for (int dx_offset_idx = 0; dx_offset_idx < 3; ++dx_offset_idx)
         {
+            if (stop_cell_scan)
+            {
+                break;
+            }
             int query_x = 0;
-            const int dx_cell = offset_order[dx_offset_idx];
+            const int dx_cell = icpNeighborCellOffset(dx_offset_idx);
             if (!offsetGridCellCoordinate(source_key.x, dx_cell, query_x))
             {
                 continue;
             }
-            for (int dy_offset_idx = 0; dy_offset_idx < 3 && !stop_cell_scan; ++dy_offset_idx)
+#pragma unroll
+            for (int dy_offset_idx = 0; dy_offset_idx < 3; ++dy_offset_idx)
             {
+                if (stop_cell_scan)
+                {
+                    break;
+                }
                 int query_y = 0;
-                const int dy_cell = offset_order[dy_offset_idx];
+                const int dy_cell = icpNeighborCellOffset(dy_offset_idx);
                 if (!offsetGridCellCoordinate(source_key.y, dy_cell, query_y))
                 {
                     continue;
