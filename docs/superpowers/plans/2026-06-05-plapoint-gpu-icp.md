@@ -2477,6 +2477,39 @@ Verification evidence:
   rerun the selected tests and compare the Task 93 `gpu_icp_alignment_step_fallback_tile_bounds_*` benchmark rows,
   especially the new-workspace row where smaller result storage can reduce per-call allocation overhead.
 
+## Task 96: Reserve Compact GPU ICP Residual Stats Storage
+
+- Goal: avoid allocating full correspondence-stats partial and result buffers for residual-only GPU ICP stats paths.
+  Residual stats kernels write `RawIcpResidualStats` partials and a `RawIcpResidualStats` final result, so reserving
+  `RawIcpStats` storage is unnecessary for standalone residual calls and the `alignGpu()` terminal final-metrics path.
+- RED:
+  - Added `ICPGpuPathTest.CorrespondenceStatsWorkspaceCanReserveCompactResidualStats`, which requires
+    `reserveResidualStats(4)` to allocate partial and final result storage smaller than full `reserve(4)`.
+  - `cmake --build build-codex-cuda -j$(nproc)` failed before implementation with
+    `IcpCorrespondenceStatsWorkspace has no member named 'reserveResidualStats'`.
+  - Static check failed before implementation because both residual implementations still called
+    `workspace.reserve(source_count)`.
+- Implementation:
+  - Added `IcpCorrespondenceStatsWorkspace::reserveResidualStats(int)`, which reserves `RawIcpResidualStats` partials
+    and final result storage.
+  - Replaced the old full-stats partial reservation helper with byte-sized `reservePartialStorage(int, size_t)`, so a
+    workspace first used for residual stats will grow correctly if a later full correspondence-stats call needs larger
+    `RawIcpStats` partials.
+  - Changed both `computeIcpResidualStatsColumnMajorImpl()` and
+    `transformPointsAndComputeIcpResidualStatsColumnMajorImpl()` to call `reserveResidualStats(source_count)`.
+  - Kept full correspondence stats and compact alignment-step reserve paths unchanged.
+- Verification performed in this session:
+  - Static check:
+    `test "$(rg -n "workspace\\.reserveResidualStats\\(source_count\\)" src/icp_gpu.cu | wc -l)" -eq 2` passed after
+    the change.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    CUDA test build succeeded after adding `reserveResidualStats()`.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsWorkspaceCanReserveCompactResidualStats:ICPGpuPathTest.CorrespondenceStatsWorkspaceCanReserveCompactAlignmentStepResult:ICPGpuPathTest.ResidualStatsUsesExactPointwiseFastPathForSameBuffer:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics`:
+    all 4 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+- Follow-up required when a CUDA device is available:
+  rerun the selected tests and benchmark ICP terminal final-metrics cases, especially non-identity terminal iterations
+  that call `transformPointsAndComputeIcpResidualStatsColumnMajor()`.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell

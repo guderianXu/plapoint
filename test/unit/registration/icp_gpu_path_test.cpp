@@ -2023,6 +2023,26 @@ TEST(ICPGpuPathTest, CorrespondenceStatsWorkspaceCanReserveCompactAlignmentStepR
     EXPECT_LT(compact_workspace._stats_storage.size(), full_workspace._stats_storage.size());
 }
 
+TEST(ICPGpuPathTest, CorrespondenceStatsWorkspaceCanReserveCompactResidualStats)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace full_workspace;
+    full_workspace.reserve(4);
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace residual_workspace;
+    residual_workspace.reserveResidualStats(4);
+
+    EXPECT_NE(residual_workspace.partialStorage(), nullptr);
+    EXPECT_NE(residual_workspace.statsStorage(), nullptr);
+    EXPECT_EQ(residual_workspace.partialCapacity(), full_workspace.partialCapacity());
+    EXPECT_LT(residual_workspace._partial_storage.size(), full_workspace._partial_storage.size());
+    EXPECT_LT(residual_workspace._stats_storage.size(), full_workspace._stats_storage.size());
+}
+
 TEST(ICPGpuPathTest, AlignDoesNotPopulateGpuPointCpuCaches)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

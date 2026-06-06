@@ -3652,7 +3652,7 @@ IcpResidualStats<Scalar> computeIcpResidualStatsColumnMajorImpl(
         throw std::invalid_argument("ICP GPU: device pointers must not be null");
     }
 
-    workspace.reserve(source_count);
+    workspace.reserveResidualStats(source_count);
 
     constexpr int block_size = kIcpStatsBlockSize;
     const int grid_size = icpStatsPartialCount(source_count);
@@ -3760,7 +3760,7 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
         throw std::invalid_argument("ICP GPU: device pointers must not be null");
     }
 
-    workspace.reserve(source_count);
+    workspace.reserveResidualStats(source_count);
 
     constexpr int block_size = kIcpStatsBlockSize;
     const int grid_size = icpStatsPartialCount(source_count);
@@ -4564,7 +4564,7 @@ void IcpCorrespondenceStatsWorkspace::reserve(int source_count)
         return;
     }
 
-    reservePartialStats(source_count);
+    reservePartialStorage(source_count, sizeof(RawIcpStats));
     reserveStatsStorage(sizeof(RawIcpStats));
 }
 
@@ -4579,16 +4579,35 @@ void IcpCorrespondenceStatsWorkspace::reserveAlignmentStep(int source_count)
         return;
     }
 
-    reservePartialStats(source_count);
+    reservePartialStorage(source_count, sizeof(RawIcpStats));
     reserveStatsStorage(sizeof(IcpAlignmentStepRawResult));
 }
 
-void IcpCorrespondenceStatsWorkspace::reservePartialStats(int source_count)
+void IcpCorrespondenceStatsWorkspace::reserveResidualStats(int source_count)
+{
+    if (source_count < 0)
+    {
+        throw std::invalid_argument("ICP GPU: source point count must not be negative");
+    }
+    if (source_count == 0)
+    {
+        return;
+    }
+
+    reservePartialStorage(source_count, sizeof(RawIcpResidualStats));
+    reserveStatsStorage(sizeof(RawIcpResidualStats));
+}
+
+void IcpCorrespondenceStatsWorkspace::reservePartialStorage(int source_count, std::size_t bytes_per_partial)
 {
     const int required_partials = icpStatsPartialCount(source_count);
+    const std::size_t required_bytes = static_cast<std::size_t>(required_partials) * bytes_per_partial;
+    if (_partial_storage.size() < required_bytes)
+    {
+        _partial_storage.allocate(required_bytes);
+    }
     if (partialCapacity() < required_partials)
     {
-        _partial_storage.allocate(static_cast<std::size_t>(required_partials) * sizeof(RawIcpStats));
         _partial_capacity = required_partials;
     }
 }
