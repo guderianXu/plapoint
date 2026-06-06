@@ -6378,3 +6378,40 @@ Verification evidence:
   0.025-0.033 ms in the 100k two-iteration benchmark rows, but it adds about 0.195 ms on the 100k nonrigid miss case.
   The default path should stay on the cached spatial-grid kernel unless the caller explicitly opts into preflight or
   ordered correspondences.
+
+## Task 171: Avoid Post-Loop Output Transform Host Synchronization
+
+- Goal: remove an unnecessary host synchronization when GPU ICP exits with the current points represented as
+  `accumulated_transform * original_source` and still needs to materialize an output cloud after the loop. Other terminal
+  output-transform paths already enqueue `transformPointsColumnMajorAsync()` on stream 0, so the post-loop path should
+  use the same asynchronous behavior.
+- RED check:
+  - Added `ICPGpuPathTest.AlignWritesPostLoopOutputTransformWithoutExtraHostSynchronization`, using a two-iteration
+    transformed exact-preflight convergence with final metrics disabled and a caller output cloud.
+  - Before the implementation, the test failed because the host synchronization count was 3 instead of the expected 2:
+    first alignment step, transformed identity confirmation, and the synchronous post-loop output transform.
+- Implementation:
+  - Replaced the post-loop `gpu::transformPointsColumnMajor()` call with `gpu::transformPointsColumnMajorAsync()` when
+    output materialization reads original source points through the final accumulated transform.
+  - Left output ownership, target-alias cache invalidation, and transform kernel launch behavior unchanged.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignWritesPostLoopOutputTransformWithoutExtraHostSynchronization`:
+    failed before implementation with host synchronization count 3, then passed after the async transform change.
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignWritesPostLoopOutputTransformWithoutExtraHostSynchronization:ICPGpuPathTest.AlignSkipsNextAccumulatedTransformBufferForLastTransformedIdentityStep:ICPGpuPathTest.AlignWithoutOutputSkipsTerminalPointTransformWhenFinalMetricsAreDisabled:ICPGpuPathTest.AlignWritesTerminalGpuTransformDirectlyToReusableOutput:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics`:
+    5 targeted output/final-metrics tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 2 --skip-cpu-icp --skip-icp-identity | rg 'binary_translation_(transform_only|reuse_output)|nonrigid'`:
+    ran successfully on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 1.94694 ms,
+    `gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations` = 2.13415 ms,
+    `gpu_icp_finite_radius_nonrigid_ordered_transform_only_two_iterations` = 0.504776 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_two_iterations` = 1.0119 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_preflight_two_iterations` = 0.981178 ms,
+    `gpu_icp_finite_radius_binary_translation_reuse_output_two_iterations` = 1.00677 ms, and
+    `gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations` = 0.989169 ms.
+- Current conclusion:
+  the post-loop output transform no longer forces an extra host synchronization in the transformed identity convergence
+  output path. The wall-clock benchmark effect is small and within run-to-run noise, but the path now matches the rest
+  of the GPU ICP terminal output behavior by leaving stream synchronization to the caller or a later GPU-to-CPU read.
