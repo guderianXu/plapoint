@@ -100,8 +100,11 @@ public:
 
     const MatrixType& points() const { return _points; }
 
+    std::uint64_t pointsVersion() const { return _points_version; }
+
     MatrixType& points()
     {
+        ++_points_version;
         invalidateCpuMirror();
         return _points;
     }
@@ -433,6 +436,7 @@ private:
     std::unique_ptr<plamatrix::DenseMatrix<int, Dev>> _faceTextureIndices;
     std::string _materialLibraryFile;
     std::string _textureImageFile;
+    std::uint64_t _points_version = 0;
     mutable std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>> _points_cpu_cache;
 };
 

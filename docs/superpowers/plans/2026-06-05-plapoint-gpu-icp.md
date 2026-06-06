@@ -3549,3 +3549,48 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   compare the new target-output row against
   `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` to quantify the direct target-output fast path.
+
+## Task 109: Version GPU Target Points for Persistent ICP Cache Validation
+
+- Goal: keep the persistent GPU ICP target spatial-grid and tile-bound caches valid when user code mutates a target
+  cloud in place between two `align()` calls. The previous cache key only used the target device pointer, so a mutable
+  `target->points()` access could change target contents without changing the pointer and allow stale target-search
+  structures to be reused.
+- RED check:
+  - Added `PointCloudTest.MutablePointAccessIncrementsPointsVersion`.
+  - Added `AlignInvalidatesPersistentGpuTargetSpatialGridCacheAfterMutableTargetPointsAccess`, expecting a second
+    spatial-grid build after external mutable target point access with the same target object.
+  - `cmake --build build-codex-cpu -j$(nproc)` failed before implementation because `PointCloud` did not expose
+    `pointsVersion()`.
+- Implementation:
+  - Added a `PointCloud::pointsVersion()` counter that increments on mutable `points()` access and remains stable for
+    const `points()` and `pointsCpu()` reads.
+  - GPU ICP now records both target point device pointer and `pointsVersion()` before using the persistent workspace
+    cache; a mismatch invalidates the cached spatial grid and tile bounds while preserving reuse for unchanged target
+    objects.
+  - Target-aliased output invalidation now resets the ICP-level cache key as well as the workspace cache metadata.
+- Verification performed in this session:
+  - `cmake --build build-codex-cpu -j$(nproc) && ./build-codex-cpu/test/plapoint_tests --gtest_filter=PointCloudTest.MutablePointAccessIncrementsPointsVersion`:
+    passed after implementation.
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignInvalidatesPersistentGpuTargetSpatialGridCacheAfterMutableTargetPointsAccess:ICPGpuPathTest.SetInputTargetKeepsPersistentGpuTargetSpatialGridCacheForSameTarget`:
+    2 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `git diff --check`:
+    clean before the plan update.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    246 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the mutable-target cache invalidation test on GPU hardware and verify unchanged-target cache reuse still builds
+  the finite-radius spatial grid only once.

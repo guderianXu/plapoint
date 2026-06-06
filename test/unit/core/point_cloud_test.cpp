@@ -49,6 +49,25 @@ TEST(PointCloudTest, PointsCpuReturnsCpuPointStorage)
     EXPECT_FLOAT_EQ(points.getValue(1, 0), 2.0f);
 }
 
+TEST(PointCloudTest, MutablePointAccessIncrementsPointsVersion)
+{
+    using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+
+    Cloud cloud(2);
+    const auto initial_version = cloud.pointsVersion();
+
+    const auto& const_cloud = static_cast<const Cloud&>(cloud);
+    (void)const_cloud.points();
+    EXPECT_EQ(cloud.pointsVersion(), initial_version);
+
+    cloud.points().setValue(0, 0, 3.0f);
+    EXPECT_GT(cloud.pointsVersion(), initial_version);
+
+    const auto after_mutable_access = cloud.pointsVersion();
+    (void)cloud.pointsCpu();
+    EXPECT_EQ(cloud.pointsVersion(), after_mutable_access);
+}
+
 #ifdef PLAPOINT_WITH_CUDA
 TEST(PointCloudTest, GpuPointsCpuCachesAndInvalidatesOnMutablePointAccess)
 {

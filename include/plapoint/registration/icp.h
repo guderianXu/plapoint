@@ -11,6 +11,7 @@
 #include <plamatrix/ops/decomposition.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -37,8 +38,7 @@ public:
             _target = cloud;
             if (!same_target)
             {
-                _gpu_stats_workspace.invalidateTargetTileBoundsCache();
-                _gpu_stats_workspace.invalidateTargetSpatialGridCache();
+                invalidateGpuTargetWorkspaceCache();
             }
             return;
         }
@@ -358,6 +358,7 @@ private:
     {
         const int source_count = checkedInt(_source->size(), "ICP: source point count exceeds int range");
         const int target_count = checkedInt(_target->size(), "ICP: target point count exceeds int range");
+        const Scalar* target_points = refreshGpuTargetWorkspaceCacheForCurrentTarget();
         const bool output_aliases_target = outputAliasesGpuTarget(output);
         bool final_points_written_to_output = false;
 
@@ -376,7 +377,7 @@ private:
             const auto stats_and_step = gpu::computeIcpAlignmentStepColumnMajor(
                 cur_points,
                 source_count,
-                _target->points().data(),
+                target_points,
                 target_count,
                 _max_corr_dist,
                 _gpu_stats_workspace,
@@ -454,7 +455,7 @@ private:
                     step_transform,
                     cur_points,
                     source_count,
-                    _target->points().data(),
+                    target_points,
                     target_count,
                     _max_corr_dist,
                     transform_output_points,
@@ -529,8 +530,30 @@ private:
         }
         if (output_aliases_target)
         {
-            _gpu_stats_workspace.invalidateTargetSpatialGridCache();
+            invalidateGpuTargetWorkspaceCache();
         }
+    }
+
+    const Scalar* refreshGpuTargetWorkspaceCacheForCurrentTarget()
+    {
+        const auto& target_points = _target->points();
+        const Scalar* target_points_data = target_points.data();
+        const std::uint64_t target_points_version = _target->pointsVersion();
+        if (_gpu_target_cache_points != target_points_data ||
+            _gpu_target_cache_points_version != target_points_version)
+        {
+            _gpu_stats_workspace.invalidateTargetSpatialGridCache();
+            _gpu_target_cache_points = target_points_data;
+            _gpu_target_cache_points_version = target_points_version;
+        }
+        return target_points_data;
+    }
+
+    void invalidateGpuTargetWorkspaceCache()
+    {
+        _gpu_stats_workspace.invalidateTargetSpatialGridCache();
+        _gpu_target_cache_points = nullptr;
+        _gpu_target_cache_points_version = 0;
     }
 
     Scalar* gpuPointScratchBuffer(int point_count, bool use_first_buffer)
@@ -926,6 +949,8 @@ private:
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_T_step;
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_points_a;
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_points_b;
+    const void* _gpu_target_cache_points = nullptr;
+    std::uint64_t _gpu_target_cache_points_version = 0;
     bool _final_T_gpu_valid = false;
 #endif
     bool _converged = false;
