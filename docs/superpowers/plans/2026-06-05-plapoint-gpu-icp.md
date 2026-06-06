@@ -3894,3 +3894,50 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun the two selected GPU tests and add a benchmark row only if index-output correspondence stats are a relevant
   public workload outside `alignGpu()`, which already omits index output.
+
+## Task 117: Preserve Requested-Index Tie Semantics
+
+- Goal: correct the Task 116 exact-pointwise index-output optimization so requested correspondence indices preserve the
+  existing nearest-neighbor tie semantics. When target points contain duplicates, the correspondence index must still be
+  the lower target index; writing `source_idx` from the exact pointwise path is not generally correct.
+- Root cause:
+  - The exact-pointwise kernel can prove only that source row `i` equals target row `i`. It cannot prove that no earlier
+    target row has the same zero distance without scanning target candidates.
+  - Existing fallback and spatial-grid correspondence searches use lower target-index tie behavior, covered by
+    `CorrespondenceStatsSpatialGridTieKeepsLowerTargetIndex`.
+- RED check:
+  - Replaced the same-buffer exact-pointwise requested-index test with
+    `CorrespondenceStatsRequestedIndicesKeepLowerDuplicateIndexForSameBuffer`, where source/target share one GPU buffer
+    and rows 0 and 1 are duplicate points. The expected index for row 1 is 0, not 1.
+  - Static inspection before the fix showed the exact-pointwise kernel accepted an optional `correspondence_indices`
+    pointer and `shouldTryExactPointwiseStats()` no longer rejected non-null index output.
+- Implementation:
+  - Restored `shouldTryExactPointwiseStats()` to reject calls with `d_correspondence_indices`.
+  - Removed the optional index-output parameter and write from `collectExactPointwiseCorrespondenceStatsKernel()`.
+  - Restored `CorrespondenceStatsStillWriteRequestedIndexOutput` to expect the safe search path instead of exact
+    pointwise output.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsStillWriteRequestedIndexOutput:ICPGpuPathTest.CorrespondenceStatsRequestedIndicesKeepLowerDuplicateIndexForSameBuffer`:
+    both selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `git diff --check`:
+    clean before the plan update.
+  - Static checks confirmed `shouldTryExactPointwiseStats()` again rejects requested index output and the unsafe
+    `CorrespondenceStatsSameBufferExactPointwiseWritesRequestedIndices` test name is gone.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    249 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the duplicate requested-index test on real GPU hardware and keep exact-pointwise optimizations limited to
+  aggregate stats paths that do not expose correspondence index tie behavior.

@@ -1164,7 +1164,6 @@ __global__ void collectExactPointwiseCorrespondenceStatsKernel(
     const Scalar* source_points,
     const Scalar* target_points,
     int point_count,
-    int* __restrict__ correspondence_indices,
     RawIcpStats* __restrict__ partial_stats)
 {
     const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1173,7 +1172,6 @@ __global__ void collectExactPointwiseCorrespondenceStatsKernel(
 
     if (source_idx < point_count)
     {
-        int correspondence_idx = -1;
         const Scalar raw_sx = loadReadOnlyIcpValue(source_points + source_idx);
         const Scalar raw_sy = loadReadOnlyIcpValue(source_points + point_count + source_idx);
         const Scalar raw_sz = loadReadOnlyIcpValue(source_points + 2 * point_count + source_idx);
@@ -1206,12 +1204,7 @@ __global__ void collectExactPointwiseCorrespondenceStatsKernel(
             else
             {
                 recordAcceptedCorrespondence(local, sx, sy, sz, sx, sy, sz, 0.0);
-                correspondence_idx = source_idx;
             }
-        }
-        if (correspondence_indices)
-        {
-            correspondence_indices[source_idx] = correspondence_idx;
         }
     }
 
@@ -3001,8 +2994,7 @@ bool shouldTryExactPointwiseStats(
     Scalar max_correspondence_distance,
     const int* d_correspondence_indices)
 {
-    (void)d_correspondence_indices;
-    if (source_count != target_count)
+    if (d_correspondence_indices || source_count != target_count)
     {
         return false;
     }
@@ -3019,7 +3011,6 @@ void launchExactPointwiseCorrespondencePartials(
     const Scalar* d_source_points,
     const Scalar* d_target_points,
     int source_count,
-    int* d_correspondence_indices,
     RawIcpStats* d_partials,
     int partial_count,
     cudaStream_t stream)
@@ -3031,7 +3022,6 @@ void launchExactPointwiseCorrespondencePartials(
             d_source_points,
             d_target_points,
             source_count,
-            d_correspondence_indices,
             d_partials);
     }
     else
@@ -3040,7 +3030,6 @@ void launchExactPointwiseCorrespondencePartials(
             d_source_points,
             d_target_points,
             source_count,
-            d_correspondence_indices,
             d_partials);
     }
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
@@ -3082,7 +3071,7 @@ bool launchExactPointwiseStats(
     const Scalar* d_target_points,
     int target_count,
     Scalar max_correspondence_distance,
-    int* d_correspondence_indices,
+    const int* d_correspondence_indices,
     RawIcpStats* d_partials,
     int partial_count,
     RawIcpStats* d_stats,
@@ -3104,7 +3093,6 @@ bool launchExactPointwiseStats(
         d_source_points,
         d_target_points,
         source_count,
-        d_correspondence_indices,
         d_partials,
         partial_count,
         stream);
@@ -3124,7 +3112,7 @@ bool launchExactPointwiseStatsAndIdentityStep(
     const Scalar* d_target_points,
     int target_count,
     Scalar max_correspondence_distance,
-    int* d_correspondence_indices,
+    const int* d_correspondence_indices,
     RawIcpStats* d_partials,
     int partial_count,
     RawIcpStats* d_stats,
@@ -3148,7 +3136,6 @@ bool launchExactPointwiseStatsAndIdentityStep(
         d_source_points,
         d_target_points,
         source_count,
-        d_correspondence_indices,
         d_partials,
         partial_count,
         stream);
@@ -3195,7 +3182,6 @@ bool launchExactPointwiseAlignmentStep(
         d_source_points,
         d_target_points,
         source_count,
-        nullptr,
         d_partials,
         partial_count,
         stream);
@@ -3259,7 +3245,7 @@ bool tryComputeExactPointwiseStats(
     const Scalar* d_target_points,
     int target_count,
     Scalar max_correspondence_distance,
-    int* d_correspondence_indices,
+    const int* d_correspondence_indices,
     RawIcpStats* d_partials,
     int partial_count,
     RawIcpStats* d_stats,
