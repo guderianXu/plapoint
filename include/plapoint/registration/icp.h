@@ -522,18 +522,21 @@ private:
         _final_T_gpu_valid = true;
         if (!final_points_written_to_output)
         {
-            Scalar* output_points = prepareGpuOutputPointBuffer(output, source_count);
-            if (output_points != cur_points)
+            if (!gpuOutputAlreadyContainsCurrentPoints(output, source_count, cur_points))
             {
-                if (output_aliases_target)
+                Scalar* output_points = prepareGpuOutputPointBuffer(output, source_count);
+                if (output_points != cur_points)
                 {
-                    invalidateGpuTargetWorkspaceCache();
+                    if (output_aliases_target)
+                    {
+                        invalidateGpuTargetWorkspaceCache();
+                    }
+                    PLAPOINT_CHECK_CUDA(cudaMemcpy(
+                        output_points,
+                        cur_points,
+                        static_cast<std::size_t>(source_count) * 3u * sizeof(Scalar),
+                        cudaMemcpyDeviceToDevice));
                 }
-                PLAPOINT_CHECK_CUDA(cudaMemcpy(
-                    output_points,
-                    cur_points,
-                    static_cast<std::size_t>(source_count) * 3u * sizeof(Scalar),
-                    cudaMemcpyDeviceToDevice));
             }
         }
     }
@@ -603,6 +606,17 @@ private:
             output = PointCloudType(std::move(points));
         }
         return output.points().data();
+    }
+
+    template <plamatrix::Device D = Dev>
+    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    gpuOutputAlreadyContainsCurrentPoints(
+        const PointCloudType& output,
+        int point_count,
+        const Scalar* current_points) const
+    {
+        return canReuseGpuOutputPointBuffer(output, point_count) &&
+               output.points().data() == current_points;
     }
 
     void reserveGpuPointBuffer(

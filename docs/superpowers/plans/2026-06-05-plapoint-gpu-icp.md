@@ -3677,3 +3677,45 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun `AlignReservesAlignmentStepWorkspaceOncePerCall` on GPU hardware and compare repeated-iteration ICP benchmark
   rows before/after this change to quantify host-side overhead reduction.
+
+## Task 112: Avoid Mutable Output Access For Same-Buffer No-Write GPU Output
+
+- Goal: avoid invalidating the target cache version in GPU ICP paths that do not write output points. The final output
+  copy path used `prepareGpuOutputPointBuffer()` before checking whether the output points already matched
+  `cur_points`; that helper calls mutable `PointCloud::points()`, which increments `pointsVersion()` even when no
+  device write or copy follows.
+- RED check:
+  - Added `AlignDoesNotIncrementTargetPointsVersionForSameBufferNoWriteOutput`, which runs identity GPU ICP with the
+    same cloud as source, target, and output, then expects `pointsVersion()` to remain unchanged.
+  - Added a static RED check requiring the final copy branch to call a same-buffer guard before
+    `prepareGpuOutputPointBuffer()`. The check failed before the implementation.
+- Implementation:
+  - Added GPU-only `gpuOutputAlreadyContainsCurrentPoints()` using const point access and the existing reusable-output
+    metadata checks.
+  - The final copy branch now skips mutable output preparation when the output already owns the current point buffer.
+  - Kept the existing copy and target-cache invalidation behavior for all paths that actually write or replace output
+    storage.
+- Verification performed in this session:
+  - The static RED check failed before the implementation and passed after the implementation.
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignDoesNotIncrementTargetPointsVersionForSameBufferNoWriteOutput`:
+    the selected GPU test was discovered but skipped because the current session has no usable CUDA device.
+  - `git diff --check`:
+    clean before the plan update.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    247 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the new same-buffer no-write version test on GPU hardware and verify repeated identity `align(*target)` calls
+  keep persistent target cache reuse intact.

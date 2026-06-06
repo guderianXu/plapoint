@@ -2519,6 +2519,31 @@ TEST(ICPGpuPathTest, AlignInvalidatesPersistentGpuTargetSpatialGridCacheAfterMut
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 2);
 }
 
+TEST(ICPGpuPathTest, AlignDoesNotIncrementTargetPointsVersionForSameBufferNoWriteOutput)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto cpu_cloud = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto cloud = std::make_shared<GpuCloud>(cpu_cloud->toGpu());
+    const auto initial_version = cloud->pointsVersion();
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(cloud);
+    icp.setInputTarget(cloud);
+    icp.setMaxCorrespondenceDistance(2.0f);
+    icp.setMaxIterations(1);
+
+    icp.align(*cloud);
+
+    EXPECT_EQ(cloud->pointsVersion(), initial_version);
+}
+
 TEST(ICPGpuPathTest, SetInputTargetInvalidatesPersistentGpuTargetSpatialGridCacheForNewTarget)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
