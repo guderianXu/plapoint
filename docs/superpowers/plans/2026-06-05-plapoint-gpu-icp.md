@@ -7702,3 +7702,71 @@ Verification evidence:
   alignment. On the 100k transformed exact-pointwise cached-grid benchmark, this reduces preflight alignment-step time
   from roughly 0.14-0.15 ms to roughly 0.048 ms. The non-preflight cache-hit row still uses the cached spatial-grid
   path by design, so it remains around 0.16 ms.
+
+## Task 200: Seed Spatial-Grid Search With Same-Index Candidate
+
+- Goal: reduce ordinary finite-radius cached-grid candidate scanning without assuming ordered correspondences. When
+  `target[source_idx]` exists and is already within the correspondence radius, use it only as the initial best-distance
+  upper bound before the normal spatial-grid nearest-neighbor search. The search still scans any cell that can contain a
+  closer point, and equal-distance candidates still use the existing lower-target-index tie break.
+- RED check:
+  - Added `ICPGpuPathTest.CorrespondenceStatsSeedsSameIndexCandidateBeforeSpatialGridSearch`.
+  - The fixture places the same-index target in the last visited neighbor cell and earlier cells with farther points.
+    Before implementation, correspondence stats, residual stats, and transform residual stats each visited 4 target
+    candidates instead of the expected 1.
+- Implementation:
+  - Added `seedSameIndexSpatialGridBestDistance()`, which loads `target[source_idx]` from the spatial-grid target
+    snapshot, validates finite coordinates and radius, and initializes `best_dist_sq` before cell scanning.
+  - Applied the seed to correspondence stats, residual stats, and transformed residual stats spatial-grid kernels.
+  - Updated the correspondence tie-break so a seeded `best_idx` with no known sorted offset still compares equal
+    distances by target index correctly.
+  - Added an exact-seed early stop: a 0-distance seed skips grid scanning when correspondence indices are omitted, and
+    also when requested indices already have target index 0, because no lower-index or closer candidate can exist.
+  - Adjusted two older candidate-load tests so their fixtures do not accidentally exercise the new seed path; they
+    continue to validate the original candidate-scan loading behavior.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsSeedsSameIndexCandidateBeforeSpatialGridSearch`:
+    failed before implementation with candidate visits 4 instead of 1 for correspondence stats, residual stats, and
+    transform residual stats.
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsSeedsSameIndexCandidateBeforeSpatialGridSearch:ICPGpuPathTest.CorrespondenceStatsSpatialGridTieKeepsLowerTargetIndex:ICPGpuPathTest.CorrespondenceStatsLoadsSpatialGridTargetIndexOnlyForCompetitiveCandidates:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest:ICPGpuPathTest.TransformResidualStatsFallbackSkipsDuplicateExactPointwiseProbeAfterPreflightMiss`:
+    6 same-index seed, tie-break, index-load, coordinate-load, cell-pruning, and transformed residual fallback tests
+    passed after implementation.
+  - After adding the exact-seed early stop and fixture adjustments,
+    `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath:ICPGpuPathTest.CorrespondenceStatsStopsSpatialGridAfterExactMatchWhenIndicesOmitted:ICPGpuPathTest.CorrespondenceStatsSeedsSameIndexCandidateBeforeSpatialGridSearch:ICPGpuPathTest.CorrespondenceStatsSpatialGridTieKeepsLowerTargetIndex:ICPGpuPathTest.CorrespondenceStatsLoadsSpatialGridTargetIndexOnlyForCompetitiveCandidates:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest:ICPGpuPathTest.TransformResidualStatsFallbackSkipsDuplicateExactPointwiseProbeAfterPreflightMiss`:
+    8 lower-bound, exact-stop, same-index seed, tie-break, and candidate-scan tests passed.
+  - Baseline before this task, using the current pushed Task 199 code:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.03099 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.610949 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.606 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.60538 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.587789 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.473831 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.47315 ms.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 80 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(stats_step|alignment_step|stats|residual_stats|transform_residual_stats)_finite_radius_translation_(new_workspace|cached_grid|cached_grid_reserved_workspace|ordered)|gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics|gpu_icp_alignment_step_(exact_pointwise_same_buffer|transformed_exact_pointwise|ordered_same_buffer_finite_radius)'`:
+    ran successfully on the RTX 4060 Laptop GPU after implementation.
+  - Relevant rows after implementation:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 0.998452 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.589876 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.588054 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.587759 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.565306 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.464801 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid_reserved_workspace` = 0.457566 ms,
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.464989 ms, and
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.04787 ms.
+- Full verification after the same-index spatial-grid seed:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 320/320 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) &&
+    ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, with the expected CUDA-only
+    `PointCloudTest.GpuTransfer` skip in the CPU build.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean after this documentation update.
+- Current conclusion:
+  the generic cached-grid finite-radius path now gets an initial same-index upper bound when available, reducing cell
+  and candidate work while preserving full nearest-neighbor correctness. On the 100k translated-grid benchmark, cached
+  stats/alignment steps drop from roughly 0.606 ms to roughly 0.588 ms, cached residual stats drop from roughly
+  0.474 ms to roughly 0.457 ms, and the 3-iteration transform-only skip-final path drops from roughly 1.031 ms to
+  roughly 0.997 ms.

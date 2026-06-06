@@ -1347,6 +1347,49 @@ __device__ __forceinline__ bool tryAcceptTransformedExactPointwiseCorrespondence
     return true;
 }
 
+template <typename Scalar>
+__device__ __forceinline__ bool seedSameIndexSpatialGridBestDistance(
+    const IcpTargetSpatialGrid& target_grid,
+    int source_idx,
+    double sx,
+    double sy,
+    double sz,
+    double max_dist_sq,
+    double& best_dist_sq,
+    double& best_tx,
+    double& best_ty,
+    double& best_tz)
+{
+    if (!target_grid.target_points || source_idx < 0 || source_idx >= target_grid.target_count)
+    {
+        return false;
+    }
+
+    const auto* target_points = static_cast<const Scalar*>(target_grid.target_points);
+    double tx = 0.0;
+    double ty = 0.0;
+    double tz = 0.0;
+    if (!loadFiniteColumnMajorPoint(target_points, target_grid.target_count, source_idx, tx, ty, tz))
+    {
+        return false;
+    }
+
+    const double dx = sx - tx;
+    const double dy = sy - ty;
+    const double dz = sz - tz;
+    const double dist_sq = dx * dx + dy * dy + dz * dz;
+    if (!isfinite(dist_sq) || dist_sq > max_dist_sq)
+    {
+        return false;
+    }
+
+    best_dist_sq = dist_sq;
+    best_tx = tx;
+    best_ty = ty;
+    best_tz = tz;
+    return true;
+}
+
 template <typename Scalar, bool CanStopAfterExactMatch>
 __device__ __forceinline__ void scanIcpGridCellCandidates(
     const IcpTargetSpatialGrid& target_grid,
@@ -1409,16 +1452,16 @@ __device__ __forceinline__ void scanIcpGridCellCandidates(
 #endif
         if (isfinite(dist_sq) && dist_sq <= best_dist_sq)
         {
-            bool update_best = dist_sq < best_dist_sq || best_sorted_offset < 0;
+            bool update_best = dist_sq < best_dist_sq || (best_sorted_offset < 0 && best_idx < 0);
             int target_idx = -1;
             if (!update_best)
             {
                 target_idx = loadSortedIcpTargetIndex(target_grid, sorted_offset);
-                if (best_idx < 0)
+                if (best_idx < 0 && best_sorted_offset >= 0)
                 {
                     best_idx = loadSortedIcpTargetIndex(target_grid, best_sorted_offset);
                 }
-                update_best = target_idx < best_idx;
+                update_best = best_idx < 0 || target_idx < best_idx;
             }
             if (update_best)
             {
@@ -1902,6 +1945,26 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
 
+    bool seeded_same_index_best = false;
+    if (source_valid)
+    {
+        seeded_same_index_best = seedSameIndexSpatialGridBestDistance<Scalar>(
+            target_grid,
+            source_idx,
+            sx,
+            sy,
+            sz,
+            max_dist_sq,
+            best_dist_sq,
+            best_tx,
+            best_ty,
+            best_tz);
+        if (seeded_same_index_best)
+        {
+            best_idx = source_idx;
+        }
+    }
+
     if (source_valid)
     {
         const IcpGridCellKey source_key{
@@ -1925,7 +1988,10 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
         }
 
         constexpr bool can_stop_after_exact_match = !WriteCorrespondenceIndices;
-        bool stop_cell_scan = false;
+        bool stop_cell_scan =
+            seeded_same_index_best &&
+            best_dist_sq <= 0.0 &&
+            (!WriteCorrespondenceIndices || best_idx == 0);
 #pragma unroll
         for (int dx_offset_idx = 0; dx_offset_idx < 3; ++dx_offset_idx)
         {
@@ -2077,7 +2143,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
 
     if (source_valid)
     {
-        bool accepted = best_sorted_offset >= 0;
+        bool accepted = best_sorted_offset >= 0 || best_idx >= 0;
         if (accepted)
         {
             accepted = best_dist_sq <= max_dist_sq;
@@ -2898,6 +2964,25 @@ __global__ void collectResidualStatsSpatialGridKernel(
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
 
+    bool seeded_same_index_best = false;
+    if (source_valid)
+    {
+        double seeded_tx = 0.0;
+        double seeded_ty = 0.0;
+        double seeded_tz = 0.0;
+        seeded_same_index_best = seedSameIndexSpatialGridBestDistance<Scalar>(
+            target_grid,
+            source_idx,
+            sx,
+            sy,
+            sz,
+            max_dist_sq,
+            best_dist_sq,
+            seeded_tx,
+            seeded_ty,
+            seeded_tz);
+    }
+
     if (source_valid)
     {
         const IcpGridCellKey source_key{
@@ -2920,7 +3005,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
             }
         }
 
-        bool stop_cell_scan = false;
+        bool stop_cell_scan = seeded_same_index_best && best_dist_sq <= 0.0;
 #pragma unroll
         for (int dx_offset_idx = 0; dx_offset_idx < 3; ++dx_offset_idx)
         {
@@ -3487,6 +3572,25 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
 
+    bool seeded_same_index_best = false;
+    if (source_valid)
+    {
+        double seeded_tx = 0.0;
+        double seeded_ty = 0.0;
+        double seeded_tz = 0.0;
+        seeded_same_index_best = seedSameIndexSpatialGridBestDistance<Scalar>(
+            target_grid,
+            source_idx,
+            sx,
+            sy,
+            sz,
+            max_dist_sq,
+            best_dist_sq,
+            seeded_tx,
+            seeded_ty,
+            seeded_tz);
+    }
+
     if (source_valid)
     {
         const IcpGridCellKey source_key{
@@ -3509,7 +3613,7 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
             }
         }
 
-        bool stop_cell_scan = false;
+        bool stop_cell_scan = seeded_same_index_best && best_dist_sq <= 0.0;
 #pragma unroll
         for (int dx_offset_idx = 0; dx_offset_idx < 3; ++dx_offset_idx)
         {

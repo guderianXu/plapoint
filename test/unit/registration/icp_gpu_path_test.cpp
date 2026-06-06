@@ -1970,6 +1970,7 @@ TEST(ICPGpuPathTest, CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPa
         target.setValue(idx, 1, 0.0f);
         target.setValue(idx, 2, 0.0f);
     }
+    target.setValue(0, 0, 2000.0f);
     target.setValue(target_count - 1, 0, 2000.0f);
 
     auto source_gpu = source.toGpu();
@@ -2122,6 +2123,76 @@ TEST(ICPGpuPathTest, CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDista
     EXPECT_LE(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 2ull);
 }
 
+TEST(ICPGpuPathTest, CorrespondenceStatsSeedsSameIndexCandidateBeforeSpatialGridSearch)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source(1, 3);
+    source.setValue(0, 0, 0.99f);
+    source.setValue(0, 1, 0.99f);
+    source.setValue(0, 2, 0.99f);
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(4, 3);
+    target.setValue(0, 0, 1.01f); target.setValue(0, 1, 1.01f); target.setValue(0, 2, 1.01f);
+    target.setValue(1, 0, 0.10f); target.setValue(1, 1, 0.10f); target.setValue(1, 2, -0.10f);
+    target.setValue(2, 0, 0.10f); target.setValue(2, 1, -0.10f); target.setValue(2, 2, 0.10f);
+    target.setValue(3, 0, -0.10f); target.setValue(3, 1, 0.10f); target.setValue(3, 2, 0.10f);
+
+    auto source_gpu = source.toGpu();
+    auto target_gpu = target.toGpu();
+    plapoint::gpu::DeviceBuffer<int> indices(static_cast<std::size_t>(source.rows()));
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        indices.get(),
+        workspace);
+
+    int host_index = -1;
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(&host_index, indices.get(), sizeof(int), cudaMemcpyDeviceToHost));
+    EXPECT_EQ(stats.active_count, 1);
+    EXPECT_NEAR(stats.residual_sq_sum, 0.0012, 1.0e-6);
+    EXPECT_EQ(host_index, 0);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 1ull);
+
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    const auto residual_stats = plapoint::gpu::computeIcpResidualStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        workspace);
+    EXPECT_EQ(residual_stats.active_count, 1);
+    EXPECT_NEAR(residual_stats.residual_sq_sum, 0.0012, 1.0e-6);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 1ull);
+
+    auto identity = makeTranslationTransform(0.0f, 0.0f, 0.0f);
+    auto identity_gpu = identity.toGpu();
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output_gpu(source.rows(), 3);
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    const auto transform_residual_stats = plapoint::gpu::transformPointsAndComputeIcpResidualStatsColumnMajor(
+        identity_gpu.data(),
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        output_gpu.data(),
+        workspace);
+    EXPECT_EQ(transform_residual_stats.active_count, 1);
+    EXPECT_NEAR(transform_residual_stats.residual_sq_sum, 0.0012, 1.0e-6);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 1ull);
+}
+
 TEST(ICPGpuPathTest, CorrespondenceStatsLoadsSpatialGridTargetIndexOnlyForCompetitiveCandidates)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
@@ -2135,10 +2206,10 @@ TEST(ICPGpuPathTest, CorrespondenceStatsLoadsSpatialGridTargetIndexOnlyForCompet
     source.setValue(0, 2, 0.0f);
 
     plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(2, 3);
-    target.setValue(0, 0, 0.2f);
+    target.setValue(0, 0, 1.6f);
     target.setValue(0, 1, 0.0f);
     target.setValue(0, 2, 0.0f);
-    target.setValue(1, 0, 1.6f);
+    target.setValue(1, 0, 0.2f);
     target.setValue(1, 1, 0.0f);
     target.setValue(1, 2, 0.0f);
 
@@ -2230,13 +2301,16 @@ TEST(ICPGpuPathTest, SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest)
     source.setValue(0, 1, 0.0f);
     source.setValue(0, 2, 0.0f);
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(2, 3);
-    target.setValue(0, 0, 0.1f);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(3, 3);
+    target.setValue(0, 0, 2.1f);
     target.setValue(0, 1, 0.0f);
     target.setValue(0, 2, 0.0f);
-    target.setValue(1, 0, 0.25f);
-    target.setValue(1, 1, 0.9f);
-    target.setValue(1, 2, 0.9f);
+    target.setValue(1, 0, 0.1f);
+    target.setValue(1, 1, 0.0f);
+    target.setValue(1, 2, 0.0f);
+    target.setValue(2, 0, 0.25f);
+    target.setValue(2, 1, 0.9f);
+    target.setValue(2, 2, 0.9f);
 
     auto source_gpu = source.toGpu();
     auto target_gpu = target.toGpu();
@@ -2974,7 +3048,7 @@ TEST(ICPGpuPathTest, CorrespondenceStatsStopsSpatialGridAfterExactMatchWhenIndic
 
     EXPECT_EQ(stats.active_count, 1);
     EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-12);
-    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 1ull);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 0ull);
     EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
 
     plapoint::gpu::DeviceBuffer<int> indices(static_cast<std::size_t>(source.rows()));
@@ -2999,7 +3073,7 @@ TEST(ICPGpuPathTest, CorrespondenceStatsStopsSpatialGridAfterExactMatchWhenIndic
     EXPECT_NEAR(indexed_stats.residual_sq_sum, 0.0, 1.0e-12);
     ASSERT_EQ(host_indices.size(), 1u);
     EXPECT_EQ(host_indices[0], 0);
-    EXPECT_GT(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 1ull);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 0ull);
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsSpatialGridTieKeepsLowerTargetIndex)
