@@ -7043,3 +7043,51 @@ Verification evidence:
 - Current conclusion:
   target-aliased terminal output now preserves the cached snapshot direct lookup for the final residual pass while still
   invalidating the target workspace cache before `align()` can return or propagate final-stats errors.
+
+## Task 186: Skip Spatial-Grid Reserve on Cache Hit
+
+- Goal: avoid repeating the target spatial-grid reserve/capacity check on hot cached-grid calls. When the target
+  pointer, point count, correspondence radius, scalar width, and reserved capacity already match, `prepareTargetSpatialGrid()`
+  can populate the launch descriptor directly from cached workspace metadata instead of calling
+  `reserveTargetSpatialGridForScalar()` again.
+- RED check:
+  - Added a testing-only `g_icp_target_spatial_grid_reserve_count` counter around
+    `IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGrid()`.
+  - Added `ICPGpuPathTest.CorrespondenceStatsSkipsSpatialGridReserveOnCacheHit`, which calls finite-radius
+    correspondence stats twice with the same target and workspace.
+  - Before implementation, the test failed with target spatial-grid reserve count 2 instead of the expected 1.
+- Implementation:
+  - `prepareTargetSpatialGrid()` now computes the scalar-aware cache match before reserving grid storage.
+  - A cache hit skips the reserve call only when the workspace capacity still covers the target count, keeping manually
+    marked or otherwise incomplete cache metadata from exposing null storage.
+  - Cache misses, radius changes, target pointer changes, target size changes, and scalar-width changes still call the
+    reserve path and rebuild the grid normally.
+- Extra coverage from the parallel test review:
+  - Added `ICPGpuPathTest.AlignInvalidatesTargetSpatialGridCacheWhenCorrespondenceRadiusChanges` to lock the cell-size
+    part of the cache key: same radius repeated calls build once, changing `setMaxCorrespondenceDistance()` rebuilds
+    once, and repeating the new radius reuses that grid.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsSkipsSpatialGridReserveOnCacheHit`:
+    failed before implementation with reserve count 2 versus expected 1, then passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsSkipsSpatialGridReserveOnCacheHit:ICPGpuPathTest.AlignInvalidatesTargetSpatialGridCacheWhenCorrespondenceRadiusChanges:ICPGpuPathTest.CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.SpatialGridDirectLookupUsesSpecializedKernelLaunches:ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn:ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells:ICPGpuPathTest.AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput:ICPGpuPathTest.AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsUseSpatialGrid:ICPGpuPathTest.AlignReusesGpuWorkspacesAcrossRepeatedCalls`:
+    11 targeted spatial-grid/cache tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 40 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_finite_radius_translation_(reuse_target_output|reuse_target_output_skip_final_metrics|reuse_output|reuse_output_skip_final_metrics|ordered_output|ordered_output_skip_final_metrics|transform_only_skip_final_metrics)|gpu_icp_stats_finite_radius_translation_cached_grid|gpu_icp_residual_stats_finite_radius_translation_cached_grid|gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid|gpu_icp_alignment_step_finite_radius_translation_cached_grid|gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace'`:
+    ran successfully on the RTX 4060 Laptop GPU.
+  - Relevant rows:
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.37578 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.21927 ms,
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.531623 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.506063 ms,
+    `gpu_icp_finite_radius_translation_transform_only_skip_final_metrics` = 1.20956 ms,
+    `gpu_icp_finite_radius_translation_reuse_target_output` = 1.46709 ms,
+    `gpu_icp_finite_radius_translation_reuse_target_output_skip_final_metrics` = 1.28877 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.695545 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace` = 0.69447 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.670866 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.481363 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.48146 ms.
+- Current conclusion:
+  cached target spatial-grid calls now bypass a host-side reserve/capacity check on cache hit while preserving the
+  radius-sensitive cache key and the existing direct-lookup behavior.

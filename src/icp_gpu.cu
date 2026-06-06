@@ -267,6 +267,7 @@ std::atomic<int> g_icp_transform_points_call_count{0};
 std::atomic<int> g_icp_transform_multiply_call_count{0};
 std::atomic<int> g_icp_identity_transform_write_count{0};
 std::atomic<int> g_icp_target_spatial_grid_prepare_count{0};
+std::atomic<int> g_icp_target_spatial_grid_reserve_count{0};
 std::atomic<int> g_icp_host_result_storage_allocation_count{0};
 std::atomic<int> g_icp_direct_spatial_grid_kernel_launch_count{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
@@ -5793,7 +5794,14 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
 
     const double cell_size = static_cast<double>(max_correspondence_distance);
     const bool finite_cell_bounds = icpGridCellBoundsAreFinite(cell_size);
-    workspace.reserveTargetSpatialGridForScalar<Scalar>(target_count);
+    const bool cache_matches =
+        workspace.targetSpatialGridCacheMatchesForScalar<Scalar>(d_target_points, target_count, cell_size) &&
+        workspace.targetSpatialGridCapacity() >= target_count;
+    if (!cache_matches)
+    {
+        workspace.reserveTargetSpatialGridForScalar<Scalar>(target_count);
+    }
+
     auto* d_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridKeysStorage());
     auto* d_unique_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridUniqueKeysStorage());
     auto* d_indices = reinterpret_cast<int*>(workspace.targetSpatialGridIndicesStorage());
@@ -5815,7 +5823,7 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     grid.cell_size = cell_size;
     grid.finite_cell_bounds = finite_cell_bounds;
 
-    if (workspace.targetSpatialGridCacheMatchesForScalar<Scalar>(d_target_points, target_count, cell_size))
+    if (cache_matches)
     {
         grid.cell_count = workspace.targetSpatialGridCellCount();
         if (build_direct_lookup)
@@ -7596,6 +7604,16 @@ int icpTargetSpatialGridPrepareCountForTesting()
     return g_icp_target_spatial_grid_prepare_count.load(std::memory_order_relaxed);
 }
 
+void resetIcpTargetSpatialGridReserveCountForTesting()
+{
+    g_icp_target_spatial_grid_reserve_count.store(0, std::memory_order_relaxed);
+}
+
+int icpTargetSpatialGridReserveCountForTesting()
+{
+    return g_icp_target_spatial_grid_reserve_count.load(std::memory_order_relaxed);
+}
+
 void resetIcpDirectSpatialGridKernelLaunchCountForTesting()
 {
     g_icp_direct_spatial_grid_kernel_launch_count.store(0, std::memory_order_relaxed);
@@ -7929,6 +7947,10 @@ void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGrid(
     int target_count,
     std::size_t coordinate_value_bytes)
 {
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_target_spatial_grid_reserve_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+
     if (target_count < 0)
     {
         throw std::invalid_argument("ICP GPU: target point count must not be negative");
