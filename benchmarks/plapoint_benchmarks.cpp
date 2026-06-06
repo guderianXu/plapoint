@@ -492,6 +492,51 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuse(int icp_points, int icp_max_ite
     }
 }
 
+void benchmarkGpuIcpFiniteRadiusTranslationReuseShrinking(int icp_points, int icp_max_iterations, int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped("gpu_icp_finite_radius_translation_reuse_shrinking", "no_usable_cuda_device");
+        return;
+    }
+
+    const int large_points = std::max(4, icp_points);
+    const int small_points = std::max(4, large_points / 2);
+    auto cpu_large_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeTranslatedGridPoints<float>(large_points, 0.003f, -0.002f, 0.001f));
+    auto cpu_large_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(large_points));
+    auto cpu_small_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeTranslatedGridPoints<float>(small_points, 0.003f, -0.002f, 0.001f));
+    auto cpu_small_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(small_points));
+    auto large_source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_large_source->toGpu());
+    auto large_target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_large_target->toGpu());
+    auto small_source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_small_source->toGpu());
+    auto small_target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_small_target->toGpu());
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setMaxCorrespondenceDistance(0.02f);
+    icp.setMaxIterations(icp_max_iterations);
+
+    Cloud<plamatrix::Device::GPU> large_output;
+    Cloud<plamatrix::Device::GPU> small_output;
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        icp.setInputSource(large_source);
+        icp.setInputTarget(large_target);
+        icp.align(large_output);
+        sink += large_output.size();
+
+        icp.setInputSource(small_source);
+        icp.setInputTarget(small_target);
+        icp.align(small_output);
+        sink += small_output.size();
+    });
+    printResult("gpu_icp_finite_radius_translation_reuse_shrinking", large_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << "gpu_icp_finite_radius_translation_reuse_shrinking produced no aligned points\n";
+    }
+}
+
 void benchmarkGpuIcpFiniteRadiusTranslationReuseOutput(int icp_points, int icp_max_iterations, int iterations)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
@@ -1364,6 +1409,10 @@ int main(int argc, char** argv)
     benchmarkGpuIcpFiniteRadius(options.icp_points, options.icp_max_iterations, options.iterations);
     benchmarkGpuIcpFiniteRadiusTranslation(options.icp_points, options.icp_max_iterations, options.iterations);
     benchmarkGpuIcpFiniteRadiusTranslationReuse(options.icp_points, options.icp_max_iterations, options.iterations);
+    benchmarkGpuIcpFiniteRadiusTranslationReuseShrinking(
+        options.icp_points,
+        options.icp_max_iterations,
+        options.iterations);
     benchmarkGpuIcpFiniteRadiusTranslationReuseOutput(
         options.icp_points,
         options.icp_max_iterations,

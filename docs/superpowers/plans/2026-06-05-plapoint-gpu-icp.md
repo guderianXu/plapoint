@@ -4926,3 +4926,44 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun `GpuPointScratchBufferSkipsRepeatedReserveCheckForSameShape` on real GPU hardware and compare terminal
   target-output alias/final-metric paths that use scratch output after larger prior calls.
+
+## Task 141: Benchmark Variable-Size GPU ICP Reuse
+
+- Goal: add a benchmark row that measures reusing one GPU ICP object first with a larger source/target cloud and then
+  with a smaller source/target cloud. This gives the alignment workspace and point scratch capacity-cache work a
+  direct real-GPU timing target.
+- RED check:
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1 --icp-points 1000 --icp-max-iterations 1 --skip-cpu-icp | rg '^gpu_icp_finite_radius_translation_reuse_shrinking,'`:
+    exited with status 1 before implementation because no benchmark row with that name existed.
+- Implementation:
+  - Added `benchmarkGpuIcpFiniteRadiusTranslationReuseShrinking()`.
+  - The row uses `icp_points` as the larger case, then reuses the same ICP object for a half-sized smaller case.
+  - The benchmark keeps separate reusable output clouds for the large and small alignments so it measures ICP object
+    reuse across variable point counts rather than output alias behavior.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed after adding the benchmark.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1 --icp-points 1000 --icp-max-iterations 1 --skip-cpu-icp | rg '^gpu_icp_finite_radius_translation_reuse_shrinking,'`:
+    produced `gpu_icp_finite_radius_translation_reuse_shrinking,skipped,no_usable_cuda_device,` on this machine.
+- Full verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    270 test entries, 0 failed. GPU-dependent tests were discovered and skipped because the current session cannot
+    communicate with a usable CUDA device.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran and included
+    `gpu_icp_finite_radius_translation_reuse_shrinking,skipped,no_usable_cuda_device,`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  compare `gpu_icp_finite_radius_translation_reuse_shrinking` against the non-shrinking reuse rows and rerun around
+  the capacity-cache commits to quantify the allocation-reserve savings.
