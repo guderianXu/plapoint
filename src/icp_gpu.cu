@@ -268,6 +268,7 @@ std::atomic<int> g_icp_transform_multiply_call_count{0};
 std::atomic<int> g_icp_identity_transform_write_count{0};
 std::atomic<int> g_icp_target_spatial_grid_prepare_count{0};
 std::atomic<int> g_icp_target_spatial_grid_reserve_count{0};
+std::atomic<int> g_icp_target_tile_bounds_reserve_count{0};
 std::atomic<int> g_icp_host_result_storage_allocation_count{0};
 std::atomic<int> g_icp_direct_spatial_grid_kernel_launch_count{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
@@ -5680,6 +5681,17 @@ const IcpTargetTileBounds* prepareTargetTileBounds(
         return nullptr;
     }
 
+    if (target_count > 0 &&
+        workspace.targetTileBoundsCacheMatches(d_target_points, target_count))
+    {
+        const int required_tiles = icpTargetTileCount(target_count);
+        auto* d_cached_bounds = reinterpret_cast<IcpTargetTileBounds*>(workspace.targetTileBoundsStorage());
+        if (d_cached_bounds && workspace.targetTileBoundCapacity() >= required_tiles)
+        {
+            return d_cached_bounds;
+        }
+    }
+
     workspace.reserveTargetTileBounds(target_count);
     auto* d_bounds = reinterpret_cast<IcpTargetTileBounds*>(workspace.targetTileBoundsStorage());
     if (workspace.targetTileBoundsCacheMatches(d_target_points, target_count))
@@ -7628,6 +7640,16 @@ int icpTargetSpatialGridReserveCountForTesting()
     return g_icp_target_spatial_grid_reserve_count.load(std::memory_order_relaxed);
 }
 
+void resetIcpTargetTileBoundsReserveCountForTesting()
+{
+    g_icp_target_tile_bounds_reserve_count.store(0, std::memory_order_relaxed);
+}
+
+int icpTargetTileBoundsReserveCountForTesting()
+{
+    return g_icp_target_tile_bounds_reserve_count.load(std::memory_order_relaxed);
+}
+
 void resetIcpDirectSpatialGridKernelLaunchCountForTesting()
 {
     g_icp_direct_spatial_grid_kernel_launch_count.store(0, std::memory_order_relaxed);
@@ -7926,6 +7948,10 @@ void IcpCorrespondenceStatsWorkspace::reserveHostResultStorage(std::size_t byte_
 
 void IcpCorrespondenceStatsWorkspace::reserveTargetTileBounds(int target_count)
 {
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_target_tile_bounds_reserve_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+
     if (target_count < 0)
     {
         throw std::invalid_argument("ICP GPU: target point count must not be negative");

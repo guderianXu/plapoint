@@ -7214,3 +7214,41 @@ Verification evidence:
 - Current conclusion:
   transform+residual final-metrics fallback now avoids repeating exact same-index target loads after a known preflight
   miss, while exact-hit preflight and snapshot residual paths retain their existing behavior.
+
+## Task 190: Skip Target Tile-Bounds Reserve on Cache Hit
+
+- Goal: avoid repeating the target tile-bounds reserve/capacity check on fallback cache hits. When target tile bounds
+  already match the target pointer and point count, and the workspace still has enough tile capacity, the fallback
+  `prepareTargetTileBounds()` path can return the cached bounds directly instead of calling
+  `reserveTargetTileBounds()` again.
+- RED check:
+  - Added a testing-only `g_icp_target_tile_bounds_reserve_count` counter around
+    `IcpCorrespondenceStatsWorkspace::reserveTargetTileBounds()`.
+  - Tightened `ICPGpuPathTest.CorrespondenceStatsReusesFiniteRadiusTargetTileBoundsForSameTarget` to expect one
+    tile-bounds reserve across two same-target fallback correspondence-stats calls.
+  - Before implementation, the test failed with tile-bounds reserve count 2 instead of the expected 1.
+- Implementation:
+  - `prepareTargetTileBounds()` now checks the tile-bounds cache before reserving.
+  - Cache hits skip reserve only when `target_count > 0`, cached bounds storage is non-null, and the recorded capacity
+    covers the required tile count.
+  - Cache misses, missing storage/capacity, changed target pointer, changed target count, zero target count, and invalid
+    negative target counts keep the original reserve path and validation behavior.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsReusesFiniteRadiusTargetTileBoundsForSameTarget`:
+    failed before implementation with reserve count 2 versus expected 1, then passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsPrecomputesFiniteRadiusTargetTileBoundsOnce:ICPGpuPathTest.CorrespondenceStatsReusesFiniteRadiusTargetTileBoundsForSameTarget:ICPGpuPathTest.CorrespondenceStatsUsesFiniteRadiusSpatialGridCandidates:ICPGpuPathTest.CorrespondenceStatsSkipsSpatialGridReserveOnCacheHit:ICPGpuPathTest.CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.AlignInvalidatesTargetSpatialGridCacheWhenCorrespondenceRadiusChanges`:
+    6 fallback/spatial-grid cache tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 40 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(stats|stats_step|alignment_step)_fallback_tile_bounds_(new_workspace|cached_bounds)'`:
+    ran successfully on the RTX 4060 Laptop GPU.
+  - Relevant rows:
+    `gpu_icp_stats_fallback_tile_bounds_new_workspace` = 0.583151 ms,
+    `gpu_icp_stats_fallback_tile_bounds_cached_bounds` = 0.104424 ms,
+    `gpu_icp_stats_step_fallback_tile_bounds_new_workspace` = 0.60954 ms,
+    `gpu_icp_stats_step_fallback_tile_bounds_cached_bounds` = 0.120741 ms,
+    `gpu_icp_alignment_step_fallback_tile_bounds_new_workspace` = 0.615846 ms, and
+    `gpu_icp_alignment_step_fallback_tile_bounds_cached_bounds` = 0.121036 ms.
+- Current conclusion:
+  cached fallback tile-bounds calls now avoid a redundant host-side reserve/capacity check while preserving the existing
+  target/count cache key and reserve-time validation for non-cache-hit paths.
