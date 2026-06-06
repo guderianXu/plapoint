@@ -2059,6 +2059,7 @@ __global__ void multiplyTransform4x4Kernel(const Scalar* A, const Scalar* B, Sca
     const int row = idx & 3;
     const int col = idx >> 2;
     double sum = 0.0;
+#pragma unroll
     for (int k = 0; k < 4; ++k)
     {
         sum += static_cast<double>(A[row + k * 4]) * static_cast<double>(B[k + col * 4]);
