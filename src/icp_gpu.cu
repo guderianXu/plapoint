@@ -280,6 +280,7 @@ __device__ unsigned long long g_icp_grid_cell_lookup_count;
 __device__ unsigned long long g_icp_grid_cell_offset_count;
 __device__ unsigned long long g_icp_direct_grid_lookup_xy_check_count;
 __device__ unsigned long long g_icp_direct_grid_lookup_active_guard_count;
+__device__ unsigned long long g_icp_direct_grid_lookup_xy_base_guard_count;
 __device__ unsigned long long g_icp_direct_grid_lookup_linear_guard_count;
 #endif
 
@@ -762,7 +763,7 @@ __device__ __forceinline__ int loadIcpGridCellCount(const IcpTargetSpatialGrid& 
     return loadReadOnlyIcpValue(target_grid.cell_counts + cell_idx);
 }
 
-template <bool CheckActive>
+template <bool CheckActive, bool CheckXyBaseBounds>
 __device__ __forceinline__ bool directLookupIcpGridCellXyBase(
     const IcpTargetSpatialGrid& target_grid,
     int query_x,
@@ -803,9 +804,15 @@ __device__ __forceinline__ bool directLookupIcpGridCellXyBase(
     const int local_x = static_cast<int>(local_x_u);
     const int local_y = static_cast<int>(local_y_u);
     xy_base = (local_x * target_grid.direct_lookup_range_y + local_y) * target_grid.direct_lookup_range_z;
-    if (xy_base < 0 || xy_base >= target_grid.direct_lookup_entry_count)
+    if constexpr (CheckXyBaseBounds)
     {
-        return false;
+#ifdef PLAPOINT_ENABLE_TESTING
+        atomicAdd(&g_icp_direct_grid_lookup_xy_base_guard_count, 1ull);
+#endif
+        if (xy_base < 0 || xy_base >= target_grid.direct_lookup_entry_count)
+        {
+            return false;
+        }
     }
     return true;
 }
@@ -1702,7 +1709,11 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                 if constexpr (DirectLookup)
                 {
                     int direct_lookup_xy_base = 0;
-                    if (!directLookupIcpGridCellXyBase<false>(target_grid, query_x, query_y, direct_lookup_xy_base))
+                    if (!directLookupIcpGridCellXyBase<false, false>(
+                            target_grid,
+                            query_x,
+                            query_y,
+                            direct_lookup_xy_base))
                     {
                         continue;
                     }
@@ -2603,7 +2614,11 @@ __global__ void collectResidualStatsSpatialGridKernel(
                 if constexpr (DirectLookup)
                 {
                     int direct_lookup_xy_base = 0;
-                    if (!directLookupIcpGridCellXyBase<false>(target_grid, query_x, query_y, direct_lookup_xy_base))
+                    if (!directLookupIcpGridCellXyBase<false, false>(
+                            target_grid,
+                            query_x,
+                            query_y,
+                            direct_lookup_xy_base))
                     {
                         continue;
                     }
@@ -3139,7 +3154,11 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                 if constexpr (DirectLookup)
                 {
                     int direct_lookup_xy_base = 0;
-                    if (!directLookupIcpGridCellXyBase<false>(target_grid, query_x, query_y, direct_lookup_xy_base))
+                    if (!directLookupIcpGridCellXyBase<false, false>(
+                            target_grid,
+                            query_x,
+                            query_y,
+                            direct_lookup_xy_base))
                     {
                         continue;
                     }
@@ -7299,6 +7318,19 @@ unsigned long long icpDirectGridLookupActiveGuardCountForTesting()
 {
     unsigned long long count = 0;
     PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_direct_grid_lookup_active_guard_count, sizeof(count)));
+    return count;
+}
+
+void resetIcpDirectGridLookupXyBaseGuardCountForTesting()
+{
+    const unsigned long long zero = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyToSymbol(g_icp_direct_grid_lookup_xy_base_guard_count, &zero, sizeof(zero)));
+}
+
+unsigned long long icpDirectGridLookupXyBaseGuardCountForTesting()
+{
+    unsigned long long count = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_direct_grid_lookup_xy_base_guard_count, sizeof(count)));
     return count;
 }
 
