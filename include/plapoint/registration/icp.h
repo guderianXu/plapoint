@@ -30,14 +30,20 @@ public:
 
     void setInputTarget(const std::shared_ptr<const PointCloudType>& cloud)
     {
-        _target = cloud;
 #ifdef PLAPOINT_WITH_CUDA
         if constexpr (Dev == plamatrix::Device::GPU)
         {
-            _gpu_stats_workspace.invalidateTargetTileBoundsCache();
-            _gpu_stats_workspace.invalidateTargetSpatialGridCache();
+            const bool same_target = _target == cloud;
+            _target = cloud;
+            if (!same_target)
+            {
+                _gpu_stats_workspace.invalidateTargetTileBoundsCache();
+                _gpu_stats_workspace.invalidateTargetSpatialGridCache();
+            }
+            return;
         }
 #endif
+        _target = cloud;
     }
 
     /// Set the maximum number of ICP iterations. Throws if n is not positive.

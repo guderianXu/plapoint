@@ -2356,7 +2356,7 @@ TEST(ICPGpuPathTest, AlignReplacesAttributedGpuOutputInsteadOfKeepingStaleMetada
     EXPECT_TRUE(output.materialLibraryFile().empty());
 }
 
-TEST(ICPGpuPathTest, SetInputTargetInvalidatesPersistentGpuTargetSpatialGridCache)
+TEST(ICPGpuPathTest, SetInputTargetKeepsPersistentGpuTargetSpatialGridCacheForSameTarget)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -2382,6 +2382,42 @@ TEST(ICPGpuPathTest, SetInputTargetInvalidatesPersistentGpuTargetSpatialGridCach
     icp.align(first_output);
 
     icp.setInputTarget(target);
+    GpuCloud second_output;
+    icp.align(second_output);
+
+    EXPECT_EQ(first_output.size(), source->size());
+    EXPECT_EQ(second_output.size(), source->size());
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
+}
+
+TEST(ICPGpuPathTest, SetInputTargetInvalidatesPersistentGpuTargetSpatialGridCacheForNewTarget)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto first_target_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto second_target_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto first_target = std::make_shared<GpuCloud>(first_target_cpu->toGpu());
+    auto second_target = std::make_shared<GpuCloud>(second_target_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(first_target);
+    icp.setMaxCorrespondenceDistance(2.0f);
+    icp.setMaxIterations(1);
+
+    plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
+    GpuCloud first_output;
+    icp.align(first_output);
+
+    icp.setInputTarget(second_target);
     GpuCloud second_output;
     icp.align(second_output);
 

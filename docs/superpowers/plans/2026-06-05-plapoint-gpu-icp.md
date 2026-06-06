@@ -3280,3 +3280,44 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun the selected GPU tests and large finite-radius ICP benchmark to confirm runtime behavior and quantify the
   first-call allocation reduction.
+
+## Task 102: Preserve GPU ICP Target Cache When Reusing the Same Target
+
+- Goal: avoid discarding the persistent GPU target spatial-grid and tile-bound caches when callers repeat
+  `setInputTarget()` with the same target cloud. Reconfiguring the same target should not force the next finite-radius
+  GPU ICP align to rebuild target-side acceleration data.
+- RED check:
+  - Changed the existing target-cache invalidation test into
+    `SetInputTargetKeepsPersistentGpuTargetSpatialGridCacheForSameTarget`, expecting the build count to remain 1 after
+    resetting the same target pointer.
+  - Added `SetInputTargetInvalidatesPersistentGpuTargetSpatialGridCacheForNewTarget`, preserving the requirement that
+    switching to a distinct target still invalidates and rebuilds the cache.
+  - A static RED check against `setInputTarget()` failed before the implementation because the GPU path invalidated
+    caches unconditionally.
+- Implementation:
+  - `setInputTarget()` now compares the new target shared pointer with the current one for GPU ICP.
+  - The GPU target caches are invalidated only when the target pointer changes; CPU behavior remains a direct assignment.
+- Verification performed in this session:
+  - Static checks confirmed `setInputTarget()` now has the same-target guard.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SetInputTargetKeepsPersistentGpuTargetSpatialGridCacheForSameTarget:ICPGpuPathTest.SetInputTargetInvalidatesPersistentGpuTargetSpatialGridCacheForNewTarget:ICPGpuPathTest.AlignReusesFiniteRadiusSpatialGridAcrossStatsCalls`:
+    3 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    241 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected GPU cache tests and a repeated-target finite-radius ICP benchmark to quantify avoided target-cache
+  rebuilds.
