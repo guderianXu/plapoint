@@ -69,7 +69,7 @@ struct IcpGridCellKey
 
 struct IcpGridCellKeyLess
 {
-    __host__ __device__ bool operator()(const IcpGridCellKey& lhs, const IcpGridCellKey& rhs) const
+    __host__ __device__ __forceinline__ bool operator()(const IcpGridCellKey& lhs, const IcpGridCellKey& rhs) const
     {
         if (lhs.x != rhs.x) return lhs.x < rhs.x;
         if (lhs.y != rhs.y) return lhs.y < rhs.y;
@@ -79,7 +79,7 @@ struct IcpGridCellKeyLess
 
 struct IcpGridCellKeyEqual
 {
-    __host__ __device__ bool operator()(const IcpGridCellKey& lhs, const IcpGridCellKey& rhs) const
+    __host__ __device__ __forceinline__ bool operator()(const IcpGridCellKey& lhs, const IcpGridCellKey& rhs) const
     {
         return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
     }
@@ -257,7 +257,7 @@ struct ComputeIcpTargetGridCellKey
     int point_count;
     double cell_size;
 
-    __host__ __device__ IcpGridCellKey operator()(int idx) const
+    __host__ __device__ __forceinline__ IcpGridCellKey operator()(int idx) const
     {
         const double x = static_cast<double>(points[idx]);
         const double y = static_cast<double>(points[point_count + idx]);
