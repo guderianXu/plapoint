@@ -7091,3 +7091,47 @@ Verification evidence:
 - Current conclusion:
   cached target spatial-grid calls now bypass a host-side reserve/capacity check on cache hit while preserving the
   radius-sensitive cache key and the existing direct-lookup behavior.
+
+## Task 187: Avoid Duplicate Exact-Pointwise Probe After Transformed Preflight Miss
+
+- Goal: when a transformed exact-pointwise preflight launches and proves the transformed source is not an exact
+  same-index match, avoid repeating the exact-pointwise probe inside the following spatial-grid alignment kernel. The
+  main kernel should go directly to spatial-grid candidate search after a known preflight miss.
+- RED check:
+  - Tightened `ICPGpuPathTest.TransformedExactPointwiseAlignmentStepFallsBackToSpatialGridOnMismatch` to reset
+    `g_icp_exact_pointwise_target_load_count` and expect one target xyz load per source point.
+  - Before implementation, the test failed with exact-pointwise target load count 24 instead of the expected 12 on the
+    four-point mismatch fixture: once in the independent preflight and once again in the fallback spatial-grid kernel.
+- Implementation:
+  - Added an `allow_transformed_exact_pointwise` launch flag to
+    `launchTransformAndCollectCorrespondenceStatsSpatialGridKernel()`.
+  - `computeIcpAlignmentStepColumnMajorImpl()` now records when a transformed exact-pointwise preflight launched but
+    returned non-finite residual stats, then disables the per-thread exact-pointwise branch for the subsequent
+    spatial-grid kernel.
+  - Exact-hit preflight still returns immediately, and cache-hit preflight requested by
+    `setGpuProbeTransformedExactPointwiseOnCacheHit(true)` keeps its fast exact-match behavior.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformedExactPointwiseAlignmentStepFallsBackToSpatialGridOnMismatch`:
+    failed before implementation with target load count 24 versus expected 12, then passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformedAlignmentStepSkipsSpatialGridSearchForExactPointwiseMatches:ICPGpuPathTest.TransformedAccumulatedAlignmentStepSkipsSpatialGridPrepareForExactPointwiseMatches:ICPGpuPathTest.TransformedExactPointwiseAlignmentStepFallsBackToSpatialGridOnMismatch:ICPGpuPathTest.TransformedAlignmentStepUsesCachedSpatialGridWithoutExactPointwiseProbe:ICPGpuPathTest.TransformedAlignmentStepCanProbeExactPointwiseOnCacheHitWhenRequested:ICPGpuPathTest.TransformedExactPointwiseAccumulatedFallbackDoesNotWriteInvalidTransform:ICPGpuPathTest.AlignCanProbeTransformedExactPointwiseOnCacheHitWhenRequested:ICPGpuPathTest.AlignSkipsNextAccumulatedTransformBufferForLastTransformedIdentityStep:ICPGpuPathTest.AlignDeferredLastTransformedStepAccumulatesNonIdentityBeforeFinalMetrics`:
+    9 transformed exact-pointwise / accumulated-transform tests passed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 40 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_finite_radius_binary_translation_(transform_only|transform_only_preflight|reuse_output|reuse_output_preflight)|gpu_icp_alignment_step_transformed_exact_pointwise_(cached_grid|cache_hit)'`:
+    ran successfully on the RTX 4060 Laptop GPU.
+  - Relevant rows:
+    `gpu_icp_finite_radius_binary_translation_transform_only_two_iterations` = 0.980791 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_preflight_two_iterations` = 0.956148 ms,
+    `gpu_icp_finite_radius_binary_translation_reuse_output_two_iterations` = 0.984522 ms,
+    `gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations` = 0.956154 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.210798 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.23534 ms, and
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit_preflight` = 0.210697 ms.
+  - A nonrigid/preflight smoke run also completed:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 1.8789 ms,
+    `gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations` = 2.0612 ms,
+    `gpu_icp_finite_radius_translation_transform_only_skip_final_metrics` = 1.20984 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_preflight_two_iterations` = 0.955205 ms, and
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit_preflight` = 0.210834 ms.
+- Current conclusion:
+  transformed exact-pointwise mismatch paths now avoid a duplicate exact target load pass after preflight miss. The
+  user-requested exact-hit preflight path still returns before spatial-grid search when it succeeds.

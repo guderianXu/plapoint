@@ -3912,6 +3912,7 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
     int source_count,
     Scalar max_correspondence_distance,
     const IcpTargetSpatialGrid& target_grid,
+    bool allow_transformed_exact_pointwise,
     RawIcpStats* partial_stats)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
@@ -3921,6 +3922,7 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
     if (target_grid.finite_cell_bounds)
     {
         const bool try_transformed_exact_pointwise =
+            allow_transformed_exact_pointwise &&
             detail::canProbeTransformedExactPointwiseStats(
                 source_count,
                 target_grid.target_points,
@@ -3982,6 +3984,7 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
     }
 
     const bool try_transformed_exact_pointwise =
+        allow_transformed_exact_pointwise &&
         detail::canProbeTransformedExactPointwiseStats(
             source_count,
             target_grid.target_points,
@@ -7038,6 +7041,7 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
         throw std::invalid_argument("ICP GPU: alignment-step host result workspace is not reserved");
     }
 
+    [[maybe_unused]] bool transformed_exact_pointwise_preflight_missed = false;
     if constexpr (!TransformSource)
     {
         const bool exact_pointwise_stats = launchExactPointwiseAlignmentStep(
@@ -7136,6 +7140,7 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
                 {
                     return makeHostAlignmentStepResult<Scalar>(*h_result);
                 }
+                transformed_exact_pointwise_preflight_missed = true;
             }
         }
     }
@@ -7162,6 +7167,7 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
                     source_count,
                     max_correspondence_distance,
                     target_grid,
+                    !transformed_exact_pointwise_preflight_missed,
                     d_partials);
             }
             else

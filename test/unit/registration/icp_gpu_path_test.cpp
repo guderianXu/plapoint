@@ -4206,6 +4206,7 @@ TEST(ICPGpuPathTest, TransformedAlignmentStepSkipsSpatialGridSearchForExactPoint
     plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
     plapoint::gpu::resetIcpTransformedExactPointwiseAlignmentStepCallCountForTesting();
+    plapoint::gpu::resetIcpExactPointwiseTargetLoadCountForTesting();
     const auto result =
         plapoint::gpu::detail::computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(
             transform_gpu.data(),
@@ -4315,6 +4316,7 @@ TEST(ICPGpuPathTest, TransformedExactPointwiseAlignmentStepFallsBackToSpatialGri
     plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
     plapoint::gpu::resetIcpTransformedExactPointwiseAlignmentStepCallCountForTesting();
+    plapoint::gpu::resetIcpExactPointwiseTargetLoadCountForTesting();
     const auto result =
         plapoint::gpu::detail::computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(
             transform_gpu.data(),
@@ -4331,6 +4333,9 @@ TEST(ICPGpuPathTest, TransformedExactPointwiseAlignmentStepFallsBackToSpatialGri
     EXPECT_TRUE(std::isfinite(result.residual_sq_sum));
     EXPECT_GT(result.residual_sq_sum, 0.0);
     EXPECT_EQ(plapoint::gpu::icpTransformedExactPointwiseAlignmentStepCallCountForTesting(), 1);
+    EXPECT_EQ(
+        plapoint::gpu::icpExactPointwiseTargetLoadCountForTesting(),
+        static_cast<unsigned long long>(source_gpu.rows()) * 3ull);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
 }
