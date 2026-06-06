@@ -174,6 +174,10 @@ void resetIcpHostSynchronizationCountForTesting();
 int icpHostSynchronizationCountForTesting();
 void resetIcpTargetTileBoundComputationCountForTesting();
 unsigned long long icpTargetTileBoundComputationCountForTesting();
+void resetIcpFallbackTileBoundKernelLaunchCountForTesting();
+int icpFallbackTileBoundKernelLaunchCountForTesting();
+void resetIcpFallbackUnboundedKernelLaunchCountForTesting();
+int icpFallbackUnboundedKernelLaunchCountForTesting();
 void resetIcpTargetSpatialGridBuildCountForTesting();
 int icpTargetSpatialGridBuildCountForTesting();
 void resetIcpGridCellLookupCountForTesting();
@@ -1296,6 +1300,95 @@ TEST(ICPGpuPathTest, ResidualStatsStopsNonSpatialScanAfterExactMatch)
     EXPECT_EQ(stats.invalid_source_count, 0);
     EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-8);
     EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 1ull);
+}
+
+TEST(ICPGpuPathTest, FallbackStatsLaunchesTileBoundSpecializationsByRadius)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source(1, 3);
+    source.setValue(0, 0, 0.0f);
+    source.setValue(0, 1, 0.0f);
+    source.setValue(0, 2, 0.0f);
+
+    constexpr int bounded_target_count = 257;
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> bounded_target(bounded_target_count, 3);
+    for (int i = 0; i < bounded_target_count; ++i)
+    {
+        bounded_target.setValue(i, 0, 1000.0f + static_cast<float>(i));
+        bounded_target.setValue(i, 1, 1000.0f);
+        bounded_target.setValue(i, 2, 1000.0f);
+    }
+    bounded_target.setValue(0, 0, 0.0f);
+    bounded_target.setValue(0, 1, 0.0f);
+    bounded_target.setValue(0, 2, 0.0f);
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> unbounded_target(2, 3);
+    unbounded_target.setValue(0, 0, 0.0f);
+    unbounded_target.setValue(0, 1, 0.0f);
+    unbounded_target.setValue(0, 2, 0.0f);
+    unbounded_target.setValue(1, 0, 1.0f);
+    unbounded_target.setValue(1, 1, 0.0f);
+    unbounded_target.setValue(1, 2, 0.0f);
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> identity(4, 4);
+    identity.fill(0.0f);
+    identity.setValue(0, 0, 1.0f);
+    identity.setValue(1, 1, 1.0f);
+    identity.setValue(2, 2, 1.0f);
+    identity.setValue(3, 3, 1.0f);
+
+    auto source_gpu = source.toGpu();
+    auto bounded_target_gpu = bounded_target.toGpu();
+    auto unbounded_target_gpu = unbounded_target.toGpu();
+    auto identity_gpu = identity.toGpu();
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output_gpu(source.rows(), 3);
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+
+    plapoint::gpu::resetIcpFallbackTileBoundKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpFallbackUnboundedKernelLaunchCountForTesting();
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        bounded_target_gpu.data(),
+        static_cast<int>(bounded_target_gpu.rows()),
+        0.0f,
+        nullptr,
+        workspace);
+    EXPECT_EQ(stats.active_count, 1);
+    EXPECT_EQ(plapoint::gpu::icpFallbackTileBoundKernelLaunchCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpFallbackUnboundedKernelLaunchCountForTesting(), 0);
+
+    plapoint::gpu::resetIcpFallbackTileBoundKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpFallbackUnboundedKernelLaunchCountForTesting();
+    const auto residual_stats = plapoint::gpu::computeIcpResidualStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        unbounded_target_gpu.data(),
+        static_cast<int>(unbounded_target_gpu.rows()),
+        std::numeric_limits<float>::infinity(),
+        workspace);
+    EXPECT_EQ(residual_stats.active_count, 1);
+    EXPECT_EQ(plapoint::gpu::icpFallbackTileBoundKernelLaunchCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpFallbackUnboundedKernelLaunchCountForTesting(), 1);
+
+    plapoint::gpu::resetIcpFallbackTileBoundKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpFallbackUnboundedKernelLaunchCountForTesting();
+    const auto transformed_stats = plapoint::gpu::transformPointsAndComputeIcpResidualStatsColumnMajor(
+        identity_gpu.data(),
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        bounded_target_gpu.data(),
+        static_cast<int>(bounded_target_gpu.rows()),
+        0.0f,
+        output_gpu.data(),
+        workspace);
+    EXPECT_EQ(transformed_stats.active_count, 1);
+    EXPECT_EQ(plapoint::gpu::icpFallbackTileBoundKernelLaunchCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpFallbackUnboundedKernelLaunchCountForTesting(), 0);
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsStopsSpatialGridAfterExactMatchWhenIndicesOmitted)

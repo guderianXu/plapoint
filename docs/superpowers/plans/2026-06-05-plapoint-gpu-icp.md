@@ -1744,6 +1744,48 @@ Verification evidence:
   rerun `ICPGpuPathTest.CorrespondenceStatsStopsNonSpatialScanAfterExactMatchWhenIndicesOmitted`, full CUDA `ctest`,
   and the 100k-point ICP benchmark to confirm runtime behavior and performance impact.
 
+## Task 77: Specialize GPU ICP Fallback Tile-Bounds Branches
+
+- Goal: remove the remaining runtime tile-bounds and radius-pruning branches from the shared-memory target-tiling
+  fallback kernels. The fallback path is now mainly used for zero-radius tile-bounds pruning and infinite-radius
+  unbounded scans, so the branch choice is known at launch time.
+- TDD red:
+  - Added `FallbackStatsLaunchesTileBoundSpecializationsByRadius`, which references new test-only fallback launch
+    counters and requires zero-radius correspondence and transform+residual calls to use the tile-bounds variant while
+    infinite-radius residual calls use the unbounded variant.
+  - `cmake --build build-codex-cuda -j$(nproc)` failed as expected at link time because the new test hooks were not yet
+    defined.
+- Implementation:
+  - Templated `collectCorrespondenceStatsKernel()` on `UseTargetTileBounds` in addition to index-output specialization.
+  - Templated `collectResidualStatsKernel()` and `transformAndCollectResidualStatsKernel()` on `UseTargetTileBounds`.
+  - Replaced runtime `target_tile_bounds` / `can_prune_by_radius` checks in those fallback kernels with `if constexpr`.
+  - Added `launchCollectResidualStatsKernel()` and `launchTransformAndCollectResidualStatsKernel()` helpers matching the
+    existing correspondence fallback launch helper.
+  - Added test-only fallback launch counters to verify bounded vs unbounded fallback selection.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `rg -n "can_prune_by_radius|collectResidualStatsKernel<Scalar>|transformAndCollectResidualStatsKernel<Scalar>|collectCorrespondenceStatsKernel<Scalar>" src/icp_gpu.cu`:
+    no remaining runtime prune flag or old unspecialized fallback launches.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.FallbackStatsLaunchesTileBoundSpecializationsByRadius:ICPGpuPathTest.CorrespondenceStatsSkipsFarTargetTilesBeforeCandidateLoop:ICPGpuPathTest.CorrespondenceStatsStopsNonSpatialScanAfterExactMatchWhenIndicesOmitted:ICPGpuPathTest.ResidualStatsStopsNonSpatialScanAfterExactMatch:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 4 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    229 test entries, 0 failed; GPU-dependent tests, including the new fallback-specialization test, were skipped
+    because the current session cannot communicate with the NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun `ICPGpuPathTest.FallbackStatsLaunchesTileBoundSpecializationsByRadius`, full CUDA `ctest`, and the 100k-point
+  ICP benchmark to confirm runtime behavior and performance impact.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell

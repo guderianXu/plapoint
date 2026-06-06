@@ -156,6 +156,8 @@ std::atomic<int> g_icp_raw_stats_step_kernel_launch_count{0};
 std::atomic<int> g_icp_alignment_step_call_count{0};
 std::atomic<int> g_icp_host_synchronization_count{0};
 std::atomic<int> g_icp_target_spatial_grid_build_count{0};
+std::atomic<int> g_icp_fallback_tile_bound_kernel_launch_count{0};
+std::atomic<int> g_icp_fallback_unbounded_kernel_launch_count{0};
 std::atomic<std::uintptr_t> g_icp_last_transform_output_pointer{0};
 std::atomic<int> g_icp_transform_points_call_count{0};
 std::atomic<int> g_icp_transform_multiply_call_count{0};
@@ -165,6 +167,20 @@ __device__ unsigned long long g_icp_target_index_load_count;
 __device__ unsigned long long g_icp_sorted_target_coordinate_load_count;
 __device__ unsigned long long g_icp_target_tile_bound_computation_count;
 __device__ unsigned long long g_icp_grid_cell_lookup_count;
+#endif
+
+#ifdef PLAPOINT_ENABLE_TESTING
+void recordFallbackKernelLaunchForTesting(bool uses_target_tile_bounds)
+{
+    if (uses_target_tile_bounds)
+    {
+        g_icp_fallback_tile_bound_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
+    }
+    else
+    {
+        g_icp_fallback_unbounded_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
+    }
+}
 #endif
 
 int icpStatsPartialCount(int source_count)
@@ -639,7 +655,7 @@ __global__ void computeTargetTileBoundsKernel(
     }
 }
 
-template <typename Scalar, bool WriteCorrespondenceIndices>
+template <typename Scalar, bool WriteCorrespondenceIndices, bool UseTargetTileBounds>
 __global__ void collectCorrespondenceStatsKernel(
     const Scalar* source_points,
     int source_count,
@@ -681,7 +697,6 @@ __global__ void collectCorrespondenceStatsKernel(
     double best_tz = 0.0;
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
-    const bool can_prune_by_radius = isfinite(max_dist) && max_dist >= 0.0;
     bool stop_target_scan = false;
     __shared__ double target_tile_x[kIcpStatsBlockSize];
     __shared__ double target_tile_y[kIcpStatsBlockSize];
@@ -704,14 +719,17 @@ __global__ void collectCorrespondenceStatsKernel(
         __syncthreads();
 
         bool tile_relevant = true;
-        if (source_valid && can_prune_by_radius && target_tile_bounds)
+        if constexpr (UseTargetTileBounds)
         {
-            const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
-            tile_relevant =
-                bounds.has_valid_point &&
-                sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&
-                sy >= bounds.min_y - max_dist && sy <= bounds.max_y + max_dist &&
-                sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
+            if (source_valid)
+            {
+                const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
+                tile_relevant =
+                    bounds.has_valid_point &&
+                    sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&
+                    sy >= bounds.min_y - max_dist && sy <= bounds.max_y + max_dist &&
+                    sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
+            }
         }
 
         if (source_valid && !stop_target_scan && tile_relevant)
@@ -728,19 +746,28 @@ __global__ void collectCorrespondenceStatsKernel(
                 }
 
                 const double dx = sx - target_tile_x[tile_offset];
-                if (can_prune_by_radius && fabs(dx) > max_dist)
+                if constexpr (UseTargetTileBounds)
                 {
-                    continue;
+                    if (fabs(dx) > max_dist)
+                    {
+                        continue;
+                    }
                 }
                 const double dy = sy - target_tile_y[tile_offset];
-                if (can_prune_by_radius && fabs(dy) > max_dist)
+                if constexpr (UseTargetTileBounds)
                 {
-                    continue;
+                    if (fabs(dy) > max_dist)
+                    {
+                        continue;
+                    }
                 }
                 const double dz = sz - target_tile_z[tile_offset];
-                if (can_prune_by_radius && fabs(dz) > max_dist)
+                if constexpr (UseTargetTileBounds)
                 {
-                    continue;
+                    if (fabs(dz) > max_dist)
+                    {
+                        continue;
+                    }
                 }
 #ifdef PLAPOINT_ENABLE_TESTING
                 atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
@@ -1177,7 +1204,7 @@ __global__ void collectExactPointwiseResidualStatsKernel(
     }
 }
 
-template <typename Scalar>
+template <typename Scalar, bool UseTargetTileBounds>
 __global__ void collectResidualStatsKernel(
     const Scalar* source_points,
     int source_count,
@@ -1210,7 +1237,6 @@ __global__ void collectResidualStatsKernel(
     double best_dist_sq = INFINITY;
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
-    const bool can_prune_by_radius = isfinite(max_dist) && max_dist >= 0.0;
     bool stop_target_scan = false;
     __shared__ double target_tile_x[kIcpStatsBlockSize];
     __shared__ double target_tile_y[kIcpStatsBlockSize];
@@ -1233,14 +1259,17 @@ __global__ void collectResidualStatsKernel(
         __syncthreads();
 
         bool tile_relevant = true;
-        if (source_valid && can_prune_by_radius && target_tile_bounds)
+        if constexpr (UseTargetTileBounds)
         {
-            const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
-            tile_relevant =
-                bounds.has_valid_point &&
-                sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&
-                sy >= bounds.min_y - max_dist && sy <= bounds.max_y + max_dist &&
-                sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
+            if (source_valid)
+            {
+                const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
+                tile_relevant =
+                    bounds.has_valid_point &&
+                    sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&
+                    sy >= bounds.min_y - max_dist && sy <= bounds.max_y + max_dist &&
+                    sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
+            }
         }
 
         if (source_valid && !stop_target_scan && tile_relevant)
@@ -1254,19 +1283,28 @@ __global__ void collectResidualStatsKernel(
                 }
 
                 const double dx = sx - target_tile_x[tile_offset];
-                if (can_prune_by_radius && fabs(dx) > max_dist)
+                if constexpr (UseTargetTileBounds)
                 {
-                    continue;
+                    if (fabs(dx) > max_dist)
+                    {
+                        continue;
+                    }
                 }
                 const double dy = sy - target_tile_y[tile_offset];
-                if (can_prune_by_radius && fabs(dy) > max_dist)
+                if constexpr (UseTargetTileBounds)
                 {
-                    continue;
+                    if (fabs(dy) > max_dist)
+                    {
+                        continue;
+                    }
                 }
                 const double dz = sz - target_tile_z[tile_offset];
-                if (can_prune_by_radius && fabs(dz) > max_dist)
+                if constexpr (UseTargetTileBounds)
                 {
-                    continue;
+                    if (fabs(dz) > max_dist)
+                    {
+                        continue;
+                    }
                 }
 
                 const double dist_sq = dx * dx + dy * dy + dz * dz;
@@ -1510,7 +1548,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
     }
 }
 
-template <typename Scalar>
+template <typename Scalar, bool UseTargetTileBounds>
 __global__ void transformAndCollectResidualStatsKernel(
     const Scalar* __restrict__ transform,
     const Scalar* source_points,
@@ -1562,7 +1600,6 @@ __global__ void transformAndCollectResidualStatsKernel(
     double best_dist_sq = INFINITY;
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
-    const bool can_prune_by_radius = isfinite(max_dist) && max_dist >= 0.0;
     bool stop_target_scan = false;
     __shared__ double target_tile_x[kIcpStatsBlockSize];
     __shared__ double target_tile_y[kIcpStatsBlockSize];
@@ -1585,14 +1622,17 @@ __global__ void transformAndCollectResidualStatsKernel(
         __syncthreads();
 
         bool tile_relevant = true;
-        if (source_valid && can_prune_by_radius && target_tile_bounds)
+        if constexpr (UseTargetTileBounds)
         {
-            const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
-            tile_relevant =
-                bounds.has_valid_point &&
-                sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&
-                sy >= bounds.min_y - max_dist && sy <= bounds.max_y + max_dist &&
-                sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
+            if (source_valid)
+            {
+                const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
+                tile_relevant =
+                    bounds.has_valid_point &&
+                    sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&
+                    sy >= bounds.min_y - max_dist && sy <= bounds.max_y + max_dist &&
+                    sz >= bounds.min_z - max_dist && sz <= bounds.max_z + max_dist;
+            }
         }
 
         if (source_valid && !stop_target_scan && tile_relevant)
@@ -1606,19 +1646,28 @@ __global__ void transformAndCollectResidualStatsKernel(
                 }
 
                 const double dx = sx - target_tile_x[tile_offset];
-                if (can_prune_by_radius && fabs(dx) > max_dist)
+                if constexpr (UseTargetTileBounds)
                 {
-                    continue;
+                    if (fabs(dx) > max_dist)
+                    {
+                        continue;
+                    }
                 }
                 const double dy = sy - target_tile_y[tile_offset];
-                if (can_prune_by_radius && fabs(dy) > max_dist)
+                if constexpr (UseTargetTileBounds)
                 {
-                    continue;
+                    if (fabs(dy) > max_dist)
+                    {
+                        continue;
+                    }
                 }
                 const double dz = sz - target_tile_z[tile_offset];
-                if (can_prune_by_radius && fabs(dz) > max_dist)
+                if constexpr (UseTargetTileBounds)
                 {
-                    continue;
+                    if (fabs(dz) > max_dist)
+                    {
+                        continue;
+                    }
                 }
 
                 const double dist_sq = dx * dx + dy * dy + dz * dz;
@@ -1895,9 +1944,27 @@ void launchCollectCorrespondenceStatsKernel(
     const IcpTargetTileBounds* target_tile_bounds,
     RawIcpStats* partial_stats)
 {
-    if (correspondence_indices)
+#ifdef PLAPOINT_ENABLE_TESTING
+    recordFallbackKernelLaunchForTesting(target_tile_bounds != nullptr);
+#endif
+
+    if (target_tile_bounds)
     {
-        collectCorrespondenceStatsKernel<Scalar, true><<<grid_size, block_size, 0, stream>>>(
+        if (correspondence_indices)
+        {
+            collectCorrespondenceStatsKernel<Scalar, true, true><<<grid_size, block_size, 0, stream>>>(
+                source_points,
+                source_count,
+                target_points,
+                target_count,
+                max_correspondence_distance,
+                correspondence_indices,
+                target_tile_bounds,
+                partial_stats);
+            return;
+        }
+
+        collectCorrespondenceStatsKernel<Scalar, false, true><<<grid_size, block_size, 0, stream>>>(
             source_points,
             source_count,
             target_points,
@@ -1909,13 +1976,113 @@ void launchCollectCorrespondenceStatsKernel(
         return;
     }
 
-    collectCorrespondenceStatsKernel<Scalar, false><<<grid_size, block_size, 0, stream>>>(
+    if (correspondence_indices)
+    {
+        collectCorrespondenceStatsKernel<Scalar, true, false><<<grid_size, block_size, 0, stream>>>(
+            source_points,
+            source_count,
+            target_points,
+            target_count,
+            max_correspondence_distance,
+            correspondence_indices,
+            target_tile_bounds,
+            partial_stats);
+        return;
+    }
+
+    collectCorrespondenceStatsKernel<Scalar, false, false><<<grid_size, block_size, 0, stream>>>(
         source_points,
         source_count,
         target_points,
         target_count,
         max_correspondence_distance,
         correspondence_indices,
+        target_tile_bounds,
+        partial_stats);
+}
+
+template <typename Scalar>
+void launchCollectResidualStatsKernel(
+    int grid_size,
+    int block_size,
+    cudaStream_t stream,
+    const Scalar* source_points,
+    int source_count,
+    const Scalar* target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    const IcpTargetTileBounds* target_tile_bounds,
+    RawIcpResidualStats* partial_stats)
+{
+#ifdef PLAPOINT_ENABLE_TESTING
+    recordFallbackKernelLaunchForTesting(target_tile_bounds != nullptr);
+#endif
+
+    if (target_tile_bounds)
+    {
+        collectResidualStatsKernel<Scalar, true><<<grid_size, block_size, 0, stream>>>(
+            source_points,
+            source_count,
+            target_points,
+            target_count,
+            max_correspondence_distance,
+            target_tile_bounds,
+            partial_stats);
+        return;
+    }
+
+    collectResidualStatsKernel<Scalar, false><<<grid_size, block_size, 0, stream>>>(
+        source_points,
+        source_count,
+        target_points,
+        target_count,
+        max_correspondence_distance,
+        target_tile_bounds,
+        partial_stats);
+}
+
+template <typename Scalar>
+void launchTransformAndCollectResidualStatsKernel(
+    int grid_size,
+    int block_size,
+    cudaStream_t stream,
+    const Scalar* transform,
+    const Scalar* source_points,
+    int source_count,
+    const Scalar* target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    Scalar* output_points,
+    const IcpTargetTileBounds* target_tile_bounds,
+    RawIcpResidualStats* partial_stats)
+{
+#ifdef PLAPOINT_ENABLE_TESTING
+    recordFallbackKernelLaunchForTesting(target_tile_bounds != nullptr);
+#endif
+
+    if (target_tile_bounds)
+    {
+        transformAndCollectResidualStatsKernel<Scalar, true><<<grid_size, block_size, 0, stream>>>(
+            transform,
+            source_points,
+            source_count,
+            target_points,
+            target_count,
+            max_correspondence_distance,
+            output_points,
+            target_tile_bounds,
+            partial_stats);
+        return;
+    }
+
+    transformAndCollectResidualStatsKernel<Scalar, false><<<grid_size, block_size, 0, stream>>>(
+        transform,
+        source_points,
+        source_count,
+        target_points,
+        target_count,
+        max_correspondence_distance,
+        output_points,
         target_tile_bounds,
         partial_stats);
 }
@@ -3325,7 +3492,10 @@ IcpResidualStats<Scalar> computeIcpResidualStatsColumnMajorImpl(
             workspace,
             stream);
 
-        collectResidualStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+        launchCollectResidualStatsKernel(
+            grid_size,
+            block_size,
+            stream,
             d_source_points,
             source_count,
             d_target_points,
@@ -3416,7 +3586,10 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
             workspace,
             stream);
 
-        transformAndCollectResidualStatsKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+        launchTransformAndCollectResidualStatsKernel(
+            grid_size,
+            block_size,
+            stream,
             d_transform,
             d_source_points,
             source_count,
@@ -4067,6 +4240,26 @@ unsigned long long icpTargetTileBoundComputationCountForTesting()
     unsigned long long count = 0;
     PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_target_tile_bound_computation_count, sizeof(count)));
     return count;
+}
+
+void resetIcpFallbackTileBoundKernelLaunchCountForTesting()
+{
+    g_icp_fallback_tile_bound_kernel_launch_count.store(0, std::memory_order_relaxed);
+}
+
+int icpFallbackTileBoundKernelLaunchCountForTesting()
+{
+    return g_icp_fallback_tile_bound_kernel_launch_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpFallbackUnboundedKernelLaunchCountForTesting()
+{
+    g_icp_fallback_unbounded_kernel_launch_count.store(0, std::memory_order_relaxed);
+}
+
+int icpFallbackUnboundedKernelLaunchCountForTesting()
+{
+    return g_icp_fallback_unbounded_kernel_launch_count.load(std::memory_order_relaxed);
 }
 
 void resetIcpTargetSpatialGridBuildCountForTesting()
