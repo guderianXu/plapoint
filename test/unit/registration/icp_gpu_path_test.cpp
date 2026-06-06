@@ -192,6 +192,8 @@ void resetIcpRawStatsStepKernelLaunchCountForTesting();
 int icpRawStatsStepKernelLaunchCountForTesting();
 void resetIcpStatsStepHostResultCopyCountForTesting();
 int icpStatsStepHostResultCopyCountForTesting();
+void resetIcpAlignmentStepHostResultCopyCountForTesting();
+int icpAlignmentStepHostResultCopyCountForTesting();
 void resetIcpAlignmentStepCallCountForTesting();
 int icpAlignmentStepCallCountForTesting();
 void resetIcpTransformedAlignmentStepCallCountForTesting();
@@ -542,6 +544,44 @@ TEST(ICPGpuPathTest, StatsAndStepTransformCopiesOneHostResult)
     EXPECT_EQ(result.stats.active_count, 4);
     EXPECT_TRUE(result.step_valid);
     EXPECT_EQ(plapoint::gpu::icpStatsStepHostResultCopyCountForTesting(), 1);
+}
+
+TEST(ICPGpuPathTest, AlignmentStepCopiesOneCompactHostResultPerCall)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto source_cpu = makeNonCollinearPoints();
+    auto target_cpu = makeTranslatedNonCollinearPoints(source_cpu, 0.1f, -0.05f, 0.025f);
+    auto source_gpu = source_cpu.toGpu();
+    auto target_gpu = target_cpu.toGpu();
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+
+    plapoint::gpu::resetIcpAlignmentStepCallCountForTesting();
+    plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
+    plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
+    plapoint::gpu::resetIcpStepTransformInputCopyCountForTesting();
+    plapoint::gpu::resetIcpRawStatsStepKernelLaunchCountForTesting();
+    const auto result = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        2.0f,
+        stats_workspace,
+        step_gpu.data());
+
+    EXPECT_EQ(result.active_count, static_cast<int>(source_gpu.rows()));
+    EXPECT_TRUE(result.step_valid);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepCallCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpStepTransformInputCopyCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpRawStatsStepKernelLaunchCountForTesting(), 0);
 }
 
 TEST(ICPGpuPathTest, StatsAndStepCanUseOrderedCorrespondencesForFiniteRadiusTranslation)

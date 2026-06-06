@@ -7252,3 +7252,43 @@ Verification evidence:
 - Current conclusion:
   cached fallback tile-bounds calls now avoid a redundant host-side reserve/capacity check while preserving the existing
   target/count cache key and reserve-time validation for non-cache-hit paths.
+
+## Task 191: Guard Alignment-Step Compact Host Result Copies
+
+- Goal: make the alignment-step compact result copy directly observable in GPU ICP tests. The compact alignment-step
+  path should copy only `AlignmentStepRawResult` back to host once per call, rather than regressing to the full
+  stats-step result copy or adding extra host-result transfers.
+- RED check:
+  - Added a testing-only `g_icp_alignment_step_host_result_copy_count` counter and
+    `ICPGpuPathTest.AlignmentStepCopiesOneCompactHostResultPerCall`.
+  - The test also asserts one alignment-step call, one host synchronization, no step-transform input copy, and no raw
+    stats-step kernel launch for the finite-radius same-index translation path.
+  - Before implementation, the test failed with alignment-step host result copy count 0 instead of the expected 1.
+- Implementation:
+  - Increment the new testing counter next to every alignment-step `cudaMemcpyAsync()` that copies
+    `AlignmentStepRawResult` from device to host.
+  - The counter is guarded by `PLAPOINT_ENABLE_TESTING`; non-testing benchmark/library builds do not get additional
+    runtime work from this instrumentation.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignmentStepCopiesOneCompactHostResultPerCall`:
+    failed before implementation with host result copy count 0 versus expected 1, then passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignmentStepCompactResultMatchesFullStatsStepResult:ICPGpuPathTest.AlignmentStepCopiesOneCompactHostResultPerCall:ICPGpuPathTest.StatsAndStepTransformCopiesOneHostResult:ICPGpuPathTest.AlignmentStepRawResultFitsCompactHostCopy:ICPGpuPathTest.FloatAlignmentStepRawResultUsesFloatSizedDelta:ICPGpuPathTest.CorrespondenceStatsReusesFiniteRadiusTargetTileBoundsForSameTarget:ICPGpuPathTest.CorrespondenceStatsSkipsSpatialGridReserveOnCacheHit:ICPGpuPathTest.AlignInvalidatesTargetSpatialGridCacheWhenCorrespondenceRadiusChanges`:
+    8 compact alignment-step, stats-step, and cache tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 40 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(stats|stats_step|alignment_step)_fallback_tile_bounds_(new_workspace|cached_bounds)|gpu_icp_stats_step_finite_radius_translation_cached_grid|gpu_icp_alignment_step_finite_radius_translation_cached_grid'`:
+    ran successfully on the RTX 4060 Laptop GPU after the NVIDIA driver fix.
+  - Relevant rows:
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.695025 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.695331 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace` = 0.702262 ms,
+    `gpu_icp_stats_fallback_tile_bounds_new_workspace` = 0.573739 ms,
+    `gpu_icp_stats_fallback_tile_bounds_cached_bounds` = 0.104361 ms,
+    `gpu_icp_stats_step_fallback_tile_bounds_new_workspace` = 0.603102 ms,
+    `gpu_icp_stats_step_fallback_tile_bounds_cached_bounds` = 0.120655 ms,
+    `gpu_icp_alignment_step_fallback_tile_bounds_new_workspace` = 0.600696 ms, and
+    `gpu_icp_alignment_step_fallback_tile_bounds_cached_bounds` = 0.120706 ms.
+- Current conclusion:
+  alignment-step host-result transfers now have a dedicated performance guard. Future changes that accidentally add
+  extra compact result copies, fall back to stats-step, or add an input-transform copy in this path will be caught by
+  targeted GPU tests.

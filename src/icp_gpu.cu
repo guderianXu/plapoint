@@ -251,6 +251,7 @@ std::atomic<int> g_icp_exact_pointwise_identity_step_kernel_launch_count{0};
 std::atomic<int> g_icp_transformed_exact_pointwise_alignment_step_call_count{0};
 std::atomic<int> g_icp_raw_stats_step_kernel_launch_count{0};
 std::atomic<int> g_icp_stats_step_host_result_copy_count{0};
+std::atomic<int> g_icp_alignment_step_host_result_copy_count{0};
 std::atomic<int> g_icp_alignment_step_call_count{0};
 std::atomic<int> g_icp_transformed_alignment_step_call_count{0};
 std::atomic<int> g_icp_accumulated_alignment_step_call_count{0};
@@ -7082,6 +7083,7 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
             PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(AlignmentStepRawResult),
                                                 cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
+            g_icp_alignment_step_host_result_copy_count.fetch_add(1, std::memory_order_relaxed);
             g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
 #endif
             PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
@@ -7115,6 +7117,7 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
                 PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(AlignmentStepRawResult),
                                                     cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
+                g_icp_alignment_step_host_result_copy_count.fetch_add(1, std::memory_order_relaxed);
                 g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
 #endif
                 PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
@@ -7153,6 +7156,7 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
                 PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(AlignmentStepRawResult),
                                                     cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
+                g_icp_alignment_step_host_result_copy_count.fetch_add(1, std::memory_order_relaxed);
                 g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
 #endif
                 PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
@@ -7270,6 +7274,7 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
     PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(AlignmentStepRawResult),
                                         cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_alignment_step_host_result_copy_count.fetch_add(1, std::memory_order_relaxed);
     g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
 #endif
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
@@ -7457,6 +7462,16 @@ void resetIcpStatsStepHostResultCopyCountForTesting()
 int icpStatsStepHostResultCopyCountForTesting()
 {
     return g_icp_stats_step_host_result_copy_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpAlignmentStepHostResultCopyCountForTesting()
+{
+    g_icp_alignment_step_host_result_copy_count.store(0, std::memory_order_relaxed);
+}
+
+int icpAlignmentStepHostResultCopyCountForTesting()
+{
+    return g_icp_alignment_step_host_result_copy_count.load(std::memory_order_relaxed);
 }
 
 void resetIcpAlignmentStepCallCountForTesting()
