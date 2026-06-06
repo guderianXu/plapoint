@@ -188,6 +188,8 @@ void resetIcpTransformedExactPointwiseResidualProbeCountForTesting();
 unsigned long long icpTransformedExactPointwiseResidualProbeCountForTesting();
 void resetIcpTransformResidualOutputPointWriteCountForTesting();
 unsigned long long icpTransformResidualOutputPointWriteCountForTesting();
+void resetIcpTransformResidualPointTransformCountForTesting();
+unsigned long long icpTransformResidualPointTransformCountForTesting();
 void resetIcpExactPointwiseTargetLoadCountForTesting();
 unsigned long long icpExactPointwiseTargetLoadCountForTesting();
 void resetIcpRawStatsStepKernelLaunchCountForTesting();
@@ -5164,6 +5166,7 @@ TEST(ICPGpuPathTest, TransformResidualStatsFallbackSkipsDuplicateExactPointwiseP
     plapoint::gpu::resetIcpTransformedExactPointwiseResidualCallCountForTesting();
     plapoint::gpu::resetIcpTransformedExactPointwiseResidualProbeCountForTesting();
     plapoint::gpu::resetIcpTransformResidualOutputPointWriteCountForTesting();
+    plapoint::gpu::resetIcpTransformResidualPointTransformCountForTesting();
     plapoint::gpu::resetIcpExactPointwiseTargetLoadCountForTesting();
     const auto stats = plapoint::gpu::transformPointsAndComputeIcpResidualStatsColumnMajor(
         transform_gpu.data(),
@@ -5187,6 +5190,9 @@ TEST(ICPGpuPathTest, TransformResidualStatsFallbackSkipsDuplicateExactPointwiseP
         static_cast<unsigned long long>(source_gpu.rows()) * 3ull);
     EXPECT_EQ(
         plapoint::gpu::icpTransformResidualOutputPointWriteCountForTesting(),
+        static_cast<unsigned long long>(source_gpu.rows()));
+    EXPECT_EQ(
+        plapoint::gpu::icpTransformResidualPointTransformCountForTesting(),
         static_cast<unsigned long long>(source_gpu.rows()));
 }
 

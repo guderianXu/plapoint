@@ -281,6 +281,7 @@ __device__ unsigned long long g_icp_target_tile_load_count;
 __device__ unsigned long long g_icp_exact_pointwise_target_load_count;
 __device__ unsigned long long g_icp_transformed_exact_pointwise_residual_probe_count;
 __device__ unsigned long long g_icp_transform_residual_output_point_write_count;
+__device__ unsigned long long g_icp_transform_residual_point_transform_count;
 __device__ unsigned long long g_icp_grid_cell_lookup_count;
 __device__ unsigned long long g_icp_grid_cell_offset_count;
 __device__ unsigned long long g_icp_grid_cell_center_min_distance_count;
@@ -2289,6 +2290,9 @@ __global__ void collectTransformedExactPointwiseResidualStatsKernel(
             sx,
             sy,
             sz);
+#ifdef PLAPOINT_ENABLE_TESTING
+        atomicAdd(&g_icp_transform_residual_point_transform_count, 1ull);
+#endif
         if (output_points)
         {
             output_points[source_idx] = static_cast<Scalar>(sx);
@@ -2904,6 +2908,9 @@ __global__ void transformAndCollectResidualStatsKernel(
         Scalar oy = Scalar(0);
         Scalar oz = Scalar(0);
         transformColumnMajorPoint3x4(block_transform, px, py, pz, ox, oy, oz);
+#ifdef PLAPOINT_ENABLE_TESTING
+        atomicAdd(&g_icp_transform_residual_point_transform_count, 1ull);
+#endif
         if (output_points)
         {
             output_points[source_idx] = ox;
@@ -3116,6 +3123,9 @@ __global__ void transformAndCollectOrderedResidualStatsKernel(
         Scalar oy = Scalar(0);
         Scalar oz = Scalar(0);
         transformColumnMajorPoint3x4(block_transform, px, py, pz, ox, oy, oz);
+#ifdef PLAPOINT_ENABLE_TESTING
+        atomicAdd(&g_icp_transform_residual_point_transform_count, 1ull);
+#endif
         const double sx = static_cast<double>(ox);
         const double sy = static_cast<double>(oy);
         const double sz = static_cast<double>(oz);
@@ -3223,6 +3233,9 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
         Scalar oy = Scalar(0);
         Scalar oz = Scalar(0);
         transformColumnMajorPoint3x4(block_transform, px, py, pz, ox, oy, oz);
+#ifdef PLAPOINT_ENABLE_TESTING
+        atomicAdd(&g_icp_transform_residual_point_transform_count, 1ull);
+#endif
         if (output_points)
         {
             output_points[source_idx] = ox;
@@ -6357,6 +6370,8 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
     }
     Scalar* fallback_output_points =
         transformed_exact_pointwise_preflight_missed ? nullptr : d_output_points;
+    const bool reuse_preflight_output_as_source =
+        transformed_exact_pointwise_preflight_missed && d_output_points != nullptr;
 
     const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
         d_target_points,
@@ -6368,18 +6383,33 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
 
     if (target_grid.active)
     {
-        launchTransformAndCollectResidualStatsSpatialGridKernel(
-            grid_size,
-            block_size,
-            stream,
-            d_transform,
-            d_source_points,
-            source_count,
-            max_correspondence_distance,
-            fallback_output_points,
-            target_grid,
-            !transformed_exact_pointwise_preflight_missed,
-            d_partials);
+        if (reuse_preflight_output_as_source)
+        {
+            launchCollectResidualStatsSpatialGridKernel(
+                grid_size,
+                block_size,
+                stream,
+                d_output_points,
+                source_count,
+                max_correspondence_distance,
+                target_grid,
+                d_partials);
+        }
+        else
+        {
+            launchTransformAndCollectResidualStatsSpatialGridKernel(
+                grid_size,
+                block_size,
+                stream,
+                d_transform,
+                d_source_points,
+                source_count,
+                max_correspondence_distance,
+                fallback_output_points,
+                target_grid,
+                !transformed_exact_pointwise_preflight_missed,
+                d_partials);
+        }
     }
     else
     {
@@ -6390,19 +6420,36 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
             workspace,
             stream);
 
-        launchTransformAndCollectResidualStatsKernel(
-            grid_size,
-            block_size,
-            stream,
-            d_transform,
-            d_source_points,
-            source_count,
-            d_target_points,
-            target_count,
-            max_correspondence_distance,
-            fallback_output_points,
-            d_target_tile_bounds,
-            d_partials);
+        if (reuse_preflight_output_as_source)
+        {
+            launchCollectResidualStatsKernel(
+                grid_size,
+                block_size,
+                stream,
+                d_output_points,
+                source_count,
+                d_target_points,
+                target_count,
+                max_correspondence_distance,
+                d_target_tile_bounds,
+                d_partials);
+        }
+        else
+        {
+            launchTransformAndCollectResidualStatsKernel(
+                grid_size,
+                block_size,
+                stream,
+                d_transform,
+                d_source_points,
+                source_count,
+                d_target_points,
+                target_count,
+                max_correspondence_distance,
+                fallback_output_points,
+                d_target_tile_bounds,
+                d_partials);
+        }
     }
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
@@ -7461,6 +7508,21 @@ unsigned long long icpTransformResidualOutputPointWriteCountForTesting()
     unsigned long long count = 0;
     PLAPOINT_CHECK_CUDA(
         cudaMemcpyFromSymbol(&count, g_icp_transform_residual_output_point_write_count, sizeof(count)));
+    return count;
+}
+
+void resetIcpTransformResidualPointTransformCountForTesting()
+{
+    const unsigned long long zero = 0;
+    PLAPOINT_CHECK_CUDA(
+        cudaMemcpyToSymbol(g_icp_transform_residual_point_transform_count, &zero, sizeof(zero)));
+}
+
+unsigned long long icpTransformResidualPointTransformCountForTesting()
+{
+    unsigned long long count = 0;
+    PLAPOINT_CHECK_CUDA(
+        cudaMemcpyFromSymbol(&count, g_icp_transform_residual_point_transform_count, sizeof(count)));
     return count;
 }
 

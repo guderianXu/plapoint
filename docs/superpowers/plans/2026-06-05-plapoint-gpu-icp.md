@@ -7335,3 +7335,43 @@ Verification evidence:
 - Current conclusion:
   transformed residual fallback after a known exact-pointwise preflight miss now avoids a redundant full output write
   while preserving residual search and transformed output contents.
+
+## Task 193: Reuse Preflight Transformed Output for Residual Fallback Search
+
+- Goal: after a transformed exact-pointwise residual preflight miss, avoid transforming the source points again in the
+  fallback residual search when the preflight already materialized transformed output points.
+- RED check:
+  - Added a testing-only `g_icp_transform_residual_point_transform_count` device counter for transformed residual point
+    transforms.
+  - Tightened
+    `ICPGpuPathTest.TransformResidualStatsFallbackSkipsDuplicateExactPointwiseProbeAfterPreflightMiss` to expect exactly
+    one point transform per source point in the preflight-miss output path.
+  - Before implementation, the test failed with point transform count 8 instead of 4 for the four-point fixture.
+- Implementation:
+  - When a transformed exact-pointwise residual preflight misses and `d_output_points` is available, the fallback
+    residual search now treats `d_output_points` as the already-transformed source point matrix.
+  - Spatial-grid fallback uses `launchCollectResidualStatsSpatialGridKernel()` on the transformed output. Non-grid
+    fallback uses `launchCollectResidualStatsKernel()` on the transformed output.
+  - No-output paths still use the transform-and-collect fallback kernel, because there is no materialized transformed
+    source matrix to reuse.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformResidualStatsFallbackSkipsDuplicateExactPointwiseProbeAfterPreflightMiss`:
+    failed before implementation with point transform count 8 versus expected 4, then passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformResidualStatsSkipsSearchForExactPointwiseMatches:ICPGpuPathTest.TransformResidualStatsFallbackSkipsDuplicateExactPointwiseProbeAfterPreflightMiss:ICPGpuPathTest.TransformResidualStatsSkipsExactPointwiseProbeWhenCountsDiffer:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.TransformOrderedResidualStatsAllowsTargetOutputAliasAfterTargetLoad:ICPGpuPathTest.TransformResidualStatsRejectsTargetOutputAliasBeforeCudaAllocation:ICPGpuPathTest.AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput:ICPGpuPathTest.AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsUseSpatialGrid:ICPGpuPathTest.AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics:ICPGpuPathTest.AlignWithoutOutputFinalMetricsSkipsScratchPointBuffer:ICPGpuPathTest.AlignWithoutOutputOrderedFinalMetricsSkipsScratchPointBuffer`:
+    11 transform-residual, output-alias, snapshot, and no-output tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 40 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_transform_residual_stats_(finite_radius_translation_cached_grid|transformed_exact_pointwise_new_workspace)|gpu_icp_finite_radius_(binary_translation_reuse_output_preflight|binary_translation_transform_only_preflight|nonrigid_transform_only_preflight)|gpu_icp_(stats_step|alignment_step)_finite_radius_translation_cached_grid'`:
+    ran successfully on the RTX 4060 Laptop GPU.
+  - Relevant rows:
+    `gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations` = 2.04359 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_preflight_two_iterations` = 0.955184 ms,
+    `gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations` = 0.964215 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.69488 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.694864 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace` = 0.70223 ms,
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.481169 ms, and
+    `gpu_icp_transform_residual_stats_transformed_exact_pointwise_new_workspace` = 0.488492 ms.
+- Current conclusion:
+  transformed residual fallback after preflight miss now avoids both the duplicate exact pointwise probe and the
+  duplicate point-transform pass when transformed output is already materialized.
