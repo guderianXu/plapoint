@@ -4070,3 +4070,44 @@ Verification evidence:
   rerun `AlignChecksAlignmentStepWorkspaceOnceBeforeLoop` on real GPU hardware to confirm the reserve-check counter is
   one while the compact alignment-step call counter is two, then compare the alignment-step benchmark rows before/after
   this commit for small-iteration CPU-side overhead.
+
+## Task 121: Benchmark Reserved-Workspace Compact Alignment Step
+
+- Goal: make the reserved-workspace compact alignment-step helper used by `alignGpu()` directly measurable. Existing
+  compact step benchmark rows still called the public helper, which intentionally performs its own workspace reserve
+  check for direct callers.
+- RED check:
+  - Ran
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 1 --icp-points 1000 --icp-max-iterations 1 --skip-cpu-icp | rg '^gpu_icp_alignment_step_.*reserved_workspace,'`;
+    the grep failed before implementation because no reserved-workspace compact alignment-step benchmark rows existed.
+- Implementation:
+  - Added `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace`, which pre-reserves the
+    alignment-step workspace, lets the warm-up build/reuse the target spatial grid, and then times
+    `gpu::detail::computeIcpAlignmentStepColumnMajorWithReservedWorkspace()`.
+  - Added `gpu_icp_alignment_step_exact_pointwise_same_buffer_reserved_workspace`, which measures the same reserved
+    helper for the same-buffer exact pointwise path.
+  - Kept the existing public-helper rows so future GPU runs can compare public direct-call overhead with the
+    already-reserved helper used inside `alignGpu()`.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `git diff --check`:
+    clean before the plan update.
+  - The targeted benchmark grep printed both new rows, each reporting `skipped,no_usable_cuda_device` in this session.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    250 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran and printed the two new reserved-workspace rows; GPU rows reported
+    `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  compare each reserved-workspace row against its public-helper counterpart to quantify the CPU-side reserve-check
+  overhead removed from `alignGpu()`.
