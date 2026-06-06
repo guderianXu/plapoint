@@ -6415,3 +6415,44 @@ Verification evidence:
   the post-loop output transform no longer forces an extra host synchronization in the transformed identity convergence
   output path. The wall-clock benchmark effect is small and within run-to-run noise, but the path now matches the rest
   of the GPU ICP terminal output behavior by leaving stream synchronization to the caller or a later GPU-to-CPU read.
+
+## Task 172: Check Center Z Cell First for Direct Spatial-Grid Exact Matches
+
+- Goal: reduce wasted candidate checks in finite-radius spatial-grid searches when the nearest target is in the source
+  point's own Z cell. The X/Y loops already visit the center cell first, but the direct-lookup Z scan walked from
+  `z - 1` to `z + 1`, so an exact match at `(x, y, z)` could still visit a same-X/Y lower-Z distractor before
+  stop-after-exact-match could fire.
+- RED check:
+  - Added `ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells`.
+  - The test builds a compact direct-lookup target grid with one lower-Z distractor and one exact center-Z match, then
+    exercises correspondence stats, residual stats, and transform+residual stats.
+  - Before the implementation, all three paths failed with `icpTargetCandidateVisitCountForTesting() == 2` instead of
+    the expected 1.
+- Implementation:
+  - Changed the direct-lookup Z scan order in the correspondence-stats, residual-stats, and transform+residual spatial
+    grid kernels to use the existing neighbor offset order: center, lower, upper.
+  - Kept the non-direct lower-bound path unchanged so sparse grids retain the current batched-by-XY lookup behavior.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells`:
+    failed before implementation with candidate visits 2 versus expected 1 on all three checked paths.
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells:ICPGpuPathTest.CorrespondenceStatsStopsSpatialGridAfterExactMatchWhenIndicesOmitted:ICPGpuPathTest.ResidualStatsStopsSpatialGridLookupsAfterExactMatch:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath`:
+    7 targeted spatial-grid tests passed after implementation.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 20 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(finite_radius_translation_(reuse_output|reuse_output_skip_final_metrics|ordered_output|ordered_output_skip_final_metrics)|stats_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid_reserved_workspace|stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid_reserved_workspace|residual_stats_finite_radius_translation_ordered|transform_residual_stats_finite_radius_translation_cached_grid)'`:
+    ran successfully on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.44588 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.26903 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.728019 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.73523 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace` = 0.735181 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.710646 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.522248 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid_reserved_workspace` = 0.52221 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_ordered` = 0.030607 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.530443 ms.
+- Current conclusion:
+  direct spatial-grid exact-match searches now check the source Z cell before adjacent Z cells, allowing exact-match
+  early exit after one candidate in that micro-path. The broader 100k cached-grid benchmark remains dominated by generic
+  correspondence search and is within normal run-to-run noise for this change.

@@ -1633,9 +1633,14 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
 
                 if (target_grid.direct_lookup_active)
                 {
-                    int query_z = min_z;
-                    while (!stop_cell_scan)
+                    for (int z_offset_idx = 0; z_offset_idx < 3 && !stop_cell_scan; ++z_offset_idx)
                     {
+                        int query_z = 0;
+                        const int dz_cell = icpNeighborCellOffset(z_offset_idx);
+                        if (!offsetGridCellCoordinate(source_key.z, dz_cell, query_z))
+                        {
+                            continue;
+                        }
                         const IcpGridCellKey query_key{query_x, query_y, query_z};
                         const int cell_idx = directLookupIcpGridCell(target_grid, query_key);
                         if (cell_idx >= 0)
@@ -1663,12 +1668,6 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                                     stop_cell_scan);
                             }
                         }
-
-                        if (query_z == max_z)
-                        {
-                            break;
-                        }
-                        ++query_z;
                     }
                 }
                 else
@@ -2530,9 +2529,14 @@ __global__ void collectResidualStatsSpatialGridKernel(
 
                 if (target_grid.direct_lookup_active)
                 {
-                    int query_z = min_z;
-                    while (!stop_cell_scan)
+                    for (int z_offset_idx = 0; z_offset_idx < 3 && !stop_cell_scan; ++z_offset_idx)
                     {
+                        int query_z = 0;
+                        const int dz_cell = icpNeighborCellOffset(z_offset_idx);
+                        if (!offsetGridCellCoordinate(source_key.z, dz_cell, query_z))
+                        {
+                            continue;
+                        }
                         const IcpGridCellKey query_key{query_x, query_y, query_z};
                         const int cell_idx = directLookupIcpGridCell(target_grid, query_key);
                         if (cell_idx >= 0)
@@ -2555,12 +2559,6 @@ __global__ void collectResidualStatsSpatialGridKernel(
                                     stop_cell_scan);
                             }
                         }
-
-                        if (query_z == max_z)
-                        {
-                            break;
-                        }
-                        ++query_z;
                     }
                 }
                 else
@@ -3062,9 +3060,14 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
 
                 if (target_grid.direct_lookup_active)
                 {
-                    int query_z = min_z;
-                    while (!stop_cell_scan)
+                    for (int z_offset_idx = 0; z_offset_idx < 3 && !stop_cell_scan; ++z_offset_idx)
                     {
+                        int query_z = 0;
+                        const int dz_cell = icpNeighborCellOffset(z_offset_idx);
+                        if (!offsetGridCellCoordinate(source_key.z, dz_cell, query_z))
+                        {
+                            continue;
+                        }
                         const IcpGridCellKey query_key{query_x, query_y, query_z};
                         const int cell_idx = directLookupIcpGridCell(target_grid, query_key);
                         if (cell_idx >= 0)
@@ -3087,12 +3090,6 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                                     stop_cell_scan);
                             }
                         }
-
-                        if (query_z == max_z)
-                        {
-                            break;
-                        }
-                        ++query_z;
                     }
                 }
                 else
