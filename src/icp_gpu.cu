@@ -1093,6 +1093,20 @@ __device__ __forceinline__ double minDistanceSqToIcpGridCellZ(
 }
 
 template <bool FiniteCellBounds>
+__device__ __forceinline__ double minDistanceSqToIcpGridCellZFromSourceCell(
+    double z,
+    int source_cell_z,
+    int cell_z,
+    double cell_size)
+{
+    if (cell_z == source_cell_z)
+    {
+        return 0.0;
+    }
+    return minDistanceSqToIcpGridCellZ<FiniteCellBounds>(z, cell_z, cell_size);
+}
+
+template <bool FiniteCellBounds>
 __device__ __forceinline__ double minDistanceSqToIcpNeighborCellZ(
     double z,
     int cell_z,
@@ -1904,8 +1918,9 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                         }
 
                         const double min_cell_dist_sq =
-                            min_xy_dist_sq + minDistanceSqToIcpGridCellZ<FiniteCellBounds>(
+                            min_xy_dist_sq + minDistanceSqToIcpGridCellZFromSourceCell<FiniteCellBounds>(
                                 sz,
+                                source_key.z,
                                 cell_key.z,
                                 target_grid.cell_size);
                         if (min_cell_dist_sq > max_dist_sq || min_cell_dist_sq > best_dist_sq)
@@ -2825,8 +2840,9 @@ __global__ void collectResidualStatsSpatialGridKernel(
                         }
 
                         const double min_cell_dist_sq =
-                            min_xy_dist_sq + minDistanceSqToIcpGridCellZ<FiniteCellBounds>(
+                            min_xy_dist_sq + minDistanceSqToIcpGridCellZFromSourceCell<FiniteCellBounds>(
                                 sz,
+                                source_key.z,
                                 cell_key.z,
                                 target_grid.cell_size);
                         if (min_cell_dist_sq > max_dist_sq || min_cell_dist_sq >= best_dist_sq)
@@ -3407,8 +3423,9 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                         }
 
                         const double min_cell_dist_sq =
-                            min_xy_dist_sq + minDistanceSqToIcpGridCellZ<FiniteCellBounds>(
+                            min_xy_dist_sq + minDistanceSqToIcpGridCellZFromSourceCell<FiniteCellBounds>(
                                 sz,
+                                source_key.z,
                                 cell_key.z,
                                 target_grid.cell_size);
                         if (min_cell_dist_sq > max_dist_sq || min_cell_dist_sq >= best_dist_sq)

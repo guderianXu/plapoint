@@ -7375,3 +7375,52 @@ Verification evidence:
 - Current conclusion:
   transformed residual fallback after preflight miss now avoids both the duplicate exact pointwise probe and the
   duplicate point-transform pass when transformed output is already materialized.
+
+## Task 194: Skip Sparse Spatial-Grid Center Z Distance Helper
+
+- Goal: sparse/lower-bound spatial-grid kernels should not call the generic Z-cell minimum-distance helper when the
+  candidate cell has the same Z coordinate as the source point's own grid cell. The direct-lookup path already avoids
+  this center-cell zero-distance helper; the lower-bound path should do the same while keeping neighbor-cell safety
+  checks unchanged.
+- RED check:
+  - Tightened `ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath` to reset
+    `g_icp_grid_cell_center_min_distance_count` and expect zero center-Z helper calls for correspondence stats,
+    residual stats, and transform+residual stats on a sparse target that cannot use the compact direct lookup table.
+  - Before implementation, the test failed with center-Z helper count 1 on each of the three lower-bound paths.
+- Implementation:
+  - Added `minDistanceSqToIcpGridCellZFromSourceCell()`, which returns `0.0` when `cell_z == source_cell_z` and
+    otherwise delegates to the existing finite/non-finite-safe `minDistanceSqToIcpGridCellZ()` helper.
+  - Updated the correspondence-stats, residual-stats, and transform+residual lower-bound spatial-grid branches to use
+    the new helper.
+  - Direct lookup branches are unchanged; lower/upper Z neighbor cells still use the existing guarded helper.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath`:
+    failed before implementation with center-Z helper count 1 on all three checked paths, then passed after
+    implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath:ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells:ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn:ICPGpuPathTest.SpatialGridDirectLookupSpecializationSkipsXyBaseGuard:ICPGpuPathTest.SpatialGridDirectLookupSpecializationSkipsActiveGuard:ICPGpuPathTest.SpatialGridDirectLookupUsesSpecializedKernelLaunches:ICPGpuPathTest.CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridXYLookupsBeforeSearch:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYExceedsRadius`:
+    13 sparse/direct spatial-grid tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 30 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(stats_step|alignment_step|residual_stats|transform_residual_stats)_finite_radius_translation_(cached_grid|cached_grid_reserved_workspace|ordered)|gpu_icp_stats_fallback_tile_bounds_(new_workspace|cached_bounds)|gpu_icp_alignment_step_fallback_tile_bounds_(new_workspace|cached_bounds)'`:
+    ran successfully on the RTX 4060 Laptop GPU.
+  - Relevant rows:
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.695025 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.695215 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace` = 0.69536 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.473736 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid_reserved_workspace` = 0.473814 ms,
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.482223 ms,
+    `gpu_icp_stats_fallback_tile_bounds_new_workspace` = 0.567587 ms,
+    `gpu_icp_stats_fallback_tile_bounds_cached_bounds` = 0.104098 ms,
+    `gpu_icp_alignment_step_fallback_tile_bounds_new_workspace` = 0.583523 ms, and
+    `gpu_icp_alignment_step_fallback_tile_bounds_cached_bounds` = 0.120679 ms.
+- Full verification after the final test-isolation reset:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 316/316 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) &&
+    ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 passed, with the expected CUDA-only
+    `PointCloudTest.GpuTransfer` skip in the CPU build.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+- Current conclusion:
+  sparse/lower-bound spatial-grid searches now avoid the same zero-distance center-Z helper cost that direct lookup
+  paths already skipped, while neighbor Z cells retain the existing guarded distance calculation.
