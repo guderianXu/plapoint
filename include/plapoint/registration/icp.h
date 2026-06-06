@@ -527,6 +527,10 @@ private:
                     cudaMemcpyDeviceToDevice));
             }
         }
+        if (output_aliases_target)
+        {
+            _gpu_stats_workspace.invalidateTargetSpatialGridCache();
+        }
     }
 
     Scalar* gpuPointScratchBuffer(int point_count, bool use_first_buffer)

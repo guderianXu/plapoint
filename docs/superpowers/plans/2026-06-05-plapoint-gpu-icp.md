@@ -3486,3 +3486,44 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun the selected target-alias test and benchmark target-output GPU ICP with `setComputeFinalMetrics(false)` to
   quantify the avoided scratch allocation and final copy.
+
+## Task 107: Invalidate Persistent GPU Target Cache After Target-Aliased Output
+
+- Goal: keep the persistent GPU target spatial-grid and tile-bound caches correct when callers pass the target cloud as
+  the align output. Target-aliased output mutates the target device point buffer in place, so a later `align()` with the
+  same target pointer must not reuse target-search structures built from the old point contents.
+- RED check:
+  - Added `AlignInvalidatesPersistentGpuTargetSpatialGridCacheAfterTargetAliasedOutput`, expecting two spatial-grid
+    builds across two align calls: the first writes into the target, and the second must rebuild the target grid even
+    though the target pointer is unchanged.
+  - A static RED check against the end of `alignGpu()` failed before the implementation because the successful
+    target-aliased-output path did not invalidate target-cache metadata.
+- Implementation:
+  - `alignGpu()` now calls `_gpu_stats_workspace.invalidateTargetSpatialGridCache()` after successful alignment when
+    `output` aliases the current GPU target. The workspace method also clears tile-bound cache metadata.
+  - Existing same-target cache reuse remains intact for ordinary caller-owned output; the new invalidation is limited
+    to target-aliased output where target contents can change.
+- Verification performed in this session:
+  - Static RED check failed before the implementation and passed after the implementation.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignInvalidatesPersistentGpuTargetSpatialGridCacheAfterTargetAliasedOutput:ICPGpuPathTest.SetInputTargetKeepsPersistentGpuTargetSpatialGridCacheForSameTarget:ICPGpuPathTest.SetInputTargetInvalidatesPersistentGpuTargetSpatialGridCacheForNewTarget`:
+    3 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `git diff --check`:
+    clean before the plan update.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    244 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the target-cache invalidation test on real GPU hardware, then benchmark repeated target-output align calls to
+  confirm the rebuild cost is only paid when target contents were actually mutated.
