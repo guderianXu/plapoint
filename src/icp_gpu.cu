@@ -1051,6 +1051,65 @@ __global__ void collectExactPointwiseCorrespondenceStatsKernel(
 }
 
 template <typename Scalar>
+__global__ void collectExactPointwiseResidualStatsKernel(
+    const Scalar* source_points,
+    const Scalar* target_points,
+    int point_count,
+    RawIcpResidualStats* __restrict__ partial_stats)
+{
+    const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int local_idx = threadIdx.x;
+    RawIcpResidualStats local{};
+
+    if (source_idx < point_count)
+    {
+        const Scalar raw_sx = loadReadOnlyIcpValue(source_points + source_idx);
+        const Scalar raw_sy = loadReadOnlyIcpValue(source_points + point_count + source_idx);
+        const Scalar raw_sz = loadReadOnlyIcpValue(source_points + 2 * point_count + source_idx);
+        const Scalar raw_tx = loadReadOnlyIcpValue(target_points + source_idx);
+        const Scalar raw_ty = loadReadOnlyIcpValue(target_points + point_count + source_idx);
+        const Scalar raw_tz = loadReadOnlyIcpValue(target_points + 2 * point_count + source_idx);
+
+        if (raw_sx != raw_tx || raw_sy != raw_ty || raw_sz != raw_tz)
+        {
+            local.residual_sq_sum = INFINITY;
+        }
+        else
+        {
+            const double sx = static_cast<double>(raw_sx);
+            const double sy = static_cast<double>(raw_sy);
+            const double sz = static_cast<double>(raw_sz);
+            if (!isfinite(sx) || !isfinite(sy) || !isfinite(sz))
+            {
+                local.invalid_source_count = 1;
+            }
+            else
+            {
+                local.active_count = 1;
+            }
+        }
+    }
+
+    __shared__ RawIcpResidualStats shared_stats[kIcpStatsBlockSize];
+    shared_stats[local_idx] = local;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            addRawIcpResidualStats(shared_stats[local_idx], shared_stats[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (local_idx == 0)
+    {
+        partial_stats[blockIdx.x] = shared_stats[0];
+    }
+}
+
+template <typename Scalar>
 __global__ void collectResidualStatsKernel(
     const Scalar* source_points,
     int source_count,
@@ -2620,6 +2679,45 @@ bool launchExactPointwiseAlignmentStep(
 }
 
 template <typename Scalar>
+bool launchExactPointwiseResidualStats(
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    RawIcpResidualStats* d_partials,
+    int partial_count,
+    RawIcpResidualStats* d_stats,
+    cudaStream_t stream)
+{
+    if (!shouldTryExactPointwiseStats(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            nullptr))
+    {
+        return false;
+    }
+
+    constexpr int block_size = kIcpStatsBlockSize;
+    collectExactPointwiseResidualStatsKernel<Scalar><<<partial_count, block_size, 0, stream>>>(
+        d_source_points,
+        d_target_points,
+        source_count,
+        d_partials);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    reduceRawIcpResidualStatsKernel<<<1, block_size, 0, stream>>>(
+        d_partials,
+        partial_count,
+        d_stats);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    return true;
+}
+
+template <typename Scalar>
 bool tryComputeExactPointwiseStats(
     const Scalar* d_source_points,
     int source_count,
@@ -2649,6 +2747,42 @@ bool tryComputeExactPointwiseStats(
     }
 
     PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpStats),
+                                        cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    return std::isfinite(raw.residual_sq_sum);
+}
+
+template <typename Scalar>
+bool tryComputeExactPointwiseResidualStats(
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    RawIcpResidualStats* d_partials,
+    int partial_count,
+    RawIcpResidualStats* d_stats,
+    RawIcpResidualStats& raw,
+    cudaStream_t stream)
+{
+    if (!launchExactPointwiseResidualStats(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            d_partials,
+            partial_count,
+            d_stats,
+            stream))
+    {
+        return false;
+    }
+
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpResidualStats),
                                         cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
@@ -3004,6 +3138,22 @@ IcpResidualStats<Scalar> computeIcpResidualStatsColumnMajorImpl(
     const int grid_size = icpStatsPartialCount(source_count);
     auto* d_partials = reinterpret_cast<RawIcpResidualStats*>(workspace.partialStorage());
     auto* d_stats = reinterpret_cast<RawIcpResidualStats*>(workspace.statsStorage());
+    RawIcpResidualStats raw{};
+    if (tryComputeExactPointwiseResidualStats(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            d_partials,
+            grid_size,
+            d_stats,
+            raw,
+            stream))
+    {
+        return makeHostResidualStats<Scalar>(raw);
+    }
+
     const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
         d_target_points,
         target_count,
@@ -3049,7 +3199,6 @@ IcpResidualStats<Scalar> computeIcpResidualStatsColumnMajorImpl(
         d_stats);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    RawIcpResidualStats raw{};
     PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&raw, d_stats, sizeof(RawIcpResidualStats),
                                         cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING

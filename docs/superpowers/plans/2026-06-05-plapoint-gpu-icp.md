@@ -1564,6 +1564,42 @@ Verification evidence:
   rerun the selected GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime behavior and
   performance impact.
 
+## Task 70: Add Exact Pointwise Residual Stats Fast Path
+
+- Goal: avoid finite-radius spatial-grid construction and candidate scans when GPU ICP residual metrics are computed for
+  a source and target that are already known to be pointwise identical. This targets terminal/final metric paths where
+  the residual-only computation can prove zero residuals with one linear pass.
+- Implementation:
+  - Added `collectExactPointwiseResidualStatsKernel()` for residual-only exact pointwise statistics.
+  - Added `launchExactPointwiseResidualStats()` and `tryComputeExactPointwiseResidualStats()` using the existing exact
+    pointwise predicate: same device buffer always qualifies, and separate equal-sized buffers qualify only for
+    non-finite correspondence radius and fall back on the first raw value mismatch.
+  - Routed `computeIcpResidualStatsColumnMajorImpl()` through the new fast path before preparing the target spatial
+    grid.
+  - Added `ResidualStatsUsesExactPointwiseFastPathForSameBuffer`, which checks that identical-buffer residual stats
+    produce all active finite points, zero residual sum, and no full-distance/candidate/grid lookup work.
+  - Kept fallback behavior for mismatched values and NaNs by marking the fast-path reduction with infinite residual
+    sum, then running the existing residual search path.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:
+    226 test entries, 0 failed; GPU-dependent tests, including the new residual fast-path test, were discovered but
+    skipped because the current session cannot communicate with the NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    benchmark binary built.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`, while CPU smoke rows still emitted timing
+    data.
+  - `nvidia-smi || true`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected GPU test
+  `ICPGpuPathTest.ResidualStatsUsesExactPointwiseFastPathForSameBuffer`, full CUDA `ctest`, and the 100k-point ICP
+  benchmark to confirm runtime behavior and performance impact.
+
 ## Task 69: Add Safe Alias Hints To GPU ICP Workspace Paths
 
 - Goal: give nvcc stronger aliasing and read-only load information in GPU ICP kernels without changing public
