@@ -240,6 +240,22 @@ __host__ __device__ __forceinline__ Value loadReadOnlyIcpValue(const Value* __re
 #endif
 }
 
+__device__ __forceinline__ IcpTargetTileBounds loadIcpTargetTileBounds(
+    const IcpTargetTileBounds* __restrict__ target_tile_bounds,
+    int tile_idx)
+{
+    const IcpTargetTileBounds* __restrict__ bounds = target_tile_bounds + tile_idx;
+    return IcpTargetTileBounds{
+        loadReadOnlyIcpValue(&bounds->min_x),
+        loadReadOnlyIcpValue(&bounds->min_y),
+        loadReadOnlyIcpValue(&bounds->min_z),
+        loadReadOnlyIcpValue(&bounds->max_x),
+        loadReadOnlyIcpValue(&bounds->max_y),
+        loadReadOnlyIcpValue(&bounds->max_z),
+        loadReadOnlyIcpValue(&bounds->has_valid_point)
+    };
+}
+
 template <typename Scalar>
 __device__ __forceinline__ void transformColumnMajorPoint3x4(
     const Scalar* transform_values,
@@ -715,7 +731,7 @@ __global__ void collectCorrespondenceStatsKernel(
             tile_relevant = false;
             if (source_valid && !stop_target_scan)
             {
-                const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
+                const IcpTargetTileBounds bounds = loadIcpTargetTileBounds(target_tile_bounds, tile_idx);
                 tile_relevant =
                     bounds.has_valid_point &&
                     sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&
@@ -1290,7 +1306,7 @@ __global__ void collectResidualStatsKernel(
             tile_relevant = false;
             if (source_valid && !stop_target_scan)
             {
-                const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
+                const IcpTargetTileBounds bounds = loadIcpTargetTileBounds(target_tile_bounds, tile_idx);
                 tile_relevant =
                     bounds.has_valid_point &&
                     sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&
@@ -1679,7 +1695,7 @@ __global__ void transformAndCollectResidualStatsKernel(
             tile_relevant = false;
             if (source_valid && !stop_target_scan)
             {
-                const IcpTargetTileBounds bounds = target_tile_bounds[tile_idx];
+                const IcpTargetTileBounds bounds = loadIcpTargetTileBounds(target_tile_bounds, tile_idx);
                 tile_relevant =
                     bounds.has_valid_point &&
                     sx >= bounds.min_x - max_dist && sx <= bounds.max_x + max_dist &&

@@ -2030,6 +2030,44 @@ Verification evidence:
   rerun the selected spatial-grid/fallback GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to verify
   runtime behavior and measure the read-only load impact.
 
+## Task 84: Use Read-Only Loads For GPU ICP Target Tile Bounds
+
+- Goal: reduce global-memory pressure in the bounded shared-memory fallback path. The target tile bounds are immutable
+  metadata during fallback scans, but the correspondence, residual, and transform+residual fallback kernels loaded the
+  whole `IcpTargetTileBounds` struct directly from global memory.
+- Static RED:
+  - `test "$(rg -n "const IcpTargetTileBounds bounds = target_tile_bounds\\[tile_idx\\]" src/icp_gpu.cu | wc -l)" -eq 0`:
+    failed before the change because the three bounded fallback kernels still used direct struct reads.
+- Implementation:
+  - Added `loadIcpTargetTileBounds()` to read each tile-bound field through `loadReadOnlyIcpValue()`.
+  - Replaced direct `target_tile_bounds[tile_idx]` reads in `collectCorrespondenceStatsKernel()`,
+    `collectResidualStatsKernel()`, and `transformAndCollectResidualStatsKernel()`.
+  - Kept bounded/unbounded specialization selection, tile relevance tests, tile-load skipping, and output behavior
+    unchanged.
+- Verification performed in this session:
+  - `test "$(rg -n "const IcpTargetTileBounds bounds = target_tile_bounds\\[tile_idx\\]" src/icp_gpu.cu | wc -l)" -eq 0`:
+    passed after the helper replacement.
+  - `rg -n "loadIcpTargetTileBounds|target_tile_bounds\\[tile_idx\\]|IcpTargetTileBounds bounds" src/icp_gpu.cu`:
+    showed the helper and the three helper call sites, with no remaining direct `target_tile_bounds[tile_idx]` reads.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.FallbackStatsLaunchesTileBoundSpecializationsByRadius:ICPGpuPathTest.FallbackStatsStopsLoadingTargetTilesWhenBlockExactMatched:ICPGpuPathTest.FallbackStatsSkipTargetTileLoadsWhenBoundsRejectWholeBlock:ICPGpuPathTest.FallbackStatsSkipUnboundedTargetTileLoadsWhenBlockHasNoValidSources:ICPGpuPathTest.CorrespondenceStatsSkipsFarTargetTilesBeforeCandidateLoop:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 5 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `git diff --check`:
+    clean.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    233 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran; GPU rows reported `skipped,no_usable_cuda_device`.
+- Follow-up required when a CUDA device is available:
+  rerun the selected fallback GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime behavior
+  and measure the metadata load impact.
+
 ## Task 74: Use Read-Only Loads For GPU ICP Spatial-Grid Cell Metadata
 
 - Goal: finish the read-only load cleanup inside the finite-radius spatial-grid search kernels. The per-cell
