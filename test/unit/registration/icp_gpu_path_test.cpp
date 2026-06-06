@@ -160,6 +160,8 @@ void resetIcpTargetCandidateVisitCountForTesting();
 unsigned long long icpTargetCandidateVisitCountForTesting();
 void resetIcpTargetIndexLoadCountForTesting();
 unsigned long long icpTargetIndexLoadCountForTesting();
+void resetIcpSortedTargetCoordinateLoadCountForTesting();
+unsigned long long icpSortedTargetCoordinateLoadCountForTesting();
 void resetIcpStepTransformInputCopyCountForTesting();
 int icpStepTransformInputCopyCountForTesting();
 void resetIcpExactPointwiseStepCallCountForTesting();
@@ -991,6 +993,57 @@ TEST(ICPGpuPathTest, CorrespondenceStatsLoadsSpatialGridTargetIndexOnlyForCompet
     EXPECT_NEAR(stats.residual_sq_sum, 0.36, 1.0e-6);
     EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 2ull);
     EXPECT_EQ(plapoint::gpu::icpTargetIndexLoadCountForTesting(), 0ull);
+}
+
+TEST(ICPGpuPathTest, SpatialGridCandidateLoadsYzCoordinatesOnlyAfterXPruning)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source(1, 3);
+    source.setValue(0, 0, 0.95f);
+    source.setValue(0, 1, 0.0f);
+    source.setValue(0, 2, 0.0f);
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(1, 3);
+    target.setValue(0, 0, -0.2f);
+    target.setValue(0, 1, 0.0f);
+    target.setValue(0, 2, 0.0f);
+
+    auto source_gpu = source.toGpu();
+    auto target_gpu = target.toGpu();
+
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    plapoint::gpu::resetIcpFullDistanceEvaluationCountForTesting();
+    plapoint::gpu::resetIcpSortedTargetCoordinateLoadCountForTesting();
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        nullptr,
+        workspace);
+
+    EXPECT_EQ(stats.active_count, 0);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 1ull);
+    EXPECT_EQ(plapoint::gpu::icpFullDistanceEvaluationCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpSortedTargetCoordinateLoadCountForTesting(), 1ull);
+
+    plapoint::gpu::resetIcpSortedTargetCoordinateLoadCountForTesting();
+    const auto residual_stats = plapoint::gpu::computeIcpResidualStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        workspace);
+
+    EXPECT_EQ(residual_stats.active_count, 0);
+    EXPECT_EQ(plapoint::gpu::icpSortedTargetCoordinateLoadCountForTesting(), 1ull);
 }
 
 TEST(ICPGpuPathTest, ResidualStatsStopsSpatialGridLookupsAfterExactMatch)

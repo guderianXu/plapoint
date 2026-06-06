@@ -1498,3 +1498,36 @@ Verification evidence:
   Compared with Task 50 on this machine, cached-grid stats+step improved from 0.94603 ms to 0.937737 ms,
   stats-only cached-grid improved from 0.91683 ms to 0.901087 ms, alignment reuse improved from 2.16523 ms to
   2.14185 ms, and the skip-final-metrics reuse row improved from 1.72318 ms to 1.69878 ms.
+
+## Task 52: Delay Spatial-Grid Y/Z Coordinate Loads After X-Axis Pruning
+
+- Goal: reduce global-memory traffic in finite-radius spatial-grid candidate loops. The hot correspondence, residual,
+  and transform+residual spatial-grid kernels loaded sorted target x/y/z coordinates before applying the x-axis radius
+  prune, so candidates rejected by x still paid for y/z loads.
+- Implementation:
+  - Added inline sorted-target coordinate load helpers with a testing-only coordinate-load counter.
+  - Changed all three spatial-grid candidate loops to load sorted x first, prune by x, then load y and z only if each
+    earlier axis passes.
+  - Added `SpatialGridCandidateLoadsYzCoordinatesOnlyAfterXPruning`, which constructs a visited candidate outside the
+    x radius and expects one candidate visit, zero full-distance evaluations, and one sorted-coordinate load for both
+    correspondence stats and residual stats paths.
+- Verification performed in this session:
+  - Recreated the temporary PlaMatrix install prefixes used by PlaPoint builds:
+    `/tmp/plamatrix-cuda-install-plapoint` and `/tmp/plamatrix-install-smoke`.
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridCandidateLoadsYzCoordinatesOnlyAfterXPruning:ICPGpuPathTest.CorrespondenceStatsLoadsSpatialGridTargetIndexOnlyForCompetitiveCandidates:ICPGpuPathTest.CorrespondenceStatsUsesFiniteRadiusSpatialGridCandidates:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.ResidualStatsStopsSpatialGridLookupsAfterExactMatch`:
+    5 selected GPU tests were discovered but skipped because the current session has no usable CUDA device.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    223 test entries, 0 failed; GPU-dependent tests skipped because `nvidia-smi` cannot communicate with the driver in
+    the current session.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran, but all GPU rows reported `skipped,no_usable_cuda_device`.
+- Follow-up required when a CUDA device is available:
+  rerun the selected GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark before using Task 52 as confirmed
+  performance evidence.

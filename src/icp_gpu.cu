@@ -161,6 +161,7 @@ std::atomic<int> g_icp_transform_multiply_call_count{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
 __device__ unsigned long long g_icp_target_candidate_visit_count;
 __device__ unsigned long long g_icp_target_index_load_count;
+__device__ unsigned long long g_icp_sorted_target_coordinate_load_count;
 __device__ unsigned long long g_icp_target_tile_bound_computation_count;
 __device__ unsigned long long g_icp_grid_cell_lookup_count;
 #endif
@@ -308,6 +309,30 @@ __device__ int lowerBoundIcpGridCell(const IcpGridCellKey* cell_keys, int cell_c
         }
     }
     return first;
+}
+
+__device__ __forceinline__ double loadSortedIcpTargetX(const IcpTargetSpatialGrid& target_grid, int sorted_offset)
+{
+#ifdef PLAPOINT_ENABLE_TESTING
+    atomicAdd(&g_icp_sorted_target_coordinate_load_count, 1ull);
+#endif
+    return target_grid.sorted_target_x[sorted_offset];
+}
+
+__device__ __forceinline__ double loadSortedIcpTargetY(const IcpTargetSpatialGrid& target_grid, int sorted_offset)
+{
+#ifdef PLAPOINT_ENABLE_TESTING
+    atomicAdd(&g_icp_sorted_target_coordinate_load_count, 1ull);
+#endif
+    return target_grid.sorted_target_y[sorted_offset];
+}
+
+__device__ __forceinline__ double loadSortedIcpTargetZ(const IcpTargetSpatialGrid& target_grid, int sorted_offset)
+{
+#ifdef PLAPOINT_ENABLE_TESTING
+    atomicAdd(&g_icp_sorted_target_coordinate_load_count, 1ull);
+#endif
+    return target_grid.sorted_target_z[sorted_offset];
 }
 
 __device__ double distanceOutsideIcpGridCellAxis(double value, int cell_coordinate, double cell_size)
@@ -796,20 +821,21 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
 #ifdef PLAPOINT_ENABLE_TESTING
                         atomicAdd(&g_icp_target_candidate_visit_count, 1ull);
 #endif
-                        const double tx = target_grid.sorted_target_x[sorted_offset];
-                        const double ty = target_grid.sorted_target_y[sorted_offset];
-                        const double tz = target_grid.sorted_target_z[sorted_offset];
-
+                        const double tx = loadSortedIcpTargetX(target_grid, sorted_offset);
                         const double dx = sx - tx;
                         if (fabs(dx) > max_dist)
                         {
                             continue;
                         }
+
+                        const double ty = loadSortedIcpTargetY(target_grid, sorted_offset);
                         const double dy = sy - ty;
                         if (fabs(dy) > max_dist)
                         {
                             continue;
                         }
+
+                        const double tz = loadSortedIcpTargetZ(target_grid, sorted_offset);
                         const double dz = sz - tz;
                         if (fabs(dz) > max_dist)
                         {
@@ -1213,20 +1239,21 @@ __global__ void collectResidualStatsSpatialGridKernel(
                     for (int offset = 0; offset < count; ++offset)
                     {
                         const int sorted_offset = start + offset;
-                        const double tx = target_grid.sorted_target_x[sorted_offset];
-                        const double ty = target_grid.sorted_target_y[sorted_offset];
-                        const double tz = target_grid.sorted_target_z[sorted_offset];
-
+                        const double tx = loadSortedIcpTargetX(target_grid, sorted_offset);
                         const double dx = sx - tx;
                         if (fabs(dx) > max_dist)
                         {
                             continue;
                         }
+
+                        const double ty = loadSortedIcpTargetY(target_grid, sorted_offset);
                         const double dy = sy - ty;
                         if (fabs(dy) > max_dist)
                         {
                             continue;
                         }
+
+                        const double tz = loadSortedIcpTargetZ(target_grid, sorted_offset);
                         const double dz = sz - tz;
                         if (fabs(dz) > max_dist)
                         {
@@ -1550,20 +1577,21 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                     for (int offset = 0; offset < count; ++offset)
                     {
                         const int sorted_offset = start + offset;
-                        const double tx = target_grid.sorted_target_x[sorted_offset];
-                        const double ty = target_grid.sorted_target_y[sorted_offset];
-                        const double tz = target_grid.sorted_target_z[sorted_offset];
-
+                        const double tx = loadSortedIcpTargetX(target_grid, sorted_offset);
                         const double dx = sx - tx;
                         if (fabs(dx) > max_dist)
                         {
                             continue;
                         }
+
+                        const double ty = loadSortedIcpTargetY(target_grid, sorted_offset);
                         const double dy = sy - ty;
                         if (fabs(dy) > max_dist)
                         {
                             continue;
                         }
+
+                        const double tz = loadSortedIcpTargetZ(target_grid, sorted_offset);
                         const double dz = sz - tz;
                         if (fabs(dz) > max_dist)
                         {
@@ -3428,6 +3456,19 @@ unsigned long long icpTargetIndexLoadCountForTesting()
 {
     unsigned long long count = 0;
     PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_target_index_load_count, sizeof(count)));
+    return count;
+}
+
+void resetIcpSortedTargetCoordinateLoadCountForTesting()
+{
+    const unsigned long long zero = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyToSymbol(g_icp_sorted_target_coordinate_load_count, &zero, sizeof(zero)));
+}
+
+unsigned long long icpSortedTargetCoordinateLoadCountForTesting()
+{
+    unsigned long long count = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyFromSymbol(&count, g_icp_sorted_target_coordinate_load_count, sizeof(count)));
     return count;
 }
 
