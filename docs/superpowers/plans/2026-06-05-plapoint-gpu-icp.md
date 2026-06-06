@@ -1899,6 +1899,39 @@ Verification evidence:
   rerun the selected GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime behavior and
   performance impact.
 
+## Task 67: Unroll GPU ICP Step-Transform Stats Loops
+
+- Goal: reduce fixed-loop overhead in the GPU ICP raw-stats-to-step-transform path without changing the Jacobi solve
+  or transform math. This path is used by the device-side stats+step kernels and compact alignment-step result path.
+- Implementation:
+  - Added `#pragma unroll` to the fixed 3-entry centroid loop in `computeStepTransformFromRawStatsValue()`.
+  - Added `#pragma unroll` to the fixed 3x3 cross-covariance loop in `computeStepTransformFromRawStatsValue()`.
+  - Added `#pragma unroll` to the fixed 16-entry identity transform write in
+    `writeAlignmentStepRawResultFromRawStats()`.
+  - Kept active-count handling, covariance arithmetic, column-major identity layout, and all step validity semantics
+    unchanged.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.StepTransformFromStatsWritesDeviceTransform:ICPGpuPathTest.AlignmentStepCompactResultMatchesFullStatsStepResult:ICPGpuPathTest.AlignComputesStepFromDeviceStatsWithoutHostInputCopy:ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 4 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    225 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran, but all GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi || true`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to confirm runtime behavior and
+  performance impact.
+
 ## Task 54: Reuse Spatial-Grid Candidate Squared Distances
 
 - Goal: reduce per-candidate arithmetic in the finite-radius spatial-grid kernels. After Task 53, the hot loops already

@@ -2330,13 +2330,16 @@ __device__ void computeStepTransformFromRawStatsValue(
 
     IcpStepTransformInput input{};
     const double inv_count = 1.0 / static_cast<double>(raw.active_count);
+#pragma unroll
     for (int c = 0; c < 3; ++c)
     {
         input.src_centroid[c] = raw.src_sum[c] * inv_count;
         input.tgt_centroid[c] = raw.tgt_sum[c] * inv_count;
     }
+#pragma unroll
     for (int r = 0; r < 3; ++r)
     {
+#pragma unroll
         for (int c = 0; c < 3; ++c)
         {
             const int idx = r * 3 + c;
@@ -2391,6 +2394,7 @@ __device__ void writeAlignmentStepRawResultFromRawStats(
     IcpStepTransformRawResult step_result{};
     if (exact_identity_step)
     {
+#pragma unroll
         for (int idx = 0; idx < 16; ++idx)
         {
             const int row = idx & 3;
