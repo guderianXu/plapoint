@@ -6765,3 +6765,51 @@ Verification evidence:
   direct-selected kernels now avoid the active guard, XY base guard, and Z linear guard in the compact lookup helpers.
   The core cached-grid rows remain at the prior baseline, while the complete finite-radius reuse rows still show
   run-to-run noise outside this specific guard removal.
+
+## Task 180: Skip Center Neighbor Min-Distance Helpers
+
+- Goal: for the center neighbor cell, the source point is already in the cell that produced `source_key`, so the minimum
+  distance from the source point to that cell is exactly zero. The spatial-grid kernels should not call the generic
+  cell-bound min-distance helpers for center XY or direct center Z probes before scanning the exact cell.
+- RED check:
+  - Added a testing-only `g_icp_grid_cell_center_min_distance_count` counter behind the generic XY/Z min-distance
+    helpers.
+  - Tightened `ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells` to expect zero center
+    min-distance helper calls for correspondence stats, residual stats, and transform+residual stats.
+  - Before implementation, all three checked paths failed with center min-distance count 2 instead of the expected 0:
+    one center XY helper call and one center Z helper call.
+- Implementation:
+  - Added `minDistanceSqToIcpNeighborCellXY()`, which returns `0.0` for center X/Y neighbor probes and falls back to
+    the existing finite or non-finite cell-bound helper for lower/upper neighbor probes.
+  - Added `minDistanceSqToIcpNeighborCellZ()`, which returns `0.0` for direct center Z probes and falls back to the
+    existing Z helper for lower/upper direct lookup probes.
+  - Updated correspondence-stats, residual-stats, and transform+residual spatial-grid kernels to use the neighbor-aware
+    helpers where the neighbor offset index is available.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells`:
+    failed before implementation with center min-distance count 2 versus expected 0 on all three checked paths, then
+    passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells:ICPGpuPathTest.SpatialGridDirectLookupSpecializationSkipsXyBaseGuard:ICPGpuPathTest.SpatialGridDirectLookupSpecializationSkipsActiveGuard:ICPGpuPathTest.SpatialGridDirectLookupUsesSpecializedKernelLaunches:ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn:ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath:ICPGpuPathTest.CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridXYLookupsBeforeSearch:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYExceedsRadius`:
+    13 targeted spatial-grid tests passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) &&
+    ./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 20 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity | rg 'gpu_icp_(finite_radius_translation_(reuse_output|reuse_output_skip_final_metrics|ordered_output|ordered_output_skip_final_metrics)|stats_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid|alignment_step_finite_radius_translation_cached_grid_reserved_workspace|stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid|residual_stats_finite_radius_translation_cached_grid_reserved_workspace|residual_stats_finite_radius_translation_ordered|transform_residual_stats_finite_radius_translation_cached_grid|alignment_step_transformed_exact_pointwise_cached_grid|alignment_step_transformed_exact_pointwise_cache_hit)'`:
+    ran successfully on the RTX 4060 Laptop GPU.
+  - A second benchmark run was recorded because the first full `reuse_output` rows were elevated while core cached-grid
+    rows were stable. Relevant second-run rows:
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.4663 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.28499 ms,
+    `gpu_icp_finite_radius_translation_ordered_output` = 0.535469 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics` = 0.506539 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.727769 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.728191 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.210725 ms,
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cache_hit` = 0.23538 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.703003 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.513948 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_ordered` = 0.030622 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.522184 ms.
+- Current conclusion:
+  exact direct center-cell paths now avoid the remaining generic cell-bound min-distance helper work before candidate
+  scanning. The core cached-grid benchmark rows moved down modestly relative to the previous baseline, while full
+  end-to-end reuse rows remain somewhat noisy across back-to-back runs.
