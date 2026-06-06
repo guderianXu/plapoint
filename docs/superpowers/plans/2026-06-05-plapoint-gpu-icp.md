@@ -5321,3 +5321,63 @@ Verification evidence:
   run the benchmark row on hardware and compare it against
   `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace` to quantify the per-source search
   work avoided by transformed exact-pointwise probing.
+
+## Task 149: Skip Spatial-Grid Build For Transformed Exact-Pointwise Alignment
+
+- Goal: remove the remaining host-side target spatial-grid prepare/build cost from transformed GPU ICP alignment steps
+  when `source[i]` transformed by the supplied transform already equals `target[i]`. The fast path should run before
+  `prepareTargetSpatialGrid()` on finite-radius cache misses, return an identity step for exact pointwise matches, and
+  preserve the existing spatial-grid fallback for mismatches.
+- RED checks:
+  - Added transformed exact-pointwise alignment-step testing counters in the CUDA path tests before defining the
+    exported testing hooks. `cmake --build build-codex-cuda -j$(nproc)` failed with undefined references to the new
+    counter reset/read functions.
+  - After an initial implementation, added
+    `TransformedExactPointwiseAccumulatedFallbackDoesNotWriteInvalidTransform`. With a mismatched transform and no
+    fallback correspondences, the test failed because the accumulated output was overwritten with the previous transform
+    before the exact preflight result was known.
+- Implementation:
+  - Added `collectTransformedExactPointwiseCorrespondenceStatsKernel()` and a host launcher that probes transformed
+    same-index correspondences before the target spatial grid is prepared.
+  - The new launcher runs only for transformed alignment steps with finite-radius search and a target spatial-grid cache
+    miss. Cache-hit paths continue to reuse the cached grid snapshot without paying an extra O(N) exact preflight.
+  - Added `reduceRawIcpStatsAndSetExactPointwiseIdentityAccumulatedAlignmentStepKernel()` so the accumulated-transform
+    output is copied from the previous accumulated transform only when the exact preflight produces a valid step.
+  - If the exact preflight reports non-finite residuals, the code falls through to the existing spatial-grid or fallback
+    nearest-neighbor path without returning early.
+- Review:
+  - A read-only subagent review found one real medium issue in the first implementation: the accumulate path copied the
+    previous transform before confirming exact preflight success. The failing regression test above reproduced that
+    issue on hardware after the NVIDIA driver was restored, and the reduce-kernel change fixes it at the source.
+  - The review also noted the intentional tradeoff: cache-miss same-count transformed alignment steps now pay one extra
+    O(N) exact preflight when the exact pointwise assumption is false, then fall back to the normal grid path. Cache-hit
+    paths skip this preflight.
+- Targeted verification performed in this session:
+  - `nvidia-smi`:
+    detected NVIDIA driver 580.159.03, CUDA 13.0, and an RTX 4060 Laptop GPU.
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformedExactPointwiseAccumulatedFallbackDoesNotWriteInvalidTransform`:
+    passed after the accumulated exact reduce-kernel fix.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformedAlignmentStepSkipsSpatialGridSearchForExactPointwiseMatches:ICPGpuPathTest.TransformedAccumulatedAlignmentStepSkipsSpatialGridPrepareForExactPointwiseMatches:ICPGpuPathTest.TransformedExactPointwiseAlignmentStepFallsBackToSpatialGridOnMismatch:ICPGpuPathTest.TransformedAlignmentStepUsesCachedSpatialGridWithoutExactPointwiseProbe:ICPGpuPathTest.TransformedExactPointwiseAccumulatedFallbackDoesNotWriteInvalidTransform`:
+    5 tests, 0 failed.
+- Full verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed after restoring the temporary PlaMatrix CPU install prefix used by this build cache.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    initially exposed one stale workspace-reuse assertion now that GPU tests run on hardware. After updating that test to
+    reflect the direct-output/no-scratch path, the full CUDA suite passed with 281 tests and 0 failed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`:
+    1 benchmark row-registration test, 0 failed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran on the RTX 4060 Laptop GPU. Relevant rows:
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace` = 0.957036 ms and
+    `gpu_icp_alignment_step_transformed_exact_pointwise_cached_grid` = 0.236204 ms.
+  - `nvidia-smi`:
+    detected NVIDIA driver 580.159.03, CUDA 13.0, and an RTX 4060 Laptop GPU after verification.

@@ -190,6 +190,7 @@ std::atomic<int> g_icp_residual_stats_call_count{0};
 std::atomic<std::uintptr_t> g_icp_first_stats_source_pointer{0};
 std::atomic<int> g_icp_step_transform_input_copy_count{0};
 std::atomic<int> g_icp_exact_pointwise_step_call_count{0};
+std::atomic<int> g_icp_transformed_exact_pointwise_alignment_step_call_count{0};
 std::atomic<int> g_icp_raw_stats_step_kernel_launch_count{0};
 std::atomic<int> g_icp_stats_step_host_result_copy_count{0};
 std::atomic<int> g_icp_alignment_step_call_count{0};
@@ -1455,6 +1456,69 @@ __global__ void collectExactPointwiseCorrespondenceStatsKernel(
             {
                 recordAcceptedCorrespondence(local, sx, sy, sz, sx, sy, sz, 0.0);
             }
+        }
+    }
+
+    __shared__ RawIcpStats shared_stats[kIcpStatsBlockSize];
+    shared_stats[local_idx] = local;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            addRawIcpStats(shared_stats[local_idx], shared_stats[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (local_idx == 0)
+    {
+        partial_stats[blockIdx.x] = shared_stats[0];
+    }
+}
+
+template <typename Scalar>
+__global__ void collectTransformedExactPointwiseCorrespondenceStatsKernel(
+    const Scalar* source_transform,
+    const Scalar* source_points,
+    int point_count,
+    const Scalar* target_points,
+    RawIcpStats* __restrict__ partial_stats)
+{
+    const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int local_idx = threadIdx.x;
+    RawIcpStats local{};
+    __shared__ Scalar block_transform[kIcpTransform3x4ValueCount];
+    loadColumnMajorTransform3x4Block(source_transform, block_transform, local_idx);
+
+    if (source_idx < point_count)
+    {
+        double sx = 0.0;
+        double sy = 0.0;
+        double sz = 0.0;
+        if (!loadFiniteTransformedColumnMajorPoint(
+                source_points,
+                point_count,
+                source_idx,
+                block_transform,
+                sx,
+                sy,
+                sz))
+        {
+            local.invalid_source_count = 1;
+        }
+        else if (!tryAcceptTransformedExactPointwiseCorrespondence<Scalar>(
+                     source_idx,
+                     point_count,
+                     target_points,
+                     point_count,
+                     sx,
+                     sy,
+                     sz,
+                     local))
+        {
+            local.residual_sq_sum = INFINITY;
         }
     }
 
@@ -2948,6 +3012,54 @@ __global__ void reduceRawIcpStatsAndSetExactPointwiseIdentityAlignmentStepKernel
 }
 
 template <typename Scalar>
+__global__ void reduceRawIcpStatsAndSetExactPointwiseIdentityAccumulatedAlignmentStepKernel(
+    const RawIcpStats* __restrict__ partial_stats,
+    int partial_count,
+    const Scalar* __restrict__ previous_accumulated_transform,
+    Scalar* __restrict__ step_transform,
+    Scalar* __restrict__ accumulated_transform,
+    IcpAlignmentStepRawResult<Scalar>* __restrict__ result)
+{
+    const int local_idx = threadIdx.x;
+    RawIcpStats local{};
+    for (int idx = local_idx; idx < partial_count; idx += blockDim.x)
+    {
+        addRawIcpStats(local, partial_stats[idx]);
+    }
+
+    __shared__ RawIcpStats shared_stats[kIcpStatsBlockSize];
+    shared_stats[local_idx] = local;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            addRawIcpStats(shared_stats[local_idx], shared_stats[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    const RawIcpStats raw = shared_stats[0];
+    const int step_valid = raw.active_count > 0 && isfinite(raw.residual_sq_sum) ? 1 : 0;
+    if (local_idx < 16)
+    {
+        const int row = local_idx & 3;
+        const int col = local_idx >> 2;
+        step_transform[local_idx] = row == col ? Scalar(1) : Scalar(0);
+        if (step_valid != 0)
+        {
+            accumulated_transform[local_idx] = previous_accumulated_transform[local_idx];
+        }
+    }
+
+    if (local_idx == 0)
+    {
+        writeAlignmentStepRawResultFields<Scalar>(raw, result, step_valid, 0.0);
+    }
+}
+
+template <typename Scalar>
 __global__ void reduceRawIcpStatsAndComputeStepTransformKernel(
     const RawIcpStats* __restrict__ partial_stats,
     int partial_count,
@@ -3731,6 +3843,67 @@ bool launchExactPointwiseAlignmentStep(
         partial_count,
         d_step_transform,
         d_result);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    return true;
+}
+
+template <typename Scalar, bool AccumulateTransform>
+bool launchTransformedExactPointwiseAlignmentStep(
+    const Scalar* d_source_transform,
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    RawIcpStats* d_partials,
+    int partial_count,
+    Scalar* d_step_transform,
+    const Scalar* d_previous_accumulated_transform,
+    Scalar* d_accumulated_transform,
+    IcpAlignmentStepRawResult<Scalar>* d_result,
+    cudaStream_t stream)
+{
+    if (!detail::canProbeTransformedExactPointwiseStats(
+            source_count,
+            d_target_points,
+            target_count,
+            nullptr))
+    {
+        return false;
+    }
+
+    constexpr int block_size = kIcpStatsBlockSize;
+    collectTransformedExactPointwiseCorrespondenceStatsKernel<Scalar>
+        <<<partial_count, block_size, 0, stream>>>(
+        d_source_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        d_partials);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_transformed_exact_pointwise_alignment_step_call_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    if constexpr (AccumulateTransform)
+    {
+        reduceRawIcpStatsAndSetExactPointwiseIdentityAccumulatedAlignmentStepKernel<Scalar>
+            <<<1, block_size, 0, stream>>>(
+            d_partials,
+            partial_count,
+            d_previous_accumulated_transform,
+            d_step_transform,
+            d_accumulated_transform,
+            d_result);
+    }
+    else
+    {
+        reduceRawIcpStatsAndSetExactPointwiseIdentityAlignmentStepKernel<Scalar>
+            <<<1, block_size, 0, stream>>>(
+            d_partials,
+            partial_count,
+            d_step_transform,
+            d_result);
+    }
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
     return true;
 }
@@ -4974,6 +5147,48 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
             }
         }
     }
+    else
+    {
+        const bool use_target_spatial_grid = shouldUseTargetSpatialGrid(max_correspondence_distance);
+        const double cell_size = static_cast<double>(max_correspondence_distance);
+        const bool target_grid_cache_matches =
+            use_target_spatial_grid &&
+            stats_workspace.targetSpatialGridCacheMatchesForScalar<Scalar>(
+                d_target_points,
+                target_count,
+                cell_size);
+        if (use_target_spatial_grid && !target_grid_cache_matches)
+        {
+            const bool exact_pointwise_stats =
+                launchTransformedExactPointwiseAlignmentStep<Scalar, AccumulateTransform>(
+                    d_source_transform,
+                    d_source_points,
+                    source_count,
+                    d_target_points,
+                    target_count,
+                    d_partials,
+                    grid_size,
+                    d_step_transform,
+                    d_previous_accumulated_transform,
+                    d_accumulated_transform,
+                    d_result,
+                    stream);
+
+            if (exact_pointwise_stats)
+            {
+                PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(AlignmentStepRawResult),
+                                                    cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+                g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+                PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+                if (std::isfinite(h_result->residual_sq_sum))
+                {
+                    return makeHostAlignmentStepResult<Scalar>(*h_result);
+                }
+            }
+        }
+    }
 
     {
         const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
@@ -5188,6 +5403,16 @@ void resetIcpExactPointwiseStepCallCountForTesting()
 int icpExactPointwiseStepCallCountForTesting()
 {
     return g_icp_exact_pointwise_step_call_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpTransformedExactPointwiseAlignmentStepCallCountForTesting()
+{
+    g_icp_transformed_exact_pointwise_alignment_step_call_count.store(0, std::memory_order_relaxed);
+}
+
+int icpTransformedExactPointwiseAlignmentStepCallCountForTesting()
+{
+    return g_icp_transformed_exact_pointwise_alignment_step_call_count.load(std::memory_order_relaxed);
 }
 
 void resetIcpTransformedExactPointwiseResidualCallCountForTesting()
