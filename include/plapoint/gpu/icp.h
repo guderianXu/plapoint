@@ -2,9 +2,11 @@
 
 #ifdef PLAPOINT_WITH_CUDA
 
-#include <plapoint/gpu/cuda_check.h>
+#include <cmath>
 
 #include <cuda_runtime.h>
+
+#include <plapoint/gpu/cuda_check.h>
 
 namespace plapoint
 {
@@ -442,6 +444,48 @@ IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajor(
 
 namespace detail
 {
+
+/// Return true when exact pointwise stats can skip target-coordinate loads because source and target alias.
+template <typename Scalar>
+inline bool canUseSameBufferExactPointwiseStats(
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    const int* d_correspondence_indices)
+{
+    return d_correspondence_indices == nullptr &&
+           source_count == target_count &&
+           d_source_points == d_target_points;
+}
+
+/// Return true when exact pointwise stats may be attempted before falling back to nearest-neighbor search.
+template <typename Scalar>
+inline bool canProbeExactPointwiseStats(
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    const int* d_correspondence_indices)
+{
+    if (d_correspondence_indices || source_count != target_count)
+    {
+        return false;
+    }
+    if (canUseSameBufferExactPointwiseStats(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            d_correspondence_indices))
+    {
+        return true;
+    }
+
+    const double max_dist = static_cast<double>(max_correspondence_distance);
+    return !std::isfinite(max_dist);
+}
 
 /// Compute the compact ICP alignment step using workspace already reserved for source_count.
 /// The caller must call IcpCorrespondenceStatsWorkspace::reserveFloatAlignmentStep(source_count) first.

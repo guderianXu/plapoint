@@ -5058,3 +5058,51 @@ Verification evidence:
 - Follow-up required when future GPU ICP benchmark rows are added:
   add the new row name to `cmake/check_gpu_icp_benchmark_rows.cmake` in the same change, so row registration remains
   covered by CTest.
+
+## Task 144: Cover Exact-Pointwise GPU ICP Predicate Semantics Without A Device
+
+- Goal: make the exact-pointwise host-side eligibility rules testable without a usable CUDA device, and keep the
+  same-buffer target-load skip separate from the different-buffer equality probe. Different source/target pointers with
+  infinite radius may still run the equality probe, but they must not be treated as same-buffer.
+- RED check:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    failed after adding `ICPGpuPathTest.ExactPointwiseStatsPredicatesSeparateSameBufferFromEqualityProbe` because
+    `plapoint::gpu::detail::canUseSameBufferExactPointwiseStats()` and
+    `plapoint::gpu::detail::canProbeExactPointwiseStats()` did not exist yet.
+- Implementation:
+  - Added inline `gpu::detail` predicate helpers in `include/plapoint/gpu/icp.h`.
+  - Kept the previous behavior: same-buffer inputs with matching counts and no requested correspondence-index output can
+    use exact pointwise stats for finite or infinite radius; different buffers only attempt exact pointwise stats when
+    `max_correspondence_distance` is non-finite.
+  - Updated `src/icp_gpu.cu` so the old internal eligibility check delegates to the shared helper, and the SameBuffer
+    kernel specialization is selected through the same-buffer helper.
+  - Added a no-device unit test that uses stack pointers only, so this predicate contract is covered even when GPU
+    runtime tests are skipped.
+- Targeted verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed after implementation.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.ExactPointwiseStatsPredicatesSeparateSameBufferFromEqualityProbe`:
+    1 test, 0 failed.
+- Full verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cpu -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`:
+    passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    271 test entries, 0 failed. GPU-dependent tests were discovered and skipped because the current session cannot
+    communicate with a usable CUDA device.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`:
+    1 test, 0 failed.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran and included the checked GPU ICP rows with `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the exact-pointwise same-buffer and equal-different-buffer GPU tests to measure the target-load skip and equality
+  probe cost on hardware.

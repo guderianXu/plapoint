@@ -19,6 +19,7 @@
 
 #define private public
 #include <plapoint/core/point_cloud.h>
+#include <plapoint/gpu/icp.h>
 #include <plapoint/registration/icp.h>
 #undef private
 
@@ -1447,6 +1448,40 @@ TEST(ICPGpuPathTest, ResidualStatsUsesExactPointwiseFastPathForSameBuffer)
     EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 0ull);
     EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
     EXPECT_EQ(plapoint::gpu::icpExactPointwiseTargetLoadCountForTesting(), 0ull);
+}
+
+TEST(ICPGpuPathTest, ExactPointwiseStatsPredicatesSeparateSameBufferFromEqualityProbe)
+{
+    float source_points[3]{};
+    float target_points[3]{};
+    int correspondence_indices[1]{};
+
+    const float* source = source_points;
+    const float* same_source = source_points;
+    const float* target = target_points;
+    const int* indices = correspondence_indices;
+
+    EXPECT_TRUE(plapoint::gpu::detail::canUseSameBufferExactPointwiseStats(
+        source, 4, same_source, 4, nullptr));
+    EXPECT_TRUE(plapoint::gpu::detail::canProbeExactPointwiseStats(
+        source, 4, same_source, 4, 2.0f, nullptr));
+
+    EXPECT_FALSE(plapoint::gpu::detail::canUseSameBufferExactPointwiseStats(
+        source, 4, same_source, 4, indices));
+    EXPECT_FALSE(plapoint::gpu::detail::canProbeExactPointwiseStats(
+        source, 4, same_source, 4, 2.0f, indices));
+
+    EXPECT_FALSE(plapoint::gpu::detail::canUseSameBufferExactPointwiseStats(
+        source, 4, same_source, 3, nullptr));
+    EXPECT_FALSE(plapoint::gpu::detail::canProbeExactPointwiseStats(
+        source, 4, same_source, 3, std::numeric_limits<float>::infinity(), nullptr));
+
+    EXPECT_FALSE(plapoint::gpu::detail::canUseSameBufferExactPointwiseStats(
+        source, 4, target, 4, nullptr));
+    EXPECT_FALSE(plapoint::gpu::detail::canProbeExactPointwiseStats(
+        source, 4, target, 4, 2.0f, nullptr));
+    EXPECT_TRUE(plapoint::gpu::detail::canProbeExactPointwiseStats(
+        source, 4, target, 4, std::numeric_limits<float>::infinity(), nullptr));
 }
 
 TEST(ICPGpuPathTest, CorrespondenceStatsSameBufferExactPointwiseAvoidsTargetCoordinateLoads)

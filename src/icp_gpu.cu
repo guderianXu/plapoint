@@ -3351,16 +3351,13 @@ bool shouldTryExactPointwiseStats(
     Scalar max_correspondence_distance,
     const int* d_correspondence_indices)
 {
-    if (d_correspondence_indices || source_count != target_count)
-    {
-        return false;
-    }
-    if (d_source_points == d_target_points)
-    {
-        return true;
-    }
-    const double max_dist = static_cast<double>(max_correspondence_distance);
-    return !std::isfinite(max_dist);
+    return detail::canProbeExactPointwiseStats(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        d_correspondence_indices);
 }
 
 template <typename Scalar>
@@ -3373,7 +3370,12 @@ void launchExactPointwiseCorrespondencePartials(
     cudaStream_t stream)
 {
     constexpr int block_size = kIcpStatsBlockSize;
-    if (d_source_points == d_target_points)
+    if (detail::canUseSameBufferExactPointwiseStats(
+            d_source_points,
+            source_count,
+            d_target_points,
+            source_count,
+            nullptr))
     {
         collectExactPointwiseCorrespondenceStatsKernel<Scalar, true><<<partial_count, block_size, 0, stream>>>(
             d_source_points,
@@ -3402,7 +3404,12 @@ void launchExactPointwiseResidualPartials(
     cudaStream_t stream)
 {
     constexpr int block_size = kIcpStatsBlockSize;
-    if (d_source_points == d_target_points)
+    if (detail::canUseSameBufferExactPointwiseStats(
+            d_source_points,
+            source_count,
+            d_target_points,
+            source_count,
+            nullptr))
     {
         collectExactPointwiseResidualStatsKernel<Scalar, true><<<partial_count, block_size, 0, stream>>>(
             d_source_points,
