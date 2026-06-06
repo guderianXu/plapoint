@@ -4139,6 +4139,10 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
     {
         throw std::invalid_argument("ICP GPU: device pointers must not be null");
     }
+    if (d_output_points == d_target_points)
+    {
+        throw std::invalid_argument("ICP GPU: transform residual output must not alias target points");
+    }
 
     if (reserve_workspace)
     {
@@ -4270,6 +4274,11 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
     target_grid.active = true;
     target_grid.target_points = workspace.targetSpatialGridPoints();
     target_grid.target_count = workspace.targetSpatialGridPointCount();
+    if (target_grid.target_points == d_output_points)
+    {
+        target_grid.target_points = nullptr;
+        target_grid.target_count = 0;
+    }
     target_grid.cell_keys = d_cell_keys;
     target_grid.sorted_target_indices = d_indices;
     target_grid.sorted_target_x = d_sorted_x;

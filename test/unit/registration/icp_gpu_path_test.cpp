@@ -3268,6 +3268,26 @@ TEST(ICPGpuPathTest, TransformResidualStatsSkipsSearchForExactPointwiseMatches)
     EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-8);
 }
 
+TEST(ICPGpuPathTest, TransformResidualStatsRejectsTargetOutputAliasBeforeCudaAllocation)
+{
+    auto* transform = reinterpret_cast<float*>(std::uintptr_t{0x1000});
+    auto* source = reinterpret_cast<float*>(std::uintptr_t{0x2000});
+    auto* target_and_output = reinterpret_cast<float*>(std::uintptr_t{0x3000});
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+
+    EXPECT_THROW(
+        (void)plapoint::gpu::transformPointsAndComputeIcpResidualStatsColumnMajor(
+            transform,
+            source,
+            4,
+            target_and_output,
+            4,
+            2.0f,
+            target_and_output,
+            workspace),
+        std::invalid_argument);
+}
+
 TEST(ICPGpuPathTest, AlignUsesReservedWorkspaceForTerminalResidualStats)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

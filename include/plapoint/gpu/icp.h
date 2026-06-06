@@ -297,6 +297,7 @@ IcpResidualStats<double> computeIcpResidualStatsColumnMajor(
     cudaStream_t stream = 0);
 
 /// Transform points into caller-owned output storage and compute final residual metrics in one GPU pass.
+/// Throws if d_output_points aliases d_target_points because residual search must read the original target points.
 IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsColumnMajor(
     const float* d_transform,
     const float* d_source_points,
@@ -309,6 +310,7 @@ IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsColumnMajor(
     cudaStream_t stream = 0);
 
 /// Transform points into caller-owned output storage and compute final residual metrics in one GPU pass.
+/// Throws if d_output_points aliases d_target_points because residual search must read the original target points.
 IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsColumnMajor(
     const double* d_transform,
     const double* d_source_points,
@@ -523,6 +525,7 @@ IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepAndAccumulateTr
 
 /// Transform points and compute final residual metrics using workspace already reserved for source_count.
 /// The caller must reserve residual-compatible partial and result storage first.
+/// Throws if d_output_points aliases d_target_points because residual search must read the original target points.
 IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
     const float* d_transform,
     const float* d_source_points,
@@ -536,6 +539,7 @@ IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsColumnMajorWith
 
 /// Transform points and compute final residual metrics using workspace already reserved for source_count.
 /// The caller must reserve residual-compatible partial and result storage first.
+/// Throws if d_output_points aliases d_target_points because residual search must read the original target points.
 IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
     const double* d_transform,
     const double* d_source_points,

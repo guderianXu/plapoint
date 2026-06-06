@@ -4755,3 +4755,46 @@ Verification evidence:
 - Follow-up required when a CUDA device is available:
   rerun `TransformResidualStatsSkipsSearchForExactPointwiseMatches` and compare terminal final-metric GPU ICP rows for
   ordered rigid-transform data before/after this fast path.
+
+## Task 137: Reject Unsafe Target/Output Aliasing in Transform Residual Stats
+
+- Goal: preserve correctness after the transformed exact pointwise residual fast path. The non-snapshot
+  transform+residual helper writes transformed source points before it searches the target cloud, so it cannot safely
+  use the same device buffer for `d_target_points` and `d_output_points`.
+- Root cause:
+  - `transformAndCollectResidualStatsKernel()` writes `output_points[source_idx]` before the exact same-index residual
+    helper reads `target_points[source_idx]`. If both pointers alias, the helper can read the just-written output as the
+    target and incorrectly record a zero residual.
+  - `alignGpu()` already avoids this by using scratch output when target points must remain readable, but the public
+    low-level helper could be called directly with aliased target/output pointers.
+- RED check:
+  - Added `TransformResidualStatsRejectsTargetOutputAliasBeforeCudaAllocation`, using fake non-null device pointers so
+    the test does not require a usable GPU.
+  - Before the fix, the test failed because the helper did not reject the alias and continued into
+    `reserveResidualStats()`, which raised a CUDA allocation error on this no-driver machine instead of
+    `std::invalid_argument`.
+- Implementation:
+  - Added host-side validation in `transformPointsAndComputeIcpResidualStatsColumnMajorImpl()` to reject
+    `d_output_points == d_target_points` before workspace reservation or CUDA allocation.
+  - Updated public and reserved-workspace API comments to document the non-aliasing requirement.
+  - Kept cached spatial-grid snapshot residuals usable with target/output aliasing, but disabled the exact same-index
+    fast path when the cached target identity equals the output pointer; those calls continue to search the immutable
+    cached snapshot data.
+- Verification performed in this session:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformResidualStatsRejectsTargetOutputAliasBeforeCudaAllocation:ICPGpuPathTest.TransformResidualStatsSkipsSearchForExactPointwiseMatches`:
+    CUDA build passed. The alias validation test passed without a usable GPU; the GPU-runtime exact-search test was
+    discovered but skipped because no usable CUDA device is available in this session.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`:
+    144 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`:
+    267 test entries, 0 failed. GPU-dependent tests were discovered and skipped because the current session cannot
+    communicate with a usable CUDA device; the new host-side alias validation test ran and passed without device
+    allocation.
+  - `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the full transform+residual GPU path tests, including target-output alias cases that use cached spatial-grid
+  snapshots from `alignGpu()`.
