@@ -1671,6 +1671,41 @@ Verification evidence:
   rerun `ICPGpuPathTest.ResidualStatsStopsNonSpatialScanAfterExactMatch`, full CUDA `ctest`, and the 100k-point ICP
   benchmark to confirm runtime behavior and performance impact.
 
+## Task 73: Use Read-Only Loads In Remaining GPU ICP Read Paths
+
+- Goal: make the remaining read-only GPU ICP paths consistent with the existing `loadReadOnlyIcpValue()` convention so
+  nvcc can use the read-only cache where available. This targets exact pointwise correspondence stats and target
+  spatial-grid build/gather loads.
+- Implementation:
+  - Made `loadReadOnlyIcpValue()` callable from host/device contexts so Thrust device functors can use it.
+  - Changed `ComputeIcpTargetGridCellKey` to load target point coordinates through `loadReadOnlyIcpValue()`.
+  - Changed `gatherSortedIcpTargetPointsKernel()` to load gathered target coordinates through `loadReadOnlyIcpValue()`.
+  - Changed `collectExactPointwiseCorrespondenceStatsKernel()` to match the residual exact fast path's read-only source
+    and target loads.
+  - Kept output writes, source/output alias assumptions, exact mismatch fallback behavior, and target grid ordering
+    unchanged.
+- Verification performed in this session:
+  - `git diff --check`:
+    clean.
+  - `cmake --build build-codex-cuda -j$(nproc)`:
+    passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs:ICPGpuPathTest.CorrespondenceStatsUsesFiniteRadiusSpatialGridCandidates:ICPGpuPathTest.CorrespondenceStatsReusesFiniteRadiusSpatialGridForSameTarget:ICPGpuPathTest.SetInputTargetInvalidatesPersistentGpuTargetSpatialGridCache:ICPGpuPathTest.ResidualStatsStopsNonSpatialScanAfterExactMatch:ICPValidation.RecoversKnownTransform`:
+    1 CPU validation test passed; 5 selected GPU tests were discovered but skipped because the current session has no
+    usable CUDA device.
+  - `cmake --build build-codex-cuda -j$(nproc)` and `ctest --test-dir build-codex-cuda --output-on-failure`:
+    227 test entries, 0 failed; GPU-dependent tests skipped because the current session cannot communicate with the
+    NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)` and `ctest --test-dir build-codex-cpu --output-on-failure`:
+    143 tests, 0 failed, 1 skipped CUDA-only transfer case.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)` and
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 5 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`:
+    benchmark binary built and ran; GPU rows reported `skipped,no_usable_cuda_device`.
+  - `nvidia-smi || true`:
+    reported that it could not communicate with the NVIDIA driver.
+- Follow-up required when a CUDA device is available:
+  rerun the selected exact-pointwise/grid-build GPU tests, full CUDA `ctest`, and the 100k-point ICP benchmark to
+  confirm runtime behavior and performance impact.
+
 ## Task 69: Add Safe Alias Hints To GPU ICP Workspace Paths
 
 - Goal: give nvcc stronger aliasing and read-only load information in GPU ICP kernels without changing public

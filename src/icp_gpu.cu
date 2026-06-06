@@ -213,7 +213,7 @@ __device__ __forceinline__ void addRawIcpResidualStats(RawIcpResidualStats& dst,
 }
 
 template <typename Value>
-__device__ __forceinline__ Value loadReadOnlyIcpValue(const Value* __restrict__ value)
+__host__ __device__ __forceinline__ Value loadReadOnlyIcpValue(const Value* __restrict__ value)
 {
 #if defined(__CUDA_ARCH__)
     return __ldg(value);
@@ -334,9 +334,9 @@ struct ComputeIcpTargetGridCellKey
 
     __host__ __device__ __forceinline__ IcpGridCellKey operator()(int idx) const
     {
-        const double x = static_cast<double>(points[idx]);
-        const double y = static_cast<double>(points[point_count + idx]);
-        const double z = static_cast<double>(points[2 * point_count + idx]);
+        const double x = static_cast<double>(loadReadOnlyIcpValue(points + idx));
+        const double y = static_cast<double>(loadReadOnlyIcpValue(points + point_count + idx));
+        const double z = static_cast<double>(loadReadOnlyIcpValue(points + 2 * point_count + idx));
         if (!isfinite(x) || !isfinite(y) || !isfinite(z))
         {
             return {INT_MAX, INT_MAX, INT_MAX};
@@ -365,9 +365,9 @@ __global__ void gatherSortedIcpTargetPointsKernel(
     }
 
     const int target_idx = loadReadOnlyIcpValue(sorted_target_indices + idx);
-    sorted_x[idx] = static_cast<double>(target_points[target_idx]);
-    sorted_y[idx] = static_cast<double>(target_points[target_count + target_idx]);
-    sorted_z[idx] = static_cast<double>(target_points[2 * target_count + target_idx]);
+    sorted_x[idx] = static_cast<double>(loadReadOnlyIcpValue(target_points + target_idx));
+    sorted_y[idx] = static_cast<double>(loadReadOnlyIcpValue(target_points + target_count + target_idx));
+    sorted_z[idx] = static_cast<double>(loadReadOnlyIcpValue(target_points + 2 * target_count + target_idx));
 }
 
 __device__ __forceinline__ int lowerBoundIcpGridCell(
@@ -1052,12 +1052,12 @@ __global__ void collectExactPointwiseCorrespondenceStatsKernel(
 
     if (source_idx < point_count)
     {
-        const Scalar raw_sx = source_points[source_idx];
-        const Scalar raw_sy = source_points[point_count + source_idx];
-        const Scalar raw_sz = source_points[2 * point_count + source_idx];
-        const Scalar raw_tx = target_points[source_idx];
-        const Scalar raw_ty = target_points[point_count + source_idx];
-        const Scalar raw_tz = target_points[2 * point_count + source_idx];
+        const Scalar raw_sx = loadReadOnlyIcpValue(source_points + source_idx);
+        const Scalar raw_sy = loadReadOnlyIcpValue(source_points + point_count + source_idx);
+        const Scalar raw_sz = loadReadOnlyIcpValue(source_points + 2 * point_count + source_idx);
+        const Scalar raw_tx = loadReadOnlyIcpValue(target_points + source_idx);
+        const Scalar raw_ty = loadReadOnlyIcpValue(target_points + point_count + source_idx);
+        const Scalar raw_tz = loadReadOnlyIcpValue(target_points + 2 * point_count + source_idx);
 
         if (raw_sx != raw_tx || raw_sy != raw_ty || raw_sz != raw_tz)
         {
