@@ -9833,3 +9833,44 @@ Verification evidence:
   benchmark is essentially unchanged because its warmup already leaves both workspaces cached in the older code; the
   remaining runtime win still requires using this two-step helper from the high-level large-target two-iteration
   `align()` path to remove a host synchronization.
+
+## Task 242: Wire Large-Target Two-Step Helper into High-Level Transform-Only Align
+
+- Goal: use the generic large-target two-step async helper from high-level GPU `align()` for the common
+  transform-only, no-output, two-iteration, finite-radius path.
+- RED check:
+  - Added `ICPGpuPathTest.AlignLargeTargetTwoIterationTransformOnlyAvoidsPerIterationHostSynchronization`.
+  - The RED run failed as intended: high-level `align()` still reported two host synchronizations and two target
+    spatial-grid prepares for the two large-target iterations.
+- Implementation:
+  - Added `tryAlignGpuTwoStepTransformOnly()` after the existing small-target transform-only specialization.
+  - The new path is intentionally narrow: no output pointer, no final metrics, exactly two iterations, finite positive
+    correspondence radius, no ordered/probe options, and a target count above the small-target threshold.
+  - Reused `launchIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces()` plus
+    `copyIcpTwoStepAlignmentResultFromReservedWorkspaces()` to queue both large-target steps and collect both compact
+    results with one host synchronization.
+  - Extracted the shared two-step transform-only host-side result handling so small-target and large-target paths update
+    convergence, residual metrics, final GPU transform validity, and full-coverage caches consistently.
+  - Updated three cache-oriented tests whose old host-sync expectations were an implementation side effect; their
+    alignment-step counts still verify whether residual results are recomputed or reused.
+- Verification:
+  - RED run failed on the new large-target high-level test: observed host synchronizations 2 vs expected 1, and
+    target spatial-grid prepares 2 vs expected 1.
+  - New large-target high-level transform-only test plus small-target transform-only regression subset: 4/4 passed.
+  - Full `ICPGpuPathTest.*`: 195/195 passed.
+  - Full CUDA CTest: 376/376 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 10000`:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 0.240461 ms,
+    `gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations` = 0.269087 ms,
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.239667 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_async_launch_cached_grid` = 0.097157 ms, and
+    `gpu_icp_alignment_step_transformed_accumulated_async_launch_cached_grid` = 0.088792 ms.
+- Current conclusion:
+  high-level large-target two-iteration transform-only `align()` now reaches the same performance band as the
+  lower-level two-step async helper by removing the per-iteration host synchronization. The next useful slices are
+  supporting the large-target output/target-alias transform-only variants and then the final-metrics two-step terminal
+  path.

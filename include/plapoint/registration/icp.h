@@ -458,6 +458,16 @@ private:
         {
             return;
         }
+        if (tryAlignGpuTwoStepTransformOnly(
+                output,
+                source_count,
+                target_count,
+                source_points,
+                target_points,
+                output_aliases_target))
+        {
+            return;
+        }
         if (tryAlignGpuSmallTargetTwoStepTerminal(
                 output,
                 source_count,
@@ -1279,7 +1289,102 @@ private:
             gpu::detail::copySmallTargetTwoStepAlignmentResultFromReservedWorkspaces<Scalar>(
                 _gpu_stats_workspace,
                 _gpu_terminal_stats_workspace);
+        return finishGpuTwoStepTransformOnlyAlignment(
+            two_step_result,
+            output,
+            source_count,
+            target_count,
+            source_points,
+            target_points,
+            output_aliases_target);
+    }
 
+    template <plamatrix::Device D = Dev>
+    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    tryAlignGpuTwoStepTransformOnly(
+        PointCloudType* output,
+        int source_count,
+        int target_count,
+        const Scalar* source_points,
+        const Scalar* target_points,
+        bool output_aliases_target)
+    {
+        if (output ||
+            _compute_final_metrics ||
+            _max_iter != 2 ||
+            _gpu_assume_ordered_correspondences ||
+            _gpu_assume_ordered_correspondences_after_same_index_step ||
+            _gpu_probe_exact_pointwise_on_finite_radius ||
+            _gpu_probe_transformed_exact_pointwise_on_cache_hit)
+        {
+            return false;
+        }
+        constexpr int small_target_tile_capacity = 128;
+        const double max_corr_dist = static_cast<double>(_max_corr_dist);
+        if (source_count <= 0 ||
+            target_count <= small_target_tile_capacity ||
+            source_points == target_points ||
+            !std::isfinite(max_corr_dist) ||
+            max_corr_dist <= 0.0)
+        {
+            return false;
+        }
+        if (output_aliases_target)
+        {
+            return false;
+        }
+
+        reserveGpuStepTransformBuffer();
+        reserveGpuAccumulatedTransformBuffer();
+        reserveGpuNextTransformBuffer();
+        reserveGpuAlignmentStepWorkspace(source_count);
+        const bool launched =
+            gpu::detail::launchIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
+                source_points,
+                source_count,
+                target_points,
+                target_count,
+                _max_corr_dist,
+                _gpu_stats_workspace,
+                _gpu_terminal_stats_workspace,
+                _gpu_T_step->data(),
+                _gpu_next_T_acc->data(),
+                _gpu_T_acc->data());
+        if (!launched)
+        {
+            return false;
+        }
+
+        _converged = false;
+        _fitness_score = Scalar(0);
+        _final_rmse = std::numeric_limits<Scalar>::infinity();
+        _final_T_cpu_valid = false;
+        _final_T_gpu_valid = false;
+        const auto two_step_result =
+            gpu::detail::copyIcpTwoStepAlignmentResultFromReservedWorkspaces<Scalar>(
+                _gpu_stats_workspace,
+                _gpu_terminal_stats_workspace);
+        return finishGpuTwoStepTransformOnlyAlignment(
+            two_step_result,
+            output,
+            source_count,
+            target_count,
+            source_points,
+            target_points,
+            output_aliases_target);
+    }
+
+    template <plamatrix::Device D = Dev>
+    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    finishGpuTwoStepTransformOnlyAlignment(
+        const gpu::IcpTwoStepAlignmentResult<Scalar>& two_step_result,
+        PointCloudType* output,
+        int source_count,
+        int target_count,
+        const Scalar* source_points,
+        const Scalar* target_points,
+        bool output_aliases_target)
+    {
         const auto& first_step = two_step_result.first_alignment_step;
         handleGpuAlignmentStepPreconditions(first_step, 0);
         const bool first_step_terminal = first_step.step.delta < _eps;
