@@ -3458,6 +3458,54 @@ void benchmarkGpuIcpSmallFiniteRadiusFinalMetricsTwoIterations(
     }
 }
 
+void benchmarkGpuIcpSmallFiniteRadiusReuseFinalMetricsTwoIterations(
+    const std::string& benchmark_name,
+    int target_count,
+    int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(benchmark_name, "no_usable_cuda_device");
+        return;
+    }
+
+    auto target_points = makeCompactNonCollinearGridPoints<float>(target_count);
+    auto source_points =
+        makeTranslatedCompactNonCollinearGridPoints<float>(target_count, 0.01f, -0.005f, 0.0025f);
+    if (target_count > 3)
+    {
+        target_points(1, 0) += 0.03f;
+        target_points(2, 1) -= 0.02f;
+        target_points(3, 2) += 0.015f;
+    }
+
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(source_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.08f);
+    icp.setMaxIterations(2);
+    icp.setTransformationEpsilon(1.0e-12f);
+
+    std::size_t sink = 0;
+    double rmse_sink = 0.0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        (void)source->points();
+        icp.align();
+        rmse_sink += static_cast<double>(icp.getFinalRmse());
+        sink += std::isfinite(icp.getFinalRmse()) ? 1u : 0u;
+    });
+    printResult(benchmark_name, target_count, iterations, elapsed);
+    if (sink == 0 || !std::isfinite(rmse_sink))
+    {
+        std::cerr << benchmark_name << " produced no finite final metrics\n";
+    }
+}
+
 void benchmarkGpuIcpSmallFiniteRadiusOutputFinalMetricsTwoIterations(
     const std::string& benchmark_name,
     int target_count,
@@ -4193,6 +4241,10 @@ int main(int argc, char** argv)
         1);
     benchmarkGpuIcpSmallFiniteRadiusFinalMetricsTwoIterations(
         "gpu_icp_small_finite_radius_nonrigid_final_metrics_two_iterations_below_grid_threshold",
+        127,
+        options.iterations);
+    benchmarkGpuIcpSmallFiniteRadiusReuseFinalMetricsTwoIterations(
+        "gpu_icp_small_finite_radius_nonrigid_reuse_final_metrics_two_iterations_below_grid_threshold",
         127,
         options.iterations);
     benchmarkGpuIcpSmallFiniteRadiusOutputFinalMetricsTwoIterations(
