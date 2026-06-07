@@ -741,6 +741,44 @@ IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepAndAccumulateTr
     bool assume_ordered_correspondences = false,
     bool probe_transformed_exact_pointwise_on_cache_hit = false);
 
+/// Enqueue a small-target transformed alignment step and write accumulated_transform = step * previous_accumulated.
+/// The helper does not copy the compact alignment-step result to host or synchronize with the host.
+/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+bool launchTransformedSmallTargetAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
+    const float* d_source_transform,
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    const float* d_previous_accumulated_transform,
+    float* d_accumulated_transform,
+    cudaStream_t stream = 0);
+
+/// Enqueue a small-target transformed alignment step and write accumulated_transform = step * previous_accumulated.
+/// The helper does not copy the compact alignment-step result to host or synchronize with the host.
+/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+bool launchTransformedSmallTargetAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
+    const double* d_source_transform,
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    const double* d_previous_accumulated_transform,
+    double* d_accumulated_transform,
+    cudaStream_t stream = 0);
+
+/// Copy the compact alignment-step result produced by an async alignment-step helper and synchronize the stream.
+template <typename Scalar>
+IcpAlignmentStepResult<Scalar> copyAlignmentStepResultFromReservedWorkspace(
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    cudaStream_t stream = 0);
+
 /// Enqueue a small-target terminal transformed alignment step and exact post-step residual metrics.
 /// The helper writes accumulated_transform = step * previous_accumulated and does not synchronize with the host.
 /// If d_output_points is not null, the helper also writes the final transformed source points.
