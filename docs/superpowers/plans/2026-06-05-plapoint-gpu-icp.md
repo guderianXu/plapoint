@@ -9523,3 +9523,53 @@ Verification evidence:
   the common high-level small-target two-iteration final-metrics paths now share the one-sync two-step flow for
   no-output, ordinary output, and target-alias output. The remaining gap is broader iteration counts or batched
   multi-alignment submission, not this narrow two-iteration path.
+
+## Task 234: Add One-Sync Single-Step Small-Target Final Metrics
+
+- Goal: reduce the common `maxIterations == 1` small finite-radius final-metrics path from an alignment-step host
+  synchronization plus a residual-stats host synchronization to one compact terminal-result synchronization.
+- RED checks:
+  - Added `ICPGpuPathTest.SmallTargetSingleStepTerminalAsyncLaunchCopiesResultWithOneHostSynchronization`. The RED
+    compile failed because the single-step terminal async launch helper did not exist.
+  - Tightened `ICPGpuPathTest.AlignFusesStatsAndStepToAvoidExtraHostSynchronization` from two host synchronizations to
+    one, with one compact terminal result copy and one small terminal alignment/residual kernel launch.
+- Implementation:
+  - Generalized the small-target terminal kernel with a `TransformSource` template mode. The existing transformed
+    terminal path still transforms the source and composes with a previous accumulated transform; the new initial-source
+    mode reads source points directly, writes the one-step transform, and computes exact post-step residual metrics in
+    the same kernel.
+  - Added
+    `launchSmallTargetSingleStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace()` for float and double.
+    It queues the initial alignment step plus final residual metrics without synchronizing; callers reuse the existing
+    compact terminal-result copy helper.
+  - Added a high-level `align()` fast path for small finite-radius, one-iteration, final-metrics-enabled runs without
+    ordered/exact-probe special modes. The path writes optional output inside the terminal kernel, swaps the step
+    transform into `_gpu_T_acc`, updates metrics from the compact residual result, and preserves cache invalidation.
+  - The fast path deliberately falls back for same-buffer source/target target-alias output so identity no-write cases
+    do not increment the point buffer version while only preparing an output pointer.
+- Correctness coverage:
+  - The new low-level test compares alignment step, residual metrics, and output points against the previous
+    alignment-step plus transform/residual-stats sequence.
+  - High-level path-shape tests now assert that one-iteration small-target final metrics use one host synchronization,
+    one terminal kernel, no separate residual-stats call, no scratch point buffer, no identity transform write, and no
+    next accumulated-transform buffer.
+  - Existing same-buffer identity output coverage still verifies target point versions are unchanged when no output
+    write is needed.
+- Targeted verification:
+  - New low-level helper plus high-level one-sync test: 2/2 passed.
+  - Previously failing path-shape/same-buffer tests: 5/5 passed.
+  - ICP GPU path tests: 186/186 passed.
+  - Full CUDA CTest after driver recovery: 367/367 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with the GPU transfer test skipped in the
+    CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+  - `git diff --check`: passed with no output.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 1024`:
+    `gpu_icp_small_finite_radius_nonrigid_final_metrics_one_iteration_below_grid_threshold` = 0.626475 ms,
+    `gpu_icp_small_finite_radius_nonrigid_final_metrics_two_iterations_below_grid_threshold` = 0.722527 ms,
+    and `gpu_icp_small_finite_radius_two_step_terminal_async_launch_below_grid_threshold` = 0.203849 ms.
+- Current conclusion:
+  one-iteration and two-iteration small-target final-metrics paths now both use one host synchronization. Remaining
+  larger gains require either extending batched submission across independent alignments or moving more multi-iteration
+  convergence control onto the device with carefully preserved error/early-stop semantics.

@@ -5275,7 +5275,7 @@ __global__ void computeSmallTargetIcpAlignmentStepKernel(
     }
 }
 
-template <typename Scalar>
+template <typename Scalar, bool TransformSource>
 __global__ void computeSmallTargetTerminalIcpAlignmentAndResidualKernel(
     const Scalar* __restrict__ source_transform,
     const Scalar* source_points,
@@ -5296,12 +5296,15 @@ __global__ void computeSmallTargetTerminalIcpAlignmentAndResidualKernel(
     if (local_idx == 0)
     {
         shared_source_transform_valid = 1;
-        if (source_transform_alignment_step &&
-            !alignmentStepRawResultIsAcceptableForIcp<Scalar>(*source_transform_alignment_step))
+        if constexpr (TransformSource)
         {
-            result->alignment_step = {};
-            result->residual_stats = {};
-            shared_source_transform_valid = 0;
+            if (source_transform_alignment_step &&
+                !alignmentStepRawResultIsAcceptableForIcp<Scalar>(*source_transform_alignment_step))
+            {
+                result->alignment_step = {};
+                result->residual_stats = {};
+                shared_source_transform_valid = 0;
+            }
         }
     }
     __syncthreads();
@@ -5318,24 +5321,37 @@ __global__ void computeSmallTargetTerminalIcpAlignmentAndResidualKernel(
     __shared__ Scalar block_transform[kIcpTransform3x4ValueCount];
     __shared__ Scalar block_accumulated_transform[kIcpTransform3x4ValueCount];
     __shared__ int shared_step_valid;
-    loadColumnMajorTransform3x4Block(source_transform, block_transform, local_idx);
+    if constexpr (TransformSource)
+    {
+        loadColumnMajorTransform3x4Block(source_transform, block_transform, local_idx);
+    }
 
     if (source_idx < source_count)
     {
-        if (!loadFiniteTransformedColumnMajorPoint(
+        bool loaded_source = false;
+        if constexpr (TransformSource)
+        {
+            loaded_source = loadFiniteTransformedColumnMajorPoint(
                 source_points,
                 source_count,
                 source_idx,
                 block_transform,
                 sx,
                 sy,
-                sz))
-        {
-            local.invalid_source_count = 1;
+                sz);
         }
         else
         {
+            loaded_source = loadFiniteColumnMajorPoint(source_points, source_count, source_idx, sx, sy, sz);
+        }
+
+        if (loaded_source)
+        {
             source_valid = true;
+        }
+        else
+        {
+            local.invalid_source_count = 1;
         }
     }
 
@@ -5439,12 +5455,15 @@ __global__ void computeSmallTargetTerminalIcpAlignmentAndResidualKernel(
             step_transform,
             &result->alignment_step);
         shared_step_valid = (result->alignment_step.flags & kIcpAlignmentStepValidFlag) != 0 ? 1 : 0;
-        if (shared_step_valid != 0)
+        if constexpr (TransformSource)
         {
-            multiplyTransform4x4SingleThread(
-                step_transform,
-                previous_accumulated_transform,
-                accumulated_transform);
+            if (shared_step_valid != 0)
+            {
+                multiplyTransform4x4SingleThread(
+                    step_transform,
+                    previous_accumulated_transform,
+                    accumulated_transform);
+            }
         }
         result->residual_stats = {};
     }
@@ -5455,7 +5474,14 @@ __global__ void computeSmallTargetTerminalIcpAlignmentAndResidualKernel(
         return;
     }
 
-    loadColumnMajorTransform3x4Block(accumulated_transform, block_accumulated_transform, local_idx);
+    if constexpr (TransformSource)
+    {
+        loadColumnMajorTransform3x4Block(accumulated_transform, block_accumulated_transform, local_idx);
+    }
+    else
+    {
+        loadColumnMajorTransform3x4Block(step_transform, block_accumulated_transform, local_idx);
+    }
     RawIcpResidualStats residual_local{};
     bool residual_source_valid = false;
     double fsx = 0.0;
@@ -6841,7 +6867,7 @@ bool launchSmallTargetStatsAndStep(
     return true;
 }
 
-template <typename Scalar>
+template <typename Scalar, bool TransformSource>
 bool launchSmallTargetTerminalAlignmentAndResidual(
     const Scalar* d_source_transform,
     const Scalar* d_source_points,
@@ -6864,9 +6890,12 @@ bool launchSmallTargetTerminalAlignmentAndResidual(
     {
         return false;
     }
-    if (!d_source_transform || !d_previous_accumulated_transform || !d_accumulated_transform)
+    if constexpr (TransformSource)
     {
-        return false;
+        if (!d_source_transform || !d_previous_accumulated_transform || !d_accumulated_transform)
+        {
+            return false;
+        }
     }
 
     constexpr int block_size = kIcpStatsBlockSize;
@@ -6874,7 +6903,7 @@ bool launchSmallTargetTerminalAlignmentAndResidual(
     g_icp_small_alignment_step_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
     g_icp_small_terminal_alignment_residual_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
 #endif
-    computeSmallTargetTerminalIcpAlignmentAndResidualKernel<Scalar><<<1, block_size, 0, stream>>>(
+    computeSmallTargetTerminalIcpAlignmentAndResidualKernel<Scalar, TransformSource><<<1, block_size, 0, stream>>>(
         d_source_transform,
         d_source_points,
         source_count,
@@ -9326,7 +9355,7 @@ bool launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
     stats_workspace.reserveStatsAndStep(source_count);
     auto* d_result =
         reinterpret_cast<IcpTerminalAlignmentAndResidualRawResult<Scalar>*>(stats_workspace.statsStorage());
-    return launchSmallTargetTerminalAlignmentAndResidual<Scalar>(
+    return launchSmallTargetTerminalAlignmentAndResidual<Scalar, true>(
         d_source_transform,
         d_source_points,
         source_count,
@@ -9340,6 +9369,63 @@ bool launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
         d_result,
         stream,
         d_source_transform_alignment_step);
+}
+
+template <typename Scalar>
+bool launchSmallTargetSingleStepTerminalAlignmentAndResidualColumnMajorImpl(
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    Scalar* d_step_transform,
+    cudaStream_t stream,
+    Scalar* d_output_points)
+{
+    if (source_count <= 0 || target_count <= 0)
+    {
+        return false;
+    }
+    if (!shouldUseSmallFiniteRadiusTargetTileCapacityKernel(
+            max_correspondence_distance,
+            source_count,
+            target_count))
+    {
+        return false;
+    }
+    if (!d_source_points || !d_target_points || !d_step_transform)
+    {
+        throw std::invalid_argument("ICP GPU: device pointers must not be null");
+    }
+
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_alignment_step_call_count.fetch_add(1, std::memory_order_relaxed);
+    std::uintptr_t empty = 0;
+    g_icp_first_stats_source_pointer.compare_exchange_strong(
+        empty,
+        reinterpret_cast<std::uintptr_t>(d_source_points),
+        std::memory_order_relaxed,
+        std::memory_order_relaxed);
+#endif
+
+    stats_workspace.reserveStatsAndStep(source_count);
+    auto* d_result =
+        reinterpret_cast<IcpTerminalAlignmentAndResidualRawResult<Scalar>*>(stats_workspace.statsStorage());
+    return launchSmallTargetTerminalAlignmentAndResidual<Scalar, false>(
+        nullptr,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        d_step_transform,
+        nullptr,
+        nullptr,
+        d_output_points,
+        d_result,
+        stream);
 }
 
 template <typename Scalar>
@@ -11251,6 +11337,52 @@ copySmallTargetTerminalAlignmentAndResidualResultFromReservedWorkspace<double>(
     return copySmallTargetTerminalAlignmentAndResidualResultFromReservedWorkspaceImpl<double>(
         stats_workspace,
         stream);
+}
+
+bool launchSmallTargetSingleStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    cudaStream_t stream,
+    float* d_output_points)
+{
+    return launchSmallTargetSingleStepTerminalAlignmentAndResidualColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        d_step_transform,
+        stream,
+        d_output_points);
+}
+
+bool launchSmallTargetSingleStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    cudaStream_t stream,
+    double* d_output_points)
+{
+    return launchSmallTargetSingleStepTerminalAlignmentAndResidualColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        d_step_transform,
+        stream,
+        d_output_points);
 }
 
 bool launchSmallTargetTwoStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspaces(

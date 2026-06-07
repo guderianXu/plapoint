@@ -2605,7 +2605,8 @@ void benchmarkGpuIcpSmallFiniteRadiusTransformOnlyTwoIterations(
 void benchmarkGpuIcpSmallFiniteRadiusFinalMetricsTwoIterations(
     const std::string& benchmark_name,
     int target_count,
-    int iterations)
+    int iterations,
+    int max_iterations = 2)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -2635,7 +2636,7 @@ void benchmarkGpuIcpSmallFiniteRadiusFinalMetricsTwoIterations(
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxCorrespondenceDistance(0.08f);
-        icp.setMaxIterations(2);
+        icp.setMaxIterations(max_iterations);
         icp.setTransformationEpsilon(1.0e-12f);
         icp.align();
         rmse_sink += static_cast<double>(icp.getFinalRmse());
@@ -3250,6 +3251,11 @@ int main(int argc, char** argv)
         "gpu_icp_small_finite_radius_nonrigid_transform_only_two_iterations_below_grid_threshold",
         127,
         options.iterations);
+    benchmarkGpuIcpSmallFiniteRadiusFinalMetricsTwoIterations(
+        "gpu_icp_small_finite_radius_nonrigid_final_metrics_one_iteration_below_grid_threshold",
+        127,
+        options.iterations,
+        1);
     benchmarkGpuIcpSmallFiniteRadiusFinalMetricsTwoIterations(
         "gpu_icp_small_finite_radius_nonrigid_final_metrics_two_iterations_below_grid_threshold",
         127,

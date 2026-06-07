@@ -438,6 +438,16 @@ private:
         {
             return;
         }
+        if (tryAlignGpuSmallTargetSingleStepTerminal(
+                output,
+                source_count,
+                target_count,
+                source_points,
+                target_points,
+                output_aliases_target))
+        {
+            return;
+        }
         if (tryAlignGpuSmallTargetTwoStepTerminal(
                 output,
                 source_count,
@@ -1189,6 +1199,150 @@ private:
                 invalidateGpuFullCoverageTransformOutputCache();
             }
         }
+    }
+
+    template <plamatrix::Device D = Dev>
+    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    tryAlignGpuSmallTargetSingleStepTerminal(
+        PointCloudType* output,
+        int source_count,
+        int target_count,
+        const Scalar* source_points,
+        const Scalar* target_points,
+        bool output_aliases_target)
+    {
+        if (!_compute_final_metrics ||
+            _max_iter != 1 ||
+            _gpu_assume_ordered_correspondences ||
+            _gpu_assume_ordered_correspondences_after_same_index_step ||
+            _gpu_probe_exact_pointwise_on_finite_radius ||
+            _gpu_probe_transformed_exact_pointwise_on_cache_hit)
+        {
+            return false;
+        }
+        constexpr int small_target_tile_capacity = 128;
+        const double max_corr_dist = static_cast<double>(_max_corr_dist);
+        if (source_count <= 0 ||
+            source_count > small_target_tile_capacity ||
+            target_count <= 0 ||
+            target_count > small_target_tile_capacity ||
+            !std::isfinite(max_corr_dist) ||
+            max_corr_dist <= 0.0)
+        {
+            return false;
+        }
+        if (output_aliases_target &&
+            output &&
+            !canReuseGpuOutputPointBuffer(*output, source_count))
+        {
+            return false;
+        }
+        if (output_aliases_target && output && source_points == target_points)
+        {
+            return false;
+        }
+
+        reserveGpuStepTransformBuffer();
+        Scalar* output_points = nullptr;
+        if (output)
+        {
+            output_points = output_aliases_target
+                ? output->points().data()
+                : prepareGpuOutputPointBuffer(*output, source_count);
+        }
+
+        const bool launched =
+            gpu::detail::launchSmallTargetSingleStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+                source_points,
+                source_count,
+                target_points,
+                target_count,
+                _max_corr_dist,
+                _gpu_stats_workspace,
+                _gpu_T_step->data(),
+                0,
+                output_points);
+        if (!launched)
+        {
+            return false;
+        }
+
+        _converged = false;
+        _fitness_score = Scalar(0);
+        _final_rmse = std::numeric_limits<Scalar>::infinity();
+        _final_T_cpu_valid = false;
+        _final_T_gpu_valid = false;
+        const auto terminal_result =
+            gpu::detail::copySmallTargetTerminalAlignmentAndResidualResultFromReservedWorkspace<Scalar>(
+                _gpu_stats_workspace);
+        if (output_points && output_aliases_target)
+        {
+            invalidateGpuTargetWorkspaceCache();
+        }
+
+        const auto& alignment_step = terminal_result.alignment_step;
+        handleGpuAlignmentStepPreconditions(alignment_step, 0);
+        std::swap(_gpu_T_acc, _gpu_T_step);
+        invalidateGpuSameBufferIdentityResultCache();
+        invalidateGpuExactIdentityResultCache();
+
+        const auto& final_stats = terminal_result.residual_stats;
+        if (final_stats.invalid_source_count > 0)
+        {
+            throw std::invalid_argument("ICP: transformed source contains non-finite point");
+        }
+        if (final_stats.active_count == 0)
+        {
+            _fitness_score = Scalar(0);
+            _final_rmse = std::numeric_limits<Scalar>::infinity();
+        }
+        else
+        {
+            updateResidualMetricsFromGpuStats(final_stats, source_count);
+        }
+
+        const bool terminal_step_converged = alignment_step.step.delta < _eps;
+        if (terminal_step_converged)
+        {
+            _converged = final_stats.active_count >= 3 && _fitness_score >= _min_fitness_score;
+        }
+        const double terminal_step_residual_sq_sum =
+            std::isfinite(alignment_step.step_residual_sq_sum)
+                ? std::max(0.0, alignment_step.step_residual_sq_sum)
+                : alignment_step.step_residual_sq_sum;
+        if (!output_aliases_target &&
+            canCacheGpuFullCoverageTransformResult(
+                source_count,
+                target_count,
+                source_points,
+                target_points,
+                alignment_step.active_count,
+                alignment_step.step_maps_correspondences_exactly,
+                alignment_step.all_correspondences_same_index,
+                alignment_step.step.delta != Scalar(0),
+                terminal_step_residual_sq_sum))
+        {
+            markGpuFullCoverageTransformResultCache(source_count, target_count, source_points, target_points);
+            if (output && output_points)
+            {
+                markGpuFullCoverageTransformOutputCache(*output, source_count, source_points, target_points);
+            }
+            else
+            {
+                invalidateGpuFullCoverageTransformOutputCache();
+            }
+            invalidateGpuIdentityOutputCache();
+        }
+        else
+        {
+            invalidateGpuFullCoverageTransformResultCache();
+            invalidateGpuFullCoverageTransformOutputCache();
+            invalidateGpuIdentityOutputCache();
+        }
+
+        _final_T_cpu_valid = false;
+        _final_T_gpu_valid = true;
+        return true;
     }
 
     template <plamatrix::Device D = Dev>
