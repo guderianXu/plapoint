@@ -9078,8 +9078,7 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
 }
 
 template <typename Scalar>
-IcpTerminalAlignmentAndResidualResult<Scalar>
-computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
+bool launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
     const Scalar* d_source_transform,
     const Scalar* d_source_points,
     int source_count,
@@ -9095,14 +9094,14 @@ computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
 {
     if (source_count <= 0 || target_count <= 0)
     {
-        return {};
+        return false;
     }
     if (!shouldUseSmallFiniteRadiusTargetTileCapacityKernel(
             max_correspondence_distance,
             source_count,
             target_count))
     {
-        return {};
+        return false;
     }
     if (!d_source_points ||
         !d_target_points ||
@@ -9130,14 +9129,7 @@ computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
     stats_workspace.reserveStatsAndStep(source_count);
     auto* d_result =
         reinterpret_cast<IcpTerminalAlignmentAndResidualRawResult<Scalar>*>(stats_workspace.statsStorage());
-    auto* h_result =
-        reinterpret_cast<IcpTerminalAlignmentAndResidualRawResult<Scalar>*>(stats_workspace.hostResultStorage());
-    if (!h_result)
-    {
-        throw std::invalid_argument("ICP GPU: terminal alignment host result workspace is not reserved");
-    }
-
-    const bool launched = launchSmallTargetTerminalAlignmentAndResidual<Scalar>(
+    return launchSmallTargetTerminalAlignmentAndResidual<Scalar>(
         d_source_transform,
         d_source_points,
         source_count,
@@ -9150,9 +9142,25 @@ computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
         d_output_points,
         d_result,
         stream);
-    if (!launched)
+}
+
+template <typename Scalar>
+IcpTerminalAlignmentAndResidualResult<Scalar>
+copySmallTargetTerminalAlignmentAndResidualResultFromReservedWorkspaceImpl(
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    cudaStream_t stream)
+{
+    auto* d_result =
+        reinterpret_cast<IcpTerminalAlignmentAndResidualRawResult<Scalar>*>(stats_workspace.statsStorage());
+    auto* h_result =
+        reinterpret_cast<IcpTerminalAlignmentAndResidualRawResult<Scalar>*>(stats_workspace.hostResultStorage());
+    if (!d_result)
     {
-        return {};
+        throw std::invalid_argument("ICP GPU: terminal alignment device result workspace is not reserved");
+    }
+    if (!h_result)
+    {
+        throw std::invalid_argument("ICP GPU: terminal alignment host result workspace is not reserved");
     }
 
     PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
@@ -9167,6 +9175,46 @@ computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
 #endif
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
     return makeHostTerminalAlignmentAndResidualResult<Scalar>(*h_result);
+}
+
+template <typename Scalar>
+IcpTerminalAlignmentAndResidualResult<Scalar>
+computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
+    const Scalar* d_source_transform,
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    Scalar* d_step_transform,
+    const Scalar* d_previous_accumulated_transform,
+    Scalar* d_accumulated_transform,
+    cudaStream_t stream,
+    Scalar* d_output_points)
+{
+    const bool launched =
+        launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
+            d_source_transform,
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            stats_workspace,
+            d_step_transform,
+            d_previous_accumulated_transform,
+            d_accumulated_transform,
+            stream,
+            d_output_points);
+    if (!launched)
+    {
+        return {};
+    }
+
+    return copySmallTargetTerminalAlignmentAndResidualResultFromReservedWorkspaceImpl<Scalar>(
+        stats_workspace,
+        stream);
 }
 
 } // namespace
@@ -10694,6 +10742,86 @@ transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajo
         target_spatial_grid_cell_count,
         stream,
         false);
+}
+
+bool launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+    const float* d_source_transform,
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    const float* d_previous_accumulated_transform,
+    float* d_accumulated_transform,
+    cudaStream_t stream,
+    float* d_output_points)
+{
+    return launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
+        d_source_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        d_step_transform,
+        d_previous_accumulated_transform,
+        d_accumulated_transform,
+        stream,
+        d_output_points);
+}
+
+bool launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+    const double* d_source_transform,
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    const double* d_previous_accumulated_transform,
+    double* d_accumulated_transform,
+    cudaStream_t stream,
+    double* d_output_points)
+{
+    return launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
+        d_source_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        d_step_transform,
+        d_previous_accumulated_transform,
+        d_accumulated_transform,
+        stream,
+        d_output_points);
+}
+
+template <>
+IcpTerminalAlignmentAndResidualResult<float>
+copySmallTargetTerminalAlignmentAndResidualResultFromReservedWorkspace<float>(
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    cudaStream_t stream)
+{
+    return copySmallTargetTerminalAlignmentAndResidualResultFromReservedWorkspaceImpl<float>(
+        stats_workspace,
+        stream);
+}
+
+template <>
+IcpTerminalAlignmentAndResidualResult<double>
+copySmallTargetTerminalAlignmentAndResidualResultFromReservedWorkspace<double>(
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    cudaStream_t stream)
+{
+    return copySmallTargetTerminalAlignmentAndResidualResultFromReservedWorkspaceImpl<double>(
+        stats_workspace,
+        stream);
 }
 
 IcpTerminalAlignmentAndResidualResult<float>

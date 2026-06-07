@@ -741,6 +741,49 @@ IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepAndAccumulateTr
     bool assume_ordered_correspondences = false,
     bool probe_transformed_exact_pointwise_on_cache_hit = false);
 
+/// Enqueue a small-target terminal transformed alignment step and exact post-step residual metrics.
+/// The helper writes accumulated_transform = step * previous_accumulated and does not synchronize with the host.
+/// If d_output_points is not null, the helper also writes the final transformed source points.
+/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+bool launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+    const float* d_source_transform,
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    const float* d_previous_accumulated_transform,
+    float* d_accumulated_transform,
+    cudaStream_t stream = 0,
+    float* d_output_points = nullptr);
+
+/// Enqueue a small-target terminal transformed alignment step and exact post-step residual metrics.
+/// The helper writes accumulated_transform = step * previous_accumulated and does not synchronize with the host.
+/// If d_output_points is not null, the helper also writes the final transformed source points.
+/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+bool launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+    const double* d_source_transform,
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    const double* d_previous_accumulated_transform,
+    double* d_accumulated_transform,
+    cudaStream_t stream = 0,
+    double* d_output_points = nullptr);
+
+/// Copy the result produced by launchTransformedSmallTargetTerminalAlignmentAndResidual... and synchronize the stream.
+template <typename Scalar>
+IcpTerminalAlignmentAndResidualResult<Scalar>
+copySmallTargetTerminalAlignmentAndResidualResultFromReservedWorkspace(
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    cudaStream_t stream = 0);
+
 /// Compute a small-target terminal transformed alignment step and exact post-step residual metrics.
 /// The helper writes accumulated_transform = step * previous_accumulated and copies one compact result to host.
 /// If d_output_points is not null, the helper also writes the final transformed source points.

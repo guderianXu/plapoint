@@ -9255,3 +9255,49 @@ Verification evidence:
   `align(*target)` case without relaxing the existing non-reusable target-alias safeguards. Remaining speed work in
   this small-cloud class is dominated by fixed launch and host-result synchronization cost, so the next larger step is
   a batched or asynchronous ICP surface rather than more single-call fusion.
+
+## Task 228: Add Async Launch Building Block for Small-Target Terminal Metrics
+
+- Goal: start the batched/asynchronous ICP direction by splitting the small-target terminal fused helper into an
+  enqueue-only detail API plus an explicit result-copy API. The existing synchronous helper remains source-compatible
+  and still returns the same host result, but lower-level callers can now enqueue the fused terminal kernel without an
+  immediate device-to-host copy or stream synchronization.
+- RED checks:
+  - Added `ICPGpuPathTest.TerminalAlignmentResidualAsyncLaunchDefersHostSynchronization`.
+  - The RED first failed at compile time because
+    `launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace()` and
+    `copySmallTargetTerminalAlignmentAndResidualResultFromReservedWorkspace()` did not exist.
+  - Added the benchmark row to `cmake/check_gpu_icp_benchmark_rows.cmake` before implementation. The row-check failed
+    because `gpu_icp_small_finite_radius_terminal_async_launch_below_grid_threshold` was not emitted.
+- Implementation:
+  - Added float/double detail overloads for
+    `launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace()`. They validate the
+    same small-target finite-radius predicates and enqueue the existing fused terminal kernel into the reserved
+    workspace result storage without copying to host.
+  - Added templated
+    `copySmallTargetTerminalAlignmentAndResidualResultFromReservedWorkspace<Scalar>()` to copy the reserved terminal
+    raw result to pinned host storage and synchronize the stream.
+  - Reworked the existing synchronous
+    `computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace()` helper to call the
+    async launch API followed by the explicit copy API, preserving its previous behavior.
+  - Added benchmark row `gpu_icp_small_finite_radius_terminal_async_launch_below_grid_threshold`, which times the
+    enqueue path plus explicit stream synchronization but no host result copy.
+- Correctness coverage:
+  - The new test asserts the async launch starts the fused terminal kernel, leaves alignment host-result copy count at
+    zero, leaves host synchronization count at zero, then produces a valid terminal host result only after the explicit
+    copy call. After copying, the expected single compact host copy and single synchronization are observed.
+- Targeted verification:
+  - The RED compile failure reproduced before implementation.
+  - The new async-launch test passed after implementation.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed after adding the benchmark row.
+- Benchmark:
+  - 3-iteration sample with `--icp-points 1024`:
+    `gpu_icp_small_finite_radius_nonrigid_transform_only_two_iterations_below_grid_threshold` = 0.176072 ms,
+    `gpu_icp_small_finite_radius_nonrigid_final_metrics_two_iterations_below_grid_threshold` = 1.27394 ms,
+    `gpu_icp_small_finite_radius_nonrigid_output_final_metrics_two_iterations_below_grid_threshold` = 1.27686 ms,
+    `gpu_icp_small_finite_radius_nonrigid_target_alias_final_metrics_two_iterations_below_grid_threshold` = 1.28168 ms,
+    and `gpu_icp_small_finite_radius_terminal_async_launch_below_grid_threshold` = 0.121739 ms.
+- Current conclusion:
+  keep this async launch/detail split. It does not change high-level `align()` synchronization yet, but it exposes the
+  exact primitive needed for a future batched or asynchronous ICP surface: enqueue terminal work now, defer host result
+  collection until the caller actually needs convergence/metrics.
