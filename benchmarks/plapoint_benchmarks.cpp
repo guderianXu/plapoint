@@ -351,6 +351,38 @@ int runBenchmarkGpuSyncSelfTest()
     }
 
     std::cout << "benchmark_gpu_sync_self_test,passed\n";
+    if (g_synchronize_cuda_after_benchmark_iteration)
+    {
+        std::cerr << "benchmark_gpu_sync_scope_self_test expected sync to start disabled\n";
+        return 1;
+    }
+    {
+        const ScopedCudaBenchmarkSynchronization scoped_sync(true);
+        if (!g_synchronize_cuda_after_benchmark_iteration)
+        {
+            std::cerr << "benchmark_gpu_sync_scope_self_test failed to enable sync\n";
+            return 1;
+        }
+        {
+            const ScopedCudaBenchmarkSynchronization scoped_launch_only(false);
+            if (g_synchronize_cuda_after_benchmark_iteration)
+            {
+                std::cerr << "benchmark_gpu_sync_scope_self_test failed to disable nested sync\n";
+                return 1;
+            }
+        }
+        if (!g_synchronize_cuda_after_benchmark_iteration)
+        {
+            std::cerr << "benchmark_gpu_sync_scope_self_test failed to restore enabled sync\n";
+            return 1;
+        }
+    }
+    if (g_synchronize_cuda_after_benchmark_iteration)
+    {
+        std::cerr << "benchmark_gpu_sync_scope_self_test failed to restore disabled sync\n";
+        return 1;
+    }
+    std::cout << "benchmark_gpu_sync_scope_self_test,passed\n";
     return 0;
 }
 #endif
@@ -2045,6 +2077,7 @@ void benchmarkGpuIcpAlignmentStepFiniteRadiusTranslationAsyncLaunchCachedGrid(
             "no_usable_cuda_device");
         return;
     }
+    const ScopedCudaBenchmarkSynchronization scoped_launch_only(false);
 
     auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
@@ -2100,6 +2133,7 @@ void benchmarkGpuIcpAlignmentStepTransformedAccumulatedAsyncLaunchCachedGrid(
             "no_usable_cuda_device");
         return;
     }
+    const ScopedCudaBenchmarkSynchronization scoped_launch_only(false);
 
     auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
@@ -2175,6 +2209,7 @@ void benchmarkGpuIcpAlignmentStepTwoStepAsyncLaunchSeparateWorkspaces(
         printSkipped(benchmark_name, "no_usable_cuda_device");
         return;
     }
+    const ScopedCudaBenchmarkSynchronization scoped_launch_only(false);
 
     auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
         makeTranslatedPerturbedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
@@ -3097,6 +3132,7 @@ void benchmarkGpuIcpAlignmentStepSmallFiniteRadiusTargetAsyncLaunch(
         printSkipped(benchmark_name, "no_usable_cuda_device");
         return;
     }
+    const ScopedCudaBenchmarkSynchronization scoped_launch_only(false);
 
     auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
         makeTranslatedCompactNonCollinearGridPoints<float>(target_points, 0.01f, -0.005f, 0.0025f));
@@ -3532,6 +3568,7 @@ void benchmarkGpuIcpSmallFiniteRadiusTransformedAccumulatedAsyncLaunch(
         printSkipped(benchmark_name, "no_usable_cuda_device");
         return;
     }
+    const ScopedCudaBenchmarkSynchronization scoped_launch_only(false);
 
     auto target_points = makeCompactNonCollinearGridPoints<float>(target_count);
     auto source_points =
@@ -3599,6 +3636,7 @@ void benchmarkGpuIcpSmallFiniteRadiusTerminalAsyncLaunch(
         printSkipped(benchmark_name, "no_usable_cuda_device");
         return;
     }
+    const ScopedCudaBenchmarkSynchronization scoped_launch_only(false);
 
     auto target_points = makeCompactNonCollinearGridPoints<float>(target_count);
     auto source_points =
@@ -3668,6 +3706,7 @@ void benchmarkGpuIcpSmallFiniteRadiusTwoStepTerminalAsyncLaunch(
         printSkipped(benchmark_name, "no_usable_cuda_device");
         return;
     }
+    const ScopedCudaBenchmarkSynchronization scoped_launch_only(false);
 
     auto target_points = makeCompactNonCollinearGridPoints<float>(target_count);
     auto source_points =
@@ -3725,6 +3764,7 @@ void benchmarkGpuIcpSmallFiniteRadiusTwoStepTransformOnlyAsyncLaunch(
         printSkipped(benchmark_name, "no_usable_cuda_device");
         return;
     }
+    const ScopedCudaBenchmarkSynchronization scoped_launch_only(false);
 
     auto target_points = makeCompactNonCollinearGridPoints<float>(target_count);
     auto source_points =

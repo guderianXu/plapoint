@@ -175,3 +175,9 @@ if(NOT sync_self_test_output MATCHES "(^|\n)benchmark_gpu_sync_self_test,(passed
         "Missing GPU benchmark sync self-test marker\n"
         "stdout:\n${sync_self_test_output}")
 endif()
+
+if(NOT sync_self_test_output MATCHES "(^|\n)benchmark_gpu_sync_scope_self_test,passed")
+    message(FATAL_ERROR
+        "Missing GPU benchmark sync scope self-test pass marker\n"
+        "stdout:\n${sync_self_test_output}")
+endif()
