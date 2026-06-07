@@ -925,6 +925,42 @@ bool launchTransformedSmallTargetAlignmentStepAndAccumulateTransformColumnMajorW
     double* d_accumulated_transform,
     cudaStream_t stream = 0);
 
+/// Enqueue two transformed ICP alignment steps on one stream without copying either result to host.
+/// The first step reads d_initial_accumulated_transform, writes d_first_accumulated_transform, and the second step
+/// writes d_final_accumulated_transform. The two workspaces must be distinct because both compact device results are
+/// copied together later.
+bool launchTransformedIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
+    const float* d_initial_accumulated_transform,
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& second_step_workspace,
+    float* d_step_transform,
+    float* d_first_accumulated_transform,
+    float* d_final_accumulated_transform,
+    cudaStream_t stream = 0);
+
+/// Enqueue two transformed ICP alignment steps on one stream without copying either result to host.
+/// The first step reads d_initial_accumulated_transform, writes d_first_accumulated_transform, and the second step
+/// writes d_final_accumulated_transform. The two workspaces must be distinct because both compact device results are
+/// copied together later.
+bool launchTransformedIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
+    const double* d_initial_accumulated_transform,
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& second_step_workspace,
+    double* d_step_transform,
+    double* d_first_accumulated_transform,
+    double* d_final_accumulated_transform,
+    cudaStream_t stream = 0);
+
 /// Copy the compact alignment-step result produced by an async alignment-step helper and synchronize the stream.
 template <typename Scalar>
 IcpAlignmentStepResult<Scalar> copyAlignmentStepResultFromReservedWorkspace(

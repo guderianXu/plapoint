@@ -10482,6 +10482,112 @@ bool launchIcpTwoStepAlignmentColumnMajorImpl(
 }
 
 template <typename Scalar>
+bool launchTransformedIcpTwoStepAlignmentColumnMajorImpl(
+    const Scalar* d_initial_accumulated_transform,
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& second_step_workspace,
+    Scalar* d_step_transform,
+    Scalar* d_first_accumulated_transform,
+    Scalar* d_final_accumulated_transform,
+    cudaStream_t stream)
+{
+    if (&first_step_workspace == &second_step_workspace)
+    {
+        throw std::invalid_argument("ICP GPU: transformed two-step workspaces must be distinct");
+    }
+    if (source_count <= 0 || target_count <= 0)
+    {
+        return false;
+    }
+    if (!d_initial_accumulated_transform ||
+        !d_source_points ||
+        !d_target_points ||
+        !d_step_transform ||
+        !d_first_accumulated_transform ||
+        !d_final_accumulated_transform)
+    {
+        throw std::invalid_argument("ICP GPU: device pointers must not be null");
+    }
+
+    const auto shared_target_grid = makeCachedTargetSpatialGrid(
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        first_step_workspace);
+    if (shared_target_grid.active)
+    {
+        const bool first_launched = launchTransformedIcpAlignmentStepAndAccumulateTransformWithTargetSpatialGridImpl(
+            d_initial_accumulated_transform,
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            first_step_workspace,
+            shared_target_grid,
+            d_step_transform,
+            d_initial_accumulated_transform,
+            d_first_accumulated_transform,
+            stream,
+            static_cast<const IcpAlignmentStepRawResult<Scalar>*>(nullptr));
+        if (!first_launched)
+        {
+            return false;
+        }
+        return launchTransformedIcpAlignmentStepAndAccumulateTransformWithTargetSpatialGridImpl(
+            d_first_accumulated_transform,
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            second_step_workspace,
+            shared_target_grid,
+            d_step_transform,
+            d_first_accumulated_transform,
+            d_final_accumulated_transform,
+            stream,
+            reinterpret_cast<IcpAlignmentStepRawResult<Scalar>*>(first_step_workspace.statsStorage()));
+    }
+
+    const bool first_launched = launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorImpl(
+        d_initial_accumulated_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        first_step_workspace,
+        d_step_transform,
+        d_initial_accumulated_transform,
+        d_first_accumulated_transform,
+        stream,
+        static_cast<const IcpAlignmentStepRawResult<Scalar>*>(nullptr));
+    if (!first_launched)
+    {
+        return false;
+    }
+    return launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorImpl(
+        d_first_accumulated_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        second_step_workspace,
+        d_step_transform,
+        d_first_accumulated_transform,
+        d_final_accumulated_transform,
+        stream,
+        reinterpret_cast<IcpAlignmentStepRawResult<Scalar>*>(first_step_workspace.statsStorage()));
+}
+
+template <typename Scalar>
 bool launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
     const Scalar* d_source_transform,
     const Scalar* d_source_points,
@@ -12747,6 +12853,64 @@ bool launchIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
         d_first_step_transform,
         d_second_step_transform,
         d_accumulated_transform,
+        stream);
+}
+
+bool launchTransformedIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
+    const float* d_initial_accumulated_transform,
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& second_step_workspace,
+    float* d_step_transform,
+    float* d_first_accumulated_transform,
+    float* d_final_accumulated_transform,
+    cudaStream_t stream)
+{
+    return launchTransformedIcpTwoStepAlignmentColumnMajorImpl(
+        d_initial_accumulated_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        first_step_workspace,
+        second_step_workspace,
+        d_step_transform,
+        d_first_accumulated_transform,
+        d_final_accumulated_transform,
+        stream);
+}
+
+bool launchTransformedIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
+    const double* d_initial_accumulated_transform,
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& second_step_workspace,
+    double* d_step_transform,
+    double* d_first_accumulated_transform,
+    double* d_final_accumulated_transform,
+    cudaStream_t stream)
+{
+    return launchTransformedIcpTwoStepAlignmentColumnMajorImpl(
+        d_initial_accumulated_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        first_step_workspace,
+        second_step_workspace,
+        d_step_transform,
+        d_first_accumulated_transform,
+        d_final_accumulated_transform,
         stream);
 }
 
