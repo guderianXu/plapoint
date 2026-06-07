@@ -9438,3 +9438,45 @@ Verification evidence:
   result synchronizations to one. It is still a low-level valid-path primitive; the next optimization should integrate
   it into a high-level two-iteration/small-target path or add a conditional combined kernel for invalid first-step
   handling before exposing it more broadly.
+
+## Task 232: Use Two-Step Async Helper in High-Level Small-Target Final Metrics
+
+- Goal: move the Task 231 primitive into the high-level GPU `align()` path for the common small-target,
+  two-iteration, no-output final-metrics case. This should reduce host synchronization from the initial step plus
+  terminal step sequence down to one result collection while keeping the existing error and metric semantics.
+- RED checks:
+  - Added `ICPGpuPathTest.SmallTargetTwoStepTerminalAsyncLaunchSkipsTerminalWhenFirstStepInvalid`. The first RED used
+    an invalid test geometry, then the corrected RED reproduced the issue: first-step active count was below 3 but the
+    terminal kernel still ran and produced a non-empty terminal result.
+  - Tightened `ICPGpuPathTest.AlignSmallFiniteRadiusFinalMetricsAvoidExtraHostSynchronization` from `<= 2` host syncs
+    to exactly 1 host sync. The RED showed the current high-level path still synchronized twice.
+- Implementation:
+  - Added a device-side first-step acceptability guard for the two-step terminal kernel. The guard requires the same
+    high-level preconditions before consuming the first step transform: at least 3 active correspondences, no invalid
+    source points, non-collinear source/target geometry, and a valid step transform.
+  - Updated the two-step helper documentation to state that an unacceptable first step writes an empty terminal result.
+  - Added a conservative `align()` fast path for no-output, `maxIterations == 2`, final-metrics-enabled, small finite
+    radius targets without ordered/exact-probe special modes. It queues the two-step helper, copies both compact
+    results with one synchronization, validates first and terminal step preconditions, updates final residual metrics,
+    and preserves existing cache invalidation/update behavior.
+  - Added a separate terminal workspace because the first-step compact result and terminal compact result must both
+    remain available until the single host copy point.
+- Correctness coverage:
+  - The new invalid-first test covers the safety guard that makes high-level integration valid even when first-step
+    correspondences are insufficient.
+  - The tightened high-level test asserts two compact result copies but only one host synchronization for the no-output
+    small-target two-iteration final-metrics path.
+  - Existing output and target-alias small-target final-metrics tests still cover the old paths and remain green.
+- Targeted verification:
+  - Low-level guard plus high-level no-output tests: 2/2 passed.
+  - Related small-target/terminal tests: 7/7 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 1024`:
+    `gpu_icp_small_finite_radius_nonrigid_final_metrics_two_iterations_below_grid_threshold` = 0.70862 ms,
+    `gpu_icp_small_finite_radius_nonrigid_output_final_metrics_two_iterations_below_grid_threshold` = 1.2175 ms,
+    `gpu_icp_small_finite_radius_nonrigid_target_alias_final_metrics_two_iterations_below_grid_threshold` = 1.22939 ms,
+    and `gpu_icp_small_finite_radius_two_step_terminal_async_launch_below_grid_threshold` = 0.203473 ms.
+- Current conclusion:
+  high-level no-output small-target final metrics now benefits from the two-step async primitive. The remaining obvious
+  high-level follow-up is to extend the same path to ordinary output and target-alias output, where the benchmark still
+  runs through the previous two-sync flow.

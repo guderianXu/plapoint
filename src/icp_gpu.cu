@@ -269,6 +269,19 @@ __device__ __forceinline__ bool rawStatsCovarianceHasNonCollinearGeometry(
     const double outer_sum[6],
     int active_count);
 
+template <typename Scalar>
+__device__ __forceinline__ bool alignmentStepRawResultIsAcceptableForIcp(
+    const IcpAlignmentStepRawResult<Scalar>& result)
+{
+    constexpr unsigned int required_flags =
+        kIcpAlignmentStepSrcNonCollinearFlag |
+        kIcpAlignmentStepTgtNonCollinearFlag |
+        kIcpAlignmentStepValidFlag;
+    return result.active_count >= 3 &&
+        result.invalid_source_count == 0 &&
+        (result.flags & required_flags) == required_flags;
+}
+
 #ifdef PLAPOINT_ENABLE_TESTING
 std::atomic<int> g_icp_correspondence_stats_call_count{0};
 std::atomic<int> g_icp_residual_stats_call_count{0};
@@ -5274,10 +5287,29 @@ __global__ void computeSmallTargetTerminalIcpAlignmentAndResidualKernel(
     const Scalar* __restrict__ previous_accumulated_transform,
     Scalar* __restrict__ accumulated_transform,
     Scalar* output_points,
+    const IcpAlignmentStepRawResult<Scalar>* __restrict__ source_transform_alignment_step,
     IcpTerminalAlignmentAndResidualRawResult<Scalar>* __restrict__ result)
 {
     const int source_idx = threadIdx.x;
     const int local_idx = threadIdx.x;
+    __shared__ int shared_source_transform_valid;
+    if (local_idx == 0)
+    {
+        shared_source_transform_valid = 1;
+        if (source_transform_alignment_step &&
+            !alignmentStepRawResultIsAcceptableForIcp<Scalar>(*source_transform_alignment_step))
+        {
+            result->alignment_step = {};
+            result->residual_stats = {};
+            shared_source_transform_valid = 0;
+        }
+    }
+    __syncthreads();
+    if (shared_source_transform_valid == 0)
+    {
+        return;
+    }
+
     RawIcpStats local{};
     bool source_valid = false;
     double sx = 0.0;
@@ -6822,7 +6854,8 @@ bool launchSmallTargetTerminalAlignmentAndResidual(
     Scalar* d_accumulated_transform,
     Scalar* d_output_points,
     IcpTerminalAlignmentAndResidualRawResult<Scalar>* d_result,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    const IcpAlignmentStepRawResult<Scalar>* d_source_transform_alignment_step = nullptr)
 {
     if (!shouldUseSmallFiniteRadiusTargetTileCapacityKernel(
             max_correspondence_distance,
@@ -6852,6 +6885,7 @@ bool launchSmallTargetTerminalAlignmentAndResidual(
         d_previous_accumulated_transform,
         d_accumulated_transform,
         d_output_points,
+        d_source_transform_alignment_step,
         d_result);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
     return true;
@@ -9252,7 +9286,8 @@ bool launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
     const Scalar* d_previous_accumulated_transform,
     Scalar* d_accumulated_transform,
     cudaStream_t stream,
-    Scalar* d_output_points)
+    Scalar* d_output_points,
+    const IcpAlignmentStepRawResult<Scalar>* d_source_transform_alignment_step = nullptr)
 {
     if (source_count <= 0 || target_count <= 0)
     {
@@ -9303,7 +9338,8 @@ bool launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
         d_accumulated_transform,
         d_output_points,
         d_result,
-        stream);
+        stream,
+        d_source_transform_alignment_step);
 }
 
 template <typename Scalar>
@@ -9414,6 +9450,8 @@ bool launchSmallTargetTwoStepTerminalAlignmentAndResidualColumnMajorImpl(
         return false;
     }
 
+    auto* d_first_step_result =
+        reinterpret_cast<IcpAlignmentStepRawResult<Scalar>*>(first_step_workspace.statsStorage());
     return launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
         d_first_step_transform,
         d_source_points,
@@ -9426,7 +9464,8 @@ bool launchSmallTargetTwoStepTerminalAlignmentAndResidualColumnMajorImpl(
         d_first_step_transform,
         d_accumulated_transform,
         stream,
-        d_output_points);
+        d_output_points,
+        d_first_step_result);
 }
 
 template <typename Scalar>

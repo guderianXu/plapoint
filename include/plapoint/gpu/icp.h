@@ -857,7 +857,7 @@ copySmallTargetTerminalAlignmentAndResidualResultFromReservedWorkspace(
 
 /// Enqueue an initial small-target alignment step followed by terminal transformed metrics on the same stream.
 /// The two workspaces must be distinct because both compact device results are copied together later.
-/// This low-level helper assumes the queued first step is valid before the terminal kernel's result is consumed.
+/// The terminal kernel writes an empty terminal result when the queued first step is not acceptable to ICP.
 /// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
 bool launchSmallTargetTwoStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspaces(
     const float* d_source_points,
@@ -875,7 +875,7 @@ bool launchSmallTargetTwoStepTerminalAlignmentAndResidualColumnMajorWithReserved
 
 /// Enqueue an initial small-target alignment step followed by terminal transformed metrics on the same stream.
 /// The two workspaces must be distinct because both compact device results are copied together later.
-/// This low-level helper assumes the queued first step is valid before the terminal kernel's result is consumed.
+/// The terminal kernel writes an empty terminal result when the queued first step is not acceptable to ICP.
 /// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
 bool launchSmallTargetTwoStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspaces(
     const double* d_source_points,
