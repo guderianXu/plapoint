@@ -9984,3 +9984,42 @@ Verification evidence:
   one duplicate target spatial-grid prepare while preserving final RMSE/fitness semantics. The next useful slices are
   regular output and target-alias final-metrics variants, followed by a deeper combined large-target terminal helper
   if a single host synchronization for step results plus final residual metrics is needed.
+
+## Task 246: Extend Large-Target Final-Metrics Two-Step Align to Output Variants
+
+- Goal: let the high-level large-target, finite-radius, two-iteration final-metrics path also serve regular output and
+  target-alias output without falling back to per-iteration host synchronization.
+- RED check:
+  - Added `ICPGpuPathTest.AlignLargeTargetTwoIterationFinalMetricsWithOutputAvoidsPerIterationHostSynchronization`.
+  - Added `ICPGpuPathTest.AlignLargeTargetTwoIterationFinalMetricsWithTargetAliasAvoidsPerIterationHostSynchronization`.
+  - Both RED runs failed as intended: the old paths used three host synchronizations and two target spatial-grid
+    prepares instead of two host synchronizations and one target spatial-grid prepare.
+- Implementation:
+  - Relaxed `tryAlignGpuTwoStepFinalMetrics()` to allow regular different-count output and reusable target-alias output.
+  - Regular output now passes the caller output buffer directly to the final transformed residual-stats kernel, so no
+    separate transform-points pass is needed.
+  - Target-alias output requires the cached target spatial-grid snapshot, writes the final transformed points directly
+    into the target buffer, and invalidates the target workspace cache after the residual stats complete.
+  - Kept source-alias output and regular same-count output on the existing fallback path to preserve the exact/probe
+    behavior covered by prior tests.
+  - Added benchmark rows `gpu_icp_finite_radius_nonrigid_output_final_metrics_two_iterations` and
+    `gpu_icp_finite_radius_nonrigid_target_alias_final_metrics_two_iterations`.
+- Verification:
+  - New regular-output test: passed.
+  - New target-alias test: passed.
+  - Targeted large/final-metrics/output/target-alias/exact/ordered/cache regression subset: 60/60 passed.
+  - Full `ICPGpuPathTest.*`: 200/200 passed.
+  - Full CUDA CTest: 381/381 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 10000`:
+    `gpu_icp_finite_radius_nonrigid_final_metrics_two_iterations` = 0.329418 ms,
+    `gpu_icp_finite_radius_nonrigid_output_final_metrics_two_iterations` = 0.337648 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_final_metrics_two_iterations` = 0.354122 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.2399 ms.
+- Current conclusion:
+  the large-target two-iteration final-metrics path now covers no-output, regular output, and target-alias output with
+  the same two-step alignment launch pattern. The remaining deeper optimization is a combined large-target terminal
+  helper that can return alignment and final residual metrics with fewer host-side result collection points.

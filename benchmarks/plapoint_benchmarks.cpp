@@ -1220,6 +1220,54 @@ void benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
     }
 }
 
+void benchmarkGpuIcpFiniteRadiusNonRigidFinalMetricsOutput(
+    const char* benchmark_name,
+    int icp_points,
+    int iterations,
+    bool target_alias_output)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(benchmark_name, "no_usable_cuda_device");
+        return;
+    }
+
+    const int target_points = target_alias_output
+        ? icp_points
+        : icp_points + std::max(1, icp_points / 4);
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeTranslatedPerturbedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.02f);
+    icp.setMaxIterations(2);
+    icp.setTransformationEpsilon(1.0e-12f);
+
+    Cloud<plamatrix::Device::GPU> output;
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        if (target_alias_output)
+        {
+            icp.align(*target);
+            sink += target->size();
+        }
+        else
+        {
+            icp.align(output);
+            sink += output.size();
+        }
+    });
+    printResult(benchmark_name, icp_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << benchmark_name << " produced no aligned points\n";
+    }
+}
+
 void benchmarkGpuIcpFiniteRadiusTranslationReuseTargetOutput(
     int icp_points,
     int icp_max_iterations,
@@ -3415,6 +3463,16 @@ int main(int argc, char** argv)
         false,
         false,
         false,
+        true);
+    benchmarkGpuIcpFiniteRadiusNonRigidFinalMetricsOutput(
+        "gpu_icp_finite_radius_nonrigid_output_final_metrics_two_iterations",
+        options.icp_points,
+        options.iterations,
+        false);
+    benchmarkGpuIcpFiniteRadiusNonRigidFinalMetricsOutput(
+        "gpu_icp_finite_radius_nonrigid_target_alias_final_metrics_two_iterations",
+        options.icp_points,
+        options.iterations,
         true);
     benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
         "gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations",

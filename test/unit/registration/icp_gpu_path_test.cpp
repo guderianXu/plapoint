@@ -9145,6 +9145,161 @@ TEST(ICPGpuPathTest, AlignLargeTargetTwoIterationFinalMetricsAvoidsPerIterationH
     EXPECT_EQ(icp.hasConverged(), baseline_converged);
 }
 
+TEST(ICPGpuPathTest, AlignLargeTargetTwoIterationFinalMetricsWithOutputAvoidsPerIterationHostSynchronization)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_cpu =
+        std::make_shared<CpuCloud>(makeTranslatedPerturbedGridPoints(4096, 0.003f, -0.002f, 0.001f));
+    auto target_cpu = std::make_shared<CpuCloud>(makeGridPoints(5000));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> baseline_icp;
+    baseline_icp.setInputSource(source);
+    baseline_icp.setInputTarget(target);
+    baseline_icp.setMaxCorrespondenceDistance(0.02f);
+    baseline_icp.setMaxIterations(2);
+    baseline_icp.setTransformationEpsilon(1.0e-12f);
+    baseline_icp.align();
+    const auto expected_output = plamatrix::transformPoints(
+        baseline_icp.getFinalTransformation(),
+        source_cpu->points());
+    const float baseline_fitness = baseline_icp.getFitnessScore();
+    const float baseline_rmse = baseline_icp.getFinalRmse();
+    const bool baseline_converged = baseline_icp.hasConverged();
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.02f);
+    icp.setMaxIterations(2);
+    icp.setTransformationEpsilon(1.0e-12f);
+
+    plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
+    plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
+    plapoint::gpu::resetIcpAlignmentStepCallCountForTesting();
+    plapoint::gpu::resetIcpResidualStatsCallCountForTesting();
+    plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpSmallTerminalAlignmentResidualKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
+    plapoint::gpu::resetIcpTransformPointsCallCountForTesting();
+    GpuCloud output;
+    icp.align(output);
+
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepCallCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpSmallAlignmentStepKernelLaunchCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpSmallTerminalAlignmentResidualKernelLaunchCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 0);
+    EXPECT_EQ(icp._gpu_points_a, nullptr);
+    EXPECT_EQ(icp._gpu_points_b, nullptr);
+    EXPECT_NEAR(icp.getFitnessScore(), baseline_fitness, 1.0e-5f);
+    EXPECT_NEAR(icp.getFinalRmse(), baseline_rmse, 1.0e-5f);
+    EXPECT_EQ(icp.hasConverged(), baseline_converged);
+    ASSERT_EQ(output.size(), source->size());
+    const auto output_cpu = output.toCpu();
+    const auto& output_points = output_cpu.points();
+    ASSERT_EQ(output_points.rows(), expected_output.rows());
+    ASSERT_EQ(output_points.cols(), expected_output.cols());
+    for (plamatrix::Index row = 0; row < output_points.rows(); ++row)
+    {
+        for (plamatrix::Index col = 0; col < output_points.cols(); ++col)
+        {
+            EXPECT_NEAR(output_points.getValue(row, col), expected_output.getValue(row, col), 1.0e-5f);
+        }
+    }
+}
+
+TEST(ICPGpuPathTest, AlignLargeTargetTwoIterationFinalMetricsWithTargetAliasAvoidsPerIterationHostSynchronization)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_cpu =
+        std::make_shared<CpuCloud>(makeTranslatedPerturbedGridPoints(4096, 0.003f, -0.002f, 0.001f));
+    auto target_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+    const auto* target_points_ptr = static_cast<const GpuCloud&>(*target).points().data();
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> baseline_icp;
+    baseline_icp.setInputSource(source);
+    baseline_icp.setInputTarget(target);
+    baseline_icp.setMaxCorrespondenceDistance(0.02f);
+    baseline_icp.setMaxIterations(2);
+    baseline_icp.setTransformationEpsilon(1.0e-12f);
+    baseline_icp.align();
+    const auto expected_output = plamatrix::transformPoints(
+        baseline_icp.getFinalTransformation(),
+        source_cpu->points());
+    const float baseline_fitness = baseline_icp.getFitnessScore();
+    const float baseline_rmse = baseline_icp.getFinalRmse();
+    const bool baseline_converged = baseline_icp.hasConverged();
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.02f);
+    icp.setMaxIterations(2);
+    icp.setTransformationEpsilon(1.0e-12f);
+
+    plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
+    plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
+    plapoint::gpu::resetIcpAlignmentStepCallCountForTesting();
+    plapoint::gpu::resetIcpResidualStatsCallCountForTesting();
+    plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpSmallTerminalAlignmentResidualKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
+    plapoint::gpu::resetIcpTransformPointsCallCountForTesting();
+    icp.align(*target);
+
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepCallCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpSmallAlignmentStepKernelLaunchCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpSmallTerminalAlignmentResidualKernelLaunchCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 0);
+    EXPECT_EQ(static_cast<const GpuCloud&>(*target).points().data(), target_points_ptr);
+    EXPECT_EQ(icp._gpu_points_a, nullptr);
+    EXPECT_EQ(icp._gpu_points_b, nullptr);
+    EXPECT_NEAR(icp.getFitnessScore(), baseline_fitness, 1.0e-5f);
+    EXPECT_NEAR(icp.getFinalRmse(), baseline_rmse, 1.0e-5f);
+    EXPECT_EQ(icp.hasConverged(), baseline_converged);
+    ASSERT_EQ(target->size(), source->size());
+    const auto output_cpu = target->toCpu();
+    const auto& output_points = output_cpu.points();
+    ASSERT_EQ(output_points.rows(), expected_output.rows());
+    ASSERT_EQ(output_points.cols(), expected_output.cols());
+    for (plamatrix::Index row = 0; row < output_points.rows(); ++row)
+    {
+        for (plamatrix::Index col = 0; col < output_points.cols(); ++col)
+        {
+            EXPECT_NEAR(output_points.getValue(row, col), expected_output.getValue(row, col), 1.0e-5f);
+        }
+    }
+}
+
 TEST(ICPGpuPathTest, AlignSmallTargetTwoIterationTransformOnlyAvoidsPerIterationHostSynchronization)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

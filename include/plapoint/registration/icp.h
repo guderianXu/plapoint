@@ -1505,8 +1505,6 @@ private:
     {
         if (!_compute_final_metrics ||
             _max_iter != 2 ||
-            output ||
-            output_aliases_target ||
             _gpu_assume_ordered_correspondences ||
             _gpu_assume_ordered_correspondences_after_same_index_step ||
             _gpu_probe_exact_pointwise_on_finite_radius ||
@@ -1521,6 +1519,18 @@ private:
             source_points == target_points ||
             !std::isfinite(max_corr_dist) ||
             max_corr_dist <= 0.0)
+        {
+            return false;
+        }
+        if (output_aliases_target)
+        {
+            if (!output || !canReuseGpuOutputPointBuffer(*output, source_count))
+            {
+                return false;
+            }
+        }
+        else if (output == _source.get() ||
+                 (output && source_count == target_count))
         {
             return false;
         }
@@ -1567,8 +1577,8 @@ private:
                 target_count,
                 source_points,
                 target_points,
-                nullptr,
-                false);
+                output,
+                output_aliases_target);
             _final_T_cpu_valid = false;
             _final_T_gpu_valid = true;
             return true;
@@ -1579,32 +1589,56 @@ private:
         invalidateGpuSameBufferIdentityResultCache();
         invalidateGpuExactIdentityResultCache();
 
-        gpu::IcpResidualStats<Scalar> final_stats;
-        if (gpuFinalMetricsCanUseCachedTargetSpatialGridSnapshot(target_points, target_count))
+        const bool final_metrics_can_use_target_snapshot =
+            gpuFinalMetricsCanUseCachedTargetSpatialGridSnapshot(target_points, target_count);
+        if (output_aliases_target && !final_metrics_can_use_target_snapshot)
         {
-            final_stats =
-                gpu::detail::
-                    transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
+            throw std::runtime_error("ICP: target spatial-grid snapshot unavailable for target-aliased final metrics");
+        }
+        Scalar* output_points = output
+            ? prepareGpuOutputPointBuffer(*output, source_count)
+            : nullptr;
+        gpu::IcpResidualStats<Scalar> final_stats;
+        try
+        {
+            if (final_metrics_can_use_target_snapshot)
+            {
+                final_stats =
+                    gpu::detail::
+                        transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
+                            _gpu_T_acc->data(),
+                            source_points,
+                            source_count,
+                            _max_corr_dist,
+                            output_points,
+                            _gpu_stats_workspace,
+                            _gpu_stats_workspace.targetSpatialGridCellCount());
+            }
+            else
+            {
+                final_stats =
+                    gpu::detail::transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
                         _gpu_T_acc->data(),
                         source_points,
                         source_count,
+                        target_points,
+                        target_count,
                         _max_corr_dist,
-                        nullptr,
-                        _gpu_stats_workspace,
-                        _gpu_stats_workspace.targetSpatialGridCellCount());
+                        output_points,
+                        _gpu_stats_workspace);
+            }
         }
-        else
+        catch (...)
         {
-            final_stats =
-                gpu::detail::transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
-                    _gpu_T_acc->data(),
-                    source_points,
-                    source_count,
-                    target_points,
-                    target_count,
-                    _max_corr_dist,
-                    nullptr,
-                    _gpu_stats_workspace);
+            if (output_points && output_aliases_target)
+            {
+                invalidateGpuTargetWorkspaceCache();
+            }
+            throw;
+        }
+        if (output_points && output_aliases_target)
+        {
+            invalidateGpuTargetWorkspaceCache();
         }
         if (final_stats.invalid_source_count > 0)
         {
@@ -1629,7 +1663,8 @@ private:
             std::isfinite(second_step.step_residual_sq_sum)
                 ? std::max(0.0, second_step.step_residual_sq_sum)
                 : second_step.step_residual_sq_sum;
-        if (canCacheGpuFullCoverageTransformResult(
+        if (!output_aliases_target &&
+            canCacheGpuFullCoverageTransformResult(
                 source_count,
                 target_count,
                 source_points,
@@ -1641,12 +1676,23 @@ private:
                 second_step_residual_sq_sum))
         {
             markGpuFullCoverageTransformResultCache(source_count, target_count, source_points, target_points);
-            invalidateGpuFullCoverageTransformOutputCache();
+            if (output && !output_aliases_target)
+            {
+                markGpuFullCoverageTransformOutputCache(*output, source_count, source_points, target_points);
+            }
+            else
+            {
+                invalidateGpuFullCoverageTransformOutputCache();
+            }
             invalidateGpuIdentityOutputCache();
         }
         else
         {
             invalidateGpuFullCoverageTransformResultCache();
+            if (output)
+            {
+                invalidateGpuIdentityOutputCache();
+            }
         }
 
         _final_T_cpu_valid = false;
