@@ -10105,3 +10105,44 @@ Verification evidence:
   preserving caller output contents and final RMSE/fitness. The next narrow slice is target-alias output, where the main
   risk is keeping the target spatial-grid snapshot valid until residual collection completes and invalidating it
   immediately after the target buffer is overwritten.
+
+## Task 249: Combine Large-Target Final-Metrics Target-Alias Result Copy
+
+- Goal: reduce the large-target, finite-radius, two-iteration, finalMetrics=true target-alias `align(*target)` path from
+  two host synchronizations to one while preserving target-cache invalidation and first-step terminal semantics.
+- RED check:
+  - Tightened
+    `ICPGpuPathTest.AlignLargeTargetTwoIterationFinalMetricsWithTargetAliasAvoidsPerIterationHostSynchronization` from
+    two expected host synchronizations to one.
+  - Updated the same test to expect one separate transform-points call because the safe target-alias path computes final
+    residual stats from the cached target snapshot without writing the target buffer, then writes the output after host
+    result collection.
+  - RED failed as intended: observed two host synchronizations.
+- Implementation:
+  - Allowed the combined final residual precompute path for target-alias output when the target spatial-grid snapshot is
+    available.
+  - Kept `d_output_points == nullptr` for target-alias residual precompute so the original target buffer remains
+    unchanged until host code confirms the first step is not terminal.
+  - Reused the existing output writer after combined result collection to transform into the target buffer and
+    invalidate the target workspace cache.
+  - Fixed the fallback output preparation guard so precomputed target-alias output is not marked as already written
+    before the writer runs.
+- Verification:
+  - New target-alias test: passed.
+  - Targeted large/final-metrics/transform-only/exact/ordered/cache regression subset: 60/60 passed.
+  - Full `ICPGpuPathTest.*`: 200/200 passed.
+  - Full CUDA CTest: 381/381 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 10000`:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 0.239621 ms,
+    `gpu_icp_finite_radius_nonrigid_final_metrics_two_iterations` = 0.317408 ms,
+    `gpu_icp_finite_radius_nonrigid_output_final_metrics_two_iterations` = 0.333066 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_final_metrics_two_iterations` = 0.343508 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.239547 ms.
+- Current conclusion:
+  target-alias finalMetrics now reaches one host synchronization without sacrificing first-step terminal correctness.
+  The remaining overhead versus regular output is the extra post-copy transform kernel needed to keep the target buffer
+  intact until the terminal decision is known.

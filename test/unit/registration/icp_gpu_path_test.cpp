@@ -9273,7 +9273,7 @@ TEST(ICPGpuPathTest, AlignLargeTargetTwoIterationFinalMetricsWithTargetAliasAvoi
     plapoint::gpu::resetIcpTransformPointsCallCountForTesting();
     icp.align(*target);
 
-    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepCallCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 1);
@@ -9281,7 +9281,7 @@ TEST(ICPGpuPathTest, AlignLargeTargetTwoIterationFinalMetricsWithTargetAliasAvoi
     EXPECT_EQ(plapoint::gpu::icpSmallTerminalAlignmentResidualKernelLaunchCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
-    EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 1);
     EXPECT_EQ(static_cast<const GpuCloud&>(*target).points().data(), target_points_ptr);
     EXPECT_EQ(icp._gpu_points_a, nullptr);
     EXPECT_EQ(icp._gpu_points_b, nullptr);

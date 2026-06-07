@@ -1568,11 +1568,10 @@ private:
             gpuFinalMetricsCanUseCachedTargetSpatialGridSnapshot(target_points, target_count);
         Scalar* output_points = nullptr;
         const bool can_precompute_final_metrics =
-            !output_aliases_target &&
             final_metrics_can_use_target_snapshot;
         if (can_precompute_final_metrics)
         {
-            if (output)
+            if (output && !output_aliases_target)
             {
                 output_points = prepareGpuOutputPointBuffer(*output, source_count);
             }
@@ -1636,7 +1635,7 @@ private:
         {
             throw std::runtime_error("ICP: target spatial-grid snapshot unavailable for target-aliased final metrics");
         }
-        if (output && !output_points)
+        if (output && !output_points && !final_stats_precomputed)
         {
             output_points = prepareGpuOutputPointBuffer(*output, source_count);
         }
@@ -1683,6 +1682,16 @@ private:
         if (output_points && output_aliases_target)
         {
             invalidateGpuTargetWorkspaceCache();
+        }
+        if (final_stats_precomputed && output && !output_points)
+        {
+            writeGpuFinalTransformOutputIfRequested(
+                output,
+                source_count,
+                target_count,
+                source_points,
+                target_points,
+                output_aliases_target);
         }
         if (final_stats.invalid_source_count > 0)
         {
