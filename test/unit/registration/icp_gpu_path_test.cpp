@@ -8951,6 +8951,8 @@ TEST(ICPGpuPathTest, ReserveGpuWorkspaceSkipsTerminalStatsForSingleIteration)
     EXPECT_TRUE(icp.gpuAlignmentStepWorkspaceReservationMatches(static_cast<int>(source->size())));
     EXPECT_EQ(icp._gpu_terminal_stats_workspace.partialCapacity(), 0);
     EXPECT_GT(icp._gpu_final_stats_workspace.partialCapacity(), 0);
+    EXPECT_NE(icp._gpu_T_step, nullptr);
+    EXPECT_EQ(icp._gpu_T_acc, nullptr);
     EXPECT_EQ(icp._gpu_next_T_acc, nullptr);
     EXPECT_GE(icp._gpu_stats_workspace.targetSpatialGridCapacity(), static_cast<int>(target->size()));
 }

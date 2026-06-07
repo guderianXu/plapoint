@@ -149,9 +149,9 @@ public:
         }
 
         reserveGpuStepTransformBuffer();
-        reserveGpuAccumulatedTransformBuffer();
         if (_max_iter > 1)
         {
+            reserveGpuAccumulatedTransformBuffer();
             reserveGpuNextTransformBuffer();
         }
         reserveGpuAlignmentStepWorkspace(source_count);
