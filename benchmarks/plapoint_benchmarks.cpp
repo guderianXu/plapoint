@@ -26,6 +26,30 @@ namespace
 
 using Clock = std::chrono::steady_clock;
 
+#ifdef PLAPOINT_WITH_CUDA
+bool g_synchronize_cuda_after_benchmark_iteration = false;
+
+void synchronizeCudaBenchmarkDevice();
+
+class ScopedCudaBenchmarkSynchronization
+{
+public:
+    explicit ScopedCudaBenchmarkSynchronization(bool enabled)
+        : _previous(g_synchronize_cuda_after_benchmark_iteration)
+    {
+        g_synchronize_cuda_after_benchmark_iteration = enabled;
+    }
+
+    ~ScopedCudaBenchmarkSynchronization()
+    {
+        g_synchronize_cuda_after_benchmark_iteration = _previous;
+    }
+
+private:
+    bool _previous;
+};
+#endif
+
 struct Options
 {
     int points = 20000;
@@ -34,6 +58,7 @@ struct Options
     int icp_max_iterations = 3;
     bool skip_cpu_icp = false;
     bool skip_icp_identity = false;
+    bool self_test_benchmark_gpu_sync = false;
 };
 
 Options parseOptions(int argc, char** argv)
@@ -66,12 +91,17 @@ Options parseOptions(int argc, char** argv)
         {
             options.skip_icp_identity = true;
         }
+        else if (arg == "--self-test-benchmark-gpu-sync")
+        {
+            options.self_test_benchmark_gpu_sync = true;
+        }
         else if (arg == "--help")
         {
             std::cout
                 << "Usage: plapoint_benchmarks [--points N] [--iterations N]\n"
                 << "                           [--icp-points N] [--icp-max-iterations N]\n"
-                << "                           [--skip-cpu-icp] [--skip-icp-identity]\n";
+                << "                           [--skip-cpu-icp] [--skip-icp-identity]\n"
+                << "                           [--self-test-benchmark-gpu-sync]\n";
             std::exit(0);
         }
     }
@@ -235,22 +265,37 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeQueries(int count)
     return queries;
 }
 
-template <typename Fn>
-double bestMilliseconds(int iterations, Fn&& fn)
+template <typename Fn, typename SyncFn>
+double bestMilliseconds(int iterations, Fn&& fn, SyncFn&& sync)
 {
     // Exclude one-time CUDA context, Thrust, and allocator startup from the measured loop.
     fn();
+    sync();
 
     double best = std::numeric_limits<double>::infinity();
     for (int i = 0; i < iterations; ++i)
     {
         const auto start = Clock::now();
         fn();
+        sync();
         const auto end = Clock::now();
         const auto elapsed = std::chrono::duration<double, std::milli>(end - start).count();
         best = std::min(best, elapsed);
     }
     return best;
+}
+
+template <typename Fn>
+double bestMilliseconds(int iterations, Fn&& fn)
+{
+    return bestMilliseconds(iterations, std::forward<Fn>(fn), [] {
+#ifdef PLAPOINT_WITH_CUDA
+        if (g_synchronize_cuda_after_benchmark_iteration)
+        {
+            synchronizeCudaBenchmarkDevice();
+        }
+#endif
+    });
 }
 
 void printResult(const std::string& name, int points, int iterations, double milliseconds)
@@ -266,6 +311,49 @@ void printSkipped(const std::string& name, const std::string& reason)
 {
     std::cout << name << ",skipped," << reason << ",\n";
 }
+
+#ifdef PLAPOINT_WITH_CUDA
+void synchronizeCudaBenchmarkDevice()
+{
+    PLAPOINT_CHECK_CUDA(cudaDeviceSynchronize());
+}
+
+void CUDART_CB benchmarkGpuSyncSelfTestCallback(void* user_data)
+{
+    auto* callback_count = static_cast<int*>(user_data);
+    ++(*callback_count);
+}
+
+int runBenchmarkGpuSyncSelfTest()
+{
+    constexpr int iterations = 3;
+    int callback_count = 0;
+
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        std::cout << "benchmark_gpu_sync_self_test,skipped,no_usable_cuda_device\n";
+        return 0;
+    }
+
+    {
+        const ScopedCudaBenchmarkSynchronization scoped_sync(true);
+        bestMilliseconds(iterations, [&] {
+            PLAPOINT_CHECK_CUDA(cudaLaunchHostFunc(0, benchmarkGpuSyncSelfTestCallback, &callback_count));
+        });
+    }
+
+    const int expected_callbacks = iterations + 1;
+    if (callback_count != expected_callbacks)
+    {
+        std::cerr << "benchmark_gpu_sync_self_test expected "
+                  << expected_callbacks << " callbacks, got " << callback_count << '\n';
+        return 1;
+    }
+
+    std::cout << "benchmark_gpu_sync_self_test,passed\n";
+    return 0;
+}
+#endif
 
 template <plamatrix::Device Dev>
 using Cloud = plapoint::PointCloud<float, Dev>;
@@ -3687,6 +3775,16 @@ void benchmarkGpuIcpSmallFiniteRadiusTwoStepTransformOnlyAsyncLaunch(
 int main(int argc, char** argv)
 {
     const Options options = parseOptions(argc, argv);
+    if (options.self_test_benchmark_gpu_sync)
+    {
+#ifdef PLAPOINT_WITH_CUDA
+        return runBenchmarkGpuSyncSelfTest();
+#else
+        std::cout << "benchmark_gpu_sync_self_test,skipped,cuda_disabled\n";
+        return 0;
+#endif
+    }
+
     std::cout << "benchmark,points,iterations,best_ms\n";
     benchmarkCpuKnn(options.points, options.iterations);
     benchmarkCpuVoxelGrid(options.points, options.iterations);
@@ -3716,6 +3814,7 @@ int main(int argc, char** argv)
             options.iterations);
     }
 #ifdef PLAPOINT_WITH_CUDA
+    const ScopedCudaBenchmarkSynchronization scoped_gpu_sync(true);
     benchmarkGpuKnn(options.points, options.iterations);
     benchmarkGpuVoxelGrid(options.points, options.iterations);
     if (options.skip_icp_identity)

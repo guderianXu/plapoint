@@ -153,3 +153,25 @@ if(NOT disabled_output MATCHES
         "Missing disabled same-buffer identity row when --skip-icp-identity is set\n"
         "stdout:\n${disabled_output}")
 endif()
+
+execute_process(
+    COMMAND
+        "${PLAPOINT_BENCHMARK_EXE}"
+        --self-test-benchmark-gpu-sync
+    RESULT_VARIABLE sync_self_test_result
+    OUTPUT_VARIABLE sync_self_test_output
+    ERROR_VARIABLE sync_self_test_error
+)
+
+if(NOT sync_self_test_result EQUAL 0)
+    message(FATAL_ERROR
+        "plapoint_benchmarks --self-test-benchmark-gpu-sync failed with exit code ${sync_self_test_result}\n"
+        "stdout:\n${sync_self_test_output}\n"
+        "stderr:\n${sync_self_test_error}")
+endif()
+
+if(NOT sync_self_test_output MATCHES "(^|\n)benchmark_gpu_sync_self_test,(passed|skipped)")
+    message(FATAL_ERROR
+        "Missing GPU benchmark sync self-test marker\n"
+        "stdout:\n${sync_self_test_output}")
+endif()
