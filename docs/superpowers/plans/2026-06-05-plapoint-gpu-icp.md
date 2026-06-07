@@ -9047,3 +9047,65 @@ Verification evidence:
   keep the per-step ordered terminal-metrics predicate. It preserves the finite-radius residual safety rule while
   removing the unnecessary spatial-grid residual kernel when same-index correspondences were already verified by the
   previous GPU ICP step.
+
+## Task 224: Fuse Small-Target GPU ICP Stats+Step and Use Full Tile Capacity for Alignment
+
+- Goal: close two small-target gaps left after the previous fused alignment/residual work:
+  `computeIcpStatsAndStepTransformColumnMajor()` still used collect+reduce for sub-128 finite-radius targets, and
+  alignment-step target count 128 still fell through to the spatial-grid path even though the shared target tile holds
+  128 rows.
+- RED checks:
+  - Added `ICPGpuPathTest.StatsAndStepUsesFusedSmallTargetKernelForFiniteRadiusTarget`. The first build failed at link
+    time because `resetIcpSmallStatsStepKernelLaunchCountForTesting()` and
+    `icpSmallStatsStepKernelLaunchCountForTesting()` did not exist.
+  - Added the benchmark row to `check_gpu_icp_benchmark_rows.cmake` before implementing it. The bench-only CTest
+    failed with missing row `gpu_icp_stats_step_small_finite_radius_target_below_grid_threshold`.
+  - Changed the 128-row alignment boundary test to expect the fused small-target kernel. It failed with
+    `icpTargetSpatialGridPrepareCountForTesting() == 1` and small-kernel launches equal to 0, proving the old boundary
+    still used spatial grid.
+- Implementation:
+  - Added `computeSmallTargetIcpStatsAndStepKernel()`, which scans a sub-128 target tile, reduces `RawIcpStats`, writes
+    the full stats payload, and computes the step transform in the same kernel.
+  - Added `launchSmallTargetStatsAndStep()` and a test counter for the stats+step fused path.
+  - Routed only non-ordered, finite-radius stats+step calls through this path after exact/ordered shortcuts and before
+    spatial-grid/fallback search.
+  - Added `shouldUseSmallFiniteRadiusTargetTileCapacityKernel()` for alignment only. It allows target count 128 while
+    keeping residual and stats+step at the old `<128` threshold so existing spatial-grid direct-lookup tests still
+    cover their intended paths.
+  - Added benchmark row `gpu_icp_stats_step_small_finite_radius_target_below_grid_threshold`.
+- Debug note:
+  - A first attempt widened the shared small-target predicate to `<=128`. Full CUDA regression then failed 11
+    spatial-grid-specific tests because residual/stats-step direct-lookup cases intentionally use compact 128-row
+    targets. The fix restored the shared predicate to `<128` and introduced an alignment-only 128-capacity predicate.
+- Targeted verification:
+  - New stats+step test passed after implementation.
+  - Small-target focused regression passed 7/7, covering 127-row alignment, 128-row alignment, large-target spatial
+    grid, stats+step small target, residual small target, and transformed residual small target.
+  - Spatial-grid focused regression passed 12/12 after narrowing the 128 predicate back to alignment-only.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+- Benchmark:
+  - GPU: NVIDIA GeForce RTX 4060 Laptop GPU, driver 580.159.03, 8188 MiB.
+  - 300-iteration sample:
+    4-row small alignment step = 0.600012 ms,
+    16-row = 0.609661 ms,
+    64-row = 0.619892 ms,
+    127-row = 0.626167 ms,
+    128-row = 0.63522 ms,
+    256-row = 0.724502 ms,
+    `gpu_icp_stats_step_small_finite_radius_target_below_grid_threshold` = 0.635949 ms,
+    `gpu_icp_residual_stats_small_finite_radius_target_below_grid_threshold` = 0.598074 ms,
+    `gpu_icp_transform_residual_stats_small_finite_radius_target_below_grid_threshold` = 0.597494 ms, and
+    `gpu_icp_small_finite_radius_nonrigid_transform_only_two_iterations_below_grid_threshold` = 0.175149 ms.
+  - Interpretation: the full stats+step path is now in the same fixed-overhead band as the existing fused small
+    alignment/residual paths. The 128-row alignment row now tracks small-kernel behavior instead of spatial-grid
+    setup, while 256 rows still exercises the larger-target path.
+- Full verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 357/357 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 144/144
+    reported no failures; `plapoint.PointCloudTest.GpuTransfer` was skipped in the CPU-only configuration.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+- Current conclusion:
+  keep the stats+step fused small-target path and alignment-only 128 boundary. This removes one more collect/reduce
+  pair from the low-level API and uses the full shared tile capacity without weakening residual/stats-step spatial-grid
+  regression coverage. The remaining dominant small-target cost is still per-call kernel launch plus host
+  synchronization.

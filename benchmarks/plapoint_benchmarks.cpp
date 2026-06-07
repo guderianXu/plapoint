@@ -2400,6 +2400,47 @@ void benchmarkGpuIcpAlignmentStepSmallFiniteRadiusTarget(
     }
 }
 
+void benchmarkGpuIcpStatsStepSmallFiniteRadiusTarget(
+    const std::string& benchmark_name,
+    int target_points,
+    int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(benchmark_name, "no_usable_cuda_device");
+        return;
+    }
+
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeTranslatedCompactNonCollinearGridPoints<float>(target_points, 0.01f, -0.005f, 0.0025f));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeCompactNonCollinearGridPoints<float>(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+        plapoint::gpu::IcpStepTransformWorkspace step_workspace;
+        plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+        const auto result = plapoint::gpu::computeIcpStatsAndStepTransformColumnMajor(
+            source->points().data(),
+            static_cast<int>(source->size()),
+            target->points().data(),
+            static_cast<int>(target->size()),
+            0.08f,
+            stats_workspace,
+            step_transform.data(),
+            step_workspace);
+        sink += static_cast<std::size_t>(std::max(0, result.stats.active_count));
+    });
+    printResult(benchmark_name, target_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << benchmark_name << " produced no correspondences\n";
+    }
+}
+
 void benchmarkGpuIcpResidualStatsSmallFiniteRadiusTarget(
     const std::string& benchmark_name,
     int target_points,
@@ -2806,6 +2847,10 @@ int main(int argc, char** argv)
     benchmarkGpuIcpAlignmentStepSmallFiniteRadiusTarget(
         "gpu_icp_alignment_step_small_finite_radius_target_256",
         256,
+        options.iterations);
+    benchmarkGpuIcpStatsStepSmallFiniteRadiusTarget(
+        "gpu_icp_stats_step_small_finite_radius_target_below_grid_threshold",
+        127,
         options.iterations);
     benchmarkGpuIcpResidualStatsSmallFiniteRadiusTarget(
         "gpu_icp_residual_stats_small_finite_radius_target_below_grid_threshold",
