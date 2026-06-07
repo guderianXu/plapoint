@@ -977,6 +977,14 @@ copyIcpTwoStepAlignmentResultFromReservedWorkspaces(
     IcpCorrespondenceStatsWorkspace& second_step_workspace,
     cudaStream_t stream = 0);
 
+/// Copy one compact alignment-step result and one residual-stats result, then synchronize the stream once.
+template <typename Scalar>
+IcpTerminalAlignmentAndResidualResult<Scalar>
+copyIcpAlignmentAndResidualResultFromReservedWorkspaces(
+    IcpCorrespondenceStatsWorkspace& alignment_step_workspace,
+    IcpCorrespondenceStatsWorkspace& residual_workspace,
+    cudaStream_t stream = 0);
+
 /// Copy two compact alignment-step results and one residual-stats result, then synchronize the stream once.
 template <typename Scalar>
 IcpTwoStepAlignmentAndResidualResult<Scalar>

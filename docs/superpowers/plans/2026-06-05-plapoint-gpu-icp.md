@@ -10146,3 +10146,44 @@ Verification evidence:
   target-alias finalMetrics now reaches one host synchronization without sacrificing first-step terminal correctness.
   The remaining overhead versus regular output is the extra post-copy transform kernel needed to keep the target buffer
   intact until the terminal decision is known.
+
+## Task 250: Combine Large-Target Single-Step Output Final-Metrics Result Copy
+
+- Goal: reduce a narrow large-target, finite-radius, `maxIterations == 1`, finalMetrics=true regular-output path from
+  one alignment-result synchronization plus one final-residual synchronization to one combined synchronization.
+- RED check:
+  - Tightened
+    `ICPGpuPathTest.AlignReusesFullCoverageGridTranslationResultAcrossSeparateBufferCalls` from two expected host
+    synchronizations to one.
+  - Adjusted that test to use a 4096-point source and 5000-point target so the new path does not overlap the existing
+    same-count exact-identity terminal fast paths.
+  - RED failed as intended: observed two host synchronizations.
+- Implementation:
+  - Added `copyIcpAlignmentAndResidualResultFromReservedWorkspaces()` to copy one compact alignment-step result and one
+    residual-stats result with a single stream synchronization.
+  - Added `tryAlignGpuSingleStepOutputFinalMetrics()` for the narrow high-level regular-output case: one iteration,
+    finite positive radius, large target, different source/target counts, no ordered/exact-probe modes, and no
+    source/target output aliasing.
+  - The path launches the alignment step, queues transformed residual metrics against the cached target spatial-grid
+    snapshot into the caller output, then collects both compact results in one host synchronization.
+  - The path marks the full-coverage transform/output caches when final metrics prove the transformed output is reusable.
+- Verification:
+  - RED target test: failed with host synchronizations 2 vs expected 1.
+  - New target test after implementation: passed.
+  - Focused full-coverage/exact/terminal/two-step regression subset: 21/21 passed.
+  - Full `ICPGpuPathTest.*`: 200/200 passed.
+  - Full CUDA CTest: 381/381 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 10000`:
+    `gpu_icp_finite_radius_translation_reuse_output_one_iteration` = 0.000208 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.000196 ms,
+    `gpu_icp_finite_radius_nonrigid_output_final_metrics_two_iterations` = 0.332664 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_final_metrics_two_iterations` = 0.341146 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.240162 ms.
+- Current conclusion:
+  the regular-output large-target single-step final-metrics reuse case now has one-sync behavior. The implementation is
+  intentionally narrow to avoid disrupting same-count exact-identity and target-alias terminal paths; broader one-step
+  no-output and target-alias coverage remain possible follow-up slices.

@@ -10093,6 +10093,60 @@ copySmallTargetTwoStepAlignmentResultFromReservedWorkspacesImpl(
 }
 
 template <typename Scalar>
+IcpTerminalAlignmentAndResidualResult<Scalar>
+copyIcpAlignmentAndResidualResultFromReservedWorkspacesImpl(
+    IcpCorrespondenceStatsWorkspace& alignment_step_workspace,
+    IcpCorrespondenceStatsWorkspace& residual_workspace,
+    cudaStream_t stream)
+{
+    if (&alignment_step_workspace == &residual_workspace)
+    {
+        throw std::invalid_argument("ICP GPU: combined alignment residual workspaces must be distinct");
+    }
+
+    auto* d_alignment_result =
+        reinterpret_cast<IcpAlignmentStepRawResult<Scalar>*>(alignment_step_workspace.statsStorage());
+    auto* h_alignment_result =
+        reinterpret_cast<IcpAlignmentStepRawResult<Scalar>*>(alignment_step_workspace.hostResultStorage());
+    auto* d_residual_result =
+        reinterpret_cast<RawIcpResidualStats*>(residual_workspace.statsStorage());
+    auto* h_residual_result =
+        reinterpret_cast<RawIcpResidualStats*>(residual_workspace.hostResultStorage());
+    if (!d_alignment_result || !h_alignment_result)
+    {
+        throw std::invalid_argument("ICP GPU: alignment-step result workspace is not reserved");
+    }
+    if (!d_residual_result || !h_residual_result)
+    {
+        throw std::invalid_argument("ICP GPU: residual-stats result workspace is not reserved");
+    }
+
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+        h_alignment_result,
+        d_alignment_result,
+        sizeof(IcpAlignmentStepRawResult<Scalar>),
+        cudaMemcpyDeviceToHost,
+        stream));
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+        h_residual_result,
+        d_residual_result,
+        sizeof(RawIcpResidualStats),
+        cudaMemcpyDeviceToHost,
+        stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_alignment_step_host_result_copy_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+
+    IcpTerminalAlignmentAndResidualResult<Scalar> result;
+    result.alignment_step = makeHostAlignmentStepResult<Scalar>(*h_alignment_result);
+    result.residual_stats = makeHostResidualStats<Scalar>(*h_residual_result);
+    result.launched = true;
+    return result;
+}
+
+template <typename Scalar>
 IcpTwoStepAlignmentAndResidualResult<Scalar>
 copyIcpTwoStepAlignmentAndResidualResultFromReservedWorkspacesImpl(
     IcpCorrespondenceStatsWorkspace& first_step_workspace,
@@ -12530,6 +12584,32 @@ copyIcpTwoStepAlignmentResultFromReservedWorkspaces<double>(
     return copySmallTargetTwoStepAlignmentResultFromReservedWorkspacesImpl<double>(
         first_step_workspace,
         second_step_workspace,
+        stream);
+}
+
+template <>
+IcpTerminalAlignmentAndResidualResult<float>
+copyIcpAlignmentAndResidualResultFromReservedWorkspaces<float>(
+    IcpCorrespondenceStatsWorkspace& alignment_step_workspace,
+    IcpCorrespondenceStatsWorkspace& residual_workspace,
+    cudaStream_t stream)
+{
+    return copyIcpAlignmentAndResidualResultFromReservedWorkspacesImpl<float>(
+        alignment_step_workspace,
+        residual_workspace,
+        stream);
+}
+
+template <>
+IcpTerminalAlignmentAndResidualResult<double>
+copyIcpAlignmentAndResidualResultFromReservedWorkspaces<double>(
+    IcpCorrespondenceStatsWorkspace& alignment_step_workspace,
+    IcpCorrespondenceStatsWorkspace& residual_workspace,
+    cudaStream_t stream)
+{
+    return copyIcpAlignmentAndResidualResultFromReservedWorkspacesImpl<double>(
+        alignment_step_workspace,
+        residual_workspace,
         stream);
 }
 
