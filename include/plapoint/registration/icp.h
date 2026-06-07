@@ -1309,8 +1309,7 @@ private:
         const Scalar* target_points,
         bool output_aliases_target)
     {
-        if (output ||
-            _compute_final_metrics ||
+        if (_compute_final_metrics ||
             _max_iter != 2 ||
             _gpu_assume_ordered_correspondences ||
             _gpu_assume_ordered_correspondences_after_same_index_step ||
@@ -1329,7 +1328,9 @@ private:
         {
             return false;
         }
-        if (output_aliases_target)
+        if (output_aliases_target ||
+            output == _source.get() ||
+            (output && source_count == target_count))
         {
             return false;
         }

@@ -9874,3 +9874,39 @@ Verification evidence:
   lower-level two-step async helper by removing the per-iteration host synchronization. The next useful slices are
   supporting the large-target output/target-alias transform-only variants and then the final-metrics two-step terminal
   path.
+
+## Task 243: Extend Large-Target Two-Step Transform-Only Align to Regular Output
+
+- Goal: let the high-level large-target two-step transform-only path also serve regular `align(output)` calls while
+  preserving existing source/target alias and same-index exact-probe behavior.
+- RED check:
+  - Added `ICPGpuPathTest.AlignLargeTargetTwoIterationTransformOnlyWithOutputAvoidsPerIterationHostSynchronization`.
+  - The first RED run failed as intended: regular output still used two host synchronizations and two target
+    spatial-grid prepares.
+- Implementation:
+  - Relaxed `tryAlignGpuTwoStepTransformOnly()` to allow regular output and reuse the shared
+    `writeGpuFinalTransformOutputIfRequested()` transform-write path after the one host result collection.
+  - Kept the fast path disabled for target-alias output, source-alias output, and same source/target point counts with
+    output. The same-count guard preserves the existing transformed exact-pointwise auto-probe path and full-coverage
+    output cache tests.
+  - Updated the new output test to use 4096 source points against a 5000-point target, covering the different-count
+    regular-output case where the exact same-index output path cannot apply.
+- Verification:
+  - RED run failed on the new output test: observed host synchronizations 2 vs expected 1, and target spatial-grid
+    prepares 2 vs expected 1.
+  - New output test plus the same-index auto-probe/cache regression subset: 4/4 passed.
+  - Full `ICPGpuPathTest.*`: 196/196 passed.
+  - Full CUDA CTest: 377/377 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+- Benchmark:
+  - No new output-specific benchmark row was added in this slice; correctness and synchronization reduction are covered
+    by test counters. A dedicated output benchmark row remains a useful follow-up.
+  - 5-iteration sample with `--icp-points 10000` showed the existing no-output high-level row remained in the expected
+    band: `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 0.240382 ms and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.240234 ms.
+- Current conclusion:
+  high-level large-target two-step transform-only `align(output)` now avoids per-iteration host synchronization for
+  regular different-count output cases. The next output-related slice is target-alias support, which needs separate
+  handling because the target buffer is also the correspondence input.
