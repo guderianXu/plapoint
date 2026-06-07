@@ -10584,3 +10584,34 @@ Verification evidence:
   reducing the source-side work alone cannot close the first-build gap; a one-source call is still close to the full
   source-count timing. The next useful optimization target remains the target spatial-grid build pipeline, especially
   sort, unique-cell reduction, and scan.
+
+## Task 263: Use CUB Run-Length Encode for Target Spatial-Grid Unique Cells
+
+- Goal: reduce target spatial-grid first-build cost by replacing the Thrust `reduce_by_key` plus `exclusive_scan` unique
+  cell construction with CUB run-length encode and CUB exclusive scan using reusable workspace temporary storage.
+- RED check:
+  - Added a testing counter for the target spatial-grid run-length encode path.
+  - The large finite-radius spatial-grid alignment-step test failed at link time before the counter functions existed.
+- Implementation:
+  - Added CUB RLE/scan temporary storage and run-count storage to `IcpCorrespondenceStatsWorkspace`.
+  - Added `operator==` for `IcpGridCellKey` so CUB can detect adjacent equal sorted cell keys.
+  - Replaced `thrust::reduce_by_key` and `thrust::exclusive_scan` in `prepareTargetSpatialGrid()` with
+    `cub::DeviceRunLengthEncode::Encode` and `cub::DeviceScan::ExclusiveSum`.
+  - Removed no-longer-used Thrust scan/constant-iterator includes.
+- Verification:
+  - Focused spatial-grid subset after implementation: 6/6 passed, covering large-target grid use, spatial candidates,
+    direct lookup with non-finite sentinel, sparse unique-cell ranges, cache reuse, and cache-hit reserve behavior.
+- Benchmark:
+  - 8-iteration 10k-point sample before this change:
+    `gpu_icp_alignment_step_finite_radius_translation_new_workspace` = 0.72966 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_new_workspace_one_source` = 0.689117 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.097002 ms.
+  - 8-iteration 10k-point sample after this change:
+    `gpu_icp_alignment_step_finite_radius_translation_new_workspace` = 0.657349 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_new_workspace_one_source` = 0.625168 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.097047 ms,
+    `gpu_icp_finite_radius_nonrigid_output_transform_only_fresh_target_two_iterations` = 0.357317 ms, and
+    `gpu_icp_finite_radius_nonrigid_target_alias_transform_only_two_iterations` = 0.331046 ms.
+- Current conclusion:
+  CUB RLE trims a meaningful part of the first-build target-grid cost while leaving cached-grid timing unchanged. The
+  remaining first-build cost is now more concentrated in target-key sort and gather/direct-lookup setup.

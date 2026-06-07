@@ -179,6 +179,12 @@ public:
     /// Reserve reusable per-block target-grid bounds storage.
     void reserveTargetSpatialGridBoundsPartials(int partial_count);
 
+    /// Reserve reusable temporary storage for CUB target-grid run-length and scan operations.
+    void reserveTargetSpatialGridCubTempStorage(std::size_t byte_count);
+
+    /// Reserve device storage for the target-grid run count produced by CUB.
+    void reserveTargetSpatialGridRunCount();
+
     /// Mark the optional dense target-grid cell lookup metadata for the current cached spatial grid.
     void markTargetSpatialGridDirectLookupCache(
         int min_x,
@@ -261,11 +267,23 @@ public:
         return _target_spatial_grid_bounds_partials_storage.get();
     }
 
+    /// Return reusable temporary storage for CUB target-grid run-length and scan operations.
+    unsigned char* targetSpatialGridCubTempStorage() { return _target_spatial_grid_cub_temp_storage.get(); }
+
+    /// Return reusable device storage for the target-grid run count.
+    unsigned char* targetSpatialGridRunCountStorage() { return _target_spatial_grid_run_count_storage.get(); }
+
     /// Return the currently reserved dense target-grid direct lookup capacity, in entries.
     int targetSpatialGridDirectLookupCapacity() const { return _target_spatial_grid_direct_lookup_capacity; }
 
     /// Return the currently reserved target-grid bounds partial capacity, in blocks.
     int targetSpatialGridBoundsPartialCapacity() const { return _target_spatial_grid_bounds_partial_capacity; }
+
+    /// Return the currently reserved CUB target-grid temporary storage capacity, in bytes.
+    std::size_t targetSpatialGridCubTempStorageCapacity() const
+    {
+        return _target_spatial_grid_cub_temp_storage.size();
+    }
 
     /// Return the dense target-grid direct lookup entry count for the currently cached grid, or zero if inactive.
     int targetSpatialGridDirectLookupEntryCount() const { return _target_spatial_grid_direct_lookup_entry_count; }
@@ -318,6 +336,8 @@ private:
     DeviceBuffer<unsigned char> _target_spatial_grid_cell_counts_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_direct_lookup_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_bounds_partials_storage;
+    DeviceBuffer<unsigned char> _target_spatial_grid_cub_temp_storage;
+    DeviceBuffer<unsigned char> _target_spatial_grid_run_count_storage;
     int _partial_capacity = 0;
     int _target_tile_bound_capacity = 0;
     const void* _target_tile_bounds_points = nullptr;

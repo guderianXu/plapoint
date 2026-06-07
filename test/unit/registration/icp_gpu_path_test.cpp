@@ -358,6 +358,8 @@ void resetIcpTargetSpatialGridKeyInitKernelLaunchCountForTesting();
 int icpTargetSpatialGridKeyInitKernelLaunchCountForTesting();
 void resetIcpTargetSpatialGridBoundsPartialKernelLaunchCountForTesting();
 int icpTargetSpatialGridBoundsPartialKernelLaunchCountForTesting();
+void resetIcpTargetSpatialGridRunLengthEncodeCountForTesting();
+int icpTargetSpatialGridRunLengthEncodeCountForTesting();
 void resetIcpTargetSpatialGridPrepareCountForTesting();
 int icpTargetSpatialGridPrepareCountForTesting();
 void resetIcpTargetSpatialGridReserveCountForTesting();
@@ -2401,6 +2403,7 @@ TEST(ICPGpuPathTest, AlignmentStepUsesTargetSpatialGridForLargeFiniteRadiusTarge
 
     plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridRunLengthEncodeCountForTesting();
     const auto result = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
         source_gpu.data(),
         static_cast<int>(source_gpu.rows()),
@@ -2415,6 +2418,7 @@ TEST(ICPGpuPathTest, AlignmentStepUsesTargetSpatialGridForLargeFiniteRadiusTarge
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridKeyInitKernelLaunchCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridRunLengthEncodeCountForTesting(), 1);
 }
 
 TEST(ICPGpuPathTest, StatsAndStepCanUseOrderedCorrespondencesForFiniteRadiusTranslation)

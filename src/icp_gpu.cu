@@ -9,15 +9,14 @@
 #include <stdexcept>
 #include <type_traits>
 
+#include <cub/device/device_run_length_encode.cuh>
+#include <cub/device/device_scan.cuh>
 #include <cuda_runtime.h>
 #include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
 #include <thrust/functional.h>
-#include <thrust/iterator/constant_iterator.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/reduce.h>
-#include <thrust/scan.h>
-#include <thrust/sequence.h>
 #include <thrust/sort.h>
 #include <thrust/transform.h>
 #include <thrust/transform_reduce.h>
@@ -80,6 +79,11 @@ struct IcpGridCellKey
     int z;
 };
 
+__host__ __device__ __forceinline__ bool operator==(const IcpGridCellKey& lhs, const IcpGridCellKey& rhs)
+{
+    return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
+}
+
 struct IcpGridCellBounds
 {
     int min_x;
@@ -97,14 +101,6 @@ struct IcpGridCellKeyLess
         if (lhs.x != rhs.x) return lhs.x < rhs.x;
         if (lhs.y != rhs.y) return lhs.y < rhs.y;
         return lhs.z < rhs.z;
-    }
-};
-
-struct IcpGridCellKeyEqual
-{
-    __host__ __device__ __forceinline__ bool operator()(const IcpGridCellKey& lhs, const IcpGridCellKey& rhs) const
-    {
-        return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
     }
 };
 
@@ -314,6 +310,7 @@ std::atomic<int> g_icp_host_synchronization_count{0};
 std::atomic<int> g_icp_target_spatial_grid_build_count{0};
 std::atomic<int> g_icp_target_spatial_grid_key_init_kernel_launch_count{0};
 std::atomic<int> g_icp_target_spatial_grid_bounds_partial_kernel_launch_count{0};
+std::atomic<int> g_icp_target_spatial_grid_run_length_encode_count{0};
 std::atomic<int> g_icp_fallback_tile_bound_kernel_launch_count{0};
 std::atomic<int> g_icp_fallback_unbounded_kernel_launch_count{0};
 std::atomic<std::uintptr_t> g_icp_last_transform_output_pointer{0};
@@ -7611,6 +7608,85 @@ void buildTargetSpatialGridDirectLookup(
     populateTargetSpatialGridDirectLookup(grid, workspace);
 }
 
+int buildTargetSpatialGridCellsWithCub(
+    const IcpGridCellKey* d_sorted_keys,
+    int target_count,
+    IcpGridCellKey* d_unique_keys,
+    int* d_cell_counts,
+    int* d_cell_starts,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+    if (target_count <= 0)
+    {
+        return 0;
+    }
+
+    workspace.reserveTargetSpatialGridRunCount();
+    auto* d_cell_count = reinterpret_cast<int*>(workspace.targetSpatialGridRunCountStorage());
+    if (!d_cell_count)
+    {
+        throw std::invalid_argument("ICP GPU: target spatial-grid run count storage is not reserved");
+    }
+
+    std::size_t temp_storage_bytes = 0;
+    PLAPOINT_CHECK_CUDA(cub::DeviceRunLengthEncode::Encode(
+        nullptr,
+        temp_storage_bytes,
+        d_sorted_keys,
+        d_unique_keys,
+        d_cell_counts,
+        d_cell_count,
+        target_count,
+        stream));
+    workspace.reserveTargetSpatialGridCubTempStorage(temp_storage_bytes);
+    auto* d_temp_storage = workspace.targetSpatialGridCubTempStorage();
+    PLAPOINT_CHECK_CUDA(cub::DeviceRunLengthEncode::Encode(
+        d_temp_storage,
+        temp_storage_bytes,
+        d_sorted_keys,
+        d_unique_keys,
+        d_cell_counts,
+        d_cell_count,
+        target_count,
+        stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_target_spatial_grid_run_length_encode_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+
+    int cell_count = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+        &cell_count,
+        d_cell_count,
+        sizeof(cell_count),
+        cudaMemcpyDeviceToHost,
+        stream));
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    if (cell_count <= 0)
+    {
+        return 0;
+    }
+
+    temp_storage_bytes = 0;
+    PLAPOINT_CHECK_CUDA(cub::DeviceScan::ExclusiveSum(
+        nullptr,
+        temp_storage_bytes,
+        d_cell_counts,
+        d_cell_starts,
+        cell_count,
+        stream));
+    workspace.reserveTargetSpatialGridCubTempStorage(temp_storage_bytes);
+    d_temp_storage = workspace.targetSpatialGridCubTempStorage();
+    PLAPOINT_CHECK_CUDA(cub::DeviceScan::ExclusiveSum(
+        d_temp_storage,
+        temp_storage_bytes,
+        d_cell_counts,
+        d_cell_starts,
+        cell_count,
+        stream));
+    return cell_count;
+}
+
 template <typename Scalar>
 IcpTargetSpatialGrid prepareTargetSpatialGrid(
     const Scalar* d_target_points,
@@ -7698,10 +7774,7 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
 
     auto policy = thrust::cuda::par.on(stream);
     auto keys = thrust::device_pointer_cast(d_keys);
-    auto unique_keys = thrust::device_pointer_cast(d_unique_keys);
     auto indices = thrust::device_pointer_cast(d_indices);
-    auto cell_starts = thrust::device_pointer_cast(d_cell_starts);
-    auto cell_counts = thrust::device_pointer_cast(d_cell_counts);
 
     initializeIcpTargetSpatialGridKeysAndIndicesKernel<Scalar>
         <<<target_grid_size, kIcpStatsBlockSize, 0, stream>>>(
@@ -7732,17 +7805,14 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
         d_sorted_z);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    const auto reduced = thrust::reduce_by_key(
-        policy,
-        keys,
-        keys + target_count,
-        thrust::make_constant_iterator(1),
-        unique_keys,
-        cell_counts,
-        IcpGridCellKeyEqual{},
-        thrust::plus<int>{});
-    const int cell_count = static_cast<int>(reduced.first - unique_keys);
-    thrust::exclusive_scan(policy, cell_counts, cell_counts + cell_count, cell_starts);
+    const int cell_count = buildTargetSpatialGridCellsWithCub(
+        d_keys,
+        target_count,
+        d_unique_keys,
+        d_cell_counts,
+        d_cell_starts,
+        workspace,
+        stream);
 
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_target_spatial_grid_build_count.fetch_add(1, std::memory_order_relaxed);
@@ -11194,6 +11264,16 @@ int icpTargetSpatialGridBoundsPartialKernelLaunchCountForTesting()
     return g_icp_target_spatial_grid_bounds_partial_kernel_launch_count.load(std::memory_order_relaxed);
 }
 
+void resetIcpTargetSpatialGridRunLengthEncodeCountForTesting()
+{
+    g_icp_target_spatial_grid_run_length_encode_count.store(0, std::memory_order_relaxed);
+}
+
+int icpTargetSpatialGridRunLengthEncodeCountForTesting()
+{
+    return g_icp_target_spatial_grid_run_length_encode_count.load(std::memory_order_relaxed);
+}
+
 void resetIcpTargetSpatialGridPrepareCountForTesting()
 {
     g_icp_target_spatial_grid_prepare_count.store(0, std::memory_order_relaxed);
@@ -11733,6 +11813,22 @@ void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGridBoundsPartials(int
         _target_spatial_grid_bounds_partials_storage.allocate(
             static_cast<std::size_t>(partial_count) * sizeof(IcpGridCellBounds));
         _target_spatial_grid_bounds_partial_capacity = partial_count;
+    }
+}
+
+void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGridCubTempStorage(std::size_t byte_count)
+{
+    if (_target_spatial_grid_cub_temp_storage.size() < byte_count)
+    {
+        _target_spatial_grid_cub_temp_storage.allocate(byte_count);
+    }
+}
+
+void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGridRunCount()
+{
+    if (_target_spatial_grid_run_count_storage.size() < sizeof(int))
+    {
+        _target_spatial_grid_run_count_storage.allocate(sizeof(int));
     }
 }
 
