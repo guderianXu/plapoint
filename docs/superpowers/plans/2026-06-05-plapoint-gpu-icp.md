@@ -10526,3 +10526,36 @@ Verification evidence:
 - Current conclusion:
   this is a narrow robustness/performance fix for non-finite target rows. The common finite-target path still remains
   dominated by spatial-grid sort/reduce build cost.
+
+## Task 261: Precompute Target Spatial-Grid Bounds Partials During Key Initialization
+
+- Goal: avoid rescanning the compact unique target cell keys solely to derive direct-lookup bounds during first target
+  spatial-grid builds.
+- RED check:
+  - Added a testing counter for target spatial-grid bounds partial kernel launches.
+  - The cache-hit spatial-grid test failed at link time before the new counter functions existed.
+- Implementation:
+  - Extended the target grid key/index initialization kernel to optionally reduce each block's valid cell-key bounds into
+    reusable workspace storage.
+  - `buildTargetSpatialGridDirectLookup()` now uses those precomputed bounds partials on fresh builds and preserves the
+    previous unique-key `transform_reduce` fallback for paths without partials.
+  - Cache hits still avoid rebuilding the bounds partials; the new counter remains one across a two-call cache-hit test.
+- Verification:
+  - Focused GPU path subset after implementation: 4/4 passed, covering large-target grid use, direct lookup, non-finite
+    sentinel direct lookup, and spatial-grid cache hits.
+- Benchmark:
+  - 8-iteration 10k-point sample before implementation:
+    `gpu_icp_finite_radius_nonrigid_output_transform_only_fresh_target_two_iterations` = 0.35946 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_transform_only_two_iterations` = 0.339544 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_new_workspace` = 0.70926 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.097021 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.239411 ms.
+  - 8-iteration 10k-point sample after implementation:
+    `gpu_icp_finite_radius_nonrigid_output_transform_only_fresh_target_two_iterations` = 0.35732 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_transform_only_two_iterations` = 0.33786 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_new_workspace` = 0.7044 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.097129 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.240263 ms.
+- Current conclusion:
+  this trims a small first-build cost in direct lookup setup while leaving cached-grid timing unchanged. The remaining
+  fresh-target gap is still mainly the target-key sort, unique-cell reduction, and scan.

@@ -176,6 +176,9 @@ public:
     /// Reserve the optional dense target-grid cell lookup table.
     void reserveTargetSpatialGridDirectLookup(int entry_count);
 
+    /// Reserve reusable per-block target-grid bounds storage.
+    void reserveTargetSpatialGridBoundsPartials(int partial_count);
+
     /// Mark the optional dense target-grid cell lookup metadata for the current cached spatial grid.
     void markTargetSpatialGridDirectLookupCache(
         int min_x,
@@ -252,8 +255,17 @@ public:
     /// Return the reusable dense target-grid direct cell lookup storage pointer.
     unsigned char* targetSpatialGridDirectLookupStorage() { return _target_spatial_grid_direct_lookup_storage.get(); }
 
+    /// Return the reusable target-grid per-block bounds storage pointer.
+    unsigned char* targetSpatialGridBoundsPartialsStorage()
+    {
+        return _target_spatial_grid_bounds_partials_storage.get();
+    }
+
     /// Return the currently reserved dense target-grid direct lookup capacity, in entries.
     int targetSpatialGridDirectLookupCapacity() const { return _target_spatial_grid_direct_lookup_capacity; }
+
+    /// Return the currently reserved target-grid bounds partial capacity, in blocks.
+    int targetSpatialGridBoundsPartialCapacity() const { return _target_spatial_grid_bounds_partial_capacity; }
 
     /// Return the dense target-grid direct lookup entry count for the currently cached grid, or zero if inactive.
     int targetSpatialGridDirectLookupEntryCount() const { return _target_spatial_grid_direct_lookup_entry_count; }
@@ -305,6 +317,7 @@ private:
     DeviceBuffer<unsigned char> _target_spatial_grid_cell_starts_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_cell_counts_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_direct_lookup_storage;
+    DeviceBuffer<unsigned char> _target_spatial_grid_bounds_partials_storage;
     int _partial_capacity = 0;
     int _target_tile_bound_capacity = 0;
     const void* _target_tile_bounds_points = nullptr;
@@ -318,6 +331,7 @@ private:
     std::size_t _target_spatial_grid_coordinate_value_bytes = 0;
     bool _target_spatial_grid_cache_valid = false;
     int _target_spatial_grid_direct_lookup_capacity = 0;
+    int _target_spatial_grid_bounds_partial_capacity = 0;
     int _target_spatial_grid_direct_lookup_entry_count = 0;
     int _target_spatial_grid_direct_lookup_min_x = 0;
     int _target_spatial_grid_direct_lookup_min_y = 0;

@@ -313,6 +313,7 @@ std::atomic<int> g_icp_residual_stats_reserve_check_count{0};
 std::atomic<int> g_icp_host_synchronization_count{0};
 std::atomic<int> g_icp_target_spatial_grid_build_count{0};
 std::atomic<int> g_icp_target_spatial_grid_key_init_kernel_launch_count{0};
+std::atomic<int> g_icp_target_spatial_grid_bounds_partial_kernel_launch_count{0};
 std::atomic<int> g_icp_fallback_tile_bound_kernel_launch_count{0};
 std::atomic<int> g_icp_fallback_unbounded_kernel_launch_count{0};
 std::atomic<std::uintptr_t> g_icp_last_transform_output_pointer{0};
@@ -855,20 +856,46 @@ __global__ void initializeIcpTargetSpatialGridKeysAndIndicesKernel(
     int target_count,
     double cell_size,
     IcpGridCellKey* __restrict__ keys,
-    int* __restrict__ indices)
+    int* __restrict__ indices,
+    IcpGridCellBounds* __restrict__ bounds_partials)
 {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= target_count)
+    IcpGridCellBounds local_bounds = emptyIcpGridCellBounds();
+    if (idx < target_count)
+    {
+        indices[idx] = idx;
+        const IcpGridCellKey key = ComputeIcpTargetGridCellKey<Scalar>{
+            target_points,
+            target_count,
+            cell_size
+        }(idx);
+        keys[idx] = key;
+        local_bounds = IcpGridCellBoundsFromKey{}(key);
+    }
+
+    if (!bounds_partials)
     {
         return;
     }
 
-    indices[idx] = idx;
-    keys[idx] = ComputeIcpTargetGridCellKey<Scalar>{
-        target_points,
-        target_count,
-        cell_size
-    }(idx);
+    __shared__ IcpGridCellBounds block_bounds[kIcpStatsBlockSize];
+    block_bounds[threadIdx.x] = local_bounds;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride /= 2)
+    {
+        if (threadIdx.x < stride)
+        {
+            block_bounds[threadIdx.x] =
+                IcpGridCellBoundsReduce{}(block_bounds[threadIdx.x], block_bounds[threadIdx.x + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0)
+    {
+        bounds_partials[blockIdx.x] = block_bounds[0];
+    }
 }
 
 template <typename Scalar>
@@ -7498,6 +7525,8 @@ void buildTargetSpatialGridDirectLookup(
     int cell_count,
     int target_count,
     double cell_size,
+    const IcpGridCellBounds* d_bounds_partials,
+    int bounds_partial_count,
     IcpCorrespondenceStatsWorkspace& workspace,
     cudaStream_t stream,
     IcpTargetSpatialGrid& grid)
@@ -7508,14 +7537,28 @@ void buildTargetSpatialGridDirectLookup(
     }
 
     auto policy = thrust::cuda::par.on(stream);
-    auto cell_keys = thrust::device_pointer_cast(d_cell_keys);
-    IcpGridCellBounds bounds = thrust::transform_reduce(
-        policy,
-        cell_keys,
-        cell_keys + cell_count,
-        IcpGridCellBoundsFromKey{},
-        emptyIcpGridCellBounds(),
-        IcpGridCellBoundsReduce{});
+    IcpGridCellBounds bounds = emptyIcpGridCellBounds();
+    if (d_bounds_partials && bounds_partial_count > 0)
+    {
+        auto bounds_partials = thrust::device_pointer_cast(d_bounds_partials);
+        bounds = thrust::reduce(
+            policy,
+            bounds_partials,
+            bounds_partials + bounds_partial_count,
+            emptyIcpGridCellBounds(),
+            IcpGridCellBoundsReduce{});
+    }
+    else
+    {
+        auto cell_keys = thrust::device_pointer_cast(d_cell_keys);
+        bounds = thrust::transform_reduce(
+            policy,
+            cell_keys,
+            cell_keys + cell_count,
+            IcpGridCellBoundsFromKey{},
+            emptyIcpGridCellBounds(),
+            IcpGridCellBoundsReduce{});
+    }
     IcpDirectGridCellLookupShape shape = makeIcpDirectGridCellLookupShape(bounds, target_count, cell_count);
     if (!shape.active && bounds.max_x == INT_MAX && bounds.max_y == INT_MAX && bounds.max_z == INT_MAX)
     {
@@ -7606,6 +7649,14 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     auto* d_sorted_z = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedZStorage());
     auto* d_cell_starts = reinterpret_cast<int*>(workspace.targetSpatialGridCellStartsStorage());
     auto* d_cell_counts = reinterpret_cast<int*>(workspace.targetSpatialGridCellCountsStorage());
+    const int target_grid_size = icpStatsPartialCount(target_count);
+    if (build_direct_lookup)
+    {
+        workspace.reserveTargetSpatialGridBoundsPartials(target_grid_size);
+    }
+    auto* d_bounds_partials = build_direct_lookup
+        ? reinterpret_cast<IcpGridCellBounds*>(workspace.targetSpatialGridBoundsPartialsStorage())
+        : nullptr;
 
     grid.target_points = d_target_points;
     grid.target_count = target_count;
@@ -7633,6 +7684,8 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
                     grid.cell_count,
                     target_count,
                     grid.cell_size,
+                    nullptr,
+                    0,
                     workspace,
                     stream,
                     grid);
@@ -7651,19 +7704,24 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     auto cell_counts = thrust::device_pointer_cast(d_cell_counts);
 
     initializeIcpTargetSpatialGridKeysAndIndicesKernel<Scalar>
-        <<<icpStatsPartialCount(target_count), kIcpStatsBlockSize, 0, stream>>>(
+        <<<target_grid_size, kIcpStatsBlockSize, 0, stream>>>(
             d_target_points,
             target_count,
             cell_size,
             d_keys,
-            d_indices);
+            d_indices,
+            d_bounds_partials);
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_target_spatial_grid_key_init_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
+    if (d_bounds_partials)
+    {
+        g_icp_target_spatial_grid_bounds_partial_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
+    }
 #endif
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
     thrust::sort_by_key(policy, keys, keys + target_count, indices, IcpGridCellKeyLess{});
     const int gather_block_size = kIcpStatsBlockSize;
-    const int gather_grid_size = icpStatsPartialCount(target_count);
+    const int gather_grid_size = target_grid_size;
     gatherSortedIcpTargetPointsKernel<Scalar><<<gather_grid_size, gather_block_size, 0, stream>>>(
         d_target_points,
         target_count,
@@ -7701,6 +7759,8 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
             cell_count,
             target_count,
             grid.cell_size,
+            d_bounds_partials,
+            target_grid_size,
             workspace,
             stream,
             grid);
@@ -11124,6 +11184,16 @@ int icpTargetSpatialGridKeyInitKernelLaunchCountForTesting()
     return g_icp_target_spatial_grid_key_init_kernel_launch_count.load(std::memory_order_relaxed);
 }
 
+void resetIcpTargetSpatialGridBoundsPartialKernelLaunchCountForTesting()
+{
+    g_icp_target_spatial_grid_bounds_partial_kernel_launch_count.store(0, std::memory_order_relaxed);
+}
+
+int icpTargetSpatialGridBoundsPartialKernelLaunchCountForTesting()
+{
+    return g_icp_target_spatial_grid_bounds_partial_kernel_launch_count.load(std::memory_order_relaxed);
+}
+
 void resetIcpTargetSpatialGridPrepareCountForTesting()
 {
     g_icp_target_spatial_grid_prepare_count.store(0, std::memory_order_relaxed);
@@ -11646,6 +11716,24 @@ void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGridDirectLookup(int e
         _target_spatial_grid_direct_lookup_capacity = entry_count;
     }
     _target_spatial_grid_direct_lookup_entry_count = 0;
+}
+
+void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGridBoundsPartials(int partial_count)
+{
+    if (partial_count < 0)
+    {
+        throw std::invalid_argument("ICP GPU: target spatial-grid bounds partial count must not be negative");
+    }
+    if (partial_count == 0)
+    {
+        return;
+    }
+    if (targetSpatialGridBoundsPartialCapacity() < partial_count)
+    {
+        _target_spatial_grid_bounds_partials_storage.allocate(
+            static_cast<std::size_t>(partial_count) * sizeof(IcpGridCellBounds));
+        _target_spatial_grid_bounds_partial_capacity = partial_count;
+    }
 }
 
 void IcpCorrespondenceStatsWorkspace::markTargetSpatialGridDirectLookupCache(

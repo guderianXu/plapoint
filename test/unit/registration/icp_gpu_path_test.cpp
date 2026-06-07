@@ -356,6 +356,8 @@ void resetIcpTargetSpatialGridBuildCountForTesting();
 int icpTargetSpatialGridBuildCountForTesting();
 void resetIcpTargetSpatialGridKeyInitKernelLaunchCountForTesting();
 int icpTargetSpatialGridKeyInitKernelLaunchCountForTesting();
+void resetIcpTargetSpatialGridBoundsPartialKernelLaunchCountForTesting();
+int icpTargetSpatialGridBoundsPartialKernelLaunchCountForTesting();
 void resetIcpTargetSpatialGridPrepareCountForTesting();
 int icpTargetSpatialGridPrepareCountForTesting();
 void resetIcpTargetSpatialGridReserveCountForTesting();
@@ -5493,6 +5495,7 @@ TEST(ICPGpuPathTest, CorrespondenceStatsSkipsSpatialGridReserveOnCacheHit)
     plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridReserveCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridBoundsPartialKernelLaunchCountForTesting();
     const auto first_stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
         source_gpu.data(),
         static_cast<int>(source_gpu.rows()),
@@ -5515,6 +5518,7 @@ TEST(ICPGpuPathTest, CorrespondenceStatsSkipsSpatialGridReserveOnCacheHit)
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridReserveCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBoundsPartialKernelLaunchCountForTesting(), 1);
 }
 
 TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
