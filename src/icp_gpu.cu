@@ -37,6 +37,7 @@ struct RawIcpStats
 {
     int active_count;
     int invalid_source_count;
+    int same_index_correspondence_count;
     double src_sum[3];
     double tgt_sum[3];
     double cross_sum[9];
@@ -187,6 +188,8 @@ struct IcpStepTransformRawResult
 constexpr unsigned int kIcpAlignmentStepSrcNonCollinearFlag = 1u << 0;
 constexpr unsigned int kIcpAlignmentStepTgtNonCollinearFlag = 1u << 1;
 constexpr unsigned int kIcpAlignmentStepValidFlag = 1u << 2;
+constexpr unsigned int kIcpAlignmentStepAllSameIndexFlag = 1u << 3;
+constexpr unsigned int kIcpAlignmentStepExactStepResidualFlag = 1u << 4;
 
 template <typename Scalar>
 struct IcpAlignmentStepRawResult
@@ -372,6 +375,58 @@ __host__ __device__ __forceinline__ int compactIcpOuterIndex(int row, int col)
     return upper_row * 3 + upper_col - upper_row * (upper_row + 1) / 2;
 }
 
+__device__ __forceinline__ double rawIcpCompactOuterValue(const double compact_outer[6], int row, int col)
+{
+    return compact_outer[compactIcpOuterIndex(row, col)];
+}
+
+template <typename Scalar>
+__device__ __forceinline__ bool rawIcpStepTransformResidualIsExactlyZero(
+    const RawIcpStats& raw,
+    const Scalar* __restrict__ step_transform)
+{
+    if (raw.active_count <= 0 || !step_transform)
+    {
+        return false;
+    }
+
+    double transformed_source_sq_sum = 0.0;
+    double transformed_source_target_dot_sum = 0.0;
+    // Compute post-step SSE from aggregate sums so the host can choose an exact transformed fast path
+    // without launching another pointwise pass.
+#pragma unroll
+    for (int out_dim = 0; out_dim < 3; ++out_dim)
+    {
+        const double t = static_cast<double>(step_transform[out_dim + 3 * 4]);
+        double row_source_sum = 0.0;
+#pragma unroll
+        for (int src_dim = 0; src_dim < 3; ++src_dim)
+        {
+            const double r = static_cast<double>(step_transform[out_dim + src_dim * 4]);
+            row_source_sum += r * raw.src_sum[src_dim];
+            transformed_source_target_dot_sum += r * raw.cross_sum[src_dim * 3 + out_dim];
+#pragma unroll
+            for (int src_dim_b = 0; src_dim_b < 3; ++src_dim_b)
+            {
+                const double rb = static_cast<double>(step_transform[out_dim + src_dim_b * 4]);
+                transformed_source_sq_sum +=
+                    r * rb * rawIcpCompactOuterValue(raw.src_outer_sum, src_dim, src_dim_b);
+            }
+        }
+        transformed_source_sq_sum +=
+            2.0 * t * row_source_sum + static_cast<double>(raw.active_count) * t * t;
+        transformed_source_target_dot_sum += t * raw.tgt_sum[out_dim];
+    }
+
+    const double target_sq_sum =
+        rawIcpCompactOuterValue(raw.tgt_outer_sum, 0, 0) +
+        rawIcpCompactOuterValue(raw.tgt_outer_sum, 1, 1) +
+        rawIcpCompactOuterValue(raw.tgt_outer_sum, 2, 2);
+    const double residual_sq_sum =
+        transformed_source_sq_sum - 2.0 * transformed_source_target_dot_sum + target_sq_sum;
+    return residual_sq_sum == 0.0;
+}
+
 __device__ __forceinline__ void addRawIcpOuterSums(double dst[6], const double src[6])
 {
     dst[0] += src[0];
@@ -386,6 +441,7 @@ __device__ __forceinline__ void addRawIcpStats(RawIcpStats& dst, const RawIcpSta
 {
     dst.active_count += src.active_count;
     dst.invalid_source_count += src.invalid_source_count;
+    dst.same_index_correspondence_count += src.same_index_correspondence_count;
 #pragma unroll
     for (int c = 0; c < 3; ++c)
     {
@@ -427,7 +483,8 @@ __device__ __forceinline__ void writeAlignmentStepRawResultFields(
     const RawIcpStats& raw,
     IcpAlignmentStepRawResult<Scalar>* __restrict__ result,
     int step_valid,
-    double delta)
+    double delta,
+    bool step_maps_correspondences_exactly = false)
 {
     result->residual_sq_sum = raw.residual_sq_sum;
     result->delta = static_cast<Scalar>(delta);
@@ -445,6 +502,14 @@ __device__ __forceinline__ void writeAlignmentStepRawResultFields(
     if (step_valid != 0)
     {
         flags |= kIcpAlignmentStepValidFlag;
+    }
+    if (raw.active_count > 0 && raw.same_index_correspondence_count == raw.active_count)
+    {
+        flags |= kIcpAlignmentStepAllSameIndexFlag;
+    }
+    if (step_maps_correspondences_exactly)
+    {
+        flags |= kIcpAlignmentStepExactStepResidualFlag;
     }
     result->flags = flags;
 }
@@ -467,6 +532,8 @@ __device__ __forceinline__ void writeIdentityAlignmentStepRawResultFields(
     if (raw.active_count > 0 && isfinite(raw.residual_sq_sum))
     {
         flags |= kIcpAlignmentStepValidFlag;
+        flags |= kIcpAlignmentStepAllSameIndexFlag;
+        flags |= kIcpAlignmentStepExactStepResidualFlag;
     }
     result->flags = flags;
 }
@@ -1249,9 +1316,11 @@ __device__ __forceinline__ void recordAcceptedCorrespondence(
     double tx,
     double ty,
     double tz,
-    double residual_sq)
+    double residual_sq,
+    bool same_index_correspondence = false)
 {
     local.active_count = 1;
+    local.same_index_correspondence_count = same_index_correspondence ? 1 : 0;
     local.residual_sq_sum = residual_sq;
 
     const double source_values[3]{sx, sy, sz};
@@ -1373,7 +1442,7 @@ __device__ __forceinline__ bool tryAcceptTransformedExactPointwiseCorrespondence
         return false;
     }
 
-    recordAcceptedCorrespondence(local, sx, sy, sz, tx, ty, tz, 0.0);
+    recordAcceptedCorrespondence(local, sx, sy, sz, tx, ty, tz, 0.0, true);
     return true;
 }
 
@@ -1909,7 +1978,16 @@ __global__ void collectCorrespondenceStatsKernel(
             {
                 correspondence_indices[source_idx] = best_idx;
             }
-            recordAcceptedCorrespondence(local, sx, sy, sz, best_tx, best_ty, best_tz, best_dist_sq);
+            recordAcceptedCorrespondence(
+                local,
+                sx,
+                sy,
+                sz,
+                best_tx,
+                best_ty,
+                best_tz,
+                best_dist_sq,
+                best_idx == source_idx);
         }
     }
 
@@ -2242,7 +2320,16 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                 }
                 correspondence_indices[source_idx] = best_idx;
             }
-            recordAcceptedCorrespondence(local, sx, sy, sz, best_tx, best_ty, best_tz, best_dist_sq);
+            recordAcceptedCorrespondence(
+                local,
+                sx,
+                sy,
+                sz,
+                best_tx,
+                best_ty,
+                best_tz,
+                best_dist_sq,
+                best_idx == source_idx);
         }
     }
 
@@ -2309,7 +2396,7 @@ __global__ void collectExactPointwiseCorrespondenceStatsKernel(
             }
             else
             {
-                recordAcceptedCorrespondence(local, sx, sy, sz, sx, sy, sz, 0.0);
+                recordAcceptedCorrespondence(local, sx, sy, sz, sx, sy, sz, 0.0, true);
             }
         }
     }
@@ -2427,7 +2514,7 @@ __global__ void collectOrderedPointwiseCorrespondenceStatsKernel(
             if (isfinite(dist_sq) &&
                 (!isfinite(max_dist) || dist_sq <= max_dist * max_dist))
             {
-                recordAcceptedCorrespondence(local, sx, sy, sz, tx, ty, tz, dist_sq);
+                recordAcceptedCorrespondence(local, sx, sy, sz, tx, ty, tz, dist_sq, true);
             }
         }
     }
@@ -2581,7 +2668,7 @@ __global__ void transformAndCollectOrderedCorrespondenceStatsKernel(
                 if (isfinite(dist_sq) &&
                     (!isfinite(max_dist) || dist_sq <= max_dist * max_dist))
                 {
-                    recordAcceptedCorrespondence(local, sx, sy, sz, tx, ty, tz, dist_sq);
+                    recordAcceptedCorrespondence(local, sx, sy, sz, tx, ty, tz, dist_sq, true);
                 }
             }
         }
@@ -4820,7 +4907,7 @@ __global__ void reduceRawIcpStatsAndSetExactPointwiseIdentityAlignmentStepKernel
     {
         const RawIcpStats raw = shared_stats[0];
         const int step_valid = raw.active_count > 0 && isfinite(raw.residual_sq_sum) ? 1 : 0;
-        writeAlignmentStepRawResultFields<Scalar>(raw, result, step_valid, 0.0);
+        writeAlignmentStepRawResultFields<Scalar>(raw, result, step_valid, 0.0, step_valid != 0);
     }
 }
 
@@ -5463,7 +5550,15 @@ __device__ __forceinline__ void writeAlignmentStepRawResultFromRawStats(
     IcpStepTransformRawResult step_result{};
     computeStepTransformFromRawStatsValue<Scalar>(raw, step_transform, &step_result);
 
-    writeAlignmentStepRawResultFields<Scalar>(raw, result, step_result.valid, step_result.delta);
+    const bool step_maps_correspondences_exactly =
+        step_result.valid != 0 &&
+        rawIcpStepTransformResidualIsExactlyZero(raw, step_transform);
+    writeAlignmentStepRawResultFields<Scalar>(
+        raw,
+        result,
+        step_result.valid,
+        step_result.delta,
+        step_maps_correspondences_exactly);
 }
 
 bool covarianceHasNonCollinearGeometry(const double covariance[9]);
@@ -6480,6 +6575,8 @@ IcpAlignmentStepResult<Scalar> makeHostAlignmentStepResult(const IcpAlignmentSte
     result.residual_sq_sum = raw.residual_sq_sum;
     result.src_has_non_collinear_geometry = (raw.flags & kIcpAlignmentStepSrcNonCollinearFlag) != 0;
     result.tgt_has_non_collinear_geometry = (raw.flags & kIcpAlignmentStepTgtNonCollinearFlag) != 0;
+    result.all_correspondences_same_index = (raw.flags & kIcpAlignmentStepAllSameIndexFlag) != 0;
+    result.step_maps_correspondences_exactly = (raw.flags & kIcpAlignmentStepExactStepResidualFlag) != 0;
     result.step.delta = static_cast<Scalar>(raw.delta);
     result.step_valid = (raw.flags & kIcpAlignmentStepValidFlag) != 0;
     return result;

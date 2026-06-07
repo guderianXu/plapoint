@@ -8044,3 +8044,69 @@ Verification evidence:
 - Current conclusion:
   keep the sorted-snapshot seed fallback. It removes the target-output-alias final-metrics candidate scan without
   reading mutable aliased target memory and without weakening the existing finite-radius candidate pruning tests.
+
+## Task 206: Auto-Probe Exact Transformed Steps After Exact Same-Index Fits
+
+- Goal: remove the second-iteration cached-grid alignment step for paired finite-radius workloads where one generic
+  same-index step already produced an exact rigid fit. This keeps the public default path fast for binary/exact
+  translated clouds without requiring callers to manually set
+  `setGpuProbeTransformedExactPointwiseOnCacheHit(true)`.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignAutoProbesTransformedExactPointwiseAfterAllSameIndexStep`.
+  - Before implementation, the default path did not launch the transformed exact-pointwise alignment step, prepared the
+    cached target spatial grid twice, used one accumulated transformed alignment step, and allocated `_gpu_next_T_acc`.
+  - Added `ICPGpuPathTest.AlignDoesNotAutoProbeTransformedExactPointwiseWhenSameIndexStepIsNotExact` after the first
+    all-same-index-only attempt proved too broad. That over-broad version auto-probed a same-index step whose fitted
+    transform did not map points to bitwise-exact targets, so the test failed with one transformed exact probe and zero
+    accumulated transformed alignment-step calls.
+- Implementation:
+  - Added compact alignment-step result flags for "all accepted correspondences were same-index" and "the computed
+    step maps the accepted correspondences to exactly zero post-step residual".
+  - Tracked same-index accepted correspondences in `RawIcpStats` reductions. Ordered and exact pointwise kernels mark
+    accepted rows as same-index; generic nearest-neighbor kernels mark only accepted matches whose resolved target index
+    equals the source row.
+  - Computed post-step SSE from aggregate sums and the just-written step transform in the reduction kernel, avoiding a
+    second pointwise pass solely to decide whether the next transformed step can be exact.
+  - `alignGpu()` now automatically enables transformed exact preflight on the next accumulated-transform iteration only
+    when the previous step had `active_count == source_count`, all correspondences were same-index, the step had exactly
+    zero post-step residual, and source/target counts match.
+- Targeted verification:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignAutoProbesTransformedExactPointwiseAfterAllSameIndexStep`
+    failed before implementation with 0 transformed exact probes, 2 spatial-grid prepares, 1 accumulated transformed
+    alignment step, and a non-null `_gpu_next_T_acc`.
+  - The over-broad all-same-index heuristic failed
+    `ICPGpuPathTest.AlignDoesNotAutoProbeTransformedExactPointwiseWhenSameIndexStepIsNotExact` with 1 transformed exact
+    probe and 0 accumulated transformed alignment steps.
+  - After adding the exact-post-step-residual condition,
+    `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignAutoProbesTransformedExactPointwiseAfterAllSameIndexStep:ICPGpuPathTest.AlignDoesNotAutoProbeTransformedExactPointwiseWhenSameIndexStepIsNotExact`
+    passed both tests.
+  - Related transformed/accumulated regression set passed 8/8:
+    `AlignFusesTransformedAlignmentStepWithAccumulatedTransformUpdate`,
+    `AlignSkipsNextAccumulatedTransformBufferForLastTransformedIdentityStep`,
+    `AlignDeferredLastTransformedStepAccumulatesNonIdentityBeforeFinalMetrics`,
+    `AlignCanProbeTransformedExactPointwiseOnCacheHitWhenRequested`,
+    `TransformedAlignmentStepUsesCachedSpatialGridWithoutExactPointwiseProbe`,
+    `TransformedAlignmentStepCanProbeExactPointwiseOnCacheHitWhenRequested`, and the two new auto-probe tests.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*`: 143/143 passed.
+- Benchmark:
+  - Rebuilt `build-codex-cuda-bench-only` and ran:
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 80 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`.
+  - Relevant sample after this change:
+    `gpu_icp_finite_radius_binary_translation_transform_only_two_iterations` = 0.529356 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_preflight_two_iterations` = 0.525443 ms,
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 1.42323 ms,
+    `gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations` = 1.47201 ms,
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.0289 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 0.916819 ms, and
+    `gpu_icp_finite_radius_translation_transform_only_skip_final_metrics` = 0.915434 ms.
+- Verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 324/324 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 143/144
+    executed tests passed, with `plapoint.PointCloudTest.GpuTransfer` skipped by the CPU-only build.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+- Current conclusion:
+  keep the exact-post-step-residual gate. It makes exact paired finite-radius translations use the fast transformed
+  exact path by default, while avoiding the known nonrigid preflight regression and leaving normal translated-grid
+  throughput effectively unchanged.

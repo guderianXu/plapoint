@@ -399,6 +399,7 @@ private:
         const Scalar* cur_points = source_points;
         bool current_points_use_accumulated_transform = false;
         bool next_points_in_a = true;
+        bool previous_step_can_use_transformed_exact_pointwise = false;
 
         _converged = false;
         _fitness_score = Scalar(0);
@@ -412,8 +413,14 @@ private:
             bool alignment_step_accumulated_transform = false;
             if (current_points_use_accumulated_transform)
             {
+                const bool auto_probe_transformed_exact_pointwise =
+                    previous_step_can_use_transformed_exact_pointwise &&
+                    source_count == target_count;
+                const bool probe_transformed_exact_pointwise =
+                    _gpu_probe_transformed_exact_pointwise_on_cache_hit ||
+                    auto_probe_transformed_exact_pointwise;
                 const bool defer_accumulated_transform =
-                    _gpu_probe_transformed_exact_pointwise_on_cache_hit && iter + 1 == _max_iter;
+                    probe_transformed_exact_pointwise && iter + 1 == _max_iter;
                 if (defer_accumulated_transform)
                 {
                     stats_and_step =
@@ -428,7 +435,7 @@ private:
                             _gpu_T_step->data(),
                             0,
                             _gpu_assume_ordered_correspondences,
-                            _gpu_probe_transformed_exact_pointwise_on_cache_hit);
+                            probe_transformed_exact_pointwise);
                 }
                 else
                 {
@@ -448,7 +455,7 @@ private:
                             _gpu_next_T_acc->data(),
                             0,
                             _gpu_assume_ordered_correspondences,
-                            _gpu_probe_transformed_exact_pointwise_on_cache_hit);
+                            probe_transformed_exact_pointwise);
                     alignment_step_accumulated_transform = true;
                 }
             }
@@ -489,6 +496,10 @@ private:
             {
                 throw std::runtime_error("ICP: transform step is not representable");
             }
+            previous_step_can_use_transformed_exact_pointwise =
+                stats.active_count == source_count &&
+                stats.all_correspondences_same_index &&
+                stats.step_maps_correspondences_exactly;
             const auto step_result = stats_and_step.step;
             const Scalar* step_transform = _gpu_T_step->data();
             const bool terminal_iteration = step_result.delta < _eps || iter + 1 == _max_iter;
