@@ -531,7 +531,7 @@ private:
         {
             return;
         }
-        if (tryAlignGpuEvenStepTransformOnly(
+        if (tryAlignGpuBatchedTransformOnly(
                 output,
                 source_count,
                 target_count,
@@ -1887,7 +1887,7 @@ private:
 
     template <plamatrix::Device D = Dev>
     std::enable_if_t<D == plamatrix::Device::GPU, bool>
-    tryAlignGpuEvenStepTransformOnly(
+    tryAlignGpuBatchedTransformOnly(
         PointCloudType* output,
         int source_count,
         int target_count,
@@ -1897,7 +1897,6 @@ private:
     {
         if (_compute_final_metrics ||
             _max_iter < 4 ||
-            (_max_iter % 2) != 0 ||
             _gpu_assume_ordered_correspondences ||
             _gpu_assume_ordered_correspondences_after_same_index_step ||
             _gpu_probe_exact_pointwise_on_finite_radius ||
@@ -1978,7 +1977,8 @@ private:
                 output_aliases_target);
         }
 
-        for (int batch_start_iter = 2; batch_start_iter < _max_iter; batch_start_iter += 2)
+        int batch_start_iter = 2;
+        for (; batch_start_iter + 1 < _max_iter; batch_start_iter += 2)
         {
             const bool transformed_batch_launched =
                 gpu::detail::launchTransformedIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
@@ -2059,6 +2059,66 @@ private:
                     target_points,
                     output_aliases_target);
             }
+        }
+        if (batch_start_iter < _max_iter)
+        {
+            const auto terminal_step =
+                gpu::detail::computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
+                    _gpu_T_acc->data(),
+                    source_points,
+                    source_count,
+                    target_points,
+                    target_count,
+                    _max_corr_dist,
+                    _gpu_stats_workspace,
+                    _gpu_T_step->data(),
+                    _gpu_T_acc->data(),
+                    _gpu_next_T_acc->data(),
+                    0);
+            handleGpuAlignmentStepPreconditions(terminal_step, batch_start_iter);
+            std::swap(_gpu_T_acc, _gpu_next_T_acc);
+            invalidateGpuSameBufferIdentityResultCache();
+            invalidateGpuExactIdentityResultCache();
+            updateResidualMetricsFromGpuStats(terminal_step, source_count);
+            if (terminal_step.step.delta < _eps)
+            {
+                _converged = terminal_step.active_count >= 3 && _fitness_score >= _min_fitness_score;
+            }
+            const double terminal_step_residual_sq_sum =
+                std::isfinite(terminal_step.step_residual_sq_sum)
+                    ? std::max(0.0, terminal_step.step_residual_sq_sum)
+                    : terminal_step.step_residual_sq_sum;
+            if (!output_aliases_source &&
+                !output_aliases_target &&
+                canCacheGpuFullCoverageTransformResult(
+                    source_count,
+                    target_count,
+                    source_points,
+                    target_points,
+                    terminal_step.active_count,
+                    terminal_step.step_maps_correspondences_exactly,
+                    terminal_step.all_correspondences_same_index,
+                    true,
+                    terminal_step_residual_sq_sum))
+            {
+                markGpuFullCoverageTransformResultCache(source_count, target_count, source_points, target_points);
+                invalidateGpuFullCoverageTransformOutputCache();
+                invalidateGpuIdentityOutputCache();
+            }
+            else
+            {
+                invalidateGpuFullCoverageTransformResultCache();
+            }
+            writeGpuFinalTransformOutputIfRequested(
+                output,
+                source_count,
+                target_count,
+                source_points,
+                target_points,
+                output_aliases_target);
+            _final_T_cpu_valid = false;
+            _final_T_gpu_valid = true;
+            return true;
         }
         return false;
     }
