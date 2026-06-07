@@ -9648,3 +9648,42 @@ Verification evidence:
   ordinary output adds negligible overhead on this small-target transform-only path once per-iteration host roundtrips
   are removed. Remaining output-specific work is target-alias coverage, while the larger ICP GPUization work still
   points toward batched async submission or large-target spatial-grid async splitting.
+
+## Task 237: Extend Two-Step Small-Target Transform-Only Path to Target-Alias Output
+
+- Goal: finish the output coverage left by Task 236 by letting the one-sync small finite-radius, two-iteration,
+  transform-only path write directly into `align(*target)` when the target point buffer is reusable.
+- RED check:
+  - Added
+    `ICPGpuPathTest.AlignSmallTargetTwoIterationTransformOnlyWithTargetAliasAvoidsPerIterationHostSynchronization`.
+  - The RED run failed because target-alias output still used the older high-level loop and observed two host
+    synchronizations instead of the one-sync contract.
+- Implementation:
+  - Relaxed `tryAlignGpuSmallTargetTwoStepTransformOnly()` to allow target-alias output when
+    `canReuseGpuOutputPointBuffer()` is true.
+  - Kept attributed or shape-incompatible target outputs on the older path so stale metadata is not preserved.
+  - Reused the existing final-transform output helper, which increments the target point version and invalidates the
+    GPU target workspace cache before the target buffer is overwritten.
+  - Added benchmark row
+    `gpu_icp_small_finite_radius_nonrigid_target_alias_transform_only_two_iterations_below_grid_threshold`.
+- Verification:
+  - New target-alias one-sync test: passed.
+  - Related target-alias/output/small-target path subset: 8/8 passed.
+  - Full `ICPGpuPathTest.*`: 189/189 passed.
+  - Full CUDA CTest: 370/370 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+- Benchmark:
+  - 10-iteration sample with `--icp-points 1024`:
+    `gpu_icp_small_finite_radius_nonrigid_transform_only_two_iterations_below_grid_threshold` = 0.169562 ms,
+    `gpu_icp_small_finite_radius_nonrigid_output_transform_only_two_iterations_below_grid_threshold` = 0.17071 ms,
+    `gpu_icp_small_finite_radius_nonrigid_target_alias_transform_only_two_iterations_below_grid_threshold` =
+    0.172559 ms, and `gpu_icp_small_finite_radius_two_step_transform_only_async_launch_below_grid_threshold` =
+    0.166197 ms.
+  - The target-alias benchmark resets the target from a GPU snapshot before each measured run because the operation
+    intentionally overwrites the target buffer.
+- Current conclusion:
+  small-target transform-only output coverage now includes no-output, ordinary output, and reusable target-alias
+  output. The remaining high-value ICP GPUization work is no longer this small-target output special case; it shifts
+  back to large-target spatial-grid async splitting or a public batched/asynchronous ICP submission surface.

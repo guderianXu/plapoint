@@ -1222,7 +1222,6 @@ private:
         bool output_aliases_target)
     {
         if (_compute_final_metrics ||
-            output_aliases_target ||
             _max_iter != 2 ||
             _gpu_assume_ordered_correspondences ||
             _gpu_assume_ordered_correspondences_after_same_index_step ||
@@ -1240,6 +1239,12 @@ private:
             source_points == target_points ||
             !std::isfinite(max_corr_dist) ||
             max_corr_dist <= 0.0)
+        {
+            return false;
+        }
+        if (output_aliases_target &&
+            output &&
+            !canReuseGpuOutputPointBuffer(*output, source_count))
         {
             return false;
         }

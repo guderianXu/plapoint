@@ -2642,6 +2642,53 @@ void benchmarkGpuIcpSmallFiniteRadiusOutputTransformOnlyTwoIterations(
     }
 }
 
+void benchmarkGpuIcpSmallFiniteRadiusTargetAliasTransformOnlyTwoIterations(
+    const std::string& benchmark_name,
+    int target_points,
+    int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(benchmark_name, "no_usable_cuda_device");
+        return;
+    }
+
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeTranslatedPerturbedCompactNonCollinearGridPoints<float>(target_points, 0.01f, -0.005f, 0.0025f));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeCompactNonCollinearGridPoints<float>(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    const auto target_snapshot = cpu_target->points().toGpu();
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.08f);
+    icp.setMaxIterations(2);
+    icp.setTransformationEpsilon(1.0e-12f);
+    icp.setComputeFinalMetrics(false);
+
+    std::size_t sink = 0;
+    const auto reset_bytes = static_cast<std::size_t>(target_points) * 3u * sizeof(float);
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        (void)source->points();
+        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+            target->points().data(),
+            target_snapshot.data(),
+            reset_bytes,
+            cudaMemcpyDeviceToDevice,
+            0));
+        icp.align(*target);
+        sink += target->size();
+    });
+    printResult(benchmark_name, target_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << benchmark_name << " produced no aligned points\n";
+    }
+}
+
 void benchmarkGpuIcpSmallFiniteRadiusFinalMetricsTwoIterations(
     const std::string& benchmark_name,
     int target_count,
@@ -3347,6 +3394,10 @@ int main(int argc, char** argv)
         options.iterations);
     benchmarkGpuIcpSmallFiniteRadiusOutputTransformOnlyTwoIterations(
         "gpu_icp_small_finite_radius_nonrigid_output_transform_only_two_iterations_below_grid_threshold",
+        127,
+        options.iterations);
+    benchmarkGpuIcpSmallFiniteRadiusTargetAliasTransformOnlyTwoIterations(
+        "gpu_icp_small_finite_radius_nonrigid_target_alias_transform_only_two_iterations_below_grid_threshold",
         127,
         options.iterations);
     benchmarkGpuIcpSmallFiniteRadiusFinalMetricsTwoIterations(
