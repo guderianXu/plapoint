@@ -432,6 +432,7 @@ private:
         bool current_points_use_accumulated_transform = false;
         bool next_points_in_a = true;
         bool previous_step_can_use_transformed_exact_pointwise = false;
+        bool accumulated_transform_has_nonidentity_step = false;
 
         _converged = false;
         _fitness_score = Scalar(0);
@@ -637,6 +638,7 @@ private:
                     }
                     std::swap(_gpu_T_acc, _gpu_next_T_acc);
                 }
+                accumulated_transform_has_nonidentity_step = true;
             }
 
             if (terminal_identity_step)
@@ -669,7 +671,30 @@ private:
                 {
                     invalidateGpuExactIdentityResultCache();
                 }
-                invalidateGpuFullCoverageTransformResultCache();
+                if (!output_aliases_target &&
+                    canCacheGpuFullCoverageTransformResult(
+                        source_count,
+                        target_count,
+                        source_points,
+                        target_points,
+                        stats.active_count,
+                        stats.step_maps_correspondences_exactly,
+                        stats.all_correspondences_same_index,
+                        accumulated_transform_has_nonidentity_step,
+                        terminal_step_residual_sq_sum))
+                {
+                    markGpuFullCoverageTransformResultCache(
+                        source_count,
+                        target_count,
+                        source_points,
+                        target_points);
+                    invalidateGpuFullCoverageTransformOutputCache();
+                    invalidateGpuIdentityOutputCache();
+                }
+                else
+                {
+                    invalidateGpuFullCoverageTransformResultCache();
+                }
                 break;
             }
             else if (terminal_iteration && _compute_final_metrics)
@@ -716,7 +741,8 @@ private:
                             stats.active_count,
                             stats.step_maps_correspondences_exactly,
                             stats.all_correspondences_same_index,
-                            step_result.delta))
+                            accumulated_transform_has_nonidentity_step,
+                            terminal_step_residual_sq_sum))
                     {
                         markGpuFullCoverageTransformResultCache(
                             source_count,
@@ -842,7 +868,8 @@ private:
                             stats.active_count,
                             stats.step_maps_correspondences_exactly,
                             stats.all_correspondences_same_index,
-                            step_result.delta))
+                            accumulated_transform_has_nonidentity_step,
+                            terminal_step_residual_sq_sum))
                     {
                         markGpuFullCoverageTransformResultCache(
                             source_count,
@@ -881,7 +908,6 @@ private:
             {
                 invalidateGpuSameBufferIdentityResultCache();
                 invalidateGpuExactIdentityResultCache();
-                invalidateGpuFullCoverageTransformResultCache();
                 if (terminal_iteration)
                 {
                     if (transform_output_points)
@@ -909,6 +935,53 @@ private:
                 if (terminal_iteration && !_compute_final_metrics)
                 {
                     updateResidualMetricsFromGpuStats(stats, source_count);
+                    const bool terminal_step_converged = step_result.delta < _eps;
+                    if (terminal_step_converged)
+                    {
+                        _converged = stats.active_count >= 3 && _fitness_score >= _min_fitness_score;
+                    }
+                    if (!output_aliases_target &&
+                        canCacheGpuFullCoverageTransformResult(
+                            source_count,
+                            target_count,
+                            source_points,
+                            target_points,
+                            stats.active_count,
+                            stats.step_maps_correspondences_exactly,
+                            stats.all_correspondences_same_index,
+                            accumulated_transform_has_nonidentity_step,
+                            terminal_step_residual_sq_sum))
+                    {
+                        markGpuFullCoverageTransformResultCache(
+                            source_count,
+                            target_count,
+                            source_points,
+                            target_points);
+                        if (output &&
+                            transform_output_points &&
+                            final_points_written_to_output &&
+                            !output_aliases_target)
+                        {
+                            markGpuFullCoverageTransformOutputCache(
+                                *output,
+                                source_count,
+                                source_points,
+                                target_points);
+                        }
+                        else
+                        {
+                            invalidateGpuFullCoverageTransformOutputCache();
+                        }
+                        invalidateGpuIdentityOutputCache();
+                    }
+                    else
+                    {
+                        invalidateGpuFullCoverageTransformResultCache();
+                    }
+                }
+                else
+                {
+                    invalidateGpuFullCoverageTransformResultCache();
                 }
             }
 
@@ -948,6 +1021,19 @@ private:
                     output_points,
                     0);
                 invalidateGpuIdentityOutputCache();
+                if (!output_aliases_target &&
+                    gpuFullCoverageTransformResultCacheMatches(
+                        source_count,
+                        target_count,
+                        source_points,
+                        target_points))
+                {
+                    markGpuFullCoverageTransformOutputCache(*output, source_count, source_points, target_points);
+                }
+                else
+                {
+                    invalidateGpuFullCoverageTransformOutputCache();
+                }
             }
             else if (!gpuOutputAlreadyContainsCurrentPoints(*output, source_count, cur_points))
             {
@@ -975,23 +1061,28 @@ private:
                     {
                         invalidateGpuIdentityOutputCache();
                     }
+                    invalidateGpuFullCoverageTransformOutputCache();
                 }
                 else if (cur_points == source_points)
                 {
                     markGpuIdentityOutputCache(*output, source_count, source_points);
+                    invalidateGpuFullCoverageTransformOutputCache();
                 }
                 else
                 {
                     invalidateGpuIdentityOutputCache();
+                    invalidateGpuFullCoverageTransformOutputCache();
                 }
             }
             else if (cur_points == source_points)
             {
                 markGpuIdentityOutputCache(*output, source_count, source_points);
+                invalidateGpuFullCoverageTransformOutputCache();
             }
             else
             {
                 invalidateGpuIdentityOutputCache();
+                invalidateGpuFullCoverageTransformOutputCache();
             }
         }
     }
@@ -1208,6 +1299,34 @@ private:
                target_points != nullptr;
     }
 
+    bool residualMetricIsNumericallyExact(Scalar rmse) const
+    {
+        return std::isfinite(rmse) &&
+               std::abs(static_cast<double>(rmse)) <= gpuFullCoverageExactResidualTolerance();
+    }
+
+    bool stepResidualIsNumericallyExact(int active_count, double residual_sq_sum) const
+    {
+        if (active_count <= 0 || !std::isfinite(residual_sq_sum))
+        {
+            return false;
+        }
+        const double residual_rms = std::sqrt(std::max(0.0, residual_sq_sum) / static_cast<double>(active_count));
+        return residual_rms <= gpuFullCoverageExactResidualTolerance();
+    }
+
+    static constexpr double gpuFullCoverageExactResidualTolerance()
+    {
+        if constexpr (std::is_same_v<Scalar, float>)
+        {
+            return 1.0e-5;
+        }
+        else
+        {
+            return 1.0e-12;
+        }
+    }
+
     template <plamatrix::Device D = Dev>
     std::enable_if_t<D == plamatrix::Device::GPU, bool>
     canCacheGpuFullCoverageTransformResult(
@@ -1218,18 +1337,22 @@ private:
         int active_count,
         bool step_maps_correspondences_exactly,
         bool all_correspondences_same_index,
-        Scalar step_delta) const
+        bool final_transform_has_nonidentity_step,
+        double step_residual_sq_sum) const
     {
         const bool full_coverage_exact =
             active_count == source_count && step_maps_correspondences_exactly;
         const bool full_coverage_same_index =
-            active_count == source_count && all_correspondences_same_index;
+            active_count == source_count &&
+            all_correspondences_same_index &&
+            (_compute_final_metrics
+                ? residualMetricIsNumericallyExact(_final_rmse)
+                : stepResidualIsNumericallyExact(active_count, step_residual_sq_sum));
         return _source.get() != _target.get() &&
-               _compute_final_metrics &&
                source_count > 0 &&
                target_count > 0 &&
                (full_coverage_exact || full_coverage_same_index) &&
-               step_delta != Scalar(0) &&
+               final_transform_has_nonidentity_step &&
                source_points != nullptr &&
                target_points != nullptr &&
                _fitness_score == Scalar(1) &&

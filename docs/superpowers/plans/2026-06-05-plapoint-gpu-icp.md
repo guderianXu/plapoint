@@ -8555,3 +8555,58 @@ Verification evidence:
   keep the full-coverage transform-result cache for final-metrics-enabled repeated calls. It removes nearly all
   repeated-call overhead for unchanged full-coverage translation workloads while leaving skip-final-metrics and
   non-rigid transform-only rows on their existing kernels.
+
+## Task 215: Reuse Exact Skip-Final Full-Coverage Transform Results
+
+- Goal: extend the full-coverage transform-result cache to `setComputeFinalMetrics(false)` for unchanged exact
+  finite-radius translation workloads. The optimization should remove repeated alignment-step, host synchronization,
+  target-grid prepare, and output-transform work for exact translated grids, but must not cache non-rigid same-index
+  residual cases where the rigid step does not explain the source/target pair.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignReusesFullCoverageSkipFinalMetricsOneIterationResultAcrossSeparateBufferCalls`.
+    Before implementation, two repeated one-iteration skip-final `align(output)` calls produced two alignment steps,
+    two host synchronizations, two target-grid prepares, and two output transforms instead of one each.
+  - Added `ICPGpuPathTest.AlignReusesFullCoverageSkipFinalMetricsTransformedIdentityResultAcrossSeparateBufferCalls`.
+    Before implementation, two repeated two-iteration skip-final translation calls produced four alignment steps, four
+    host synchronizations, and two output transforms instead of two, two, and one.
+  - Added `ICPGpuPathTest.AlignDoesNotReuseSkipFinalMetricsForNonRigidSameIndexResiduals` after an initial over-broad
+    cache condition incorrectly reduced the non-rigid transform-only benchmark to a microsecond cache hit. The RED
+    failure showed two alignment steps instead of the expected four across two no-output non-rigid calls.
+- Implementation:
+  - Tracked whether the accumulated GPU transform contains a non-identity step so terminal identity iterations after a
+    prior translation can still mark the transform-result cache.
+  - Allowed skip-final cache marking only for full-coverage results whose step residual RMS is numerically exact
+    (`1e-5` for float, `1e-12` for double), or for final-metrics-enabled results whose final RMSE is numerically exact.
+    This keeps translated grids on the fast path while rejecting perturbed same-index non-rigid residuals.
+  - Added post-loop output-cache marking for accumulated-transform output writes, which is required for the two-step
+    skip-final translation path because the output transform is emitted after the loop.
+- Targeted verification:
+  - The two skip-final reuse RED tests failed before implementation and passed after cache marking was extended.
+  - The non-rigid same-index regression failed under the first broad same-index condition, then passed after the
+    residual-RMS gate was added.
+  - Adjacent GPU ICP regression set passed 12/12, covering skip-final reuse, non-rigid rejection, final-metrics
+    full-coverage reuse, mutable source/target/output invalidation, target-alias output, and existing skip-final
+    no-output behavior.
+- Benchmark:
+  - Rebuilt `build-codex-cuda-bench-only` and ran:
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 100 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`.
+  - Relevant sample after this change:
+    `gpu_icp_identity` = 0.662391 ms,
+    `gpu_icp_identity_same_buffer_reuse_output` = 0.000146 ms,
+    `gpu_icp_finite_radius` = 1.2269 ms,
+    `gpu_icp_finite_radius_identity_reuse_output` = 0.000157 ms,
+    `gpu_icp_finite_radius_identity_exact_probe_reuse_output` = 0.000153 ms,
+    `gpu_icp_finite_radius_translation_reuse_output` = 0.000188 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_one_iteration` = 0.00021 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 0.000198 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.000194 ms, and
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 1.43203 ms.
+- Full verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 343/343 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 144/144
+    reported no failures; `plapoint.PointCloudTest.GpuTransfer` was skipped in the CPU-only configuration.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+- Current conclusion:
+  keep the residual-gated skip-final transform cache. It removes almost all repeated-call overhead for exact
+  full-coverage translation workloads while preserving the non-rigid transform-only path as a real ICP benchmark.
