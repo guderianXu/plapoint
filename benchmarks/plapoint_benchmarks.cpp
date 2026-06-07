@@ -144,6 +144,49 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeBinaryGridPoints(int 
 }
 
 template <typename Scalar>
+plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeCompactNonCollinearGridPoints(int count)
+{
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(count, 3);
+    for (int i = 0; i < count; ++i)
+    {
+        if (i < 4)
+        {
+            points(i, 0) = (i == 1) ? Scalar(0.25) : Scalar(0);
+            points(i, 1) = (i == 2) ? Scalar(0.25) : Scalar(0);
+            points(i, 2) = (i == 3) ? Scalar(0.25) : Scalar(0);
+        }
+        else
+        {
+            const int j = i - 4;
+            const int x = j % 8;
+            const int y = (j / 8) % 8;
+            const int z = j / 64;
+            points(i, 0) = static_cast<Scalar>(x) * Scalar(0.25) + Scalar(0.125);
+            points(i, 1) = static_cast<Scalar>(y) * Scalar(0.25) + Scalar(0.125);
+            points(i, 2) = static_cast<Scalar>(z) * Scalar(0.25) + Scalar(0.125);
+        }
+    }
+    return points;
+}
+
+template <typename Scalar>
+plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslatedCompactNonCollinearGridPoints(
+    int count,
+    Scalar tx,
+    Scalar ty,
+    Scalar tz)
+{
+    auto points = makeCompactNonCollinearGridPoints<Scalar>(count);
+    for (int i = 0; i < count; ++i)
+    {
+        points(i, 0) += tx;
+        points(i, 1) += ty;
+        points(i, 2) += tz;
+    }
+    return points;
+}
+
+template <typename Scalar>
 plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslationTransform(
     Scalar tx,
     Scalar ty,
@@ -2296,6 +2339,45 @@ void benchmarkGpuIcpAlignmentStepFallbackTileBoundsCachedBounds(int icp_points, 
         std::cerr << "gpu_icp_alignment_step_fallback_tile_bounds_cached_bounds produced no correspondences\n";
     }
 }
+
+void benchmarkGpuIcpAlignmentStepSmallFiniteRadiusTarget(
+    const std::string& benchmark_name,
+    int target_points,
+    int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(benchmark_name, "no_usable_cuda_device");
+        return;
+    }
+
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeTranslatedCompactNonCollinearGridPoints<float>(target_points, 0.01f, -0.005f, 0.0025f));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeCompactNonCollinearGridPoints<float>(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+        plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+        const auto result = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
+            source->points().data(),
+            static_cast<int>(source->size()),
+            target->points().data(),
+            static_cast<int>(target->size()),
+            0.08f,
+            stats_workspace,
+            step_transform.data());
+        sink += static_cast<std::size_t>(std::max(0, result.active_count));
+    });
+    printResult(benchmark_name, target_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << benchmark_name << " produced no correspondences\n";
+    }
+}
 #endif
 
 } // namespace
@@ -2553,6 +2635,30 @@ int main(int argc, char** argv)
     benchmarkGpuIcpStatsStepFallbackTileBoundsCachedBounds(options.icp_points, options.iterations);
     benchmarkGpuIcpAlignmentStepFallbackTileBoundsNewWorkspace(options.icp_points, options.iterations);
     benchmarkGpuIcpAlignmentStepFallbackTileBoundsCachedBounds(options.icp_points, options.iterations);
+    benchmarkGpuIcpAlignmentStepSmallFiniteRadiusTarget(
+        "gpu_icp_alignment_step_small_finite_radius_target_4",
+        4,
+        options.iterations);
+    benchmarkGpuIcpAlignmentStepSmallFiniteRadiusTarget(
+        "gpu_icp_alignment_step_small_finite_radius_target_16",
+        16,
+        options.iterations);
+    benchmarkGpuIcpAlignmentStepSmallFiniteRadiusTarget(
+        "gpu_icp_alignment_step_small_finite_radius_target_64",
+        64,
+        options.iterations);
+    benchmarkGpuIcpAlignmentStepSmallFiniteRadiusTarget(
+        "gpu_icp_alignment_step_small_finite_radius_target_below_grid_threshold",
+        127,
+        options.iterations);
+    benchmarkGpuIcpAlignmentStepSmallFiniteRadiusTarget(
+        "gpu_icp_alignment_step_small_finite_radius_target_at_grid_threshold",
+        128,
+        options.iterations);
+    benchmarkGpuIcpAlignmentStepSmallFiniteRadiusTarget(
+        "gpu_icp_alignment_step_small_finite_radius_target_256",
+        256,
+        options.iterations);
 #endif
     return 0;
 }

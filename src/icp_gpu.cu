@@ -223,6 +223,7 @@ static_assert(offsetof(IcpStatsAndStepRawResult, stats) == 0,
 
 constexpr int kIcpStatsBlockSize = 128;
 constexpr int kIcpSpatialGridMinTargetCount = kIcpStatsBlockSize;
+constexpr int kIcpTargetTileBoundsMinTargetCount = kIcpStatsBlockSize + 1;
 constexpr int kIcpTransform3x4ValueCount = 12;
 
 template <typename Scalar>
@@ -5586,10 +5587,12 @@ __device__ __forceinline__ void writeAlignmentStepRawResultFromRawStats(
 bool covarianceHasNonCollinearGeometry(const double covariance[9]);
 
 template <typename Scalar>
-bool shouldPrecomputeTargetTileBounds(Scalar max_correspondence_distance)
+bool shouldPrecomputeTargetTileBounds(Scalar max_correspondence_distance, int target_count)
 {
     const double max_dist = static_cast<double>(max_correspondence_distance);
-    return std::isfinite(max_dist) && max_dist >= 0.0;
+    return std::isfinite(max_dist) &&
+        max_dist >= 0.0 &&
+        target_count >= kIcpTargetTileBoundsMinTargetCount;
 }
 
 template <typename Scalar>
@@ -6274,7 +6277,7 @@ const IcpTargetTileBounds* prepareTargetTileBounds(
     IcpCorrespondenceStatsWorkspace& workspace,
     cudaStream_t stream)
 {
-    if (!shouldPrecomputeTargetTileBounds(max_correspondence_distance))
+    if (!shouldPrecomputeTargetTileBounds(max_correspondence_distance, target_count))
     {
         return nullptr;
     }

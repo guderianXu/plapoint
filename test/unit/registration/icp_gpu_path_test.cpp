@@ -841,6 +841,42 @@ TEST(ICPGpuPathTest, AlignmentStepSkipsTargetSpatialGridBelowTargetCountThreshol
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 0);
 }
 
+TEST(ICPGpuPathTest, AlignmentStepSkipsTargetTileBoundsForSmallFiniteRadiusTarget)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto target_cpu = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
+    auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.01f, -0.005f, 0.0025f);
+    auto source_gpu = source_cpu.toGpu();
+    auto target_gpu = target_cpu.toGpu();
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+
+    plapoint::gpu::resetIcpTargetTileBoundsReserveCountForTesting();
+    plapoint::gpu::resetIcpTargetTileBoundComputationCountForTesting();
+    plapoint::gpu::resetIcpFallbackTileBoundKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpFallbackUnboundedKernelLaunchCountForTesting();
+    const auto result = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        0.08f,
+        stats_workspace,
+        step_gpu.data());
+
+    EXPECT_EQ(result.active_count, static_cast<int>(source_gpu.rows()));
+    EXPECT_TRUE(result.step_valid);
+    EXPECT_EQ(plapoint::gpu::icpTargetTileBoundsReserveCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpTargetTileBoundComputationCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpFallbackTileBoundKernelLaunchCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpFallbackUnboundedKernelLaunchCountForTesting(), 1);
+}
+
 TEST(ICPGpuPathTest, AlignmentStepUsesTargetSpatialGridAtTargetCountThreshold)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
@@ -1187,13 +1223,19 @@ TEST(ICPGpuPathTest, CorrespondenceStatsPrunesFarTargetsBeforeFullDistanceEvalua
     source.setValue(0, 1, 0.0f);
     source.setValue(0, 2, 0.0f);
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(4, 3);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(129, 3);
     target.setValue(0, 0, std::numeric_limits<float>::quiet_NaN());
     target.setValue(0, 1, std::numeric_limits<float>::quiet_NaN());
     target.setValue(0, 2, std::numeric_limits<float>::quiet_NaN());
-    target.setValue(1, 0, 0.5f);   target.setValue(1, 1, 0.0f);    target.setValue(1, 2, 0.0f);
+    target.setValue(1, 0, 0.0f);   target.setValue(1, 1, 0.0f);    target.setValue(1, 2, 0.0f);
     target.setValue(2, 0, 100.0f); target.setValue(2, 1, 0.0f);    target.setValue(2, 2, 0.0f);
     target.setValue(3, 0, 0.0f);   target.setValue(3, 1, -200.0f); target.setValue(3, 2, 0.0f);
+    for (int row = 4; row < static_cast<int>(target.rows()); ++row)
+    {
+        target.setValue(row, 0, 1000.0f + static_cast<float>(row));
+        target.setValue(row, 1, 1000.0f);
+        target.setValue(row, 2, 1000.0f);
+    }
 
     auto source_gpu = source.toGpu();
     auto target_gpu = target.toGpu();
@@ -1204,7 +1246,7 @@ TEST(ICPGpuPathTest, CorrespondenceStatsPrunesFarTargetsBeforeFullDistanceEvalua
         static_cast<int>(source_gpu.rows()),
         target_gpu.data(),
         static_cast<int>(target_gpu.rows()),
-        1.0f,
+        0.0f,
         nullptr);
 
     EXPECT_EQ(stats.active_count, 1);

@@ -8763,3 +8763,62 @@ Verification evidence:
   keep the target-count gate. It removes unnecessary spatial-grid setup for very small finite-radius targets without
   changing the large-target grid/cache path. The next measurable follow-up is a dedicated small non-collinear ICP
   benchmark row so the threshold can be tuned against real timing data instead of only counter evidence.
+
+## Task 219: Add Small-Target GPU ICP Benchmarks and Skip One-Tile Bounds
+
+- Goal: quantify the finite-radius small-target path with non-degenerate fixtures, then remove one more avoidable
+  kernel/setup step for targets that fit in a single 128-point ICP target tile.
+- RED checks:
+  - Added row-completeness expectations for
+    `gpu_icp_alignment_step_small_finite_radius_target_below_grid_threshold` and
+    `gpu_icp_alignment_step_small_finite_radius_target_at_grid_threshold`. `ctest --test-dir
+    build-codex-cuda-bench-only --output-on-failure` failed because the rows were missing.
+  - Expanded the row-completeness RED to fixed small-target sweep rows for 4, 16, 64, 127, 128, and 256 target rows;
+    the CTest failed on the missing `gpu_icp_alignment_step_small_finite_radius_target_4` row.
+  - Added `ICPGpuPathTest.AlignmentStepSkipsTargetTileBoundsForSmallFiniteRadiusTarget`. Before implementation, the
+    127-row finite-radius target reserved one target-tile-bounds buffer, computed one tile bound, and launched the
+    tile-bound fallback kernel.
+- Implementation:
+  - Added benchmark-only compact non-collinear fixtures that stay non-degenerate even at 4 target rows.
+  - Added six fixed-size finite-radius GPU ICP alignment-step benchmark rows: 4, 16, 64, 127, 128, and 256 target
+    rows.
+  - Added `kIcpTargetTileBoundsMinTargetCount = kIcpStatsBlockSize + 1` and changed target tile-bound precompute to
+    require a finite non-negative radius and more than one 128-point target tile. Targets that fit in one tile now use
+    the unbounded fallback kernel directly.
+- Benchmark:
+  - Before skipping one-tile bounds, 200-iteration samples were:
+    4 rows = 0.559022 ms,
+    16 rows = 0.568569 ms,
+    64 rows = 0.584935 ms,
+    127 rows = 0.605935 ms,
+    128 rows = 0.660747 ms, and
+    256 rows = 0.673958 ms.
+  - After skipping one-tile bounds, 200-iteration samples were:
+    4 rows = 0.561141 ms,
+    16 rows = 0.569418 ms,
+    64 rows = 0.575737 ms,
+    127 rows = 0.593111 ms,
+    128 rows = 0.660306 ms, and
+    256 rows = 0.663976 ms.
+  - Interpretation: skipping one-tile bounds gives a modest gain at 64/127 rows; 4/16 rows are dominated by fixed
+    launch/synchronization overhead. The 128/256 rows remain spatial-grid rows, so small changes there are benchmark
+    noise rather than the tile-bounds optimization.
+- Targeted verification:
+  - `cmake --build build-codex-cuda -j$(nproc) && ./build-codex-cuda/test/plapoint_tests
+    --gtest_filter=ICPGpuPathTest.AlignmentStepSkipsTargetTileBoundsForSmallFiniteRadiusTarget:
+    ICPGpuPathTest.CorrespondenceStatsPrecomputesFiniteRadiusTargetTileBoundsOnce:
+    ICPGpuPathTest.CorrespondenceStatsReusesFiniteRadiusTargetTileBoundsForSameTarget:
+    ICPGpuPathTest.AlignmentStepSkipsTargetSpatialGridBelowTargetCountThreshold:
+    ICPGpuPathTest.AlignmentStepUsesTargetSpatialGridAtTargetCountThreshold`: 5/5 passed.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) && ctest --test-dir build-codex-cuda-bench-only
+    --output-on-failure`: 1/1 passed after the new rows were implemented.
+- Full verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 351/351 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 144/144
+    reported no failures; `plapoint.PointCloudTest.GpuTransfer` was skipped in the CPU-only configuration.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+- Current conclusion:
+  keep the one-tile bounds skip. It removes a measurable but small amount of fallback overhead without changing the
+  multi-tile target-bounds path or the spatial-grid path. The remaining sub-64-row bottleneck is fixed GPU launch and
+  host-result synchronization overhead, not nearest-neighbor search work.

@@ -84,6 +84,12 @@ set(expected_gpu_icp_rows
     gpu_icp_stats_step_fallback_tile_bounds_cached_bounds
     gpu_icp_alignment_step_fallback_tile_bounds_new_workspace
     gpu_icp_alignment_step_fallback_tile_bounds_cached_bounds
+    gpu_icp_alignment_step_small_finite_radius_target_4
+    gpu_icp_alignment_step_small_finite_radius_target_16
+    gpu_icp_alignment_step_small_finite_radius_target_64
+    gpu_icp_alignment_step_small_finite_radius_target_below_grid_threshold
+    gpu_icp_alignment_step_small_finite_radius_target_at_grid_threshold
+    gpu_icp_alignment_step_small_finite_radius_target_256
 )
 
 foreach(row_name IN LISTS expected_gpu_icp_rows)
