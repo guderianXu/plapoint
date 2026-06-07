@@ -122,6 +122,43 @@ public:
     {
         _gpu_cache_full_coverage_residual_results = enabled;
     }
+
+    /// Preallocate reusable GPU ICP workspaces for the current source, target, and iteration settings.
+    /// This moves allocation cost out of the first align() call without building target-grid contents.
+    template <plamatrix::Device D = Dev>
+    std::enable_if_t<D == plamatrix::Device::GPU, void>
+    reserveGpuWorkspace()
+    {
+        if (!_source)
+        {
+            throw std::runtime_error("ICP: source cloud not set");
+        }
+        if (!_target)
+        {
+            throw std::runtime_error("ICP: target cloud not set");
+        }
+        const int source_count = checkedInt(_source->size(), "ICP: source point count exceeds int range");
+        const int target_count = checkedInt(_target->size(), "ICP: target point count exceeds int range");
+        if (source_count <= 0)
+        {
+            throw std::invalid_argument("ICP: source cloud must not be empty");
+        }
+        if (target_count <= 0)
+        {
+            throw std::invalid_argument("ICP: target cloud must not be empty");
+        }
+
+        reserveGpuStepTransformBuffer();
+        reserveGpuAccumulatedTransformBuffer();
+        if (_max_iter > 1)
+        {
+            reserveGpuNextTransformBuffer();
+        }
+        reserveGpuAlignmentStepWorkspace(source_count);
+        reserveGpuStatsAndStepWorkspace(_gpu_terminal_stats_workspace, source_count);
+        reserveGpuResidualStatsWorkspace(_gpu_final_stats_workspace, source_count);
+        reserveGpuTargetSpatialGridWorkspace(target_count);
+    }
 #endif
 
     /// Align the source cloud to the target cloud and write the transformed source to output.
@@ -3029,22 +3066,63 @@ private:
         return source_count > 0 && _gpu_alignment_step_workspace_source_capacity >= source_count;
     }
 
+    void reserveGpuAlignmentStepWorkspaceStorage(
+        gpu::IcpCorrespondenceStatsWorkspace& workspace,
+        int source_count)
+    {
+        if constexpr (std::is_same_v<Scalar, float>)
+        {
+            workspace.reserveFloatAlignmentStep(source_count);
+        }
+        else
+        {
+            workspace.reserveDoubleAlignmentStep(source_count);
+        }
+    }
+
     void reserveGpuAlignmentStepWorkspace(int source_count)
     {
         if (gpuAlignmentStepWorkspaceReservationMatches(source_count))
         {
             return;
         }
-        if constexpr (std::is_same_v<Scalar, float>)
-        {
-            _gpu_stats_workspace.reserveFloatAlignmentStep(source_count);
-        }
-        else
-        {
-            _gpu_stats_workspace.reserveDoubleAlignmentStep(source_count);
-        }
+        reserveGpuAlignmentStepWorkspaceStorage(_gpu_stats_workspace, source_count);
         _gpu_alignment_step_workspace_source_capacity =
             std::max(_gpu_alignment_step_workspace_source_capacity, source_count);
+    }
+
+    void reserveGpuStatsAndStepWorkspace(
+        gpu::IcpCorrespondenceStatsWorkspace& workspace,
+        int source_count)
+    {
+        workspace.reserveStatsAndStep(source_count);
+    }
+
+    void reserveGpuResidualStatsWorkspace(
+        gpu::IcpCorrespondenceStatsWorkspace& workspace,
+        int source_count)
+    {
+        workspace.reserveResidualStats(source_count);
+    }
+
+    static constexpr int gpuTargetSpatialGridMinTargetCount()
+    {
+        return 128;
+    }
+
+    bool gpuTargetSpatialGridWorkspaceReservationMatches(int target_count) const
+    {
+        return target_count > 0 && _gpu_stats_workspace.targetSpatialGridCapacity() >= target_count;
+    }
+
+    void reserveGpuTargetSpatialGridWorkspace(int target_count)
+    {
+        if (target_count < gpuTargetSpatialGridMinTargetCount() ||
+            gpuTargetSpatialGridWorkspaceReservationMatches(target_count))
+        {
+            return;
+        }
+        _gpu_stats_workspace.template reserveTargetSpatialGridForScalar<Scalar>(target_count);
     }
 
     void reserveGpuAccumulatedTransformBuffer()

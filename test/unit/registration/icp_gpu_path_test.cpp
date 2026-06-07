@@ -8834,6 +8834,53 @@ TEST(ICPGpuPathTest, AlignmentStepWorkspaceReservationCacheMatchesReservedCapaci
     EXPECT_FALSE(icp.gpuAlignmentStepWorkspaceReservationMatches(5));
 }
 
+TEST(ICPGpuPathTest, ReserveGpuWorkspacePreallocatesLargeTargetAlignmentState)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_points = makeTranslatedGridPoints(
+        kMinTargetSpatialGridRowsForTesting,
+        0.003f,
+        -0.002f,
+        0.001f);
+    auto target_points = makeGridPoints(kMinTargetSpatialGridRowsForTesting);
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.02f);
+    icp.setMaxIterations(2);
+
+    plapoint::gpu::resetIcpTargetSpatialGridReserveCountForTesting();
+    icp.reserveGpuWorkspace();
+    auto* first_step = icp._gpu_T_step->data();
+    auto* first_acc = icp._gpu_T_acc->data();
+    auto* first_next = icp._gpu_next_T_acc->data();
+
+    EXPECT_TRUE(icp.gpuAlignmentStepWorkspaceReservationMatches(static_cast<int>(source->size())));
+    EXPECT_GT(icp._gpu_terminal_stats_workspace.partialCapacity(), 0);
+    EXPECT_GT(icp._gpu_final_stats_workspace.partialCapacity(), 0);
+    EXPECT_GE(icp._gpu_stats_workspace.targetSpatialGridCapacity(), static_cast<int>(target->size()));
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridReserveCountForTesting(), 1);
+
+    icp.reserveGpuWorkspace();
+
+    EXPECT_EQ(icp._gpu_T_step->data(), first_step);
+    EXPECT_EQ(icp._gpu_T_acc->data(), first_acc);
+    EXPECT_EQ(icp._gpu_next_T_acc->data(), first_next);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridReserveCountForTesting(), 1);
+}
+
 TEST(ICPGpuPathTest, AlignReusesAlignmentStepWorkspaceAcrossRepeatedCalls)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
