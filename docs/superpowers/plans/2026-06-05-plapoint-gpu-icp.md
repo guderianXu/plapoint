@@ -7823,3 +7823,114 @@ Verification evidence:
     and branches increase register pressure/instruction count in already heavy kernels.
   - Next optimization work should target candidate coordinate loads, accepted-correspondence statistic payload, or
     whole-kernel/whole-synchronization elimination rather than neighbor offset arithmetic.
+
+## Task 202: Rejected Direct-Lookup Z-Entry Pruning Experiment
+
+- Goal tested: avoid reading direct spatial-grid Z lookup entries when the Z-cell lower bound already proves that the
+  cell cannot improve the current best distance. This looked attractive after Task 200 because the same-index seed often
+  gives a small best-distance upper bound.
+- RED check:
+  - Added a temporary `g_icp_direct_grid_lookup_z_load_count` counter and
+    `ICPGpuPathTest.SpatialGridDirectLookupSkipsZLoadsWhenNeighborZCannotImproveBest`.
+  - Before implementation, correspondence stats, residual stats, and transformed residual stats each loaded 3 direct
+    Z lookup entries for one source point; the intended optimized count was 1.
+- Implementation attempt:
+  - In the direct-lookup path, moved `directLookupIcpGridCellAtZ()` after the Z lower-bound computation and only loaded
+    the direct lookup table when `min_cell_dist_sq` could still improve the current best distance.
+  - The targeted direct-lookup/seed tests passed after the change.
+- Verification:
+  - Targeted tests:
+    `ICPGpuPathTest.SpatialGridDirectLookupSkipsZLoadsWhenNeighborZCannotImproveBest`,
+    `ICPGpuPathTest.SpatialGridDirectLookupChecksXYRangeOnceForNeighborZColumn`,
+    `ICPGpuPathTest.SpatialGridDirectLookupPrunesXYBeforeBaseLookup`,
+    `ICPGpuPathTest.CorrespondenceStatsSeedsSameIndexCandidateBeforeSpatialGridSearch`, and
+    `ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells` all passed.
+  - Baseline after NVIDIA driver recovery, clean Task 201 code:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.0055 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.589784 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.588729 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.587987 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.564395 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.456823 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.464834 ms.
+  - After the direct-lookup Z-entry pruning attempt:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.06424 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.646964 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.645252 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.64501 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.621354 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.51396 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.523177 ms.
+- Decision:
+  - Do not keep this code. Although it reduced direct lookup table reads in the narrow fixture, it regressed all
+    cached-grid finite-radius benchmark rows by roughly 10%.
+  - Working hypothesis: on the hot translated-grid path the direct lookup table load is cheaper than moving the
+    lower-bound arithmetic and branches ahead of it; the reordering likely increases instruction pressure in the inner
+    Z loop.
+  - Avoid further micro-optimizations that only trade one direct lookup load for extra arithmetic unless profiling
+    shows the table load is a real bottleneck.
+
+## Task 203: Skip Same-Index Candidate After Spatial-Grid Seed
+
+- Goal: avoid scanning the same target candidate that `seedSameIndexSpatialGridBestDistance()` already evaluated. Task
+  200 used same-index target points as an initial nearest-neighbor upper bound, but the later spatial-grid candidate
+  scan could still visit the same sorted target entry and reload its coordinates.
+- RED check:
+  - Tightened `ICPGpuPathTest.CorrespondenceStatsSeedsSameIndexCandidateBeforeSpatialGridSearch` so correspondence
+    stats, residual stats, and transformed residual stats must report 0 scanned target candidates after a successful
+    same-index seed in its single-candidate fixture.
+  - Before implementation, all three paths still reported 1 candidate visit.
+- Implementation:
+  - Added a cached `target_idx -> sorted_offset` reverse table to `IcpCorrespondenceStatsWorkspace` target spatial-grid
+    storage.
+  - Filled the reverse table in `gatherSortedIcpTargetPointsKernel()` while gathering sorted coordinates.
+  - Extended `IcpTargetSpatialGrid` and `seedSameIndexSpatialGridBestDistance()` to return the seeded sorted offset.
+  - Updated correspondence, residual, and transformed residual spatial-grid scan helpers to skip the seeded sorted
+    offset before candidate visit counting and coordinate loads.
+  - Updated older counter fixtures that unintentionally used the same-index seed path, and extended spatial-grid
+    storage reuse tests to cover the new reverse table.
+- Targeted verification:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsSeedsSameIndexCandidateBeforeSpatialGridSearch`
+    failed before implementation with 1 candidate visit for correspondence stats, residual stats, and transformed
+    residual stats.
+  - After implementation,
+    `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.CorrespondenceStatsSeedsSameIndexCandidateBeforeSpatialGridSearch:ICPGpuPathTest.CorrespondenceStatsSpatialGridTieKeepsLowerTargetIndex:ICPGpuPathTest.CorrespondenceStatsLoadsSpatialGridTargetIndexOnlyForCompetitiveCandidates:ICPGpuPathTest.CorrespondenceStatsPrunesSpatialGridCellsByCurrentBestDistance:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYCannotImproveBest:ICPGpuPathTest.TransformResidualStatsFallbackSkipsDuplicateExactPointwiseProbeAfterPreflightMiss:ICPGpuPathTest.AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput:ICPGpuPathTest.AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsUseSpatialGrid`
+    passed all 8 seed, tie-break, candidate-load, and snapshot tests.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*`: 139/139 passed.
+- Benchmark:
+  - Baseline after NVIDIA driver recovery, clean Task 201 code:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.0055 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.589784 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.588729 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.587987 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.564395 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.456823 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.464834 ms.
+  - After the same-index sorted-offset skip:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 0.908318 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.540596 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.539439 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.539538 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.515009 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.416815 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid_reserved_workspace` = 0.415687 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.417997 ms.
+- Current conclusion:
+  skipping the already seeded same-index sorted target entry is a real hot-path win. It removes one duplicate candidate
+  coordinate load sequence per source point in common same-index/translated-cloud workloads, while preserving full
+  nearest-neighbor correctness and lower-target-index tie-break behavior.
+- Pre-push verification after full-suite rebuild:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 320/320 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 143/144
+    executed tests passed, with `plapoint.PointCloudTest.GpuTransfer` skipped by the CPU-only build.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+  - Final local benchmark sample:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 0.913184 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.540601 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.538556 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.538481 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.515022 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.415663 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.416631 ms.

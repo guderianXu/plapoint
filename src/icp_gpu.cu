@@ -149,6 +149,7 @@ struct IcpTargetSpatialGrid
     int target_count = 0;
     const IcpGridCellKey* __restrict__ cell_keys = nullptr;
     const int* __restrict__ sorted_target_indices = nullptr;
+    const int* __restrict__ sorted_target_offsets = nullptr;
     const void* __restrict__ sorted_target_x = nullptr;
     const void* __restrict__ sorted_target_y = nullptr;
     const void* __restrict__ sorted_target_z = nullptr;
@@ -776,6 +777,7 @@ __global__ void gatherSortedIcpTargetPointsKernel(
     const Scalar* __restrict__ target_points,
     int target_count,
     const int* __restrict__ sorted_target_indices,
+    int* __restrict__ sorted_target_offsets,
     Scalar* __restrict__ sorted_x,
     Scalar* __restrict__ sorted_y,
     Scalar* __restrict__ sorted_z)
@@ -790,6 +792,7 @@ __global__ void gatherSortedIcpTargetPointsKernel(
     sorted_x[idx] = loadReadOnlyIcpValue(target_points + target_idx);
     sorted_y[idx] = loadReadOnlyIcpValue(target_points + target_count + target_idx);
     sorted_z[idx] = loadReadOnlyIcpValue(target_points + 2 * target_count + target_idx);
+    sorted_target_offsets[target_idx] = idx;
 }
 
 __device__ __forceinline__ int lowerBoundIcpGridCell(
@@ -1358,7 +1361,8 @@ __device__ __forceinline__ bool seedSameIndexSpatialGridBestDistance(
     double& best_dist_sq,
     double& best_tx,
     double& best_ty,
-    double& best_tz)
+    double& best_tz,
+    int& seeded_sorted_offset)
 {
     if (!target_grid.target_points || source_idx < 0 || source_idx >= target_grid.target_count)
     {
@@ -1387,6 +1391,9 @@ __device__ __forceinline__ bool seedSameIndexSpatialGridBestDistance(
     best_tx = tx;
     best_ty = ty;
     best_tz = tz;
+    seeded_sorted_offset = target_grid.sorted_target_offsets
+        ? loadReadOnlyIcpValue(target_grid.sorted_target_offsets + source_idx)
+        : -1;
     return true;
 }
 
@@ -1404,6 +1411,7 @@ __device__ __forceinline__ void scanIcpGridCellCandidates(
     double& best_tx,
     double& best_ty,
     double& best_tz,
+    int skipped_sorted_offset,
     bool& stop_cell_scan)
 {
     const int start = loadIcpGridCellStart(target_grid, cell_idx);
@@ -1411,6 +1419,10 @@ __device__ __forceinline__ void scanIcpGridCellCandidates(
     for (int offset = 0; offset < count; ++offset)
     {
         const int sorted_offset = start + offset;
+        if (sorted_offset == skipped_sorted_offset)
+        {
+            continue;
+        }
 #ifdef PLAPOINT_ENABLE_TESTING
         atomicAdd(&g_icp_target_candidate_visit_count, 1ull);
 #endif
@@ -1490,6 +1502,7 @@ __device__ __forceinline__ void scanIcpResidualGridCellCandidates(
     double sz,
     double max_dist_sq,
     double& best_dist_sq,
+    int skipped_sorted_offset,
     bool& stop_cell_scan)
 {
     const int start = loadIcpGridCellStart(target_grid, cell_idx);
@@ -1497,6 +1510,10 @@ __device__ __forceinline__ void scanIcpResidualGridCellCandidates(
     for (int offset = 0; offset < count; ++offset)
     {
         const int sorted_offset = start + offset;
+        if (sorted_offset == skipped_sorted_offset)
+        {
+            continue;
+        }
 #ifdef PLAPOINT_ENABLE_TESTING
         atomicAdd(&g_icp_target_candidate_visit_count, 1ull);
 #endif
@@ -1944,6 +1961,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
     double best_tz = 0.0;
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
+    int seeded_sorted_offset = -1;
 
     bool seeded_same_index_best = false;
     if (source_valid)
@@ -1958,7 +1976,8 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
             best_dist_sq,
             best_tx,
             best_ty,
-            best_tz);
+            best_tz,
+            seeded_sorted_offset);
         if (seeded_same_index_best)
         {
             best_idx = source_idx;
@@ -2078,6 +2097,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                                     best_tx,
                                     best_ty,
                                     best_tz,
+                                    seeded_sorted_offset,
                                     stop_cell_scan);
                             }
                         }
@@ -2133,6 +2153,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
                             best_tx,
                             best_ty,
                             best_tz,
+                            seeded_sorted_offset,
                             stop_cell_scan);
                         ++cell_idx;
                     }
@@ -2963,6 +2984,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
     double best_dist_sq = INFINITY;
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
+    int seeded_sorted_offset = -1;
 
     bool seeded_same_index_best = false;
     if (source_valid)
@@ -2980,7 +3002,8 @@ __global__ void collectResidualStatsSpatialGridKernel(
             best_dist_sq,
             seeded_tx,
             seeded_ty,
-            seeded_tz);
+            seeded_tz,
+            seeded_sorted_offset);
     }
 
     if (source_valid)
@@ -3087,6 +3110,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
                                     sz,
                                     max_dist_sq,
                                     best_dist_sq,
+                                    seeded_sorted_offset,
                                     stop_cell_scan);
                             }
                         }
@@ -3137,6 +3161,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
                             sz,
                             max_dist_sq,
                             best_dist_sq,
+                            seeded_sorted_offset,
                             stop_cell_scan);
                         ++cell_idx;
                     }
@@ -3571,6 +3596,7 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
     double best_dist_sq = INFINITY;
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
+    int seeded_sorted_offset = -1;
 
     bool seeded_same_index_best = false;
     if (source_valid)
@@ -3588,7 +3614,8 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
             best_dist_sq,
             seeded_tx,
             seeded_ty,
-            seeded_tz);
+            seeded_tz,
+            seeded_sorted_offset);
     }
 
     if (source_valid)
@@ -3695,6 +3722,7 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                                     sz,
                                     max_dist_sq,
                                     best_dist_sq,
+                                    seeded_sorted_offset,
                                     stop_cell_scan);
                             }
                         }
@@ -3745,6 +3773,7 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
                             sz,
                             max_dist_sq,
                             best_dist_sq,
+                            seeded_sorted_offset,
                             stop_cell_scan);
                         ++cell_idx;
                     }
@@ -6215,6 +6244,7 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     auto* d_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridKeysStorage());
     auto* d_unique_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridUniqueKeysStorage());
     auto* d_indices = reinterpret_cast<int*>(workspace.targetSpatialGridIndicesStorage());
+    auto* d_sorted_offsets = reinterpret_cast<int*>(workspace.targetSpatialGridSortedOffsetsStorage());
     auto* d_sorted_x = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedXStorage());
     auto* d_sorted_y = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedYStorage());
     auto* d_sorted_z = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedZStorage());
@@ -6225,6 +6255,7 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     grid.target_count = target_count;
     grid.cell_keys = d_unique_keys;
     grid.sorted_target_indices = d_indices;
+    grid.sorted_target_offsets = d_sorted_offsets;
     grid.sorted_target_x = d_sorted_x;
     grid.sorted_target_y = d_sorted_y;
     grid.sorted_target_z = d_sorted_z;
@@ -6273,6 +6304,7 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
         d_target_points,
         target_count,
         d_indices,
+        d_sorted_offsets,
         d_sorted_x,
         d_sorted_y,
         d_sorted_z);
@@ -6944,12 +6976,14 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
 
     auto* d_cell_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridUniqueKeysStorage());
     auto* d_indices = reinterpret_cast<int*>(workspace.targetSpatialGridIndicesStorage());
+    auto* d_sorted_offsets = reinterpret_cast<int*>(workspace.targetSpatialGridSortedOffsetsStorage());
     auto* d_sorted_x = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedXStorage());
     auto* d_sorted_y = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedYStorage());
     auto* d_sorted_z = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedZStorage());
     auto* d_cell_starts = reinterpret_cast<int*>(workspace.targetSpatialGridCellStartsStorage());
     auto* d_cell_counts = reinterpret_cast<int*>(workspace.targetSpatialGridCellCountsStorage());
-    if (!d_cell_keys || !d_indices || !d_sorted_x || !d_sorted_y || !d_sorted_z || !d_cell_starts || !d_cell_counts)
+    if (!d_cell_keys || !d_indices || !d_sorted_offsets || !d_sorted_x || !d_sorted_y || !d_sorted_z ||
+        !d_cell_starts || !d_cell_counts)
     {
         throw std::invalid_argument("ICP GPU: cached target spatial grid snapshot is not available");
     }
@@ -6970,6 +7004,7 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
     }
     target_grid.cell_keys = d_cell_keys;
     target_grid.sorted_target_indices = d_indices;
+    target_grid.sorted_target_offsets = d_sorted_offsets;
     target_grid.sorted_target_x = d_sorted_x;
     target_grid.sorted_target_y = d_sorted_y;
     target_grid.sorted_target_z = d_sorted_z;
@@ -8528,6 +8563,8 @@ void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGrid(
         _target_spatial_grid_unique_keys_storage.allocate(
             static_cast<std::size_t>(required_capacity) * sizeof(IcpGridCellKey));
         _target_spatial_grid_indices_storage.allocate(
+            static_cast<std::size_t>(required_capacity) * sizeof(int));
+        _target_spatial_grid_sorted_offsets_storage.allocate(
             static_cast<std::size_t>(required_capacity) * sizeof(int));
         _target_spatial_grid_sorted_x_storage.allocate(
             static_cast<std::size_t>(required_capacity) * coordinate_value_bytes);

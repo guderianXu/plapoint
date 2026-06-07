@@ -187,6 +187,9 @@ public:
     /// Return the reusable sorted target index storage pointer.
     unsigned char* targetSpatialGridIndicesStorage() { return _target_spatial_grid_indices_storage.get(); }
 
+    /// Return the reusable target-index to sorted-offset storage pointer.
+    unsigned char* targetSpatialGridSortedOffsetsStorage() { return _target_spatial_grid_sorted_offsets_storage.get(); }
+
     /// Return the reusable sorted target x-coordinate storage pointer.
     unsigned char* targetSpatialGridSortedXStorage() { return _target_spatial_grid_sorted_x_storage.get(); }
 
@@ -251,6 +254,7 @@ private:
     DeviceBuffer<unsigned char> _target_spatial_grid_keys_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_unique_keys_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_indices_storage;
+    DeviceBuffer<unsigned char> _target_spatial_grid_sorted_offsets_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_sorted_x_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_sorted_y_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_sorted_z_storage;
