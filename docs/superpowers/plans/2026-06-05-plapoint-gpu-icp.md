@@ -8442,3 +8442,48 @@ Verification evidence:
   keep the same-buffer identity result cache. It removes nearly all repeated-call overhead for the exact same cloud
   object while preserving recomputation after mutable point access and leaving separate-buffer identity or general
   finite-radius ICP paths on their existing algorithms.
+
+## Task 213: Reuse Exact Separate-Buffer Identity Result Across Calls
+
+- Goal: skip repeated GPU ICP alignment-step work for separate source and target GPU clouds only after the previous
+  terminal step proved an exact full-coverage identity result. This keeps the cache narrower than a general
+  source/target result cache and leaves non-identity ICP paths on the normal kernels.
+- RED check:
+  - Added `ICPGpuPathTest.AlignReusesExactIdentityResultAcrossSeparateBufferCalls`.
+  - Before implementation, two consecutive separate-buffer identity `align(output)` calls still produced two alignment
+    steps, two host synchronizations, and two target spatial-grid prepares. The desired path keeps those counts at one.
+- Implementation:
+  - Added a separate-buffer exact identity-result cache keyed by source cloud, target cloud, source point buffer,
+    target point buffer, both point versions, both point counts, and the existing GPU accumulated transform buffer.
+  - The cache is marked only for terminal identity steps where `active_count == source_count` and
+    `step_maps_correspondences_exactly` proves the step maps all correspondences exactly.
+  - The reuse path restores convergence, fitness, RMSE, and GPU final-transform validity from the cached identity
+    result, then uses the existing identity-output write/cache path for optional output materialization.
+  - Added `ICPGpuPathTest.AlignRecomputesExactIdentityAfterMutableTargetAccess` to prove target point-version changes
+    force the next align to recompute instead of reusing stale validation.
+- Targeted verification:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesExactIdentityResultAcrossSeparateBufferCalls:ICPGpuPathTest.AlignRecomputesExactIdentityAfterMutableTargetAccess`:
+    2/2 passed.
+  - GPU ICP fast-path regression set passed 11/11, covering same-buffer identity reuse, exact pointwise finite-radius
+    behavior, exact terminal metric reuse, and non-identity terminal metric reuse.
+- Benchmark:
+  - Rebuilt `build-codex-cuda-bench-only` and ran:
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 100 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`.
+  - Relevant sample after this change:
+    `gpu_icp_identity` = 0.674662 ms,
+    `gpu_icp_identity_same_buffer_reuse_output` = 0.000141 ms,
+    `gpu_icp_finite_radius` = 1.22577 ms,
+    `gpu_icp_finite_radius_identity_reuse_output` = 0.00014 ms,
+    `gpu_icp_finite_radius_identity_exact_probe_reuse_output` = 0.000141 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_one_iteration` = 0.709798 ms, and
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 1.42384 ms.
+- Full verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 335/335 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 143/144
+    executed tests passed, with `plapoint.PointCloudTest.GpuTransfer` skipped by the CPU-only build.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+- Current conclusion:
+  keep the exact separate-buffer identity result cache. It removes nearly all repeated-call overhead for known exact
+  identity source/target pairs while preserving recomputation after target mutable access and avoiding broad reuse for
+  translation or non-rigid repeated-call benchmarks.
