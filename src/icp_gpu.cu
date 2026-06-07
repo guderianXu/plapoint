@@ -1391,18 +1391,48 @@ __device__ __forceinline__ bool seedSameIndexSpatialGridBestDistance(
     double& best_tz,
     int& seeded_sorted_offset)
 {
-    if (!target_grid.target_points || source_idx < 0 || source_idx >= target_grid.target_count)
+    if (source_idx < 0 || source_idx >= target_grid.target_count)
     {
         return false;
     }
 
-    const auto* target_points = static_cast<const Scalar*>(target_grid.target_points);
     double tx = 0.0;
     double ty = 0.0;
     double tz = 0.0;
-    if (!loadFiniteColumnMajorPoint(target_points, target_grid.target_count, source_idx, tx, ty, tz))
+    int candidate_sorted_offset = -1;
+    if (target_grid.target_points)
     {
-        return false;
+        const auto* target_points = static_cast<const Scalar*>(target_grid.target_points);
+        if (!loadFiniteColumnMajorPoint(target_points, target_grid.target_count, source_idx, tx, ty, tz))
+        {
+            return false;
+        }
+        candidate_sorted_offset = target_grid.sorted_target_offsets
+            ? loadReadOnlyIcpValue(target_grid.sorted_target_offsets + source_idx)
+            : -1;
+    }
+    else
+    {
+        if (!target_grid.sorted_target_offsets ||
+            !target_grid.sorted_target_x ||
+            !target_grid.sorted_target_y ||
+            !target_grid.sorted_target_z)
+        {
+            return false;
+        }
+        const int sorted_offset = loadReadOnlyIcpValue(target_grid.sorted_target_offsets + source_idx);
+        if (sorted_offset < 0 || sorted_offset >= target_grid.target_count)
+        {
+            return false;
+        }
+        tx = loadSortedIcpTargetX<Scalar>(target_grid, sorted_offset);
+        ty = loadSortedIcpTargetY<Scalar>(target_grid, sorted_offset);
+        tz = loadSortedIcpTargetZ<Scalar>(target_grid, sorted_offset);
+        if (!isfinite(tx) || !isfinite(ty) || !isfinite(tz))
+        {
+            return false;
+        }
+        candidate_sorted_offset = sorted_offset;
     }
 
     const double dx = sx - tx;
@@ -1418,9 +1448,7 @@ __device__ __forceinline__ bool seedSameIndexSpatialGridBestDistance(
     best_tx = tx;
     best_ty = ty;
     best_tz = tz;
-    seeded_sorted_offset = target_grid.sorted_target_offsets
-        ? loadReadOnlyIcpValue(target_grid.sorted_target_offsets + source_idx)
-        : -1;
+    seeded_sorted_offset = candidate_sorted_offset;
     return true;
 }
 
@@ -7058,7 +7086,6 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
     if (target_grid.target_points == d_output_points)
     {
         target_grid.target_points = nullptr;
-        target_grid.target_count = 0;
     }
     target_grid.cell_keys = d_cell_keys;
     target_grid.sorted_target_indices = d_indices;

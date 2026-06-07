@@ -1552,6 +1552,56 @@ TEST(ICPGpuPathTest, TransformResidualStatsUsesDirectSpatialGridCellLookupForCom
     EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
 }
 
+TEST(ICPGpuPathTest, TransformResidualStatsSnapshotSeedsSameIndexWhenOutputAliasesTarget)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto source = makeNonCollinearPoints();
+    auto target = makeTranslatedNonCollinearPoints(source, 0.1f, -0.05f, 0.025f);
+    auto transform = makeTranslationTransform(0.1f, -0.05f, 0.025f);
+    auto source_gpu = source.toGpu();
+    auto target_gpu = target.toGpu();
+    auto transform_gpu = transform.toGpu();
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+    const auto seed_stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        2.0f,
+        nullptr,
+        workspace);
+
+    ASSERT_EQ(seed_stats.active_count, static_cast<int>(source_gpu.rows()));
+    ASSERT_GT(workspace.targetSpatialGridCellCount(), 0);
+    ASSERT_GT(workspace.targetSpatialGridDirectLookupEntryCount(), 0);
+    workspace.reserveResidualStats(static_cast<int>(source_gpu.rows()));
+
+    plapoint::gpu::resetIcpDirectSpatialGridKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    const auto final_stats =
+        plapoint::gpu::detail::
+            transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
+                transform_gpu.data(),
+                source_gpu.data(),
+                static_cast<int>(source_gpu.rows()),
+                2.0f,
+                target_gpu.data(),
+                workspace,
+                workspace.targetSpatialGridCellCount());
+
+    EXPECT_EQ(final_stats.active_count, static_cast<int>(source_gpu.rows()));
+    EXPECT_NEAR(final_stats.residual_sq_sum, 0.0, 1.0e-8);
+    EXPECT_EQ(plapoint::gpu::icpDirectSpatialGridKernelLaunchCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTargetCandidateVisitCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
+}
+
 TEST(ICPGpuPathTest, SpatialGridDirectLookupUsesSpecializedKernelLaunches)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

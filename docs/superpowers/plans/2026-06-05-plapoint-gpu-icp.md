@@ -7990,3 +7990,57 @@ Verification evidence:
   keep the two-stage fallback. It preserves the compact-grid direct lookup path when target clouds contain isolated
   non-finite points, while avoiding the normal no-NaN build-path regression from always reducing bounds over point
   coordinates.
+
+## Task 205: Seed Snapshot Final Metrics When Output Aliases Target
+
+- Goal: keep terminal transformed residual metrics on the same fast spatial-grid seed path when the caller writes ICP
+  output directly into the target point buffer. The snapshot path intentionally nulls `target_grid.target_points` when
+  `d_output_points` aliases the cached target buffer, but it still has immutable sorted snapshot coordinates. Before
+  this task, that null pointer disabled same-index seeding and forced candidate scans during final metrics.
+- RED check:
+  - Added `ICPGpuPathTest.TransformResidualStatsSnapshotSeedsSameIndexWhenOutputAliasesTarget`.
+  - Fixture: source and target have matching row order, target is source translated by `(0.1, -0.05, 0.025)`, and the
+    transform residual snapshot call writes transformed source points directly into `target_gpu.data()`.
+  - With the old implementation restored temporarily, the test failed with
+    `icpTargetCandidateVisitCountForTesting() == 7` instead of 0.
+- Implementation:
+  - Extended `seedSameIndexSpatialGridBestDistance()` so it can load the same-index candidate from
+    `sorted_target_offsets` plus sorted snapshot coordinate arrays when `target_grid.target_points` is null.
+  - Kept `target_grid.target_count` available in the target-output-alias snapshot path so sorted-offset range checks
+    remain valid.
+  - Fixed the seed helper to assign `seeded_sorted_offset` only after a seed is accepted. This preserves existing
+    candidate-scan behavior when the same-index point is outside the correspondence radius.
+  - Kept the broader `align()` target-alias test focused on output-buffer behavior; the new direct snapshot test owns
+    the final-metrics candidate-count assertion.
+- Targeted verification:
+  - RED command:
+    `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.TransformResidualStatsSnapshotSeedsSameIndexWhenOutputAliasesTarget`
+    failed before implementation with 7 target candidate visits.
+  - After implementation, the same test passed.
+  - Regression command:
+    `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridCandidateLoadsYzCoordinatesOnlyAfterXPruning:ICPGpuPathTest.SpatialGridCandidateSkipsZLoadWhenXYExceedsRadius:ICPGpuPathTest.TransformResidualStatsSnapshotSeedsSameIndexWhenOutputAliasesTarget`
+    passed all 3 tests after fixing the accepted-seed offset assignment.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*`: 141/141 passed.
+- Benchmark:
+  - Sample command:
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 80 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`.
+  - Relevant sample after this change:
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.01979 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_one_iteration` = 0.702355 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 0.915393 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.541701 ms,
+    `gpu_icp_finite_radius_translation_reuse_target_output` = 1.12527 ms,
+    `gpu_icp_finite_radius_translation_reuse_target_output_skip_final_metrics` = 1.05674 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.416705 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid_reserved_workspace` = 0.415708 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.416698 ms.
+- Verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 322/322 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 143/144
+    executed tests passed, with `plapoint.PointCloudTest.GpuTransfer` skipped by the CPU-only build.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+- Current conclusion:
+  keep the sorted-snapshot seed fallback. It removes the target-output-alias final-metrics candidate scan without
+  reading mutable aliased target memory and without weakening the existing finite-radius candidate pruning tests.
