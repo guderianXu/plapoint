@@ -8610,3 +8610,48 @@ Verification evidence:
 - Current conclusion:
   keep the residual-gated skip-final transform cache. It removes almost all repeated-call overhead for exact
   full-coverage translation workloads while preserving the non-rigid transform-only path as a real ICP benchmark.
+
+## Task 216: Add Opt-In Residual Result Cache for Paired GPU ICP Inputs
+
+- Goal: provide an explicit GPU ICP throughput knob for callers whose source and target are known paired clouds
+  (`source[i]` corresponds to `target[i]`). Default behavior must continue rejecting non-rigid same-index residual
+  cache reuse so the ordinary finite-radius path remains a real nearest-neighbor ICP benchmark.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignCanReuseSkipFinalMetricsForNonRigidSameIndexResidualsWhenEnabled`.
+    The first build failed because `setGpuCacheFullCoverageResidualResults` did not exist.
+  - Added `ICPGpuPathTest.AlignRecomputesCachedResidualResultAfterMutableTargetAccessWhenEnabled` to verify point
+    version invalidation still forces recomputation after mutable target access.
+- Implementation:
+  - Added `setGpuCacheFullCoverageResidualResults(bool)` for CUDA builds only.
+  - Kept the default residual gate unchanged: full-coverage same-index cache reuse still requires numerically exact
+    residuals unless the new opt-in flag is enabled.
+  - Included the opt-in flag in the full-coverage transform-result cache key, mark path, and invalidation path so
+    conservative and opt-in modes cannot reuse each other's cached result inside one ICP instance.
+  - Added benchmark row `gpu_icp_finite_radius_nonrigid_transform_only_cache_reuse_two_iterations` and registered it
+    in the benchmark row completeness CMake check.
+- Targeted verification:
+  - The new RED build failed on the missing setter, then passed after implementation.
+  - Focused regression passed 3/3:
+    `AlignDoesNotReuseSkipFinalMetricsForNonRigidSameIndexResiduals`,
+    `AlignCanReuseSkipFinalMetricsForNonRigidSameIndexResidualsWhenEnabled`, and
+    `AlignRecomputesCachedResidualResultAfterMutableTargetAccessWhenEnabled`.
+  - Adjacent full-coverage cache set passed 6/6, covering translation reuse, skip-final reuse, transformed-identity
+    reuse, default non-rigid rejection, opt-in reuse, and mutable target invalidation.
+- Benchmark:
+  - Rebuilt `build-codex-cuda-bench-only` and ran:
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 80 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`.
+  - Relevant sample after this change:
+    `gpu_icp_finite_radius` = 1.2137 ms,
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 1.42332 ms,
+    `gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations` = 1.47143 ms,
+    `gpu_icp_finite_radius_nonrigid_transform_only_cache_reuse_two_iterations` = 0.000106 ms, and
+    `gpu_icp_finite_radius_nonrigid_ordered_transform_only_two_iterations` = 0.372632 ms.
+- Full verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 345/345 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 144/144
+    reported no failures; `plapoint.PointCloudTest.GpuTransfer` was skipped in the CPU-only configuration.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+- Current conclusion:
+  keep the optimization as an explicit paired-input API. It turns repeated no-output non-rigid paired-cloud calls into
+  cache hits while preserving the default conservative ICP behavior and mutable point-version invalidation.

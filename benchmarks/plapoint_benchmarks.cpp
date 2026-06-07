@@ -1104,7 +1104,8 @@ void benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
     int icp_points,
     int iterations,
     bool assume_ordered_correspondences,
-    bool probe_transformed_exact_pointwise_on_cache_hit)
+    bool probe_transformed_exact_pointwise_on_cache_hit,
+    bool cache_full_coverage_residual_results)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -1131,6 +1132,10 @@ void benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
     if (probe_transformed_exact_pointwise_on_cache_hit)
     {
         icp.setGpuProbeTransformedExactPointwiseOnCacheHit(true);
+    }
+    if (cache_full_coverage_residual_results)
+    {
+        icp.setGpuCacheFullCoverageResidualResults(true);
     }
 
     std::size_t sink = 0;
@@ -2420,11 +2425,20 @@ int main(int argc, char** argv)
         options.icp_points,
         options.iterations,
         false,
+        false,
         false);
     benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
         "gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations",
         options.icp_points,
         options.iterations,
+        false,
+        true,
+        false);
+    benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
+        "gpu_icp_finite_radius_nonrigid_transform_only_cache_reuse_two_iterations",
+        options.icp_points,
+        options.iterations,
+        false,
         false,
         true);
     benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
@@ -2432,6 +2446,7 @@ int main(int argc, char** argv)
         options.icp_points,
         options.iterations,
         true,
+        false,
         false);
     benchmarkGpuIcpFiniteRadiusTranslationTransformOnlySkipFinalMetrics(
         "gpu_icp_finite_radius_translation_transform_only_skip_final_metrics",

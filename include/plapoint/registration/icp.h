@@ -108,6 +108,13 @@ public:
     {
         _gpu_probe_transformed_exact_pointwise_on_cache_hit = enabled;
     }
+
+    /// Cache full-coverage same-index GPU ICP results even when residuals are nonzero.
+    /// Enable only when source[i] to target[i] pairing is part of the caller's input contract.
+    void setGpuCacheFullCoverageResidualResults(bool enabled)
+    {
+        _gpu_cache_full_coverage_residual_results = enabled;
+    }
 #endif
 
     /// Align the source cloud to the target cloud and write the transformed source to output.
@@ -1342,12 +1349,15 @@ private:
     {
         const bool full_coverage_exact =
             active_count == source_count && step_maps_correspondences_exactly;
-        const bool full_coverage_same_index =
-            active_count == source_count &&
-            all_correspondences_same_index &&
+        const bool same_index_residual_is_cacheable =
+            _gpu_cache_full_coverage_residual_results ||
             (_compute_final_metrics
                 ? residualMetricIsNumericallyExact(_final_rmse)
                 : stepResidualIsNumericallyExact(active_count, step_residual_sq_sum));
+        const bool full_coverage_same_index =
+            active_count == source_count &&
+            all_correspondences_same_index &&
+            same_index_residual_is_cacheable;
         return _source.get() != _target.get() &&
                source_count > 0 &&
                target_count > 0 &&
@@ -1415,6 +1425,8 @@ private:
                _gpu_full_coverage_transform_result_cache_probe_transformed_exact ==
                    _gpu_probe_transformed_exact_pointwise_on_cache_hit &&
                _gpu_full_coverage_transform_result_cache_compute_final_metrics == _compute_final_metrics &&
+               _gpu_full_coverage_transform_result_cache_cache_residual_results ==
+                   _gpu_cache_full_coverage_residual_results &&
                _gpu_T_acc != nullptr;
     }
 
@@ -1471,6 +1483,8 @@ private:
         _gpu_full_coverage_transform_result_cache_probe_transformed_exact =
             _gpu_probe_transformed_exact_pointwise_on_cache_hit;
         _gpu_full_coverage_transform_result_cache_compute_final_metrics = _compute_final_metrics;
+        _gpu_full_coverage_transform_result_cache_cache_residual_results =
+            _gpu_cache_full_coverage_residual_results;
         _gpu_full_coverage_transform_result_cache_converged = _converged;
         _gpu_full_coverage_transform_result_cache_fitness_score = _fitness_score;
         _gpu_full_coverage_transform_result_cache_final_rmse = _final_rmse;
@@ -1514,6 +1528,7 @@ private:
         _gpu_full_coverage_transform_result_cache_probe_exact = false;
         _gpu_full_coverage_transform_result_cache_probe_transformed_exact = false;
         _gpu_full_coverage_transform_result_cache_compute_final_metrics = false;
+        _gpu_full_coverage_transform_result_cache_cache_residual_results = false;
         _gpu_full_coverage_transform_result_cache_converged = false;
         _gpu_full_coverage_transform_result_cache_fitness_score = Scalar(0);
         _gpu_full_coverage_transform_result_cache_final_rmse = std::numeric_limits<Scalar>::infinity();
@@ -2177,6 +2192,7 @@ private:
     bool _gpu_full_coverage_transform_result_cache_probe_exact = false;
     bool _gpu_full_coverage_transform_result_cache_probe_transformed_exact = false;
     bool _gpu_full_coverage_transform_result_cache_compute_final_metrics = false;
+    bool _gpu_full_coverage_transform_result_cache_cache_residual_results = false;
     bool _gpu_full_coverage_transform_result_cache_converged = false;
     Scalar _gpu_full_coverage_transform_result_cache_fitness_score = Scalar(0);
     Scalar _gpu_full_coverage_transform_result_cache_final_rmse = std::numeric_limits<Scalar>::infinity();
@@ -2194,6 +2210,7 @@ private:
     bool _gpu_assume_ordered_correspondences = false;
     bool _gpu_probe_exact_pointwise_on_finite_radius = false;
     bool _gpu_probe_transformed_exact_pointwise_on_cache_hit = false;
+    bool _gpu_cache_full_coverage_residual_results = false;
 #ifdef PLAPOINT_ENABLE_TESTING
     int _gpu_step_transform_reserve_check_count = 0;
     int _gpu_accumulated_transform_reserve_check_count = 0;
