@@ -155,7 +155,10 @@ public:
             reserveGpuNextTransformBuffer();
         }
         reserveGpuAlignmentStepWorkspace(source_count);
-        reserveGpuStatsAndStepWorkspace(_gpu_terminal_stats_workspace, source_count);
+        if (_max_iter > 1)
+        {
+            reserveGpuStatsAndStepWorkspace(_gpu_terminal_stats_workspace, source_count);
+        }
         if (_compute_final_metrics)
         {
             reserveGpuResidualStatsWorkspace(_gpu_final_stats_workspace, source_count);

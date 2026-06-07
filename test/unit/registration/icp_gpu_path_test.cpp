@@ -8919,6 +8919,42 @@ TEST(ICPGpuPathTest, ReserveGpuWorkspaceSkipsFinalStatsWhenFinalMetricsAreDisabl
     EXPECT_GE(icp._gpu_stats_workspace.targetSpatialGridCapacity(), static_cast<int>(target->size()));
 }
 
+TEST(ICPGpuPathTest, ReserveGpuWorkspaceSkipsTerminalStatsForSingleIteration)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_points = makeTranslatedGridPoints(
+        kMinTargetSpatialGridRowsForTesting,
+        0.003f,
+        -0.002f,
+        0.001f);
+    auto target_points = makeGridPoints(kMinTargetSpatialGridRowsForTesting);
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.02f);
+    icp.setMaxIterations(1);
+
+    icp.reserveGpuWorkspace();
+
+    EXPECT_TRUE(icp.gpuAlignmentStepWorkspaceReservationMatches(static_cast<int>(source->size())));
+    EXPECT_EQ(icp._gpu_terminal_stats_workspace.partialCapacity(), 0);
+    EXPECT_GT(icp._gpu_final_stats_workspace.partialCapacity(), 0);
+    EXPECT_EQ(icp._gpu_next_T_acc, nullptr);
+    EXPECT_GE(icp._gpu_stats_workspace.targetSpatialGridCapacity(), static_cast<int>(target->size()));
+}
+
 TEST(ICPGpuPathTest, AlignReusesAlignmentStepWorkspaceAcrossRepeatedCalls)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
