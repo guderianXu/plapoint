@@ -7934,3 +7934,59 @@ Verification evidence:
     `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.515022 ms,
     `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.415663 ms, and
     `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.416631 ms.
+
+## Task 204: Keep Direct Spatial-Grid Lookup Active With Non-Finite Targets
+
+- Goal: real point clouds can contain NaN/invalid target points. `ComputeIcpTargetGridCellKey` maps those points to
+  `{INT_MAX, INT_MAX, INT_MAX}` so they sort deterministically, but the direct lookup bounds reducer treated that
+  sentinel as a real cell and disabled direct lookup for otherwise compact valid target cells.
+- RED check:
+  - Added `ICPGpuPathTest.SpatialGridDirectLookupIgnoresNonFiniteTargetSentinelForCompactValidCells`.
+  - Fixture: one NaN target at index 0 plus 27 valid compact 3x3x3 cells, with a source point at the valid center.
+  - Before implementation, `targetSpatialGridDirectLookupEntryCount()` was 0,
+    `icpDirectSpatialGridKernelLaunchCountForTesting()` was 0, and the kernel used one lower-bound cell lookup.
+- Implementation:
+  - Kept the normal direct-lookup bounds path on unique sorted grid-cell keys, preserving the no-NaN hot path.
+  - Added a fallback bounds reducer over original target points that returns empty bounds for non-finite points.
+  - The fallback only runs when the unique-key bounds include the all-`INT_MAX` sentinel and the normal direct lookup
+    shape is inactive. Finite extreme coordinates that clamp to `INT_MAX` remain conservative because the point-based
+    fallback includes them and still disables direct lookup when needed.
+  - Added `gpu_icp_finite_radius_translation_reuse_output_one_iteration` to the benchmark rows so full final-metrics
+    one-iteration overhead is tracked next to the existing skip-final-metrics row.
+- Targeted verification:
+  - RED command:
+    `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.SpatialGridDirectLookupIgnoresNonFiniteTargetSentinelForCompactValidCells`
+    failed with direct lookup entry count 0, direct lookup launch count 0, and lower-bound lookup count 1.
+  - After implementation, the same test passed.
+  - Direct lookup regression set passed:
+    `ICPGpuPathTest.CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompactTarget`,
+    `ICPGpuPathTest.SpatialGridDirectLookupIgnoresNonFiniteTargetSentinelForCompactValidCells`,
+    `ICPGpuPathTest.ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget`,
+    `ICPGpuPathTest.TransformResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget`,
+    `ICPGpuPathTest.SpatialGridDirectLookupUsesSpecializedKernelLaunches`, and
+    `ICPGpuPathTest.CorrespondenceStatsKeepsSparseUniqueCellRangeOnLowerBoundPath`: 6/6 passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*`: 140/140 passed.
+- Benchmark:
+  - First point-based-only bounds attempt fixed the test but regressed normal no-NaN new-workspace rows by roughly
+    5-7%, so it was reduced to the two-stage fallback above.
+  - Final sample after two-stage fallback:
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.02083 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_one_iteration` = 0.701401 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 0.907229 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.540473 ms,
+    `gpu_icp_stats_step_finite_radius_translation_new_workspace` = 1.47575 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_new_workspace` = 1.49815 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.539305 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.539498 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.416632 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.423864 ms.
+- Verification:
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 321/321 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 143/144
+    executed tests passed, with `plapoint.PointCloudTest.GpuTransfer` skipped by the CPU-only build.
+- Current conclusion:
+  keep the two-stage fallback. It preserves the compact-grid direct lookup path when target clouds contain isolated
+  non-finite points, while avoiding the normal no-NaN build-path regression from always reducing bounds over point
+  coordinates.

@@ -1382,6 +1382,60 @@ TEST(ICPGpuPathTest, CorrespondenceStatsUsesDirectSpatialGridCellLookupForCompac
     EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
 }
 
+TEST(ICPGpuPathTest, SpatialGridDirectLookupIgnoresNonFiniteTargetSentinelForCompactValidCells)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source(1, 3);
+    source.setValue(0, 0, 0.0f);
+    source.setValue(0, 1, 0.0f);
+    source.setValue(0, 2, 0.0f);
+
+    constexpr int target_count = 28;
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target(target_count, 3);
+    target.setValue(0, 0, std::numeric_limits<float>::quiet_NaN());
+    target.setValue(0, 1, std::numeric_limits<float>::quiet_NaN());
+    target.setValue(0, 2, std::numeric_limits<float>::quiet_NaN());
+    int idx = 1;
+    for (int x = -1; x <= 1; ++x)
+    {
+        for (int y = -1; y <= 1; ++y)
+        {
+            for (int z = -1; z <= 1; ++z)
+            {
+                target.setValue(idx, 0, static_cast<float>(x));
+                target.setValue(idx, 1, static_cast<float>(y));
+                target.setValue(idx, 2, static_cast<float>(z));
+                ++idx;
+            }
+        }
+    }
+
+    auto source_gpu = source.toGpu();
+    auto target_gpu = target.toGpu();
+
+    plapoint::gpu::resetIcpDirectSpatialGridKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpGridCellLookupCountForTesting();
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
+    const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        1.0f,
+        nullptr,
+        workspace);
+
+    EXPECT_EQ(stats.active_count, 1);
+    EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-12);
+    EXPECT_GT(workspace.targetSpatialGridDirectLookupEntryCount(), 0);
+    EXPECT_EQ(plapoint::gpu::icpDirectSpatialGridKernelLaunchCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
+}
+
 TEST(ICPGpuPathTest, ResidualStatsUsesDirectSpatialGridCellLookupForCompactTarget)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

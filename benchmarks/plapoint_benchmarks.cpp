@@ -617,11 +617,15 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuseShrinking(int icp_points, int ic
     }
 }
 
-void benchmarkGpuIcpFiniteRadiusTranslationReuseOutput(int icp_points, int icp_max_iterations, int iterations)
+void benchmarkGpuIcpFiniteRadiusTranslationReuseOutput(
+    const char* benchmark_name,
+    int icp_points,
+    int icp_max_iterations,
+    int iterations)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
-        printSkipped("gpu_icp_finite_radius_translation_reuse_output", "no_usable_cuda_device");
+        printSkipped(benchmark_name, "no_usable_cuda_device");
         return;
     }
 
@@ -642,10 +646,10 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuseOutput(int icp_points, int icp_m
         icp.align(output);
         sink += output.size();
     });
-    printResult("gpu_icp_finite_radius_translation_reuse_output", icp_points, iterations, elapsed);
+    printResult(benchmark_name, icp_points, iterations, elapsed);
     if (sink == 0)
     {
-        std::cerr << "gpu_icp_finite_radius_translation_reuse_output produced no aligned points\n";
+        std::cerr << benchmark_name << " produced no aligned points\n";
     }
 }
 
@@ -2227,8 +2231,14 @@ int main(int argc, char** argv)
         options.icp_max_iterations,
         options.iterations);
     benchmarkGpuIcpFiniteRadiusTranslationReuseOutput(
+        "gpu_icp_finite_radius_translation_reuse_output",
         options.icp_points,
         options.icp_max_iterations,
+        options.iterations);
+    benchmarkGpuIcpFiniteRadiusTranslationReuseOutput(
+        "gpu_icp_finite_radius_translation_reuse_output_one_iteration",
+        options.icp_points,
+        1,
         options.iterations);
     benchmarkGpuIcpFiniteRadiusTranslationReuseOutputSkipFinalMetrics(
         options.icp_points,

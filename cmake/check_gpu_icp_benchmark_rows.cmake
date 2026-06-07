@@ -30,6 +30,7 @@ set(expected_gpu_icp_rows
     gpu_icp_finite_radius_translation_reuse
     gpu_icp_finite_radius_translation_reuse_shrinking
     gpu_icp_finite_radius_translation_reuse_output
+    gpu_icp_finite_radius_translation_reuse_output_one_iteration
     gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics
     gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration
     gpu_icp_finite_radius_translation_ordered_output

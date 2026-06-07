@@ -14,6 +14,7 @@
 #include <thrust/execution_policy.h>
 #include <thrust/functional.h>
 #include <thrust/iterator/constant_iterator.h>
+#include <thrust/iterator/counting_iterator.h>
 #include <thrust/reduce.h>
 #include <thrust/scan.h>
 #include <thrust/sequence.h>
@@ -653,7 +654,7 @@ __device__ __forceinline__ IcpGridCellKey loadIcpGridCellKey(
     };
 }
 
-IcpGridCellBounds emptyIcpGridCellBounds()
+__host__ __device__ __forceinline__ IcpGridCellBounds emptyIcpGridCellBounds()
 {
     return {INT_MAX, INT_MAX, INT_MAX, INT_MIN, INT_MIN, INT_MIN};
 }
@@ -734,6 +735,32 @@ struct ComputeIcpTargetGridCellKey
             icpGridCellCoordinate(y, cell_size),
             icpGridCellCoordinate(z, cell_size)
         };
+    }
+};
+
+template <typename Scalar>
+struct IcpGridCellBoundsFromTargetPoint
+{
+    const Scalar* __restrict__ points;
+    int point_count;
+    double cell_size;
+
+    __host__ __device__ __forceinline__ IcpGridCellBounds operator()(int idx) const
+    {
+        const double x = static_cast<double>(loadReadOnlyIcpValue(points + idx));
+        const double y = static_cast<double>(loadReadOnlyIcpValue(points + point_count + idx));
+        const double z = static_cast<double>(loadReadOnlyIcpValue(points + 2 * point_count + idx));
+        if (!isfinite(x) || !isfinite(y) || !isfinite(z))
+        {
+            return emptyIcpGridCellBounds();
+        }
+
+        const IcpGridCellKey key{
+            icpGridCellCoordinate(x, cell_size),
+            icpGridCellCoordinate(y, cell_size),
+            icpGridCellCoordinate(z, cell_size)
+        };
+        return {key.x, key.y, key.z, key.x, key.y, key.z};
     }
 };
 
@@ -6153,10 +6180,13 @@ void populateTargetSpatialGridDirectLookup(
     grid.direct_lookup_active = true;
 }
 
+template <typename Scalar>
 void buildTargetSpatialGridDirectLookup(
+    const Scalar* d_target_points,
     const IcpGridCellKey* d_cell_keys,
     int cell_count,
     int target_count,
+    double cell_size,
     IcpCorrespondenceStatsWorkspace& workspace,
     cudaStream_t stream,
     IcpTargetSpatialGrid& grid)
@@ -6168,14 +6198,26 @@ void buildTargetSpatialGridDirectLookup(
 
     auto policy = thrust::cuda::par.on(stream);
     auto cell_keys = thrust::device_pointer_cast(d_cell_keys);
-    const IcpGridCellBounds bounds = thrust::transform_reduce(
+    IcpGridCellBounds bounds = thrust::transform_reduce(
         policy,
         cell_keys,
         cell_keys + cell_count,
         IcpGridCellBoundsFromKey{},
         emptyIcpGridCellBounds(),
         IcpGridCellBoundsReduce{});
-    const IcpDirectGridCellLookupShape shape = makeIcpDirectGridCellLookupShape(bounds, target_count, cell_count);
+    IcpDirectGridCellLookupShape shape = makeIcpDirectGridCellLookupShape(bounds, target_count, cell_count);
+    if (!shape.active && bounds.max_x == INT_MAX && bounds.max_y == INT_MAX && bounds.max_z == INT_MAX)
+    {
+        auto point_indices = thrust::make_counting_iterator<int>(0);
+        bounds = thrust::transform_reduce(
+            policy,
+            point_indices,
+            point_indices + target_count,
+            IcpGridCellBoundsFromTargetPoint<Scalar>{d_target_points, target_count, cell_size},
+            emptyIcpGridCellBounds(),
+            IcpGridCellBoundsReduce{});
+        shape = makeIcpDirectGridCellLookupShape(bounds, target_count, cell_count);
+    }
     if (!shape.active)
     {
         workspace.markTargetSpatialGridDirectLookupCache(0, 0, 0, 0, 0, 0, 0);
@@ -6271,7 +6313,15 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
         {
             if (!workspace.targetSpatialGridDirectLookupEvaluated())
             {
-                buildTargetSpatialGridDirectLookup(d_unique_keys, grid.cell_count, target_count, workspace, stream, grid);
+                buildTargetSpatialGridDirectLookup(
+                    d_target_points,
+                    d_unique_keys,
+                    grid.cell_count,
+                    target_count,
+                    grid.cell_size,
+                    workspace,
+                    stream,
+                    grid);
             }
             populateTargetSpatialGridDirectLookup(grid, workspace);
         }
@@ -6331,7 +6381,15 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     workspace.markTargetSpatialGridCache(d_target_points, target_count, cell_size, cell_count);
     if (build_direct_lookup)
     {
-        buildTargetSpatialGridDirectLookup(d_unique_keys, cell_count, target_count, workspace, stream, grid);
+        buildTargetSpatialGridDirectLookup(
+            d_target_points,
+            d_unique_keys,
+            cell_count,
+            target_count,
+            grid.cell_size,
+            workspace,
+            stream,
+            grid);
     }
     return grid;
 }
