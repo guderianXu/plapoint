@@ -476,10 +476,14 @@ private:
                     auto_probe_transformed_exact_pointwise;
                 const bool defer_accumulated_transform =
                     probe_transformed_exact_pointwise && iter + 1 == _max_iter;
+                const bool fused_terminal_can_write_target_alias_output =
+                    output_aliases_target &&
+                    output &&
+                    canReuseGpuOutputPointBuffer(*output, source_count);
                 const bool try_fused_terminal_final_metrics =
                     _compute_final_metrics &&
                     iter + 1 == _max_iter &&
-                    (!output || !output_aliases_target) &&
+                    (!output || !output_aliases_target || fused_terminal_can_write_target_alias_output) &&
                     !assume_ordered_correspondences_for_step &&
                     !probe_transformed_exact_pointwise;
                 if (try_fused_terminal_final_metrics)
@@ -488,7 +492,16 @@ private:
                     Scalar* candidate_output_points = nullptr;
                     if (output)
                     {
-                        candidate_output_points = prepareGpuOutputPointBuffer(*output, source_count);
+                        if (output_aliases_target)
+                        {
+                            // The small-target terminal kernel loads the whole target tile into shared memory before
+                            // writing output, so an already-sized target buffer can be overwritten safely.
+                            candidate_output_points = output->points().data();
+                        }
+                        else
+                        {
+                            candidate_output_points = prepareGpuOutputPointBuffer(*output, source_count);
+                        }
                     }
                     const auto terminal_result =
                         gpu::detail::
@@ -513,6 +526,10 @@ private:
                         fused_terminal_final_metrics = true;
                         alignment_step_accumulated_transform = true;
                         final_points_written_to_output = candidate_output_points != nullptr;
+                        if (candidate_output_points && output_aliases_target)
+                        {
+                            invalidateGpuTargetWorkspaceCache();
+                        }
                     }
                 }
                 if (!fused_terminal_final_metrics && defer_accumulated_transform)

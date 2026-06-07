@@ -97,6 +97,7 @@ set(expected_gpu_icp_rows
     gpu_icp_small_finite_radius_nonrigid_transform_only_two_iterations_below_grid_threshold
     gpu_icp_small_finite_radius_nonrigid_final_metrics_two_iterations_below_grid_threshold
     gpu_icp_small_finite_radius_nonrigid_output_final_metrics_two_iterations_below_grid_threshold
+    gpu_icp_small_finite_radius_nonrigid_target_alias_final_metrics_two_iterations_below_grid_threshold
 )
 
 foreach(row_name IN LISTS expected_gpu_icp_rows)

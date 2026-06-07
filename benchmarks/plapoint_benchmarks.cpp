@@ -2652,6 +2652,59 @@ void benchmarkGpuIcpSmallFiniteRadiusOutputFinalMetricsTwoIterations(
         std::cerr << benchmark_name << " produced no finite output metrics\n";
     }
 }
+
+void benchmarkGpuIcpSmallFiniteRadiusTargetAliasFinalMetricsTwoIterations(
+    const std::string& benchmark_name,
+    int target_count,
+    int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(benchmark_name, "no_usable_cuda_device");
+        return;
+    }
+
+    auto target_points = makeCompactNonCollinearGridPoints<float>(target_count);
+    auto source_points =
+        makeTranslatedCompactNonCollinearGridPoints<float>(target_count, 0.01f, -0.005f, 0.0025f);
+    if (target_count > 3)
+    {
+        target_points(1, 0) += 0.03f;
+        target_points(2, 1) -= 0.02f;
+        target_points(3, 2) += 0.015f;
+    }
+
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(source_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    std::vector<std::shared_ptr<Cloud<plamatrix::Device::GPU>>> targets;
+    targets.reserve(static_cast<std::size_t>(iterations) + 1u);
+    for (int i = 0; i <= iterations; ++i)
+    {
+        targets.push_back(std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu()));
+    }
+
+    std::size_t target_index = 0;
+    std::size_t sink = 0;
+    double rmse_sink = 0.0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        auto& target = targets[target_index++ % targets.size()];
+        plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+        icp.setInputSource(source);
+        icp.setInputTarget(target);
+        icp.setMaxCorrespondenceDistance(0.08f);
+        icp.setMaxIterations(2);
+        icp.setTransformationEpsilon(1.0e-12f);
+        icp.align(*target);
+        rmse_sink += static_cast<double>(icp.getFinalRmse());
+        sink += target->size();
+    });
+    printResult(benchmark_name, target_count, iterations, elapsed);
+    if (sink == 0 || !std::isfinite(rmse_sink))
+    {
+        std::cerr << benchmark_name << " produced no finite target-alias output metrics\n";
+    }
+}
 #endif
 
 } // namespace
@@ -2964,6 +3017,10 @@ int main(int argc, char** argv)
         options.iterations);
     benchmarkGpuIcpSmallFiniteRadiusOutputFinalMetricsTwoIterations(
         "gpu_icp_small_finite_radius_nonrigid_output_final_metrics_two_iterations_below_grid_threshold",
+        127,
+        options.iterations);
+    benchmarkGpuIcpSmallFiniteRadiusTargetAliasFinalMetricsTwoIterations(
+        "gpu_icp_small_finite_radius_nonrigid_target_alias_final_metrics_two_iterations_below_grid_threshold",
         127,
         options.iterations);
 #endif

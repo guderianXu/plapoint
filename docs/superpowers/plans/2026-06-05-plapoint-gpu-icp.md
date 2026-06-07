@@ -9208,3 +9208,50 @@ Verification evidence:
   keep this non-alias output extension. It removes the third host synchronization from the small-target two-step
   `align(output)` final-metrics path while preserving target-alias safety. The next safe extension is either explicit
   target-alias handling with a pre-read target snapshot, or a batched/asynchronous API to reduce fixed launch/sync cost.
+
+## Task 227: Fuse Small-Target Terminal Metrics for Reusable Target-Alias Output
+
+- Goal: extend the small-target terminal fused final-metrics path to `align(*target)` when the target output buffer is
+  already reusable for the source size. This removes the scratch transform plus device-to-device copy while preserving
+  target safety for non-reusable alias outputs.
+- RED check:
+  - Added `ICPGpuPathTest.AlignSmallFiniteRadiusFinalMetricsWithTargetAliasOutputAvoidsScratchCopy`.
+  - The RED failed with terminal fused kernel launches = 0, small residual-stats kernels = 1, residual-stats calls = 1,
+    host synchronizations = 3, a scratch point buffer allocation, and one output device-to-device copy. That confirmed
+    the target-alias small-target path was still excluded from the fused terminal helper.
+- Implementation:
+  - Allowed the fused terminal helper only when `output` aliases target and `canReuseGpuOutputPointBuffer()` is true,
+    so the target buffer is not resized or replaced before the helper reads it.
+  - Passed the existing target/output point pointer directly to
+    `computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace()`. The helper is safe
+    for this case because the small-target kernel loads the target tile into shared memory before writing transformed
+    output.
+  - Invalidated the target spatial-grid cache immediately after a successful fused target-alias write.
+  - Added benchmark row
+    `gpu_icp_small_finite_radius_nonrigid_target_alias_final_metrics_two_iterations_below_grid_threshold`.
+- Correctness coverage:
+  - The new end-to-end test asserts the fused terminal kernel launches once, residual-stats kernel/call counts remain
+    zero, host synchronizations are at most two, no scratch buffers are retained for the terminal output, no
+    device-to-device output copy is issued, the target point buffer pointer is preserved, and final RMSE/output values
+    remain finite.
+  - Adjacent target-alias tests still cover non-reusable alias output, spatial-grid snapshot alias output, ordered alias
+    output, and target-cache invalidation after alias writes.
+- Targeted verification:
+  - RED reproduced before implementation on
+    `ICPGpuPathTest.AlignSmallFiniteRadiusFinalMetricsWithTargetAliasOutputAvoidsScratchCopy`.
+  - After implementation, the new RED passed.
+  - Alias/fused focused regression passed 7/7:
+    no-output fused terminal, non-alias output fused terminal, target-alias fused terminal, non-reusable alias scratch,
+    spatial-grid snapshot alias output, ordered alias output, and target-cache invalidation after target-alias output.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+- Benchmark:
+  - 3-iteration sample with `--icp-points 1024`:
+    `gpu_icp_small_finite_radius_nonrigid_transform_only_two_iterations_below_grid_threshold` = 0.175768 ms,
+    `gpu_icp_small_finite_radius_nonrigid_final_metrics_two_iterations_below_grid_threshold` = 1.22589 ms,
+    `gpu_icp_small_finite_radius_nonrigid_output_final_metrics_two_iterations_below_grid_threshold` = 1.20978 ms, and
+    `gpu_icp_small_finite_radius_nonrigid_target_alias_final_metrics_two_iterations_below_grid_threshold` = 1.22327 ms.
+- Current conclusion:
+  keep the reusable target-alias extension. It removes the scratch/copy fallback for the small-target terminal
+  `align(*target)` case without relaxing the existing non-reusable target-alias safeguards. Remaining speed work in
+  this small-cloud class is dominated by fixed launch and host-result synchronization cost, so the next larger step is
+  a batched or asynchronous ICP surface rather than more single-call fusion.

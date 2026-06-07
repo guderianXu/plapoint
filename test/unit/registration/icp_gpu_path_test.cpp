@@ -1300,6 +1300,70 @@ TEST(ICPGpuPathTest, AlignSmallFiniteRadiusFinalMetricsWithOutputAvoidExtraHostS
     }
 }
 
+TEST(ICPGpuPathTest, AlignSmallFiniteRadiusFinalMetricsWithTargetAliasOutputAvoidsScratchCopy)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto target_cpu_points = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
+    auto source_cpu_points = makeTranslatedNonCollinearPoints(target_cpu_points, 0.01f, -0.005f, 0.0025f);
+    target_cpu_points.setValue(1, 0, target_cpu_points.getValue(1, 0) + 0.03f);
+    target_cpu_points.setValue(2, 1, target_cpu_points.getValue(2, 1) - 0.02f);
+    target_cpu_points.setValue(3, 2, target_cpu_points.getValue(3, 2) + 0.015f);
+
+    auto source_cpu = std::make_shared<CpuCloud>(std::move(source_cpu_points));
+    auto target_cpu = std::make_shared<CpuCloud>(std::move(target_cpu_points));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+    const auto* target_points = target->points().data();
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.08f);
+    icp.setMaxIterations(2);
+    icp.setTransformationEpsilon(1.0e-12f);
+
+    plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
+    plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpSmallResidualStatsKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpSmallTerminalAlignmentResidualKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpResidualStatsCallCountForTesting();
+    plapoint::gpu::resetIcpTransformResidualOutputPointWriteCountForTesting();
+    icp.align(*target);
+
+    EXPECT_EQ(plapoint::gpu::icpSmallAlignmentStepKernelLaunchCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpSmallTerminalAlignmentResidualKernelLaunchCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpSmallResidualStatsKernelLaunchCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 0);
+    EXPECT_EQ(
+        plapoint::gpu::icpTransformResidualOutputPointWriteCountForTesting(),
+        static_cast<unsigned long long>(source->size()));
+    EXPECT_LE(plapoint::gpu::icpHostSynchronizationCountForTesting(), 2);
+    EXPECT_EQ(target->points().data(), target_points);
+    EXPECT_EQ(target->size(), source->size());
+    EXPECT_EQ(icp._gpu_points_a, nullptr);
+    EXPECT_EQ(icp._gpu_points_b, nullptr);
+    EXPECT_EQ(icp._gpu_output_device_to_device_copy_async_count, 0);
+    EXPECT_GT(icp.getFinalRmse(), 0.0f);
+    EXPECT_LT(icp.getFinalRmse(), 0.08f);
+    EXPECT_TRUE(std::isfinite(icp.getFinalRmse()));
+
+    const auto output_cpu = target->toCpu();
+    for (plamatrix::Index row = 0; row < output_cpu.points().rows(); ++row)
+    {
+        for (plamatrix::Index col = 0; col < output_cpu.points().cols(); ++col)
+        {
+            EXPECT_TRUE(std::isfinite(output_cpu.points().getValue(row, col)));
+        }
+    }
+}
+
 TEST(ICPGpuPathTest, AlignmentStepUsesFusedSmallTargetKernelAtTargetCountThreshold)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
