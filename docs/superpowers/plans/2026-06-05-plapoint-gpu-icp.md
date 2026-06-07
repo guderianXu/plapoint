@@ -8655,3 +8655,54 @@ Verification evidence:
 - Current conclusion:
   keep the optimization as an explicit paired-input API. It turns repeated no-output non-rigid paired-cloud calls into
   cache hits while preserving the default conservative ICP behavior and mutable point-version invalidation.
+
+## Task 217: Add Verified Ordered Follow-Up Iterations for Paired GPU ICP Inputs
+
+- Goal: add a more conservative opt-in path between default nearest-neighbor ICP and unconditional ordered
+  correspondences. The first iteration still performs the normal finite-radius nearest-neighbor search; only after a
+  full-coverage same-index step does the next iteration use same-index ordered correspondences. Default behavior must
+  remain unchanged.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignCanUseOrderedCorrespondencesAfterSameIndexStepWhenEnabled`.
+    The first build failed because `setGpuAssumeOrderedCorrespondencesAfterSameIndexStep` did not exist.
+- Implementation:
+  - Added CUDA-only setter `setGpuAssumeOrderedCorrespondencesAfterSameIndexStep(bool)`.
+  - Tracked whether the previous GPU ICP step had full source coverage and all correspondences at the same index.
+  - Used ordered correspondence kernels for following iterations only when the new opt-in flag is enabled and the
+    previous step proved same-index coverage.
+  - Included the flag in the full-coverage transform-result cache key, mark path, and invalidation path.
+  - Added benchmark row `gpu_icp_finite_radius_nonrigid_verified_ordered_transform_only_two_iterations` and registered
+    it in the benchmark row completeness CMake check.
+- Targeted verification:
+  - RED build failed on the missing setter, then passed after implementation.
+  - Focused regression passed 3/3:
+    `AlignDoesNotReuseSkipFinalMetricsForNonRigidSameIndexResiduals`,
+    `AlignCanReuseSkipFinalMetricsForNonRigidSameIndexResidualsWhenEnabled`, and
+    `AlignCanUseOrderedCorrespondencesAfterSameIndexStepWhenEnabled`.
+  - Adjacent regression passed 9/9, covering default non-rigid rejection, opt-in residual caching, verified ordered
+    follow-up, mutable target invalidation, ordered final metrics, transformed exact-pointwise auto-probe behavior, and
+    persistent target-grid cache invalidation.
+- Benchmark:
+  - Rebuilt `build-codex-cuda-bench-only` and ran:
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 80 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`.
+  - Relevant sample after this change:
+    `gpu_icp_finite_radius` = 1.26795 ms,
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 1.4228 ms,
+    `gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations` = 1.4699 ms,
+    `gpu_icp_finite_radius_nonrigid_transform_only_cache_reuse_two_iterations` = 0.000095 ms,
+    `gpu_icp_finite_radius_nonrigid_verified_ordered_transform_only_two_iterations` = 0.733657 ms, and
+    `gpu_icp_finite_radius_nonrigid_ordered_transform_only_two_iterations` = 0.369499 ms.
+- Full verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 346/346 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 144/144
+    reported no failures; `plapoint.PointCloudTest.GpuTransfer` was skipped in the CPU-only configuration.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+- Current conclusion:
+  keep verified ordered follow-up as an explicit paired-input optimization. It roughly halves the two-iteration
+  non-rigid paired workload compared with the conservative default while still proving same-index coverage before
+  using ordered correspondences.
+- Next candidate:
+  a read-only agent review identified a local follow-up: skip target spatial-grid construction for very small finite
+  target clouds and use the existing fallback scan instead. That should be handled separately with small-target tests
+  and a large-target regression to avoid changing the 100k-point path.

@@ -6268,6 +6268,44 @@ TEST(ICPGpuPathTest, AlignCanReuseSkipFinalMetricsForNonRigidSameIndexResidualsW
     EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 0);
 }
 
+TEST(ICPGpuPathTest, AlignCanUseOrderedCorrespondencesAfterSameIndexStepWhenEnabled)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_cpu =
+        std::make_shared<CpuCloud>(makeTranslatedPerturbedGridPoints(4096, 0.003f, -0.002f, 0.001f));
+    auto target_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.02f);
+    icp.setMaxIterations(2);
+    icp.setTransformationEpsilon(1.0e-12f);
+    icp.setComputeFinalMetrics(false);
+    icp.setGpuAssumeOrderedCorrespondencesAfterSameIndexStep(true);
+
+    plapoint::gpu::resetIcpAlignmentStepCallCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
+    plapoint::gpu::resetIcpTransformPointsCallCountForTesting();
+    icp.align();
+
+    EXPECT_GT(icp.getFinalRmse(), 0.0f);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepCallCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 0);
+}
+
 TEST(ICPGpuPathTest, AlignRecomputesCachedResidualResultAfterMutableTargetAccessWhenEnabled)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

@@ -95,6 +95,13 @@ public:
     /// Use only for ordered or paired clouds where same-index correspondences are part of the input contract.
     void setGpuAssumeOrderedCorrespondences(bool enabled) { _gpu_assume_ordered_correspondences = enabled; }
 
+    /// After a full-coverage same-index GPU step, use same-index correspondences for following iterations.
+    /// Enable only when the caller expects same-index correspondences to remain valid after each rigid step.
+    void setGpuAssumeOrderedCorrespondencesAfterSameIndexStep(bool enabled)
+    {
+        _gpu_assume_ordered_correspondences_after_same_index_step = enabled;
+    }
+
     /// Probe exact same-index matches for finite-radius first-iteration GPU alignment before nearest-neighbor search.
     /// Enable only when source[i] is expected to equal target[i] often enough to pay an extra O(N) failed probe.
     void setGpuProbeExactPointwiseOnFiniteRadius(bool enabled)
@@ -439,6 +446,7 @@ private:
         bool current_points_use_accumulated_transform = false;
         bool next_points_in_a = true;
         bool previous_step_can_use_transformed_exact_pointwise = false;
+        bool previous_step_can_use_ordered_correspondences = false;
         bool accumulated_transform_has_nonidentity_step = false;
 
         _converged = false;
@@ -451,6 +459,10 @@ private:
         {
             gpu::IcpAlignmentStepResult<Scalar> stats_and_step;
             bool alignment_step_accumulated_transform = false;
+            const bool assume_ordered_correspondences_for_step =
+                _gpu_assume_ordered_correspondences ||
+                (_gpu_assume_ordered_correspondences_after_same_index_step &&
+                    previous_step_can_use_ordered_correspondences);
             if (current_points_use_accumulated_transform)
             {
                 const bool auto_probe_transformed_exact_pointwise =
@@ -474,7 +486,7 @@ private:
                             _gpu_stats_workspace,
                             _gpu_T_step->data(),
                             0,
-                            _gpu_assume_ordered_correspondences,
+                            assume_ordered_correspondences_for_step,
                             probe_transformed_exact_pointwise);
                 }
                 else
@@ -494,7 +506,7 @@ private:
                             _gpu_T_acc->data(),
                             _gpu_next_T_acc->data(),
                             0,
-                            _gpu_assume_ordered_correspondences,
+                            assume_ordered_correspondences_for_step,
                             probe_transformed_exact_pointwise);
                     alignment_step_accumulated_transform = true;
                 }
@@ -510,7 +522,7 @@ private:
                     _gpu_stats_workspace,
                     _gpu_T_step->data(),
                     0,
-                    _gpu_assume_ordered_correspondences,
+                    assume_ordered_correspondences_for_step,
                     _gpu_probe_exact_pointwise_on_finite_radius);
             }
             const auto& stats = stats_and_step;
@@ -541,6 +553,10 @@ private:
                 stats.active_count == source_count &&
                 stats.all_correspondences_same_index &&
                 stats.step_maps_correspondences_exactly;
+            previous_step_can_use_ordered_correspondences =
+                stats.active_count == source_count &&
+                source_count == target_count &&
+                stats.all_correspondences_same_index;
             const auto step_result = stats_and_step.step;
             const Scalar* step_transform = _gpu_T_step->data();
             const bool terminal_iteration = step_result.delta < _eps || iter + 1 == _max_iter;
@@ -1421,6 +1437,8 @@ private:
                _gpu_full_coverage_transform_result_cache_eps == _eps &&
                _gpu_full_coverage_transform_result_cache_min_fitness_score == _min_fitness_score &&
                _gpu_full_coverage_transform_result_cache_assume_ordered == _gpu_assume_ordered_correspondences &&
+               _gpu_full_coverage_transform_result_cache_assume_ordered_after_same_index_step ==
+                   _gpu_assume_ordered_correspondences_after_same_index_step &&
                _gpu_full_coverage_transform_result_cache_probe_exact == _gpu_probe_exact_pointwise_on_finite_radius &&
                _gpu_full_coverage_transform_result_cache_probe_transformed_exact ==
                    _gpu_probe_transformed_exact_pointwise_on_cache_hit &&
@@ -1479,6 +1497,8 @@ private:
         _gpu_full_coverage_transform_result_cache_eps = _eps;
         _gpu_full_coverage_transform_result_cache_min_fitness_score = _min_fitness_score;
         _gpu_full_coverage_transform_result_cache_assume_ordered = _gpu_assume_ordered_correspondences;
+        _gpu_full_coverage_transform_result_cache_assume_ordered_after_same_index_step =
+            _gpu_assume_ordered_correspondences_after_same_index_step;
         _gpu_full_coverage_transform_result_cache_probe_exact = _gpu_probe_exact_pointwise_on_finite_radius;
         _gpu_full_coverage_transform_result_cache_probe_transformed_exact =
             _gpu_probe_transformed_exact_pointwise_on_cache_hit;
@@ -1525,6 +1545,7 @@ private:
         _gpu_full_coverage_transform_result_cache_eps = Scalar(0);
         _gpu_full_coverage_transform_result_cache_min_fitness_score = Scalar(0);
         _gpu_full_coverage_transform_result_cache_assume_ordered = false;
+        _gpu_full_coverage_transform_result_cache_assume_ordered_after_same_index_step = false;
         _gpu_full_coverage_transform_result_cache_probe_exact = false;
         _gpu_full_coverage_transform_result_cache_probe_transformed_exact = false;
         _gpu_full_coverage_transform_result_cache_compute_final_metrics = false;
@@ -2189,6 +2210,7 @@ private:
     Scalar _gpu_full_coverage_transform_result_cache_eps = Scalar(0);
     Scalar _gpu_full_coverage_transform_result_cache_min_fitness_score = Scalar(0);
     bool _gpu_full_coverage_transform_result_cache_assume_ordered = false;
+    bool _gpu_full_coverage_transform_result_cache_assume_ordered_after_same_index_step = false;
     bool _gpu_full_coverage_transform_result_cache_probe_exact = false;
     bool _gpu_full_coverage_transform_result_cache_probe_transformed_exact = false;
     bool _gpu_full_coverage_transform_result_cache_compute_final_metrics = false;
@@ -2208,6 +2230,7 @@ private:
     int _gpu_full_coverage_transform_output_cache_point_count = 0;
     bool _final_T_gpu_valid = false;
     bool _gpu_assume_ordered_correspondences = false;
+    bool _gpu_assume_ordered_correspondences_after_same_index_step = false;
     bool _gpu_probe_exact_pointwise_on_finite_radius = false;
     bool _gpu_probe_transformed_exact_pointwise_on_cache_hit = false;
     bool _gpu_cache_full_coverage_residual_results = false;
