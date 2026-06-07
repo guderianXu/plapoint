@@ -448,7 +448,7 @@ private:
         {
             return;
         }
-        if (tryAlignGpuSingleStepOutputFinalMetrics(
+        if (tryAlignGpuSingleStepFinalMetrics(
                 output,
                 source_count,
                 target_count,
@@ -1243,7 +1243,7 @@ private:
 
     template <plamatrix::Device D = Dev>
     std::enable_if_t<D == plamatrix::Device::GPU, bool>
-    tryAlignGpuSingleStepOutputFinalMetrics(
+    tryAlignGpuSingleStepFinalMetrics(
         PointCloudType* output,
         int source_count,
         int target_count,
@@ -1271,9 +1271,7 @@ private:
         {
             return false;
         }
-        if (!output ||
-            output == _source.get() ||
-            output_aliases_target)
+        if (output == _source.get())
         {
             return false;
         }
@@ -1307,7 +1305,7 @@ private:
             throw std::runtime_error("ICP: target spatial-grid snapshot unavailable for single-step final metrics");
         }
 
-        Scalar* output_points = prepareGpuOutputPointBuffer(*output, source_count);
+        Scalar* output_points = output ? prepareGpuOutputPointBuffer(*output, source_count) : nullptr;
         const bool residual_launched =
             gpu::detail::
                 launchTransformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
@@ -1328,6 +1326,10 @@ private:
             gpu::detail::copyIcpAlignmentAndResidualResultFromReservedWorkspaces<Scalar>(
                 _gpu_stats_workspace,
                 _gpu_final_stats_workspace);
+        if (output_points && output_aliases_target)
+        {
+            invalidateGpuTargetWorkspaceCache();
+        }
         const auto& stats = terminal_result.alignment_step;
         handleGpuAlignmentStepPreconditions(stats, 0);
 
@@ -1359,7 +1361,8 @@ private:
             std::isfinite(stats.step_residual_sq_sum)
                 ? std::max(0.0, stats.step_residual_sq_sum)
                 : stats.step_residual_sq_sum;
-        if (canCacheGpuFullCoverageTransformResult(
+        if (!output_aliases_target &&
+            canCacheGpuFullCoverageTransformResult(
                 source_count,
                 target_count,
                 source_points,
@@ -1371,12 +1374,20 @@ private:
                 step_residual_sq_sum))
         {
             markGpuFullCoverageTransformResultCache(source_count, target_count, source_points, target_points);
-            markGpuFullCoverageTransformOutputCache(*output, source_count, source_points, target_points);
+            if (output)
+            {
+                markGpuFullCoverageTransformOutputCache(*output, source_count, source_points, target_points);
+            }
+            else
+            {
+                invalidateGpuFullCoverageTransformOutputCache();
+            }
             invalidateGpuIdentityOutputCache();
         }
         else
         {
             invalidateGpuFullCoverageTransformResultCache();
+            invalidateGpuFullCoverageTransformOutputCache();
             invalidateGpuIdentityOutputCache();
         }
 

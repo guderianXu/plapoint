@@ -10187,3 +10187,49 @@ Verification evidence:
   the regular-output large-target single-step final-metrics reuse case now has one-sync behavior. The implementation is
   intentionally narrow to avoid disrupting same-count exact-identity and target-alias terminal paths; broader one-step
   no-output and target-alias coverage remain possible follow-up slices.
+
+## Task 251: Extend Large-Target Single-Step Final-Metrics Combined Copy
+
+- Goal: extend the large-target, finite-radius, `maxIterations == 1`, finalMetrics=true combined-copy path to
+  no-output and target-alias output cases, reducing each from an alignment-result synchronization plus a final-residual
+  synchronization to one host synchronization.
+- RED check:
+  - Added `ICPGpuPathTest.AlignLargeTargetSingleIterationFinalMetricsAvoidsExtraHostSynchronization` for the no-output
+    case with 4096 source points and 5000 target points.
+  - Added
+    `ICPGpuPathTest.AlignLargeTargetSingleIterationFinalMetricsWithTargetAliasAvoidsExtraHostSynchronization` for
+    `align(*target)` with the same different-count geometry and output content validation.
+  - Both RED runs failed as intended: observed two host synchronizations instead of the expected one.
+- Implementation:
+  - Broadened `tryAlignGpuSingleStepOutputFinalMetrics()` into `tryAlignGpuSingleStepFinalMetrics()`.
+  - No-output now launches final residual stats against the cached target spatial-grid snapshot with `d_output_points`
+    set to null, then copies the alignment-step result and residual-stats result with one stream synchronization.
+  - Target-alias output now uses the same target spatial-grid snapshot while writing transformed points into the target
+    output buffer, invalidating the target workspace cache after the combined copy synchronizes.
+  - Target-alias output deliberately does not populate the full-coverage transform/output caches because the target
+    cloud has been overwritten by the output.
+  - Added benchmark rows for cold-ish one-iteration no-output and target-output paths.
+- Verification:
+  - No-output RED: failed with host synchronizations 2 vs expected 1.
+  - Target-alias RED: failed with host synchronizations 2 vs expected 1.
+  - New no-output and target-alias tests after implementation: passed.
+  - Focused single-step/exact/two-step regression subset: 16/16 passed.
+  - Full `ICPGpuPathTest.*`: 202/202 passed.
+  - Full CUDA CTest: 383/383 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 10000`:
+    `gpu_icp_finite_radius_translation_reuse_output_one_iteration` = 0.000191 ms,
+    `gpu_icp_finite_radius_translation_no_output_one_iteration` = 0.763034 ms,
+    `gpu_icp_finite_radius_translation_target_output_one_iteration` = 0.79193 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.000194 ms,
+    `gpu_icp_finite_radius_nonrigid_output_final_metrics_two_iterations` = 0.332849 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_final_metrics_two_iterations` = 0.344278 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.247771 ms.
+- Current conclusion:
+  the large-target single-step finalMetrics path now covers no-output, regular output, and target-alias output with one
+  host synchronization when the finite-radius target spatial-grid snapshot is available. The remaining single-step
+  exclusions are still intentional: same-count exact/probe paths, source output aliasing, ordered-correspondence modes,
+  and non-finite or non-positive correspondence radii.
