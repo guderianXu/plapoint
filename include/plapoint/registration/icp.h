@@ -1513,15 +1513,15 @@ private:
         {
             return false;
         }
-        if (output_aliases_target)
+        const bool output_aliases_source = output == _source.get();
+        if (output_aliases_source || output_aliases_target)
         {
             if (!output || !canReuseGpuOutputPointBuffer(*output, source_count))
             {
                 return false;
             }
         }
-        else if (output == _source.get() ||
-                 (output && source_count == target_count))
+        else if (output && source_count == target_count)
         {
             return false;
         }
@@ -1577,6 +1577,7 @@ private:
         const Scalar* target_points,
         bool output_aliases_target)
     {
+        const bool output_aliases_source = output == _source.get();
         const auto& first_step = two_step_result.first_alignment_step;
         handleGpuAlignmentStepPreconditions(first_step, 0);
         const bool first_step_terminal = first_step.step.delta < _eps;
@@ -1591,7 +1592,9 @@ private:
                 std::isfinite(first_step.step_residual_sq_sum)
                     ? std::max(0.0, first_step.step_residual_sq_sum)
                     : first_step.step_residual_sq_sum;
-            if (canCacheGpuFullCoverageTransformResult(
+            if (!output_aliases_source &&
+                !output_aliases_target &&
+                canCacheGpuFullCoverageTransformResult(
                     source_count,
                     target_count,
                     source_points,
@@ -1636,7 +1639,9 @@ private:
             std::isfinite(second_step.step_residual_sq_sum)
                 ? std::max(0.0, second_step.step_residual_sq_sum)
                 : second_step.step_residual_sq_sum;
-        if (canCacheGpuFullCoverageTransformResult(
+        if (!output_aliases_source &&
+            !output_aliases_target &&
+            canCacheGpuFullCoverageTransformResult(
                 source_count,
                 target_count,
                 source_points,

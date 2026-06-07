@@ -10325,3 +10325,43 @@ Verification evidence:
   the large-target two-step finite-radius finalMetrics path now covers no output, regular output, target alias, and
   source alias with one host synchronization when the target spatial-grid snapshot is available. Source alias still
   deliberately pays one post-copy transform kernel so the source buffer is not overwritten before host validation.
+
+## Task 254: Add Large-Target Two-Step Source-Alias Transform-Only Coverage
+
+- Goal: extend the large-target, finite-radius, `maxIterations == 2`, `computeFinalMetrics(false)` transform-only path
+  to `align(*source)` while avoiding stale full-coverage transform-cache reuse after the source cloud is overwritten.
+- RED check:
+  - Added
+    `ICPGpuPathTest.AlignLargeTargetTwoIterationTransformOnlyWithSourceAliasAvoidsPerIterationHostSynchronization`.
+  - RED failed as intended: the old source-alias transform-only path used two host synchronizations and prepared the
+    target spatial grid twice instead of using the queued two-step helper once.
+- Implementation:
+  - Allowed source-alias output in `tryAlignGpuTwoStepTransformOnly()` when the source output point buffer can be
+    reused.
+  - Reused the existing post-copy final transform output writer so the source buffer is overwritten only after both
+    queued alignment-step results are copied and validated on host.
+  - Skipped full-coverage transform/output cache population for source-alias and target-alias transform-only outputs
+    because one of the input buffers has been overwritten by the aligned output.
+  - Added `gpu_icp_finite_radius_translation_source_alias_transform_only_two_iterations` to the benchmark suite.
+- Verification:
+  - Source-alias RED: failed with host synchronizations 2 vs expected 1 and target-grid prepares 2 vs expected 1.
+  - Source-alias test after implementation: passed.
+  - Focused two-step transform-only/final-metrics alias regression subset: 6/6 passed.
+  - Full `ICPGpuPathTest.*`: 205/205 passed.
+  - Full CUDA CTest: 386/386 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 10000`:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 0.239736 ms,
+    `gpu_icp_finite_radius_nonrigid_final_metrics_two_iterations` = 0.319588 ms,
+    `gpu_icp_finite_radius_nonrigid_output_final_metrics_two_iterations` = 0.332816 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_final_metrics_two_iterations` = 0.342995 ms,
+    `gpu_icp_finite_radius_translation_source_alias_transform_only_two_iterations` = 0.18555 ms,
+    `gpu_icp_finite_radius_translation_source_alias_final_metrics_two_iterations` = 0.220559 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.243764 ms.
+- Current conclusion:
+  both large-target two-step source-alias modes now use the queued two-step helper: transform-only avoids terminal
+  residual work, while default finalMetrics still computes terminal metrics. Both defer source overwrite until host
+  validation and both avoid stale transform-cache reuse after mutating the source buffer.
