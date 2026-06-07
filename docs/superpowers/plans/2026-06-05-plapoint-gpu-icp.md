@@ -8706,3 +8706,60 @@ Verification evidence:
   a read-only agent review identified a local follow-up: skip target spatial-grid construction for very small finite
   target clouds and use the existing fallback scan instead. That should be handled separately with small-target tests
   and a large-target regression to avoid changing the 100k-point path.
+
+## Task 218: Skip Target Spatial Grid for Small GPU ICP Targets
+
+- Goal: avoid target spatial-grid prepare/build overhead when a finite-radius GPU ICP call has a very small target
+  cloud. The existing fallback scan is cheaper for this size class, while large targets should keep using the spatial
+  grid and its cache.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignmentStepSkipsTargetSpatialGridForSmallFiniteRadiusTarget`. Before implementation,
+    the small 4-row finite-radius target still prepared and built the target spatial grid once.
+  - Added `ICPGpuPathTest.AlignmentStepUsesTargetSpatialGridForLargeFiniteRadiusTarget` to keep the large-target
+    finite-radius path on the grid-backed implementation.
+- Implementation:
+  - Added `kIcpSpatialGridMinTargetCount = kIcpStatsBlockSize` and changed `shouldUseTargetSpatialGrid` to require
+    both a positive finite correspondence radius and at least 128 target rows.
+  - Updated all target-grid gate call sites to pass the real target count or cached target-grid point count.
+  - Kept non-positive, non-finite, and no-radius behavior unchanged.
+- Test adjustments:
+  - Low-level spatial-grid candidate and direct-lookup tests now pad small target fixtures to at least 128 rows with
+    non-finite rows, preserving the finite fixture geometry while still exercising the grid path.
+  - High-level cache and final-metrics tests that assert real spatial-grid behavior now use 4096-row grid or binary
+    grid fixtures so they remain above the threshold.
+  - Added small-target, 127/128 finite boundary, and large-target alignment-step counter checks around target-grid
+    prepare/build counters.
+- Benchmark notes:
+  - Fresh 1024-point run:
+    `gpu_icp_finite_radius` = 0.663432 ms,
+    `gpu_icp_finite_radius_translation` = 0.76141 ms,
+    `gpu_icp_finite_radius_translation_reuse` = 0.007434 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_new_workspace` = 0.670338 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.055408 ms, and
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.019641 ms.
+  - Fresh 100000-point run:
+    `gpu_icp_finite_radius` = 1.39294 ms,
+    `gpu_icp_finite_radius_translation` = 2.37665 ms,
+    `gpu_icp_finite_radius_translation_reuse` = 0.072139 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_new_workspace` = 1.61251 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.557706 ms, and
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.424263 ms.
+  - The current benchmark fixture generator is degenerate below 257 rows because `makeGridPoints` only varies x for
+    those sizes. Direct sub-128 benchmark rows should be added with a non-collinear small fixture before reporting a
+    measured small-target speedup.
+- Full verification:
+  - GPU: NVIDIA GeForce RTX 4060 Laptop GPU, driver 580.159.03, 8188 MiB.
+  - Targeted boundary regression passed 5/5:
+    `AlignmentStepSkipsTargetSpatialGridForSmallFiniteRadiusTarget`,
+    `AlignmentStepSkipsTargetSpatialGridBelowTargetCountThreshold`,
+    `AlignmentStepUsesTargetSpatialGridAtTargetCountThreshold`,
+    `AlignmentStepUsesTargetSpatialGridForLargeFiniteRadiusTarget`, and
+    `AlignOrderedFinalMetricsSkipTargetSpatialGridSearch`.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 350/350 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 144/144
+    reported no failures; `plapoint.PointCloudTest.GpuTransfer` was skipped in the CPU-only configuration.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+- Current conclusion:
+  keep the target-count gate. It removes unnecessary spatial-grid setup for very small finite-radius targets without
+  changing the large-target grid/cache path. The next measurable follow-up is a dedicated small non-collinear ICP
+  benchmark row so the threshold can be tuned against real timing data instead of only counter evidence.

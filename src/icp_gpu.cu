@@ -222,6 +222,7 @@ static_assert(offsetof(IcpStatsAndStepRawResult, stats) == 0,
               "ICP stats-step result must expose RawIcpStats at the start of the storage");
 
 constexpr int kIcpStatsBlockSize = 128;
+constexpr int kIcpSpatialGridMinTargetCount = kIcpStatsBlockSize;
 constexpr int kIcpTransform3x4ValueCount = 12;
 
 template <typename Scalar>
@@ -5592,10 +5593,10 @@ bool shouldPrecomputeTargetTileBounds(Scalar max_correspondence_distance)
 }
 
 template <typename Scalar>
-bool shouldUseTargetSpatialGrid(Scalar max_correspondence_distance)
+bool shouldUseTargetSpatialGrid(Scalar max_correspondence_distance, int target_count)
 {
     const double max_dist = static_cast<double>(max_correspondence_distance);
-    return std::isfinite(max_dist) && max_dist > 0.0;
+    return std::isfinite(max_dist) && max_dist > 0.0 && target_count >= kIcpSpatialGridMinTargetCount;
 }
 
 template <typename Scalar>
@@ -6412,7 +6413,7 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     bool build_direct_lookup)
 {
     IcpTargetSpatialGrid grid{};
-    if (!shouldUseTargetSpatialGrid(max_correspondence_distance))
+    if (!shouldUseTargetSpatialGrid(max_correspondence_distance, target_count))
     {
         return grid;
     }
@@ -6944,7 +6945,8 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsColumnMajorImp
         throw std::invalid_argument("ICP GPU: residual-stats host result workspace is not reserved");
     }
 
-    const bool use_target_spatial_grid = shouldUseTargetSpatialGrid(max_correspondence_distance);
+    const bool use_target_spatial_grid =
+        shouldUseTargetSpatialGrid(max_correspondence_distance, target_count);
     const double cell_size = static_cast<double>(max_correspondence_distance);
     const bool target_grid_cache_matches =
         use_target_spatial_grid &&
@@ -7177,7 +7179,9 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
     {
         throw std::invalid_argument("ICP GPU: device pointers must not be null");
     }
-    if (!shouldUseTargetSpatialGrid(max_correspondence_distance) ||
+    if (!shouldUseTargetSpatialGrid(
+            max_correspondence_distance,
+            workspace.targetSpatialGridPointCount()) ||
         target_spatial_grid_cell_count <= 0)
     {
         throw std::invalid_argument("ICP GPU: cached target spatial grid snapshot is not available");
@@ -7799,7 +7803,8 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
             }
         }
 
-        const bool use_target_spatial_grid = shouldUseTargetSpatialGrid(max_correspondence_distance);
+        const bool use_target_spatial_grid =
+            shouldUseTargetSpatialGrid(max_correspondence_distance, target_count);
         const double cell_size = static_cast<double>(max_correspondence_distance);
         const bool target_grid_cache_matches =
             use_target_spatial_grid &&
