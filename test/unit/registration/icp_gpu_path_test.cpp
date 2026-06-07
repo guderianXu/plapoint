@@ -2202,18 +2202,21 @@ TEST(ICPGpuPathTest, AlignSmallFiniteRadiusFinalMetricsAvoidExtraHostSynchroniza
     icp.setMaxCorrespondenceDistance(0.08f);
     icp.setMaxIterations(2);
     icp.setTransformationEpsilon(1.0e-12f);
+    icp.setGpuProbeTransformedExactPointwiseOnCacheHit(true);
 
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
     plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
     plapoint::gpu::resetIcpSmallResidualStatsKernelLaunchCountForTesting();
     plapoint::gpu::resetIcpSmallTerminalAlignmentResidualKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpTransformedExactPointwiseAlignmentStepCallCountForTesting();
     plapoint::gpu::resetIcpResidualStatsCallCountForTesting();
     icp.align();
 
     EXPECT_EQ(plapoint::gpu::icpSmallAlignmentStepKernelLaunchCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpSmallTerminalAlignmentResidualKernelLaunchCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpSmallResidualStatsKernelLaunchCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpTransformedExactPointwiseAlignmentStepCallCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
@@ -7271,7 +7274,7 @@ TEST(ICPGpuPathTest, AlignDeferredLastTransformedStepAccumulatesNonIdentityBefor
     using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
     using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
 
-    auto source_points = makeNonCollinearPoints();
+    auto source_points = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting + 1);
     auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.2f, -0.1f, 0.05f);
     target_points.setValue(1, 0, target_points.getValue(1, 0) + 0.025f);
     target_points.setValue(2, 1, target_points.getValue(2, 1) - 0.015f);

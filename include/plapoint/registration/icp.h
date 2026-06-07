@@ -2093,8 +2093,7 @@ private:
             _max_iter != 2 ||
             _gpu_assume_ordered_correspondences ||
             _gpu_assume_ordered_correspondences_after_same_index_step ||
-            _gpu_probe_exact_pointwise_on_finite_radius ||
-            _gpu_probe_transformed_exact_pointwise_on_cache_hit)
+            _gpu_probe_exact_pointwise_on_finite_radius)
         {
             return false;
         }
