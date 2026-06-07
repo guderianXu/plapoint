@@ -10588,6 +10588,82 @@ bool launchTransformedIcpTwoStepAlignmentColumnMajorImpl(
 }
 
 template <typename Scalar>
+bool launchTransformedIcpTerminalAlignmentAndResidualWithTargetSpatialGridSnapshotColumnMajorImpl(
+    const Scalar* d_source_transform,
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& alignment_step_workspace,
+    IcpCorrespondenceStatsWorkspace& residual_workspace,
+    Scalar* d_step_transform,
+    const Scalar* d_previous_accumulated_transform,
+    Scalar* d_accumulated_transform,
+    cudaStream_t stream,
+    Scalar* d_output_points)
+{
+    if (&alignment_step_workspace == &residual_workspace)
+    {
+        throw std::invalid_argument("ICP GPU: terminal alignment residual workspaces must be distinct");
+    }
+    if (source_count <= 0 || target_count <= 0)
+    {
+        return false;
+    }
+    if (!d_source_transform ||
+        !d_source_points ||
+        !d_target_points ||
+        !d_step_transform ||
+        !d_previous_accumulated_transform ||
+        !d_accumulated_transform)
+    {
+        throw std::invalid_argument("ICP GPU: device pointers must not be null");
+    }
+
+    const auto shared_target_grid = makeCachedTargetSpatialGrid(
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        alignment_step_workspace);
+    if (!shared_target_grid.active)
+    {
+        return false;
+    }
+
+    const bool alignment_launched =
+        launchTransformedIcpAlignmentStepAndAccumulateTransformWithTargetSpatialGridImpl(
+            d_source_transform,
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            alignment_step_workspace,
+            shared_target_grid,
+            d_step_transform,
+            d_previous_accumulated_transform,
+            d_accumulated_transform,
+            stream,
+            static_cast<const IcpAlignmentStepRawResult<Scalar>*>(nullptr));
+    if (!alignment_launched)
+    {
+        return false;
+    }
+
+    return launchTransformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorImpl(
+        d_accumulated_transform,
+        d_source_points,
+        source_count,
+        max_correspondence_distance,
+        d_output_points,
+        alignment_step_workspace,
+        residual_workspace,
+        shared_target_grid.cell_count,
+        stream);
+}
+
+template <typename Scalar>
 bool launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
     const Scalar* d_source_transform,
     const Scalar* d_source_points,
@@ -12912,6 +12988,68 @@ bool launchTransformedIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
         d_first_accumulated_transform,
         d_final_accumulated_transform,
         stream);
+}
+
+bool launchTransformedIcpTerminalAlignmentAndResidualWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
+    const float* d_source_transform,
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& alignment_step_workspace,
+    IcpCorrespondenceStatsWorkspace& residual_workspace,
+    float* d_step_transform,
+    const float* d_previous_accumulated_transform,
+    float* d_accumulated_transform,
+    cudaStream_t stream,
+    float* d_output_points)
+{
+    return launchTransformedIcpTerminalAlignmentAndResidualWithTargetSpatialGridSnapshotColumnMajorImpl(
+        d_source_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        alignment_step_workspace,
+        residual_workspace,
+        d_step_transform,
+        d_previous_accumulated_transform,
+        d_accumulated_transform,
+        stream,
+        d_output_points);
+}
+
+bool launchTransformedIcpTerminalAlignmentAndResidualWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
+    const double* d_source_transform,
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& alignment_step_workspace,
+    IcpCorrespondenceStatsWorkspace& residual_workspace,
+    double* d_step_transform,
+    const double* d_previous_accumulated_transform,
+    double* d_accumulated_transform,
+    cudaStream_t stream,
+    double* d_output_points)
+{
+    return launchTransformedIcpTerminalAlignmentAndResidualWithTargetSpatialGridSnapshotColumnMajorImpl(
+        d_source_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        alignment_step_workspace,
+        residual_workspace,
+        d_step_transform,
+        d_previous_accumulated_transform,
+        d_accumulated_transform,
+        stream,
+        d_output_points);
 }
 
 template <>

@@ -893,6 +893,40 @@ bool launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReser
     double* d_accumulated_transform,
     cudaStream_t stream = 0);
 
+/// Enqueue a transformed terminal ICP alignment step and final residual metrics against the cached target spatial
+/// grid snapshot. The helper writes accumulated_transform = step * previous_accumulated and does not synchronize.
+bool launchTransformedIcpTerminalAlignmentAndResidualWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
+    const float* d_source_transform,
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& alignment_step_workspace,
+    IcpCorrespondenceStatsWorkspace& residual_workspace,
+    float* d_step_transform,
+    const float* d_previous_accumulated_transform,
+    float* d_accumulated_transform,
+    cudaStream_t stream = 0,
+    float* d_output_points = nullptr);
+
+/// Enqueue a transformed terminal ICP alignment step and final residual metrics against the cached target spatial
+/// grid snapshot. The helper writes accumulated_transform = step * previous_accumulated and does not synchronize.
+bool launchTransformedIcpTerminalAlignmentAndResidualWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
+    const double* d_source_transform,
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& alignment_step_workspace,
+    IcpCorrespondenceStatsWorkspace& residual_workspace,
+    double* d_step_transform,
+    const double* d_previous_accumulated_transform,
+    double* d_accumulated_transform,
+    cudaStream_t stream = 0,
+    double* d_output_points = nullptr);
+
 /// Enqueue a small-target transformed alignment step and write accumulated_transform = step * previous_accumulated.
 /// The helper does not copy the compact alignment-step result to host or synchronize with the host.
 /// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
