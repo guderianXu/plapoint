@@ -8822,3 +8822,56 @@ Verification evidence:
   keep the one-tile bounds skip. It removes a measurable but small amount of fallback overhead without changing the
   multi-tile target-bounds path or the spatial-grid path. The remaining sub-64-row bottleneck is fixed GPU launch and
   host-result synchronization overhead, not nearest-neighbor search work.
+
+## Task 220: Fuse Small-Target GPU ICP Alignment Step
+
+- Goal: reduce the finite-radius sub-128 target alignment-step path from fallback collect plus reduce to a single
+  fused kernel when both source and target fit in one 128-thread ICP stats block.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignmentStepUsesFusedSmallTargetKernelForFiniteRadiusTarget`. The first build failed with
+    undefined references to `resetIcpSmallAlignmentStepKernelLaunchCountForTesting()` and
+    `icpSmallAlignmentStepKernelLaunchCountForTesting()`, proving the new path and counter did not exist.
+- Implementation:
+  - Added a testing counter for small alignment-step kernel launches.
+  - Added `computeSmallTargetIcpAlignmentStepKernel()`, which loads the whole target tile once, scans nearest
+    correspondences for up to 128 source rows, reduces `RawIcpStats`, and writes the compact alignment-step result in
+    the same kernel.
+  - Added `shouldUseSmallTargetAlignmentStep()` and `launchSmallTargetAlignmentStep()` for positive finite radii,
+    source rows <= 128, and target rows < 128.
+  - Routed only the non-transformed, non-accumulated alignment-step path through the fused kernel after exact-pointwise
+    shortcuts miss. Transformed, accumulated, 128+ target rows, no-radius, and non-finite radius paths are unchanged.
+  - Updated the existing small-target tile-bounds regression so it now expects no fallback collect kernel launch.
+- Targeted verification:
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignmentStepUsesFusedSmallTargetKernelForFiniteRadiusTarget:ICPGpuPathTest.AlignmentStepSkipsTargetTileBoundsForSmallFiniteRadiusTarget:ICPGpuPathTest.AlignmentStepSkipsTargetSpatialGridBelowTargetCountThreshold:ICPGpuPathTest.AlignmentStepUsesTargetSpatialGridAtTargetCountThreshold`:
+    4/4 passed.
+- Benchmark:
+  - GPU: NVIDIA GeForce RTX 4060 Laptop GPU, driver 580.159.03, 8188 MiB.
+  - 200-iteration smoke after implementation:
+    4 rows = 0.570215 ms,
+    16 rows = 0.572813 ms,
+    64 rows = 0.577205 ms,
+    127 rows = 0.607878 ms,
+    128 rows = 0.673261 ms, and
+    256 rows = 0.687644 ms.
+  - Longer 1000-iteration sample after implementation:
+    4 rows = 0.524188 ms,
+    16 rows = 0.539326 ms,
+    64 rows = 0.565352 ms,
+    127 rows = 0.583817 ms,
+    128 rows = 0.66808 ms, and
+    256 rows = 0.654762 ms.
+  - Compared with Task 219's post-bounds-skip 200-iteration sample, the longer run shows the fused path helps most at
+    4/16 rows and modestly at 64/127 rows. 128/256 rows still use the spatial-grid path, so those numbers are context
+    noise rather than the fused-kernel change.
+- Full verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 352/352 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 144/144
+    reported no failures; `plapoint.PointCloudTest.GpuTransfer` was skipped in the CPU-only configuration.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+- Current conclusion:
+  keep the fused small-target alignment-step path. It removes one kernel launch from the sub-128 finite-radius
+  alignment-step path without changing the large-target spatial-grid path. The remaining fixed cost is the host result
+  copy and stream synchronization, so the next meaningful speedup is batching or deferring per-iteration host result
+  consumption rather than adding more tiny-kernel special cases.

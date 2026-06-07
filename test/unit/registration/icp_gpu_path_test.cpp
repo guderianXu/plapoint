@@ -344,6 +344,8 @@ void resetIcpFallbackTileBoundKernelLaunchCountForTesting();
 int icpFallbackTileBoundKernelLaunchCountForTesting();
 void resetIcpFallbackUnboundedKernelLaunchCountForTesting();
 int icpFallbackUnboundedKernelLaunchCountForTesting();
+void resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
+int icpSmallAlignmentStepKernelLaunchCountForTesting();
 void resetIcpTargetSpatialGridBuildCountForTesting();
 int icpTargetSpatialGridBuildCountForTesting();
 void resetIcpTargetSpatialGridPrepareCountForTesting();
@@ -858,6 +860,7 @@ TEST(ICPGpuPathTest, AlignmentStepSkipsTargetTileBoundsForSmallFiniteRadiusTarge
 
     plapoint::gpu::resetIcpTargetTileBoundsReserveCountForTesting();
     plapoint::gpu::resetIcpTargetTileBoundComputationCountForTesting();
+    plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
     plapoint::gpu::resetIcpFallbackTileBoundKernelLaunchCountForTesting();
     plapoint::gpu::resetIcpFallbackUnboundedKernelLaunchCountForTesting();
     const auto result = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
@@ -873,8 +876,47 @@ TEST(ICPGpuPathTest, AlignmentStepSkipsTargetTileBoundsForSmallFiniteRadiusTarge
     EXPECT_TRUE(result.step_valid);
     EXPECT_EQ(plapoint::gpu::icpTargetTileBoundsReserveCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpTargetTileBoundComputationCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpSmallAlignmentStepKernelLaunchCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpFallbackTileBoundKernelLaunchCountForTesting(), 0);
-    EXPECT_EQ(plapoint::gpu::icpFallbackUnboundedKernelLaunchCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpFallbackUnboundedKernelLaunchCountForTesting(), 0);
+}
+
+TEST(ICPGpuPathTest, AlignmentStepUsesFusedSmallTargetKernelForFiniteRadiusTarget)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto target_cpu = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
+    auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.01f, -0.005f, 0.0025f);
+    auto source_gpu = source_cpu.toGpu();
+    auto target_gpu = target_cpu.toGpu();
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+
+    plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpFallbackTileBoundKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpFallbackUnboundedKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
+    plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
+    const auto result = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        0.08f,
+        stats_workspace,
+        step_gpu.data());
+
+    EXPECT_EQ(result.active_count, static_cast<int>(source_gpu.rows()));
+    EXPECT_TRUE(result.step_valid);
+    EXPECT_EQ(plapoint::gpu::icpSmallAlignmentStepKernelLaunchCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpFallbackTileBoundKernelLaunchCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpFallbackUnboundedKernelLaunchCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
 }
 
 TEST(ICPGpuPathTest, AlignmentStepUsesTargetSpatialGridAtTargetCountThreshold)
