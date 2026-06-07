@@ -7250,10 +7250,12 @@ TEST(ICPGpuPathTest, AlignWritesPostLoopOutputTransformWithoutExtraHostSynchroni
 
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     plapoint::gpu::resetIcpTransformPointsCallCountForTesting();
+    plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
     GpuCloud output;
     icp.align(output);
 
-    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpSmallAlignmentStepKernelLaunchCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 1);
     EXPECT_EQ(output.size(), source->size());
     EXPECT_TRUE(icp.hasConverged());
