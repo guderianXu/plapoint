@@ -1536,6 +1536,61 @@ void benchmarkGpuIcpAlignmentStepFiniteRadiusTranslationCachedGridReservedWorksp
     }
 }
 
+void benchmarkGpuIcpAlignmentStepFiniteRadiusTranslationAsyncLaunchCachedGrid(
+    int icp_points,
+    int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(
+            "gpu_icp_alignment_step_finite_radius_translation_async_launch_cached_grid",
+            "no_usable_cuda_device");
+        return;
+    }
+
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    stats_workspace.reserveAlignmentStep(static_cast<int>(source->size()));
+
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        const bool launched =
+            plapoint::gpu::detail::launchIcpAlignmentStepColumnMajorWithReservedWorkspace(
+                source->points().data(),
+                static_cast<int>(source->size()),
+                target->points().data(),
+                static_cast<int>(target->size()),
+                0.02f,
+                stats_workspace,
+                step_transform.data(),
+                0);
+        if (launched)
+        {
+            const auto result =
+                plapoint::gpu::detail::copyAlignmentStepResultFromReservedWorkspace<float>(
+                    stats_workspace,
+                    0);
+            sink += static_cast<std::size_t>(std::max(0, result.active_count));
+        }
+    });
+    printResult(
+        "gpu_icp_alignment_step_finite_radius_translation_async_launch_cached_grid",
+        icp_points,
+        iterations,
+        elapsed);
+    if (sink == 0)
+    {
+        std::cerr
+            << "gpu_icp_alignment_step_finite_radius_translation_async_launch_cached_grid"
+            << " produced no correspondences\n";
+    }
+}
+
 void benchmarkGpuIcpAlignmentStepExactPointwiseSameBuffer(int icp_points, int iterations)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
@@ -3312,6 +3367,9 @@ int main(int argc, char** argv)
     benchmarkGpuIcpAlignmentStepFiniteRadiusTranslationNewWorkspace(options.icp_points, options.iterations);
     benchmarkGpuIcpAlignmentStepFiniteRadiusTranslationCachedGrid(options.icp_points, options.iterations);
     benchmarkGpuIcpAlignmentStepFiniteRadiusTranslationCachedGridReservedWorkspace(
+        options.icp_points,
+        options.iterations);
+    benchmarkGpuIcpAlignmentStepFiniteRadiusTranslationAsyncLaunchCachedGrid(
         options.icp_points,
         options.iterations);
     benchmarkGpuIcpAlignmentStepExactPointwiseSameBuffer(options.icp_points, options.iterations);

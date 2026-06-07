@@ -9172,6 +9172,177 @@ bool launchSmallTargetAlignmentStepColumnMajorImpl(
     Scalar max_correspondence_distance,
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     Scalar* d_step_transform,
+    cudaStream_t stream);
+
+template <typename Scalar>
+bool launchIcpAlignmentStepColumnMajorImpl(
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    Scalar* d_step_transform,
+    cudaStream_t stream,
+    bool assume_ordered_correspondences,
+    bool probe_exact_pointwise_on_finite_radius)
+{
+    if (source_count <= 0 || target_count <= 0)
+    {
+        return false;
+    }
+    if (!d_source_points || !d_target_points || !d_step_transform)
+    {
+        throw std::invalid_argument("ICP GPU: device pointers must not be null");
+    }
+
+    const bool same_buffer_exact_pointwise = detail::canUseSameBufferExactPointwiseStats(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        nullptr);
+    if (assume_ordered_correspondences && !same_buffer_exact_pointwise)
+    {
+        return false;
+    }
+    if (detail::canProbeExactPointwiseStats(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            nullptr,
+            probe_exact_pointwise_on_finite_radius) &&
+        !same_buffer_exact_pointwise)
+    {
+        return false;
+    }
+
+    const bool small_target_step = shouldUseSmallFiniteRadiusTargetTileCapacityKernel(
+        max_correspondence_distance,
+        source_count,
+        target_count);
+    if (small_target_step)
+    {
+        return launchSmallTargetAlignmentStepColumnMajorImpl(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            stats_workspace,
+            d_step_transform,
+            stream);
+    }
+
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_alignment_step_call_count.fetch_add(1, std::memory_order_relaxed);
+    std::uintptr_t empty = 0;
+    g_icp_first_stats_source_pointer.compare_exchange_strong(
+        empty,
+        reinterpret_cast<std::uintptr_t>(d_source_points),
+        std::memory_order_relaxed,
+        std::memory_order_relaxed);
+#endif
+
+    if constexpr (std::is_same_v<Scalar, float>)
+    {
+        stats_workspace.reserveFloatAlignmentStep(source_count);
+    }
+    else
+    {
+        stats_workspace.reserveDoubleAlignmentStep(source_count);
+    }
+
+    constexpr int block_size = kIcpStatsBlockSize;
+    const int grid_size = icpStatsPartialCount(source_count);
+    auto* d_partials = reinterpret_cast<RawIcpStats*>(stats_workspace.partialStorage());
+    auto* d_result = reinterpret_cast<IcpAlignmentStepRawResult<Scalar>*>(stats_workspace.statsStorage());
+
+    if (same_buffer_exact_pointwise)
+    {
+        return launchExactPointwiseAlignmentStep(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            d_partials,
+            grid_size,
+            d_step_transform,
+            d_result,
+            stream,
+            assume_ordered_correspondences,
+            probe_exact_pointwise_on_finite_radius);
+    }
+
+    {
+        const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            stats_workspace,
+            stream,
+            true);
+
+        if (target_grid.active)
+        {
+            launchCollectCorrespondenceStatsSpatialGridKernel(
+                grid_size,
+                block_size,
+                stream,
+                d_source_points,
+                source_count,
+                max_correspondence_distance,
+                nullptr,
+                target_grid,
+                d_partials);
+        }
+        else
+        {
+            const IcpTargetTileBounds* d_target_tile_bounds = prepareTargetTileBounds(
+                d_target_points,
+                target_count,
+                max_correspondence_distance,
+                stats_workspace,
+                stream);
+            launchCollectCorrespondenceStatsKernel(
+                grid_size,
+                block_size,
+                stream,
+                d_source_points,
+                source_count,
+                d_target_points,
+                target_count,
+                max_correspondence_distance,
+                nullptr,
+                d_target_tile_bounds,
+                d_partials);
+        }
+        PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+        reduceRawIcpStatsAndComputeAlignmentStepKernel<Scalar><<<1, block_size, 0, stream>>>(
+            d_partials,
+            grid_size,
+            d_step_transform,
+            d_result);
+        PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    }
+
+    return true;
+}
+
+template <typename Scalar>
+bool launchSmallTargetAlignmentStepColumnMajorImpl(
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    Scalar* d_step_transform,
     cudaStream_t stream)
 {
     if (source_count <= 0 || target_count <= 0)
@@ -11313,6 +11484,56 @@ transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajo
         target_spatial_grid_cell_count,
         stream,
         false);
+}
+
+bool launchIcpAlignmentStepColumnMajorWithReservedWorkspace(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    cudaStream_t stream,
+    bool assume_ordered_correspondences,
+    bool probe_exact_pointwise_on_finite_radius)
+{
+    return launchIcpAlignmentStepColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        d_step_transform,
+        stream,
+        assume_ordered_correspondences,
+        probe_exact_pointwise_on_finite_radius);
+}
+
+bool launchIcpAlignmentStepColumnMajorWithReservedWorkspace(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    cudaStream_t stream,
+    bool assume_ordered_correspondences,
+    bool probe_exact_pointwise_on_finite_radius)
+{
+    return launchIcpAlignmentStepColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        d_step_transform,
+        stream,
+        assume_ordered_correspondences,
+        probe_exact_pointwise_on_finite_radius);
 }
 
 bool launchSmallTargetAlignmentStepColumnMajorWithReservedWorkspace(
