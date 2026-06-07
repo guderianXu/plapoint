@@ -6983,6 +6983,7 @@ TEST(ICPGpuPathTest, AlignCanProbeExactPointwiseForEqualFiniteRadiusInputsWhenEn
     plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
     plapoint::gpu::resetIcpExactPointwiseStepCallCountForTesting();
+    plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     GpuCloud output;
     icp.align(output);
 
@@ -6995,6 +6996,7 @@ TEST(ICPGpuPathTest, AlignCanProbeExactPointwiseForEqualFiniteRadiusInputsWhenEn
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpExactPointwiseStepCallCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
 }
 
 TEST(ICPGpuPathTest, AlignCanUseOrderedPointwiseCorrespondencesForFiniteRadiusTranslation)
@@ -7028,6 +7030,7 @@ TEST(ICPGpuPathTest, AlignCanUseOrderedPointwiseCorrespondencesForFiniteRadiusTr
     plapoint::gpu::resetIcpGridCellLookupCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
+    plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     GpuCloud output;
     icp.align(output);
 
@@ -7037,6 +7040,7 @@ TEST(ICPGpuPathTest, AlignCanUseOrderedPointwiseCorrespondencesForFiniteRadiusTr
     EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
     const auto& final_transform = icp.getFinalTransformation();
     EXPECT_NEAR(final_transform.getValue(0, 3), -0.1f, 1.0e-5f);
     EXPECT_NEAR(final_transform.getValue(1, 3), 0.05f, 1.0e-5f);
@@ -7163,18 +7167,20 @@ TEST(ICPGpuPathTest, AlignCanProbeTransformedExactPointwiseOnCacheHitWhenRequest
     plapoint::gpu::resetIcpTransformedExactPointwiseAlignmentStepCallCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
+    plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     icp.align();
 
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepCallCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpTransformedAlignmentStepCallCountForTesting(), 1);
-    EXPECT_EQ(plapoint::gpu::icpTransformedExactPointwiseAlignmentStepCallCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTransformedExactPointwiseAlignmentStepCallCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
     EXPECT_TRUE(icp.hasConverged());
     EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-6f);
 }
 
-TEST(ICPGpuPathTest, AlignSkipsNextAccumulatedTransformBufferForLastTransformedIdentityStep)
+TEST(ICPGpuPathTest, AlignProbeTransformedExactCacheHitUsesTwoStepFastPath)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -7203,13 +7209,15 @@ TEST(ICPGpuPathTest, AlignSkipsNextAccumulatedTransformBufferForLastTransformedI
     plapoint::gpu::resetIcpTransformedAlignmentStepCallCountForTesting();
     plapoint::gpu::resetIcpTransformedExactPointwiseResidualCallCountForTesting();
     plapoint::gpu::resetIcpTransformedExactPointwiseAlignmentStepCallCountForTesting();
+    plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     icp.align();
 
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepCallCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpTransformedAlignmentStepCallCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTransformedExactPointwiseResidualCallCountForTesting(), 0);
-    EXPECT_EQ(plapoint::gpu::icpTransformedExactPointwiseAlignmentStepCallCountForTesting(), 1);
-    EXPECT_EQ(icp._gpu_next_T_acc, nullptr);
+    EXPECT_EQ(plapoint::gpu::icpTransformedExactPointwiseAlignmentStepCallCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
+    EXPECT_NE(icp._gpu_next_T_acc, nullptr);
     EXPECT_TRUE(icp.hasConverged());
     EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-6f);
 }
