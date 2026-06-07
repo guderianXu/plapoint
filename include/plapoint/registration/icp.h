@@ -509,6 +509,17 @@ private:
                 _compute_final_metrics &&
                 stats.active_count == source_count &&
                 stats.step_maps_correspondences_exactly;
+            const bool terminal_final_metrics_can_reuse_ordered_infinite_step =
+                terminal_iteration &&
+                _compute_final_metrics &&
+                _gpu_assume_ordered_correspondences &&
+                source_count == target_count &&
+                stats.active_count == source_count &&
+                !std::isfinite(_max_corr_dist) &&
+                std::isfinite(stats.step_residual_sq_sum);
+            const bool terminal_final_metrics_can_reuse_alignment_step =
+                terminal_final_metrics_can_reuse_exact_step ||
+                terminal_final_metrics_can_reuse_ordered_infinite_step;
             const bool terminal_final_metrics_can_use_ordered_correspondences =
                 terminal_iteration &&
                 _compute_final_metrics &&
@@ -594,7 +605,7 @@ private:
             }
             else if (terminal_iteration && _compute_final_metrics)
             {
-                if (terminal_final_metrics_can_reuse_exact_step)
+                if (terminal_final_metrics_can_reuse_alignment_step)
                 {
                     if (transform_output_points)
                     {
@@ -616,7 +627,10 @@ private:
                     {
                         invalidateGpuTargetWorkspaceCache();
                     }
-                    updateExactResidualMetricsFromActiveCount(stats.active_count, source_count);
+                    updateResidualMetricsFromActiveCountAndResidualSqSum(
+                        stats.active_count,
+                        source_count,
+                        terminal_final_metrics_can_reuse_exact_step ? 0.0 : stats.step_residual_sq_sum);
 
                     if (step_result.delta < _eps)
                     {
@@ -1004,7 +1018,10 @@ private:
         _final_rmse = metricScalarFromDouble(rmse);
     }
 
-    void updateExactResidualMetricsFromActiveCount(int active_count, int source_count)
+    void updateResidualMetricsFromActiveCountAndResidualSqSum(
+        int active_count,
+        int source_count,
+        double residual_sq_sum)
     {
 #if defined(PLAPOINT_WITH_CUDA) && defined(PLAPOINT_ENABLE_TESTING)
         ++_gpu_metric_update_count;
@@ -1015,8 +1032,13 @@ private:
             _final_rmse = std::numeric_limits<Scalar>::infinity();
             return;
         }
+        if (!std::isfinite(residual_sq_sum))
+        {
+            throw std::runtime_error("ICP: residual distance is not finite");
+        }
+        const double rmse = std::sqrt(residual_sq_sum / static_cast<double>(active_count));
         _fitness_score = static_cast<Scalar>(active_count) / static_cast<Scalar>(source_count);
-        _final_rmse = Scalar(0);
+        _final_rmse = metricScalarFromDouble(rmse);
     }
 
     static void validateGpuStepTransformStatsInput(

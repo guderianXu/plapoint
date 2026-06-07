@@ -8165,3 +8165,58 @@ Verification evidence:
 - Current conclusion:
   keep the exact terminal metrics reuse path. It removes a full residual nearest-neighbor pass from exact one-step
   non-identity alignments while preserving the residual-stats path for non-exact terminal transforms.
+
+## Task 208: Reuse Ordered Infinite-Radius Step For Terminal Metrics
+
+- Goal: skip the terminal ordered residual-stats pass when the just-computed ordered alignment step already contains
+  the post-step residual SSE needed for final metrics. This applies only to ordered, same-size source/target clouds
+  with an infinite correspondence radius. Finite-radius ordered ICP still needs a per-point terminal residual check,
+  because aggregate post-step SSE alone cannot prove every point remains inside the radius.
+- RED check:
+  - Added `ICPGpuPathTest.AlignReusesOrderedInfiniteRadiusStepForTerminalMetrics`.
+  - Before implementation, the test failed with two correspondence-stats calls, one residual-stats call, and zero
+    standalone transform-point calls. The expected fast path needs one alignment/correspondence stats pass, no
+    residual-stats pass, and one standalone transform-point pass when output points are requested.
+- Implementation:
+  - Added `step_residual_sq_sum` to the compact GPU ICP alignment-step result and raw host-copy result.
+  - Reused the aggregate source, target, and cross-covariance sums plus the just-computed step transform to compute
+    post-step SSE inside the alignment-step reduction kernel.
+  - Updated the existing exact-step flag to reuse the same computed post-step SSE instead of recomputing it.
+  - Added a terminal final-metrics fast path in `alignGpu()` for full-coverage ordered infinite-radius terminal
+    iterations. It updates fitness and RMSE directly from `active_count` and `step_residual_sq_sum`, while preserving
+    the exact-zero shortcut for exact terminal steps.
+  - Added `gpu_icp_ordered_infinite_radius_output_one_iteration` to the benchmark rows so this terminal-metrics case is
+    tracked directly.
+- Targeted verification:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesOrderedInfiniteRadiusStepForTerminalMetrics`
+    failed before implementation with the expected extra residual-stats pass, then passed after implementation.
+  - Related regression set passed 8/8:
+    `AlignmentStepRawResultFitsCompactHostCopy`,
+    `FloatAlignmentStepRawResultUsesFloatSizedDelta`,
+    `AlignmentStepCompactResultMatchesFullStatsStepResult`,
+    `AlignOrderedFinalMetricsSkipTargetSpatialGridSearch`,
+    `AlignReusesOrderedInfiniteRadiusStepForTerminalMetrics`,
+    `AlignReusesExactNonIdentityStepForTerminalMetrics`,
+    `AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics`, and
+    `AlignWithoutOutputOrderedFinalMetricsSkipsScratchPointBuffer`.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*`: 145/145 passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed, including the new benchmark row.
+- Benchmark:
+  - Rebuilt `build-codex-cuda-bench-only` and ran:
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 80 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`.
+  - Relevant sample after this change:
+    `gpu_icp_finite_radius_translation_reuse_output_one_iteration` = 0.709503 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_one_iteration` = 0.21519 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics_one_iteration` = 0.187643 ms,
+    `gpu_icp_ordered_infinite_radius_output_one_iteration` = 0.188147 ms, and
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 1.43132 ms.
+- Full verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 326/326 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 143/144
+    executed tests passed, with `plapoint.PointCloudTest.GpuTransfer` skipped by the CPU-only build.
+  - `git diff --check`: clean before the documentation update.
+- Current conclusion:
+  keep the ordered infinite-radius terminal-metrics reuse path. It brings the final-metrics-enabled ordered infinite
+  one-iteration output benchmark down to the same range as the skip-final-metrics ordered path, while leaving
+  finite-radius ordered final metrics on the conservative residual-stats path.

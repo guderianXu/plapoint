@@ -195,6 +195,7 @@ template <typename Scalar>
 struct IcpAlignmentStepRawResult
 {
     double residual_sq_sum;
+    double step_residual_sq_sum;
     Scalar delta;
     int active_count;
     int invalid_source_count;
@@ -213,9 +214,9 @@ static_assert(sizeof(RawIcpStats) >= sizeof(RawIcpIdentityStats),
               "ICP alignment-step partial workspace must cover identity-stats partials");
 static_assert(sizeof(IcpAlignmentStepRawResult<float>) >= sizeof(RawIcpResidualStats),
               "ICP alignment-step result workspace must cover residual-stats results");
-static_assert(sizeof(IcpAlignmentStepRawResult<float>) <= 24,
+static_assert(sizeof(IcpAlignmentStepRawResult<float>) <= 32,
               "Float ICP alignment-step host result should use a float-sized delta");
-static_assert(sizeof(IcpAlignmentStepRawResult<double>) <= 32,
+static_assert(sizeof(IcpAlignmentStepRawResult<double>) <= 40,
               "ICP alignment-step host result should stay compact");
 static_assert(offsetof(IcpStatsAndStepRawResult, stats) == 0,
               "ICP stats-step result must expose RawIcpStats at the start of the storage");
@@ -381,13 +382,13 @@ __device__ __forceinline__ double rawIcpCompactOuterValue(const double compact_o
 }
 
 template <typename Scalar>
-__device__ __forceinline__ bool rawIcpStepTransformResidualIsExactlyZero(
+__device__ __forceinline__ double rawIcpStepTransformResidualSqSum(
     const RawIcpStats& raw,
     const Scalar* __restrict__ step_transform)
 {
     if (raw.active_count <= 0 || !step_transform)
     {
-        return false;
+        return INFINITY;
     }
 
     double transformed_source_sq_sum = 0.0;
@@ -422,9 +423,15 @@ __device__ __forceinline__ bool rawIcpStepTransformResidualIsExactlyZero(
         rawIcpCompactOuterValue(raw.tgt_outer_sum, 0, 0) +
         rawIcpCompactOuterValue(raw.tgt_outer_sum, 1, 1) +
         rawIcpCompactOuterValue(raw.tgt_outer_sum, 2, 2);
-    const double residual_sq_sum =
-        transformed_source_sq_sum - 2.0 * transformed_source_target_dot_sum + target_sq_sum;
-    return residual_sq_sum == 0.0;
+    return transformed_source_sq_sum - 2.0 * transformed_source_target_dot_sum + target_sq_sum;
+}
+
+template <typename Scalar>
+__device__ __forceinline__ bool rawIcpStepTransformResidualIsExactlyZero(
+    const RawIcpStats& raw,
+    const Scalar* __restrict__ step_transform)
+{
+    return rawIcpStepTransformResidualSqSum(raw, step_transform) == 0.0;
 }
 
 __device__ __forceinline__ void addRawIcpOuterSums(double dst[6], const double src[6])
@@ -484,9 +491,11 @@ __device__ __forceinline__ void writeAlignmentStepRawResultFields(
     IcpAlignmentStepRawResult<Scalar>* __restrict__ result,
     int step_valid,
     double delta,
+    double step_residual_sq_sum,
     bool step_maps_correspondences_exactly = false)
 {
     result->residual_sq_sum = raw.residual_sq_sum;
+    result->step_residual_sq_sum = step_residual_sq_sum;
     result->delta = static_cast<Scalar>(delta);
     result->active_count = raw.active_count;
     result->invalid_source_count = raw.invalid_source_count;
@@ -520,6 +529,7 @@ __device__ __forceinline__ void writeIdentityAlignmentStepRawResultFields(
     IcpAlignmentStepRawResult<Scalar>* __restrict__ result)
 {
     result->residual_sq_sum = raw.residual_sq_sum;
+    result->step_residual_sq_sum = raw.residual_sq_sum;
     result->delta = Scalar(0);
     result->active_count = raw.active_count;
     result->invalid_source_count = raw.invalid_source_count;
@@ -4907,7 +4917,13 @@ __global__ void reduceRawIcpStatsAndSetExactPointwiseIdentityAlignmentStepKernel
     {
         const RawIcpStats raw = shared_stats[0];
         const int step_valid = raw.active_count > 0 && isfinite(raw.residual_sq_sum) ? 1 : 0;
-        writeAlignmentStepRawResultFields<Scalar>(raw, result, step_valid, 0.0, step_valid != 0);
+        writeAlignmentStepRawResultFields<Scalar>(
+            raw,
+            result,
+            step_valid,
+            0.0,
+            raw.residual_sq_sum,
+            step_valid != 0);
     }
 }
 
@@ -5550,14 +5566,19 @@ __device__ __forceinline__ void writeAlignmentStepRawResultFromRawStats(
     IcpStepTransformRawResult step_result{};
     computeStepTransformFromRawStatsValue<Scalar>(raw, step_transform, &step_result);
 
+    const double step_residual_sq_sum =
+        step_result.valid != 0
+            ? rawIcpStepTransformResidualSqSum(raw, step_transform)
+            : INFINITY;
     const bool step_maps_correspondences_exactly =
         step_result.valid != 0 &&
-        rawIcpStepTransformResidualIsExactlyZero(raw, step_transform);
+        step_residual_sq_sum == 0.0;
     writeAlignmentStepRawResultFields<Scalar>(
         raw,
         result,
         step_result.valid,
         step_result.delta,
+        step_residual_sq_sum,
         step_maps_correspondences_exactly);
 }
 
@@ -6573,6 +6594,7 @@ IcpAlignmentStepResult<Scalar> makeHostAlignmentStepResult(const IcpAlignmentSte
     result.active_count = raw.active_count;
     result.invalid_source_count = raw.invalid_source_count;
     result.residual_sq_sum = raw.residual_sq_sum;
+    result.step_residual_sq_sum = raw.step_residual_sq_sum;
     result.src_has_non_collinear_geometry = (raw.flags & kIcpAlignmentStepSrcNonCollinearFlag) != 0;
     result.tgt_has_non_collinear_geometry = (raw.flags & kIcpAlignmentStepTgtNonCollinearFlag) != 0;
     result.all_correspondences_same_index = (raw.flags & kIcpAlignmentStepAllSameIndexFlag) != 0;

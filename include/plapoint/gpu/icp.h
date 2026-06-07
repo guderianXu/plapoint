@@ -63,6 +63,7 @@ struct IcpAlignmentStepResult
     int active_count = 0;
     int invalid_source_count = 0;
     double residual_sq_sum = 0.0;
+    double step_residual_sq_sum = 0.0;
     bool src_has_non_collinear_geometry = false;
     bool tgt_has_non_collinear_geometry = false;
     bool all_correspondences_same_index = false;
