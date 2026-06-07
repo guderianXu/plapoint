@@ -8487,3 +8487,71 @@ Verification evidence:
   keep the exact separate-buffer identity result cache. It removes nearly all repeated-call overhead for known exact
   identity source/target pairs while preserving recomputation after target mutable access and avoiding broad reuse for
   translation or non-rigid repeated-call benchmarks.
+
+## Task 214: Reuse Full-Coverage Non-Identity Transform Results Across Calls
+
+- Goal: skip repeated GPU ICP search, final metric synchronization, and output writes for unchanged source/target
+  pairs after a prior terminal non-identity transform already verified full source coverage. This targets repeated
+  finite-radius translation workloads without caching arbitrary partial-overlap ICP results.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignReusesExactNonIdentityResultAcrossSeparateBufferCalls`.
+  - Before implementation, two consecutive exact non-identity `align(output)` calls produced two alignment steps, two
+    host synchronizations, two target spatial-grid prepares, and two output transform kernels.
+  - Added `ICPGpuPathTest.AlignReusesFullCoverageGridTranslationResultAcrossSeparateBufferCalls` for the benchmark-like
+    grid translation case. Before broadening the cache condition, it still produced two alignment steps, four host
+    synchronizations, and two target spatial-grid prepares.
+- Implementation:
+  - Added a full-coverage transform-result cache keyed by source cloud, target cloud, source/target point buffers,
+    source/target point versions, point counts, max correspondence distance, max iteration count, epsilon, minimum
+    fitness, GPU ordered/exact-probe flags, and final-metrics mode.
+  - Cache marking is restricted to terminal non-identity results with final metrics enabled, fitness exactly 1, finite
+    RMSE, and either exact correspondence mapping or full-coverage same-index correspondences.
+  - Added a matching output cache so repeated `align(output)` can skip the output transform when the same output buffer
+    still contains the cached transformed source.
+  - Skipped transform-result/output cache marking when output aliases the target, because target-as-output mutates the
+    target cloud and must invalidate the persistent target workspace instead of reusing the old target key.
+  - Added invalidation tests for mutable source and target point access, plus a mutable-output test proving output
+    mutation forces only the output transform while still reusing the cached ICP result.
+- Targeted verification:
+  - The first RED test failed with alignment-step, host-sync, spatial-grid-prepare, and transform-point counts of `2`
+    vs expected `1`, then passed after implementation.
+  - The benchmark-like grid RED test failed with alignment-step `2` vs `1`, host-sync `4` vs `2`, and spatial-grid
+    prepare `2` vs `1`, then passed after the full-coverage same-index cache condition.
+  - Exact/full-coverage cache set passed 5/5:
+    `AlignReusesExactNonIdentityResultAcrossSeparateBufferCalls`,
+    `AlignReusesFullCoverageGridTranslationResultAcrossSeparateBufferCalls`,
+    `AlignRecomputesExactNonIdentityAfterMutableSourceAccess`,
+    `AlignRecomputesExactNonIdentityAfterMutableTargetAccess`, and
+    `AlignReusesExactNonIdentityResultAfterMutableOutputAccess`.
+  - Adjacent GPU ICP regression set passed 12/12, covering identity result caches, non-identity terminal metrics,
+    target-alias output, and ordered final metrics.
+  - After fixing target-as-output invalidation, the focused regression command passed 3/3:
+    `AlignInvalidatesPersistentGpuTargetSpatialGridCacheAfterTargetAliasedOutput`,
+    `AlignReusesFullCoverageGridTranslationResultAcrossSeparateBufferCalls`, and
+    `AlignReusesExactNonIdentityResultAcrossSeparateBufferCalls`.
+- Benchmark:
+  - Rebuilt `build-codex-cuda-bench-only` and ran:
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 100 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`.
+  - Relevant sample after this change:
+    `gpu_icp_identity` = 0.662453 ms,
+    `gpu_icp_identity_same_buffer_reuse_output` = 0.000139 ms,
+    `gpu_icp_finite_radius` = 1.22399 ms,
+    `gpu_icp_finite_radius_identity_reuse_output` = 0.000148 ms,
+    `gpu_icp_finite_radius_identity_exact_probe_reuse_output` = 0.000146 ms,
+    `gpu_icp_finite_radius_translation_reuse_output` = 0.000182 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_one_iteration` = 0.00018 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 0.917107 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.548661 ms, and
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 1.43131 ms.
+- Full verification:
+  - `cmake --build build-codex-cuda -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 340/340 passed on the repaired NVIDIA driver.
+  - `cmake --build build-codex-cpu -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cpu --output-on-failure`: 144/144 reported no failures; the GPU transfer test was
+    skipped in the CPU-only configuration.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc)`: passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+- Current conclusion:
+  keep the full-coverage transform-result cache for final-metrics-enabled repeated calls. It removes nearly all
+  repeated-call overhead for unchanged full-coverage translation workloads while leaving skip-final-metrics and
+  non-rigid transform-only rows on their existing kernels.
