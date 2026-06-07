@@ -1805,6 +1805,7 @@ __global__ void collectCorrespondenceStatsKernel(
     Scalar max_correspondence_distance,
     int* __restrict__ correspondence_indices,
     const IcpTargetTileBounds* __restrict__ target_tile_bounds,
+    const IcpAlignmentStepRawResult<Scalar>* __restrict__ source_transform_alignment_step,
     RawIcpStats* __restrict__ partial_stats)
 {
     const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1817,6 +1818,24 @@ __global__ void collectCorrespondenceStatsKernel(
     __shared__ Scalar block_transform[kIcpTransform3x4ValueCount];
     if constexpr (TransformSource)
     {
+        __shared__ int shared_source_transform_valid;
+        if (source_transform_alignment_step)
+        {
+            if (local_idx == 0)
+            {
+                shared_source_transform_valid = 1;
+                if (!alignmentStepRawResultIsAcceptableForIcp<Scalar>(*source_transform_alignment_step))
+                {
+                    partial_stats[blockIdx.x] = {};
+                    shared_source_transform_valid = 0;
+                }
+            }
+            __syncthreads();
+            if (shared_source_transform_valid == 0)
+            {
+                return;
+            }
+        }
         loadColumnMajorTransform3x4Block(source_transform, block_transform, local_idx);
     }
 
@@ -2062,6 +2081,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
     Scalar max_correspondence_distance,
     int* __restrict__ correspondence_indices,
     IcpTargetSpatialGrid target_grid,
+    const IcpAlignmentStepRawResult<Scalar>* __restrict__ source_transform_alignment_step,
     RawIcpStats* __restrict__ partial_stats)
 {
     const int source_idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -2074,6 +2094,24 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
     __shared__ Scalar block_transform[kIcpTransform3x4ValueCount];
     if constexpr (TransformSource)
     {
+        __shared__ int shared_source_transform_valid;
+        if (source_transform_alignment_step)
+        {
+            if (local_idx == 0)
+            {
+                shared_source_transform_valid = 1;
+                if (!alignmentStepRawResultIsAcceptableForIcp<Scalar>(*source_transform_alignment_step))
+                {
+                    partial_stats[blockIdx.x] = {};
+                    shared_source_transform_valid = 0;
+                }
+            }
+            __syncthreads();
+            if (shared_source_transform_valid == 0)
+            {
+                return;
+            }
+        }
         loadColumnMajorTransform3x4Block(source_transform, block_transform, local_idx);
     }
 
@@ -4019,6 +4057,7 @@ void launchCollectCorrespondenceStatsKernel(
                 max_correspondence_distance,
                 correspondence_indices,
                 target_tile_bounds,
+                nullptr,
                 partial_stats);
             return;
         }
@@ -4033,6 +4072,7 @@ void launchCollectCorrespondenceStatsKernel(
             max_correspondence_distance,
             correspondence_indices,
             target_tile_bounds,
+            nullptr,
             partial_stats);
         return;
     }
@@ -4049,6 +4089,7 @@ void launchCollectCorrespondenceStatsKernel(
             max_correspondence_distance,
             correspondence_indices,
             target_tile_bounds,
+            nullptr,
             partial_stats);
         return;
     }
@@ -4063,6 +4104,7 @@ void launchCollectCorrespondenceStatsKernel(
         max_correspondence_distance,
         correspondence_indices,
         target_tile_bounds,
+        nullptr,
         partial_stats);
 }
 
@@ -4078,6 +4120,7 @@ void launchTransformAndCollectCorrespondenceStatsKernel(
     int target_count,
     Scalar max_correspondence_distance,
     const IcpTargetTileBounds* target_tile_bounds,
+    const IcpAlignmentStepRawResult<Scalar>* source_transform_alignment_step,
     RawIcpStats* partial_stats)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
@@ -4104,6 +4147,7 @@ void launchTransformAndCollectCorrespondenceStatsKernel(
                 max_correspondence_distance,
                 nullptr,
                 target_tile_bounds,
+                source_transform_alignment_step,
                 partial_stats);
             return;
         }
@@ -4117,6 +4161,7 @@ void launchTransformAndCollectCorrespondenceStatsKernel(
             max_correspondence_distance,
             nullptr,
             target_tile_bounds,
+            source_transform_alignment_step,
             partial_stats);
         return;
     }
@@ -4139,6 +4184,7 @@ void launchTransformAndCollectCorrespondenceStatsKernel(
             max_correspondence_distance,
             nullptr,
             target_tile_bounds,
+            source_transform_alignment_step,
             partial_stats);
         return;
     }
@@ -4152,6 +4198,7 @@ void launchTransformAndCollectCorrespondenceStatsKernel(
         max_correspondence_distance,
         nullptr,
         target_tile_bounds,
+        source_transform_alignment_step,
         partial_stats);
 }
 
@@ -4361,6 +4408,7 @@ void launchCollectCorrespondenceStatsSpatialGridKernel(
                     max_correspondence_distance,
                     correspondence_indices,
                     target_grid,
+                    nullptr,
                     partial_stats);
             }
             else
@@ -4373,6 +4421,7 @@ void launchCollectCorrespondenceStatsSpatialGridKernel(
                     max_correspondence_distance,
                     correspondence_indices,
                     target_grid,
+                    nullptr,
                     partial_stats);
             }
         }
@@ -4388,6 +4437,7 @@ void launchCollectCorrespondenceStatsSpatialGridKernel(
                     max_correspondence_distance,
                     correspondence_indices,
                     target_grid,
+                    nullptr,
                     partial_stats);
             }
             else
@@ -4400,6 +4450,7 @@ void launchCollectCorrespondenceStatsSpatialGridKernel(
                     max_correspondence_distance,
                     correspondence_indices,
                     target_grid,
+                    nullptr,
                     partial_stats);
             }
         }
@@ -4418,6 +4469,7 @@ void launchCollectCorrespondenceStatsSpatialGridKernel(
                 max_correspondence_distance,
                 correspondence_indices,
                 target_grid,
+                nullptr,
                 partial_stats);
         }
         else
@@ -4430,6 +4482,7 @@ void launchCollectCorrespondenceStatsSpatialGridKernel(
                 max_correspondence_distance,
                 correspondence_indices,
                 target_grid,
+                nullptr,
                 partial_stats);
         }
     }
@@ -4445,6 +4498,7 @@ void launchCollectCorrespondenceStatsSpatialGridKernel(
                 max_correspondence_distance,
                 correspondence_indices,
                 target_grid,
+                nullptr,
                 partial_stats);
         }
         else
@@ -4457,6 +4511,7 @@ void launchCollectCorrespondenceStatsSpatialGridKernel(
                 max_correspondence_distance,
                 correspondence_indices,
                 target_grid,
+                nullptr,
                 partial_stats);
         }
     }
@@ -4473,6 +4528,7 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
     Scalar max_correspondence_distance,
     const IcpTargetSpatialGrid& target_grid,
     bool allow_transformed_exact_pointwise,
+    const IcpAlignmentStepRawResult<Scalar>* source_transform_alignment_step,
     RawIcpStats* partial_stats)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
@@ -4500,6 +4556,7 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
                     max_correspondence_distance,
                     nullptr,
                     target_grid,
+                    source_transform_alignment_step,
                     partial_stats);
             }
             else
@@ -4512,6 +4569,7 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
                     max_correspondence_distance,
                     nullptr,
                     target_grid,
+                    source_transform_alignment_step,
                     partial_stats);
             }
             return;
@@ -4526,6 +4584,7 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
                 max_correspondence_distance,
                 nullptr,
                 target_grid,
+                source_transform_alignment_step,
                 partial_stats);
         }
         else
@@ -4538,6 +4597,7 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
                 max_correspondence_distance,
                 nullptr,
                 target_grid,
+                source_transform_alignment_step,
                 partial_stats);
         }
         return;
@@ -4562,6 +4622,7 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
                 max_correspondence_distance,
                 nullptr,
                 target_grid,
+                source_transform_alignment_step,
                 partial_stats);
         }
         else
@@ -4574,6 +4635,7 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
                 max_correspondence_distance,
                 nullptr,
                 target_grid,
+                source_transform_alignment_step,
                 partial_stats);
         }
         return;
@@ -4588,6 +4650,7 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
             max_correspondence_distance,
             nullptr,
             target_grid,
+            source_transform_alignment_step,
             partial_stats);
     }
     else
@@ -4600,6 +4663,7 @@ void launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
             max_correspondence_distance,
             nullptr,
             target_grid,
+            source_transform_alignment_step,
             partial_stats);
     }
 }
@@ -9074,6 +9138,7 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
                     max_correspondence_distance,
                     target_grid,
                     !transformed_exact_pointwise_preflight_missed,
+                    static_cast<const IcpAlignmentStepRawResult<Scalar>*>(nullptr),
                     d_partials);
             }
             else
@@ -9112,6 +9177,7 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
                     target_count,
                     max_correspondence_distance,
                     d_target_tile_bounds,
+                    static_cast<const IcpAlignmentStepRawResult<Scalar>*>(nullptr),
                     d_partials);
             }
             else
@@ -9407,7 +9473,8 @@ bool launchTransformedSmallTargetAlignmentStepAndAccumulateTransformColumnMajorI
     Scalar* d_step_transform,
     const Scalar* d_previous_accumulated_transform,
     Scalar* d_accumulated_transform,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    const IcpAlignmentStepRawResult<Scalar>* d_source_transform_alignment_step = nullptr)
 {
     if (source_count <= 0 || target_count <= 0)
     {
@@ -9463,7 +9530,8 @@ bool launchTransformedSmallTargetAlignmentStepAndAccumulateTransformColumnMajorI
         d_previous_accumulated_transform,
         d_accumulated_transform,
         d_result,
-        stream);
+        stream,
+        d_source_transform_alignment_step);
 }
 
 template <typename Scalar>
@@ -9478,7 +9546,8 @@ bool launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorImpl(
     Scalar* d_step_transform,
     const Scalar* d_previous_accumulated_transform,
     Scalar* d_accumulated_transform,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    const IcpAlignmentStepRawResult<Scalar>* d_source_transform_alignment_step = nullptr)
 {
     if (source_count <= 0 || target_count <= 0)
     {
@@ -9511,7 +9580,8 @@ bool launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorImpl(
             d_step_transform,
             d_previous_accumulated_transform,
             d_accumulated_transform,
-            stream);
+            stream,
+            d_source_transform_alignment_step);
     }
 
 #ifdef PLAPOINT_ENABLE_TESTING
@@ -9561,6 +9631,7 @@ bool launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorImpl(
             max_correspondence_distance,
             target_grid,
             true,
+            d_source_transform_alignment_step,
             d_partials);
     }
     else
@@ -9582,6 +9653,7 @@ bool launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorImpl(
             target_count,
             max_correspondence_distance,
             d_target_tile_bounds,
+            d_source_transform_alignment_step,
             d_partials);
     }
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
@@ -9774,6 +9846,88 @@ copySmallTargetTwoStepAlignmentResultFromReservedWorkspacesImpl(
     result.second_alignment_step = makeHostAlignmentStepResult<Scalar>(*h_second_result);
     result.launched = true;
     return result;
+}
+
+template <typename Scalar>
+bool launchIcpTwoStepAlignmentColumnMajorImpl(
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& second_step_workspace,
+    Scalar* d_first_step_transform,
+    Scalar* d_second_step_transform,
+    Scalar* d_accumulated_transform,
+    cudaStream_t stream)
+{
+    if (&first_step_workspace == &second_step_workspace)
+    {
+        throw std::invalid_argument("ICP GPU: two-step workspaces must be distinct");
+    }
+    if (source_count <= 0 || target_count <= 0)
+    {
+        return false;
+    }
+    if (!d_source_points ||
+        !d_target_points ||
+        !d_first_step_transform ||
+        !d_second_step_transform ||
+        !d_accumulated_transform)
+    {
+        throw std::invalid_argument("ICP GPU: device pointers must not be null");
+    }
+
+    const bool small_target_step = shouldUseSmallFiniteRadiusTargetTileCapacityKernel(
+        max_correspondence_distance,
+        source_count,
+        target_count);
+    if (small_target_step)
+    {
+        return launchSmallTargetTwoStepAlignmentColumnMajorImpl(
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            first_step_workspace,
+            second_step_workspace,
+            d_first_step_transform,
+            d_second_step_transform,
+            d_accumulated_transform,
+            stream);
+    }
+
+    const bool first_launched = launchIcpAlignmentStepColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        first_step_workspace,
+        d_first_step_transform,
+        stream,
+        false,
+        false);
+    if (!first_launched)
+    {
+        return false;
+    }
+
+    return launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorImpl(
+        d_first_step_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        second_step_workspace,
+        d_second_step_transform,
+        d_first_step_transform,
+        d_accumulated_transform,
+        stream,
+        reinterpret_cast<IcpAlignmentStepRawResult<Scalar>*>(first_step_workspace.statsStorage()));
 }
 
 template <typename Scalar>
@@ -11871,6 +12025,60 @@ bool launchSmallTargetTwoStepAlignmentColumnMajorWithReservedWorkspaces(
         stream);
 }
 
+bool launchIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& second_step_workspace,
+    float* d_first_step_transform,
+    float* d_second_step_transform,
+    float* d_accumulated_transform,
+    cudaStream_t stream)
+{
+    return launchIcpTwoStepAlignmentColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        first_step_workspace,
+        second_step_workspace,
+        d_first_step_transform,
+        d_second_step_transform,
+        d_accumulated_transform,
+        stream);
+}
+
+bool launchIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& second_step_workspace,
+    double* d_first_step_transform,
+    double* d_second_step_transform,
+    double* d_accumulated_transform,
+    cudaStream_t stream)
+{
+    return launchIcpTwoStepAlignmentColumnMajorImpl(
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        first_step_workspace,
+        second_step_workspace,
+        d_first_step_transform,
+        d_second_step_transform,
+        d_accumulated_transform,
+        stream);
+}
+
 template <>
 IcpAlignmentStepResult<float> copyAlignmentStepResultFromReservedWorkspace<float>(
     IcpCorrespondenceStatsWorkspace& stats_workspace,
@@ -11907,6 +12115,32 @@ copySmallTargetTwoStepAlignmentResultFromReservedWorkspaces<float>(
 template <>
 IcpSmallTargetTwoStepAlignmentResult<double>
 copySmallTargetTwoStepAlignmentResultFromReservedWorkspaces<double>(
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& second_step_workspace,
+    cudaStream_t stream)
+{
+    return copySmallTargetTwoStepAlignmentResultFromReservedWorkspacesImpl<double>(
+        first_step_workspace,
+        second_step_workspace,
+        stream);
+}
+
+template <>
+IcpTwoStepAlignmentResult<float>
+copyIcpTwoStepAlignmentResultFromReservedWorkspaces<float>(
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& second_step_workspace,
+    cudaStream_t stream)
+{
+    return copySmallTargetTwoStepAlignmentResultFromReservedWorkspacesImpl<float>(
+        first_step_workspace,
+        second_step_workspace,
+        stream);
+}
+
+template <>
+IcpTwoStepAlignmentResult<double>
+copyIcpTwoStepAlignmentResultFromReservedWorkspaces<double>(
     IcpCorrespondenceStatsWorkspace& first_step_workspace,
     IcpCorrespondenceStatsWorkspace& second_step_workspace,
     cudaStream_t stream)

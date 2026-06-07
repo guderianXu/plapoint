@@ -67,6 +67,7 @@ set(expected_gpu_icp_rows
     gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace
     gpu_icp_alignment_step_finite_radius_translation_async_launch_cached_grid
     gpu_icp_alignment_step_transformed_accumulated_async_launch_cached_grid
+    gpu_icp_alignment_step_two_step_async_launch_separate_workspaces
     gpu_icp_alignment_step_exact_pointwise_same_buffer
     gpu_icp_alignment_step_exact_pointwise_same_buffer_reserved_workspace
     gpu_icp_alignment_step_ordered_same_buffer_finite_radius

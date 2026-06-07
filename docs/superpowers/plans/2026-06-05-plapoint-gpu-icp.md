@@ -9759,3 +9759,47 @@ Verification evidence:
   the first and transformed accumulated large-target alignment steps now both have launch-only detail helpers. The next
   useful slice is a two-step large-target path that queues both kernels and performs one compact host-result collection,
   with explicit invalid-first-step handling.
+
+## Task 240: Add Generic Two-Step Async Launch for Large-Target Alignment Steps
+
+- Goal: queue the initial large-target alignment step and the transformed accumulated second step on one stream, then
+  copy both compact alignment-step results with one host synchronization. This is the generic large-target counterpart
+  to the existing small-target two-step transform-only helper.
+- RED check:
+  - Added `ICPGpuPathTest.TwoStepAlignmentAsyncLaunchUsesSpatialGridAndCopiesResultsWithOneSynchronization`.
+  - The first RED build failed because `launchIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces()` and
+    `copyIcpTwoStepAlignmentResultFromReservedWorkspaces()` did not exist.
+  - Added `ICPGpuPathTest.TwoStepAlignmentAsyncLaunchWritesEmptySecondStepWhenFirstStepInvalid`.
+  - After correcting the test to use `active_count < 3` rather than assuming `step_valid == false`, the RED run failed
+    because the current two-step draft still executed the second step from an unacceptable first transform.
+- Implementation:
+  - Added float/double detail overloads of `launchIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces()` plus
+    `copyIcpTwoStepAlignmentResultFromReservedWorkspaces()`.
+  - The helper delegates small finite-radius targets to the existing small-target two-step path. Large targets enqueue
+    the existing async initial step, then the transformed accumulated async step, and collect both compact results with
+    the existing one-sync two-result copy path.
+  - Added an optional device-side first-step raw-result guard to the transformed generic stats kernels. When the first
+    step is not acceptable for another ICP iteration, each block writes empty partial stats so the second compact result
+    is empty without a host branch.
+  - Kept the guard check conditional on a non-null guard pointer so ordinary transformed single-step calls do not pay an
+    extra block synchronization.
+  - Added benchmark row `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces`.
+- Verification:
+  - New two-step happy-path test: passed.
+  - New invalid-first-step test: passed.
+  - Focused transformed/two-step subset: 4/4 passed.
+  - Full `ICPGpuPathTest.*`: 194/194 passed.
+  - Full CUDA CTest: 375/375 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 10000`:
+    `gpu_icp_alignment_step_finite_radius_translation_async_launch_cached_grid` = 0.097199 ms,
+    `gpu_icp_alignment_step_transformed_accumulated_async_launch_cached_grid` = 0.088832 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.239577 ms.
+- Current conclusion:
+  the large-target two-step enqueue/copy primitive is in place and correctly avoids host branching between the two
+  steps. The current cost is still higher than the sum of the two single-step rows because the helper uses distinct
+  workspaces, so the next optimization target is sharing or externally reusing the target spatial-grid cache between
+  the first and second large-target steps before wiring this into high-level `align()`.

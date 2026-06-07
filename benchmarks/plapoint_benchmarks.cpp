@@ -1666,6 +1666,64 @@ void benchmarkGpuIcpAlignmentStepTransformedAccumulatedAsyncLaunchCachedGrid(
     }
 }
 
+void benchmarkGpuIcpAlignmentStepTwoStepAsyncLaunchSeparateWorkspaces(
+    int icp_points,
+    int iterations)
+{
+    constexpr const char* benchmark_name =
+        "gpu_icp_alignment_step_two_step_async_launch_separate_workspaces";
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(benchmark_name, "no_usable_cuda_device");
+        return;
+    }
+
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeTranslatedPerturbedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace first_step_workspace;
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace second_step_workspace;
+    first_step_workspace.reserveAlignmentStep(static_cast<int>(source->size()));
+    second_step_workspace.reserveAlignmentStep(static_cast<int>(source->size()));
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> first_step_transform(4, 4);
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> second_step_transform(4, 4);
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> accumulated_transform(4, 4);
+
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        const bool launched =
+            plapoint::gpu::detail::launchIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
+                source->points().data(),
+                static_cast<int>(source->size()),
+                target->points().data(),
+                static_cast<int>(target->size()),
+                0.02f,
+                first_step_workspace,
+                second_step_workspace,
+                first_step_transform.data(),
+                second_step_transform.data(),
+                accumulated_transform.data(),
+                0);
+        if (launched)
+        {
+            const auto result =
+                plapoint::gpu::detail::copyIcpTwoStepAlignmentResultFromReservedWorkspaces<float>(
+                    first_step_workspace,
+                    second_step_workspace,
+                    0);
+            sink += static_cast<std::size_t>(std::max(0, result.first_alignment_step.active_count));
+            sink += static_cast<std::size_t>(std::max(0, result.second_alignment_step.active_count));
+        }
+    });
+    printResult(benchmark_name, icp_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << benchmark_name << " produced no correspondences\n";
+    }
+}
+
 void benchmarkGpuIcpAlignmentStepExactPointwiseSameBuffer(int icp_points, int iterations)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
@@ -3448,6 +3506,9 @@ int main(int argc, char** argv)
         options.icp_points,
         options.iterations);
     benchmarkGpuIcpAlignmentStepTransformedAccumulatedAsyncLaunchCachedGrid(
+        options.icp_points,
+        options.iterations);
+    benchmarkGpuIcpAlignmentStepTwoStepAsyncLaunchSeparateWorkspaces(
         options.icp_points,
         options.iterations);
     benchmarkGpuIcpAlignmentStepExactPointwiseSameBuffer(options.icp_points, options.iterations);
