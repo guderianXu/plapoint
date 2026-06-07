@@ -669,6 +669,30 @@ IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajorWithReservedWor
     bool assume_ordered_correspondences = false,
     bool probe_exact_pointwise_on_finite_radius = false);
 
+/// Enqueue a small-target compact ICP alignment step without copying the result to host.
+/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+bool launchSmallTargetAlignmentStepColumnMajorWithReservedWorkspace(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    cudaStream_t stream = 0);
+
+/// Enqueue a small-target compact ICP alignment step without copying the result to host.
+/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+bool launchSmallTargetAlignmentStepColumnMajorWithReservedWorkspace(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    cudaStream_t stream = 0);
+
 /// Compute the compact ICP alignment step from source points transformed by d_source_transform.
 /// The caller must call IcpCorrespondenceStatsWorkspace::reserveFloatAlignmentStep(source_count) first.
 /// Set probe_transformed_exact_pointwise_on_cache_hit only when same-index transformed matches are expected often

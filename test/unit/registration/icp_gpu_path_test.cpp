@@ -1158,6 +1158,81 @@ TEST(ICPGpuPathTest, TerminalAlignmentResidualMatchesSeparateSmallTargetBaseline
     }
 }
 
+TEST(ICPGpuPathTest, SmallTargetAlignmentStepAsyncLaunchDefersHostSynchronization)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    auto target_cpu = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
+    auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.01f, -0.005f, 0.0025f);
+    target_cpu.setValue(1, 0, target_cpu.getValue(1, 0) + 0.03f);
+    target_cpu.setValue(2, 1, target_cpu.getValue(2, 1) - 0.02f);
+    target_cpu.setValue(3, 2, target_cpu.getValue(3, 2) + 0.015f);
+    auto source_gpu = source_cpu.toGpu();
+    auto target_gpu = target_cpu.toGpu();
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace baseline_workspace;
+    baseline_workspace.reserveFloatAlignmentStep(static_cast<int>(source_gpu.rows()));
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_step_gpu(4, 4);
+    const auto baseline = plapoint::gpu::detail::computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
+        source_gpu.data(),
+        static_cast<int>(source_gpu.rows()),
+        target_gpu.data(),
+        static_cast<int>(target_gpu.rows()),
+        0.08f,
+        baseline_workspace,
+        baseline_step_gpu.data());
+    ASSERT_TRUE(baseline.step_valid);
+
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace async_workspace;
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> async_step_gpu(4, 4);
+    plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
+    plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
+    plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
+    const bool launched =
+        plapoint::gpu::detail::launchSmallTargetAlignmentStepColumnMajorWithReservedWorkspace(
+            source_gpu.data(),
+            static_cast<int>(source_gpu.rows()),
+            target_gpu.data(),
+            static_cast<int>(target_gpu.rows()),
+            0.08f,
+            async_workspace,
+            async_step_gpu.data());
+
+    ASSERT_TRUE(launched);
+    EXPECT_EQ(plapoint::gpu::icpSmallAlignmentStepKernelLaunchCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 0);
+
+    const auto async_result =
+        plapoint::gpu::detail::copyAlignmentStepResultFromReservedWorkspace<float>(
+            async_workspace,
+            0);
+
+    ASSERT_TRUE(async_result.step_valid);
+    EXPECT_EQ(async_result.active_count, baseline.active_count);
+    EXPECT_EQ(async_result.invalid_source_count, baseline.invalid_source_count);
+    EXPECT_NEAR(async_result.step.delta, baseline.step.delta, 1.0e-6f);
+    EXPECT_NEAR(async_result.residual_sq_sum, baseline.residual_sq_sum, 1.0e-5);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
+
+    const auto baseline_step_cpu = baseline_step_gpu.toCpu();
+    const auto async_step_cpu = async_step_gpu.toCpu();
+    for (int row = 0; row < 4; ++row)
+    {
+        for (int col = 0; col < 4; ++col)
+        {
+            EXPECT_NEAR(
+                async_step_cpu.getValue(row, col),
+                baseline_step_cpu.getValue(row, col),
+                1.0e-5f);
+        }
+    }
+}
+
 TEST(ICPGpuPathTest, TerminalAlignmentResidualAsyncLaunchDefersHostSynchronization)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

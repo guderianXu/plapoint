@@ -9347,3 +9347,45 @@ Verification evidence:
   keep this lower-level async split. It still does not change the high-level `align()` synchronization cadence, but it
   gives a future batched/asynchronous ICP caller separate enqueue and result-collection phases for both ordinary
   transformed accumulated steps and terminal metric steps.
+
+## Task 230: Add Async Launch Building Block for Initial Small-Target Alignment Step
+
+- Goal: complete the small-target async step trio needed by a future batched/asynchronous ICP surface. Task 228 covered
+  terminal metrics, Task 229 covered transformed accumulated steps, and this task exposes the initial small-target
+  alignment step as an enqueue-only detail API with explicit compact result collection.
+- RED checks:
+  - Added `ICPGpuPathTest.SmallTargetAlignmentStepAsyncLaunchDefersHostSynchronization`.
+  - The RED failed at compile time because
+    `launchSmallTargetAlignmentStepColumnMajorWithReservedWorkspace()` did not exist.
+  - Added benchmark row
+    `gpu_icp_alignment_step_small_finite_radius_target_async_launch_below_grid_threshold` to the row checker before
+    implementation. The checker failed because the row was missing.
+- Implementation:
+  - Added float/double detail overloads for
+    `launchSmallTargetAlignmentStepColumnMajorWithReservedWorkspace()`. They validate the small finite-radius
+    predicate, reserve alignment-step workspace, enqueue the existing small-target alignment-step kernel, and return
+    without copying the compact result to host or synchronizing the stream.
+  - Reused `copyAlignmentStepResultFromReservedWorkspace<Scalar>()` from Task 229 for explicit result collection.
+  - Added benchmark row
+    `gpu_icp_alignment_step_small_finite_radius_target_async_launch_below_grid_threshold`, timing enqueue plus explicit
+    stream synchronization but no host result copy.
+- Correctness coverage:
+  - The new test compares the async launch result and device step transform against the existing synchronous
+    `computeIcpAlignmentStepColumnMajorWithReservedWorkspace()` helper. It asserts one small-target alignment kernel
+    launch, zero alignment-step host result copies, and zero host synchronizations before explicit result copy; after
+    copying, both counters are exactly one.
+- Verification evidence:
+  - The RED compile failure reproduced before implementation.
+  - `ICPGpuPathTest.SmallTargetAlignmentStepAsyncLaunchDefersHostSynchronization`: 1/1 passed after implementation.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed after adding the benchmark row.
+- Benchmark:
+  - 3-iteration sample with `--icp-points 1024`:
+    `gpu_icp_alignment_step_small_finite_radius_target_below_grid_threshold` = 0.6011 ms,
+    `gpu_icp_alignment_step_small_finite_radius_target_async_launch_below_grid_threshold` = 0.083866 ms,
+    `gpu_icp_small_finite_radius_nonrigid_transform_only_two_iterations_below_grid_threshold` = 0.175769 ms,
+    `gpu_icp_small_finite_radius_transformed_accumulated_async_launch_below_grid_threshold` = 0.085176 ms,
+    and `gpu_icp_small_finite_radius_terminal_async_launch_below_grid_threshold` = 0.121389 ms.
+- Current conclusion:
+  keep this async launch/detail split. Small-target ICP now has separate enqueue and result-copy APIs for the initial
+  step, transformed accumulated step, and terminal metric step. The next larger optimization can build a two-step or
+  batched async ICP surface that queues multiple dependent GPU kernels before collecting host convergence data.

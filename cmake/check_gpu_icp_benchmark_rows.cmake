@@ -89,6 +89,7 @@ set(expected_gpu_icp_rows
     gpu_icp_alignment_step_small_finite_radius_target_16
     gpu_icp_alignment_step_small_finite_radius_target_64
     gpu_icp_alignment_step_small_finite_radius_target_below_grid_threshold
+    gpu_icp_alignment_step_small_finite_radius_target_async_launch_below_grid_threshold
     gpu_icp_alignment_step_small_finite_radius_target_at_grid_threshold
     gpu_icp_alignment_step_small_finite_radius_target_256
     gpu_icp_stats_step_small_finite_radius_target_below_grid_threshold
