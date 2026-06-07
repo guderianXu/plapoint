@@ -10277,3 +10277,51 @@ Verification evidence:
   all large-target single-step finite-radius finalMetrics output shapes now have one host synchronization: no output,
   regular output, target alias, and source alias. Alias outputs intentionally pay one post-copy transform kernel so
   source/target buffers are not overwritten before host-side alignment validation.
+
+## Task 253: Add Large-Target Two-Step Source-Alias Final-Metrics Coverage
+
+- Goal: extend the large-target, finite-radius, `maxIterations == 2`, finalMetrics=true combined-copy path to
+  `align(*source)` while avoiding stale full-coverage transform-cache reuse after the source cloud is overwritten.
+- RED check:
+  - Added
+    `ICPGpuPathTest.AlignLargeTargetTwoIterationFinalMetricsWithSourceAliasAvoidsPerIterationHostSynchronization`.
+  - RED failed as intended: the old source-alias path fell back to the generic loop with three host synchronizations
+    instead of one.
+  - The same RED exposed the stale-cache hazard again: after `align(*source)`, a second `align()` reused the
+    pre-overwrite full-coverage transform cache, launched zero alignment steps, and returned the old translation.
+- Implementation:
+  - Allowed source-alias output in `tryAlignGpuTwoStepFinalMetrics()` when the source output buffer can be reused.
+  - For source-alias and target-alias outputs, final residual metrics are precomputed against the cached target
+    spatial-grid snapshot without writing the output buffer.
+  - The source-alias output transform is written only after the combined two-step alignment/residual copy synchronizes
+    and the host validates both alignment steps.
+  - Source-alias and target-alias outputs skip full-coverage transform/output cache population because one input buffer
+    has been overwritten by the aligned output.
+  - Added `gpu_icp_finite_radius_translation_source_alias_final_metrics_two_iterations` to the benchmark suite.
+- Verification:
+  - Source-alias RED: failed with host synchronizations 3 vs expected 1, target-grid prepares 2 vs expected 1,
+    transform calls 0 vs expected 1, second-align alignment steps 0 vs expected 2, and the second transform still
+    containing the old translation.
+  - Source-alias test after implementation: passed.
+  - Focused single/two-step alias final-metrics regression subset: 7/7 passed.
+  - Full `ICPGpuPathTest.*`: 204/204 passed.
+  - Full CUDA CTest: 385/385 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 10000`:
+    `gpu_icp_finite_radius_translation_reuse_output_one_iteration` = 0.000196 ms,
+    `gpu_icp_finite_radius_translation_no_output_one_iteration` = 0.755739 ms,
+    `gpu_icp_finite_radius_translation_target_output_one_iteration` = 0.779815 ms,
+    `gpu_icp_finite_radius_translation_source_output_one_iteration` = 0.748511 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.0002 ms,
+    `gpu_icp_finite_radius_nonrigid_final_metrics_two_iterations` = 0.317009 ms,
+    `gpu_icp_finite_radius_nonrigid_output_final_metrics_two_iterations` = 0.33265 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_final_metrics_two_iterations` = 0.342608 ms,
+    `gpu_icp_finite_radius_translation_source_alias_final_metrics_two_iterations` = 0.219464 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.239439 ms.
+- Current conclusion:
+  the large-target two-step finite-radius finalMetrics path now covers no output, regular output, target alias, and
+  source alias with one host synchronization when the target spatial-grid snapshot is available. Source alias still
+  deliberately pays one post-copy transform kernel so the source buffer is not overwritten before host validation.

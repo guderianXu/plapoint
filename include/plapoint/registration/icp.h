@@ -1697,15 +1697,15 @@ private:
         {
             return false;
         }
-        if (output_aliases_target)
+        const bool output_aliases_source = output == _source.get();
+        if (output_aliases_source || output_aliases_target)
         {
             if (!output || !canReuseGpuOutputPointBuffer(*output, source_count))
             {
                 return false;
             }
         }
-        else if (output == _source.get() ||
-                 (output && source_count == target_count))
+        else if (output && source_count == target_count)
         {
             return false;
         }
@@ -1742,11 +1742,12 @@ private:
         const bool final_metrics_can_use_target_snapshot =
             gpuFinalMetricsCanUseCachedTargetSpatialGridSnapshot(target_points, target_count);
         Scalar* output_points = nullptr;
+        const bool defer_output_write = output_aliases_source || output_aliases_target;
         const bool can_precompute_final_metrics =
             final_metrics_can_use_target_snapshot;
         if (can_precompute_final_metrics)
         {
-            if (output && !output_aliases_target)
+            if (output && !defer_output_write)
             {
                 output_points = prepareGpuOutputPointBuffer(*output, source_count);
             }
@@ -1891,7 +1892,8 @@ private:
             std::isfinite(second_step.step_residual_sq_sum)
                 ? std::max(0.0, second_step.step_residual_sq_sum)
                 : second_step.step_residual_sq_sum;
-        if (!output_aliases_target &&
+        if (!output_aliases_source &&
+            !output_aliases_target &&
             canCacheGpuFullCoverageTransformResult(
                 source_count,
                 target_count,
@@ -1904,7 +1906,7 @@ private:
                 second_step_residual_sq_sum))
         {
             markGpuFullCoverageTransformResultCache(source_count, target_count, source_points, target_points);
-            if (output && !output_aliases_target)
+            if (output && !defer_output_write)
             {
                 markGpuFullCoverageTransformOutputCache(*output, source_count, source_points, target_points);
             }
