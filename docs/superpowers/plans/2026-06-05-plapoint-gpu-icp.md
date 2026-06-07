@@ -9389,3 +9389,52 @@ Verification evidence:
   keep this async launch/detail split. Small-target ICP now has separate enqueue and result-copy APIs for the initial
   step, transformed accumulated step, and terminal metric step. The next larger optimization can build a two-step or
   batched async ICP surface that queues multiple dependent GPU kernels before collecting host convergence data.
+
+## Task 231: Add Two-Step Async Small-Target Terminal Helper
+
+- Goal: use the existing small-target async primitives to queue the initial alignment step and the terminal transformed
+  alignment/residual kernel on the same stream, then copy both compact host results with one synchronization.
+- RED checks:
+  - Added `ICPGpuPathTest.SmallTargetTwoStepTerminalAsyncLaunchCopiesResultsWithOneHostSynchronization`.
+  - The RED failed at compile time because
+    `launchSmallTargetTwoStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspaces()` and
+    `copySmallTargetTwoStepTerminalAlignmentAndResidualResultFromReservedWorkspaces()` did not exist.
+  - Added benchmark row
+    `gpu_icp_small_finite_radius_two_step_terminal_async_launch_below_grid_threshold` to the row checker before
+    implementation. The checker failed because the row was missing.
+- Implementation:
+  - Added `IcpSmallTargetTwoStepTerminalAlignmentAndResidualResult<Scalar>` for the first alignment-step result plus
+    the terminal alignment/residual result.
+  - Added float/double detail overloads for
+    `launchSmallTargetTwoStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspaces()`. The helper requires
+    distinct first-step and terminal workspaces, queues the existing initial small-target step, then queues the existing
+    terminal transformed residual kernel using the first step transform as both source and previous accumulated
+    transform.
+  - Added
+    `copySmallTargetTwoStepTerminalAlignmentAndResidualResultFromReservedWorkspaces<Scalar>()`, which performs two
+    compact `cudaMemcpyAsync()` calls and one `cudaStreamSynchronize()`.
+  - Added benchmark row
+    `gpu_icp_small_finite_radius_two_step_terminal_async_launch_below_grid_threshold`, timing two queued kernels plus
+    one explicit stream synchronization and no host result copy.
+- Correctness coverage:
+  - The new test compares the async two-step result, accumulated transform, and optional output points against the
+    existing synchronous first-step plus terminal fused helper sequence. It asserts two small-target alignment kernel
+    launches, one terminal kernel launch, zero host copies/synchronizations before explicit copy, and two compact host
+    result copies with one host synchronization after explicit copy.
+- Verification evidence:
+  - The RED compile failure reproduced before implementation.
+  - The benchmark row checker failed before implementation and passed after adding the row.
+  - `ICPGpuPathTest.SmallTargetTwoStepTerminalAsyncLaunchCopiesResultsWithOneHostSynchronization`: 1/1 passed after
+    implementation.
+  - Related async ICP GPU tests: 6/6 passed.
+- Benchmark:
+  - 3-iteration sample with `--icp-points 1024`:
+    `gpu_icp_alignment_step_small_finite_radius_target_async_launch_below_grid_threshold` = 0.084005 ms,
+    `gpu_icp_small_finite_radius_transformed_accumulated_async_launch_below_grid_threshold` = 0.085239 ms,
+    `gpu_icp_small_finite_radius_terminal_async_launch_below_grid_threshold` = 0.121368 ms,
+    and `gpu_icp_small_finite_radius_two_step_terminal_async_launch_below_grid_threshold` = 0.205327 ms.
+- Current conclusion:
+  this helper reduces the host-side collection point for a valid two-step terminal small-target path from two compact
+  result synchronizations to one. It is still a low-level valid-path primitive; the next optimization should integrate
+  it into a high-level two-iteration/small-target path or add a conditional combined kernel for invalid first-step
+  handling before exposing it more broadly.

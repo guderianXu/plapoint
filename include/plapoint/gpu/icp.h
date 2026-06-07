@@ -81,6 +81,15 @@ struct IcpTerminalAlignmentAndResidualResult
     bool launched = false;
 };
 
+/// Host-side compact result for two queued small-target GPU ICP steps and terminal residual metrics.
+template <typename Scalar>
+struct IcpSmallTargetTwoStepTerminalAlignmentAndResidualResult
+{
+    IcpAlignmentStepResult<Scalar> first_alignment_step;
+    IcpTerminalAlignmentAndResidualResult<Scalar> terminal_result;
+    bool launched = false;
+};
+
 /// Reusable device storage for ICP correspondence stats reductions.
 /// Reserve it once for a source size and pass it to repeated stats calls to avoid repeated allocations.
 class IcpCorrespondenceStatsWorkspace
@@ -844,6 +853,50 @@ template <typename Scalar>
 IcpTerminalAlignmentAndResidualResult<Scalar>
 copySmallTargetTerminalAlignmentAndResidualResultFromReservedWorkspace(
     IcpCorrespondenceStatsWorkspace& stats_workspace,
+    cudaStream_t stream = 0);
+
+/// Enqueue an initial small-target alignment step followed by terminal transformed metrics on the same stream.
+/// The two workspaces must be distinct because both compact device results are copied together later.
+/// This low-level helper assumes the queued first step is valid before the terminal kernel's result is consumed.
+/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+bool launchSmallTargetTwoStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspaces(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& terminal_workspace,
+    float* d_first_step_transform,
+    float* d_terminal_step_transform,
+    float* d_accumulated_transform,
+    cudaStream_t stream = 0,
+    float* d_output_points = nullptr);
+
+/// Enqueue an initial small-target alignment step followed by terminal transformed metrics on the same stream.
+/// The two workspaces must be distinct because both compact device results are copied together later.
+/// This low-level helper assumes the queued first step is valid before the terminal kernel's result is consumed.
+/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+bool launchSmallTargetTwoStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspaces(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& terminal_workspace,
+    double* d_first_step_transform,
+    double* d_terminal_step_transform,
+    double* d_accumulated_transform,
+    cudaStream_t stream = 0,
+    double* d_output_points = nullptr);
+
+/// Copy both compact results produced by the two-step async helper and synchronize the stream once.
+template <typename Scalar>
+IcpSmallTargetTwoStepTerminalAlignmentAndResidualResult<Scalar>
+copySmallTargetTwoStepTerminalAlignmentAndResidualResultFromReservedWorkspaces(
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& terminal_workspace,
     cudaStream_t stream = 0);
 
 /// Compute a small-target terminal transformed alignment step and exact post-step residual metrics.
