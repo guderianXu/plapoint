@@ -9573,3 +9573,44 @@ Verification evidence:
   one-iteration and two-iteration small-target final-metrics paths now both use one host synchronization. Remaining
   larger gains require either extending batched submission across independent alignments or moving more multi-iteration
   convergence control onto the device with carefully preserved error/early-stop semantics.
+
+## Task 235: Add One-Sync Two-Step Small-Target Transform-Only Path
+
+- Goal: reduce the small finite-radius, `maxIterations == 2`, `computeFinalMetrics(false)`, no-output high-level GPU
+  `align()` path from one host synchronization per alignment step to one combined host synchronization for both compact
+  alignment-step results.
+- RED check:
+  - Added `ICPGpuPathTest.AlignSmallTargetTwoIterationTransformOnlyAvoidsPerIterationHostSynchronization`.
+  - The first run failed as intended because the current path reported two host synchronizations while the test expected
+    one. A preliminary compile-only issue in the test was fixed by caching scalar baseline transform values instead of
+    copying a non-copyable `DenseMatrix`.
+- Implementation:
+  - Added `IcpSmallTargetTwoStepAlignmentResult` plus
+    `launchSmallTargetTwoStepAlignmentColumnMajorWithReservedWorkspaces()` and
+    `copySmallTargetTwoStepAlignmentResultFromReservedWorkspaces()`.
+  - The second small-target transformed alignment kernel now accepts the first step raw result as a device-side guard.
+    It writes an empty second result instead of consuming an invalid first transform.
+  - Added a high-level `alignGpu()` fast path limited to small finite-radius, two-iteration, no-output, transform-only
+    runs without ordered/exact-probe special modes. The path queues both alignment steps, copies both compact results
+    with one stream synchronization, and keeps final transform output in `_gpu_T_acc`.
+  - Added benchmark row
+    `gpu_icp_small_finite_radius_two_step_transform_only_async_launch_below_grid_threshold`.
+- Verification:
+  - New high-level one-sync test: passed.
+  - Related small-target/final-metrics path subset: 6/6 passed.
+  - ICP GPU path tests: 187/187 passed.
+  - Full CUDA CTest: 368/368 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with the GPU transfer test skipped in the
+    CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+  - `git diff --check`: passed with no output.
+- Benchmark:
+  - 10-iteration sample with `--icp-points 1024`:
+    `gpu_icp_small_finite_radius_nonrigid_transform_only_two_iterations_below_grid_threshold` = 0.171738 ms,
+    `gpu_icp_small_finite_radius_transformed_accumulated_async_launch_below_grid_threshold` = 0.085002 ms,
+    `gpu_icp_small_finite_radius_two_step_transform_only_async_launch_below_grid_threshold` = 0.168329 ms,
+    and `gpu_icp_small_finite_radius_two_step_terminal_async_launch_below_grid_threshold` = 0.204401 ms.
+- Current conclusion:
+  the small-target transform-only two-step path now has the same one-sync shape as the recent small-target final-metrics
+  paths. The next broader step is still either a public batched/asynchronous ICP surface or a generic large-target
+  spatial-grid alignment-step launch/copy split.

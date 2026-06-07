@@ -2941,6 +2941,60 @@ void benchmarkGpuIcpSmallFiniteRadiusTwoStepTerminalAsyncLaunch(
         std::cerr << benchmark_name << " did not launch\n";
     }
 }
+
+void benchmarkGpuIcpSmallFiniteRadiusTwoStepTransformOnlyAsyncLaunch(
+    const std::string& benchmark_name,
+    int target_count,
+    int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(benchmark_name, "no_usable_cuda_device");
+        return;
+    }
+
+    auto target_points = makeCompactNonCollinearGridPoints<float>(target_count);
+    auto source_points =
+        makeTranslatedCompactNonCollinearGridPoints<float>(target_count, 0.01f, -0.005f, 0.0025f);
+    if (target_count > 3)
+    {
+        target_points(1, 0) += 0.03f;
+        target_points(2, 1) -= 0.02f;
+        target_points(3, 2) += 0.015f;
+    }
+
+    auto source_gpu = source_points.toGpu();
+    auto target_gpu = target_points.toGpu();
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace first_step_workspace;
+    plapoint::gpu::IcpCorrespondenceStatsWorkspace second_step_workspace;
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> first_step_gpu(4, 4);
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> second_step_gpu(4, 4);
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> accumulated_gpu(4, 4);
+
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        const bool launched =
+            plapoint::gpu::detail::launchSmallTargetTwoStepAlignmentColumnMajorWithReservedWorkspaces(
+                source_gpu.data(),
+                static_cast<int>(source_gpu.rows()),
+                target_gpu.data(),
+                static_cast<int>(target_gpu.rows()),
+                0.08f,
+                first_step_workspace,
+                second_step_workspace,
+                first_step_gpu.data(),
+                second_step_gpu.data(),
+                accumulated_gpu.data(),
+                0);
+        PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(0));
+        sink += launched ? 1u : 0u;
+    });
+    printResult(benchmark_name, target_count, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << benchmark_name << " did not launch\n";
+    }
+}
 #endif
 
 } // namespace
@@ -3270,6 +3324,10 @@ int main(int argc, char** argv)
         options.iterations);
     benchmarkGpuIcpSmallFiniteRadiusTransformedAccumulatedAsyncLaunch(
         "gpu_icp_small_finite_radius_transformed_accumulated_async_launch_below_grid_threshold",
+        127,
+        options.iterations);
+    benchmarkGpuIcpSmallFiniteRadiusTwoStepTransformOnlyAsyncLaunch(
+        "gpu_icp_small_finite_radius_two_step_transform_only_async_launch_below_grid_threshold",
         127,
         options.iterations);
     benchmarkGpuIcpSmallFiniteRadiusTerminalAsyncLaunch(

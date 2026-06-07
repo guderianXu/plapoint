@@ -90,6 +90,15 @@ struct IcpSmallTargetTwoStepTerminalAlignmentAndResidualResult
     bool launched = false;
 };
 
+/// Host-side compact result for two queued small-target GPU ICP alignment iterations.
+template <typename Scalar>
+struct IcpSmallTargetTwoStepAlignmentResult
+{
+    IcpAlignmentStepResult<Scalar> first_alignment_step;
+    IcpAlignmentStepResult<Scalar> second_alignment_step;
+    bool launched = false;
+};
+
 /// Reusable device storage for ICP correspondence stats reductions.
 /// Reserve it once for a source size and pass it to repeated stats calls to avoid repeated allocations.
 class IcpCorrespondenceStatsWorkspace
@@ -810,6 +819,48 @@ bool launchTransformedSmallTargetAlignmentStepAndAccumulateTransformColumnMajorW
 template <typename Scalar>
 IcpAlignmentStepResult<Scalar> copyAlignmentStepResultFromReservedWorkspace(
     IcpCorrespondenceStatsWorkspace& stats_workspace,
+    cudaStream_t stream = 0);
+
+/// Enqueue two small-target alignment steps on one stream without copying either result to host.
+/// The second step consumes the first step transform only when the first compact result is acceptable to ICP.
+/// The two workspaces must be distinct because both compact device results are copied together later.
+/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+bool launchSmallTargetTwoStepAlignmentColumnMajorWithReservedWorkspaces(
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& second_step_workspace,
+    float* d_first_step_transform,
+    float* d_second_step_transform,
+    float* d_accumulated_transform,
+    cudaStream_t stream = 0);
+
+/// Enqueue two small-target alignment steps on one stream without copying either result to host.
+/// The second step consumes the first step transform only when the first compact result is acceptable to ICP.
+/// The two workspaces must be distinct because both compact device results are copied together later.
+/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+bool launchSmallTargetTwoStepAlignmentColumnMajorWithReservedWorkspaces(
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& second_step_workspace,
+    double* d_first_step_transform,
+    double* d_second_step_transform,
+    double* d_accumulated_transform,
+    cudaStream_t stream = 0);
+
+/// Copy both compact alignment-step results produced by the two-step async helper and synchronize the stream once.
+template <typename Scalar>
+IcpSmallTargetTwoStepAlignmentResult<Scalar>
+copySmallTargetTwoStepAlignmentResultFromReservedWorkspaces(
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& second_step_workspace,
     cudaStream_t stream = 0);
 
 /// Enqueue an initial small-target alignment step and exact post-step residual metrics.
