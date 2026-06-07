@@ -10414,3 +10414,30 @@ Verification evidence:
   the target-alias transform-only path is now tracked directly. On the current 10k-point sample its cost is dominated
   by the post-validation target output transform, putting it close to target-alias final-metrics and about 0.117 ms
   above the no-output transform-only baseline.
+
+## Task 257: Add Large-Target Regular-Output Transform-Only Benchmark Row
+
+- Goal: track the optimized large-target, finite-radius, `maxIterations == 2`, transform-only regular `align(output)`
+  path directly so the output-write overhead can be compared with no-output and target-alias output forms.
+- RED check:
+  - Added `gpu_icp_finite_radius_nonrigid_output_transform_only_two_iterations` to the benchmark row checker.
+  - RED failed as intended: bench-only CTest reported the row missing from `plapoint_benchmarks` output.
+- Implementation:
+  - Added a dedicated benchmark using perturbed nonrigid source points, a larger target cloud to stay off same-count
+    exact/probe paths, two transform-only ICP iterations, and a caller-owned GPU output cloud.
+  - Registered the new row next to the no-output and target-alias transform-only rows.
+- Verification:
+  - Bench-only CTest after implementation: 1/1 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 10000`:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 0.240331 ms,
+    `gpu_icp_finite_radius_nonrigid_output_transform_only_two_iterations` = 0.24953 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_transform_only_two_iterations` = 0.351311 ms,
+    `gpu_icp_finite_radius_nonrigid_final_metrics_two_iterations` = 0.317216 ms,
+    `gpu_icp_finite_radius_nonrigid_output_final_metrics_two_iterations` = 0.333024 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_final_metrics_two_iterations` = 0.350972 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.240515 ms.
+- Current conclusion:
+  regular output adds about 0.009 ms over no-output on the current 10k-point transform-only sample, while target-alias
+  output adds about 0.111 ms. The next runtime optimization should target the target-alias in-place output constraint
+  rather than the ordinary output path.
