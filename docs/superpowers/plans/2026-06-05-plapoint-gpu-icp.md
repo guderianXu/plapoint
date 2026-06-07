@@ -10388,3 +10388,29 @@ Verification evidence:
   - Full CUDA CTest: 387/387 passed.
   - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
     skipped in the CPU-only build.
+
+## Task 256: Add Large-Target Target-Alias Transform-Only Benchmark Row
+
+- Goal: track the optimized large-target, finite-radius, `maxIterations == 2`, transform-only `align(*target)` path
+  directly instead of inferring it from counters or translation target-output benchmarks.
+- RED check:
+  - Added `gpu_icp_finite_radius_nonrigid_target_alias_transform_only_two_iterations` to the benchmark row checker.
+  - RED failed as intended: bench-only CTest reported the row missing from `plapoint_benchmarks` output.
+- Implementation:
+  - Added a dedicated benchmark that uses perturbed nonrigid source points, reusable target-alias output, two
+    transform-only ICP iterations, and a fresh prebuilt GPU target for each warmup/measured invocation because
+    `align(*target)` mutates the target cloud.
+  - Registered the new row next to the existing no-output transform-only and final-metrics two-iteration rows.
+- Verification:
+  - Bench-only CTest after implementation: 1/1 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 10000`:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 0.239277 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_transform_only_two_iterations` = 0.356398 ms,
+    `gpu_icp_finite_radius_nonrigid_final_metrics_two_iterations` = 0.324521 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_final_metrics_two_iterations` = 0.351802 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.239171 ms.
+- Current conclusion:
+  the target-alias transform-only path is now tracked directly. On the current 10k-point sample its cost is dominated
+  by the post-validation target output transform, putting it close to target-alias final-metrics and about 0.117 ms
+  above the no-output transform-only baseline.

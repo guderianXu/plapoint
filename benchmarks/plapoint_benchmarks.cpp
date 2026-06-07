@@ -1381,6 +1381,49 @@ void benchmarkGpuIcpFiniteRadiusNonRigidFinalMetricsOutput(
     }
 }
 
+void benchmarkGpuIcpFiniteRadiusNonRigidTargetAliasTransformOnlyTwoIterations(int icp_points, int iterations)
+{
+    constexpr const char* benchmark_name =
+        "gpu_icp_finite_radius_nonrigid_target_alias_transform_only_two_iterations";
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(benchmark_name, "no_usable_cuda_device");
+        return;
+    }
+
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeTranslatedPerturbedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    std::vector<std::shared_ptr<Cloud<plamatrix::Device::GPU>>> targets;
+    targets.reserve(static_cast<std::size_t>(iterations) + 1u);
+    for (int i = 0; i < iterations + 1; ++i)
+    {
+        targets.push_back(std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu()));
+    }
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setMaxCorrespondenceDistance(0.02f);
+    icp.setMaxIterations(2);
+    icp.setTransformationEpsilon(1.0e-12f);
+    icp.setComputeFinalMetrics(false);
+
+    std::size_t target_index = 0;
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        auto& target = targets[target_index++];
+        icp.setInputTarget(target);
+        icp.align(*target);
+        sink += target->size();
+    });
+    printResult(benchmark_name, icp_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << benchmark_name << " produced no aligned points\n";
+    }
+}
+
 void benchmarkGpuIcpFiniteRadiusTranslationSourceAliasFinalMetricsTwoIterations(int icp_points, int iterations)
 {
     constexpr const char* benchmark_name =
@@ -3658,6 +3701,9 @@ int main(int argc, char** argv)
         false,
         false,
         false);
+    benchmarkGpuIcpFiniteRadiusNonRigidTargetAliasTransformOnlyTwoIterations(
+        options.icp_points,
+        options.iterations);
     benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
         "gpu_icp_finite_radius_nonrigid_final_metrics_two_iterations",
         options.icp_points,
