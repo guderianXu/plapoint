@@ -5273,6 +5273,7 @@ __global__ void computeSmallTargetTerminalIcpAlignmentAndResidualKernel(
     Scalar* __restrict__ step_transform,
     const Scalar* __restrict__ previous_accumulated_transform,
     Scalar* __restrict__ accumulated_transform,
+    Scalar* output_points,
     IcpTerminalAlignmentAndResidualRawResult<Scalar>* __restrict__ result)
 {
     const int source_idx = threadIdx.x;
@@ -5430,14 +5431,31 @@ __global__ void computeSmallTargetTerminalIcpAlignmentAndResidualKernel(
     double fsz = 0.0;
     if (source_idx < source_count)
     {
-        if (!loadFiniteTransformedColumnMajorPoint(
-                source_points,
-                source_count,
-                source_idx,
-                block_accumulated_transform,
-                fsx,
-                fsy,
-                fsz))
+        const Scalar px = loadReadOnlyIcpValue(source_points + source_idx);
+        const Scalar py = loadReadOnlyIcpValue(source_points + source_count + source_idx);
+        const Scalar pz = loadReadOnlyIcpValue(source_points + 2 * source_count + source_idx);
+
+        Scalar ox = Scalar(0);
+        Scalar oy = Scalar(0);
+        Scalar oz = Scalar(0);
+        transformColumnMajorPoint3x4(block_accumulated_transform, px, py, pz, ox, oy, oz);
+#ifdef PLAPOINT_ENABLE_TESTING
+        atomicAdd(&g_icp_transform_residual_point_transform_count, 1ull);
+#endif
+        if (output_points)
+        {
+            output_points[source_idx] = ox;
+            output_points[source_count + source_idx] = oy;
+            output_points[2 * source_count + source_idx] = oz;
+#ifdef PLAPOINT_ENABLE_TESTING
+            atomicAdd(&g_icp_transform_residual_output_point_write_count, 1ull);
+#endif
+        }
+
+        fsx = static_cast<double>(ox);
+        fsy = static_cast<double>(oy);
+        fsz = static_cast<double>(oz);
+        if (!isfinite(fsx) || !isfinite(fsy) || !isfinite(fsz))
         {
             residual_local.invalid_source_count = 1;
         }
@@ -6802,6 +6820,7 @@ bool launchSmallTargetTerminalAlignmentAndResidual(
     Scalar* d_step_transform,
     const Scalar* d_previous_accumulated_transform,
     Scalar* d_accumulated_transform,
+    Scalar* d_output_points,
     IcpTerminalAlignmentAndResidualRawResult<Scalar>* d_result,
     cudaStream_t stream)
 {
@@ -6832,6 +6851,7 @@ bool launchSmallTargetTerminalAlignmentAndResidual(
         d_step_transform,
         d_previous_accumulated_transform,
         d_accumulated_transform,
+        d_output_points,
         d_result);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
     return true;
@@ -9070,7 +9090,8 @@ computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
     Scalar* d_step_transform,
     const Scalar* d_previous_accumulated_transform,
     Scalar* d_accumulated_transform,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    Scalar* d_output_points)
 {
     if (source_count <= 0 || target_count <= 0)
     {
@@ -9126,6 +9147,7 @@ computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
         d_step_transform,
         d_previous_accumulated_transform,
         d_accumulated_transform,
+        d_output_points,
         d_result,
         stream);
     if (!launched)
@@ -10686,7 +10708,8 @@ computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReserved
     float* d_step_transform,
     const float* d_previous_accumulated_transform,
     float* d_accumulated_transform,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    float* d_output_points)
 {
     return computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
         d_source_transform,
@@ -10699,7 +10722,8 @@ computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReserved
         d_step_transform,
         d_previous_accumulated_transform,
         d_accumulated_transform,
-        stream);
+        stream,
+        d_output_points);
 }
 
 IcpTerminalAlignmentAndResidualResult<double>
@@ -10714,7 +10738,8 @@ computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReserved
     double* d_step_transform,
     const double* d_previous_accumulated_transform,
     double* d_accumulated_transform,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    double* d_output_points)
 {
     return computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
         d_source_transform,
@@ -10727,7 +10752,8 @@ computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReserved
         d_step_transform,
         d_previous_accumulated_transform,
         d_accumulated_transform,
-        stream);
+        stream,
+        d_output_points);
 }
 
 } // namespace detail

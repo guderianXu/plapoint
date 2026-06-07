@@ -743,6 +743,7 @@ IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepAndAccumulateTr
 
 /// Compute a small-target terminal transformed alignment step and exact post-step residual metrics.
 /// The helper writes accumulated_transform = step * previous_accumulated and copies one compact result to host.
+/// If d_output_points is not null, the helper also writes the final transformed source points.
 /// It returns launched=false when the source/target sizes or correspondence radius are outside the small-target path.
 IcpTerminalAlignmentAndResidualResult<float>
 computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
@@ -756,10 +757,12 @@ computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReserved
     float* d_step_transform,
     const float* d_previous_accumulated_transform,
     float* d_accumulated_transform,
-    cudaStream_t stream = 0);
+    cudaStream_t stream = 0,
+    float* d_output_points = nullptr);
 
 /// Compute a small-target terminal transformed alignment step and exact post-step residual metrics.
 /// The helper writes accumulated_transform = step * previous_accumulated and copies one compact result to host.
+/// If d_output_points is not null, the helper also writes the final transformed source points.
 /// It returns launched=false when the source/target sizes or correspondence radius are outside the small-target path.
 IcpTerminalAlignmentAndResidualResult<double>
 computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
@@ -773,7 +776,8 @@ computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReserved
     double* d_step_transform,
     const double* d_previous_accumulated_transform,
     double* d_accumulated_transform,
-    cudaStream_t stream = 0);
+    cudaStream_t stream = 0,
+    double* d_output_points = nullptr);
 
 /// Compute final residual metrics using workspace already reserved for source_count.
 /// The caller must reserve residual-compatible partial and result storage first.

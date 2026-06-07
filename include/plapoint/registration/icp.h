@@ -459,6 +459,7 @@ private:
         {
             gpu::IcpAlignmentStepResult<Scalar> stats_and_step;
             gpu::IcpResidualStats<Scalar> fused_terminal_final_stats;
+            Scalar* fused_terminal_output_points = nullptr;
             bool fused_terminal_final_metrics = false;
             bool alignment_step_accumulated_transform = false;
             const bool assume_ordered_correspondences_for_step =
@@ -478,12 +479,17 @@ private:
                 const bool try_fused_terminal_final_metrics =
                     _compute_final_metrics &&
                     iter + 1 == _max_iter &&
-                    !output &&
+                    (!output || !output_aliases_target) &&
                     !assume_ordered_correspondences_for_step &&
                     !probe_transformed_exact_pointwise;
                 if (try_fused_terminal_final_metrics)
                 {
                     reserveGpuNextTransformBuffer();
+                    Scalar* candidate_output_points = nullptr;
+                    if (output)
+                    {
+                        candidate_output_points = prepareGpuOutputPointBuffer(*output, source_count);
+                    }
                     const auto terminal_result =
                         gpu::detail::
                             computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
@@ -497,13 +503,16 @@ private:
                             _gpu_T_step->data(),
                             _gpu_T_acc->data(),
                             _gpu_next_T_acc->data(),
-                            0);
+                            0,
+                            candidate_output_points);
                     if (terminal_result.launched)
                     {
                         stats_and_step = terminal_result.alignment_step;
                         fused_terminal_final_stats = terminal_result.residual_stats;
+                        fused_terminal_output_points = candidate_output_points;
                         fused_terminal_final_metrics = true;
                         alignment_step_accumulated_transform = true;
+                        final_points_written_to_output = candidate_output_points != nullptr;
                     }
                 }
                 if (!fused_terminal_final_metrics && defer_accumulated_transform)
@@ -647,9 +656,13 @@ private:
                 _compute_final_metrics &&
                 !terminal_ordered_final_metrics_can_overwrite_target_output &&
                 !terminal_final_metrics_can_use_target_snapshot;
-            Scalar* transform_output_points = nullptr;
+            Scalar* transform_output_points = fused_terminal_output_points;
             bool defer_target_workspace_cache_invalidation = false;
-            if (terminal_iteration && !terminal_identity_step && output && !terminal_output_needs_target_points)
+            if (!transform_output_points &&
+                terminal_iteration &&
+                !terminal_identity_step &&
+                output &&
+                !terminal_output_needs_target_points)
             {
                 transform_output_points = prepareGpuOutputPointBuffer(*output, source_count);
                 if (output_aliases_target)
@@ -665,7 +678,8 @@ private:
                 }
                 final_points_written_to_output = true;
             }
-            else if (terminal_iteration &&
+            else if (!transform_output_points &&
+                     terminal_iteration &&
                      !terminal_identity_step &&
                      output)
             {

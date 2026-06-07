@@ -9163,3 +9163,48 @@ Verification evidence:
   keep the fused terminal small-target helper. It removes the third host synchronization from this no-output two-step
   final-metrics path while preserving exact final RMSE semantics. Remaining speed work should focus on either widening
   this fusion to safe output cases or reducing per-call host synchronization through a batched/asynchronous ICP API.
+
+## Task 226: Extend Small-Target Terminal Metrics Fusion to Non-Alias Output
+
+- Goal: widen the Task 225 terminal small-target fused path from no-output `align()` to safe `align(output)` calls where
+  output does not alias the target. The path should still avoid overwriting target data before residual search, so
+  target-alias output remains on the existing guarded path.
+- RED check:
+  - Added `ICPGpuPathTest.AlignSmallFiniteRadiusFinalMetricsWithOutputAvoidExtraHostSynchronization`.
+  - The RED failed with terminal fused kernel launches = 0, small residual-stats kernels = 1, residual-stats calls = 1,
+    and host synchronizations = 3. This confirmed that non-alias output still paid the separate terminal residual sync.
+- Implementation:
+  - Added an optional `d_output_points` argument to
+    `computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace()`, preserving existing
+    stream-argument call compatibility.
+  - Updated `computeSmallTargetTerminalIcpAlignmentAndResidualKernel()` to write final transformed source points during
+    the fused final-residual pass when an output pointer is supplied.
+  - Routed only no-output and non-target-alias output through this fused path. If the helper does not launch, the
+    preallocated output buffer is not treated as written and the existing transform/residual path writes it normally.
+  - Added benchmark row
+    `gpu_icp_small_finite_radius_nonrigid_output_final_metrics_two_iterations_below_grid_threshold` and registered it
+    in `cmake/check_gpu_icp_benchmark_rows.cmake`.
+- Correctness coverage:
+  - Extended `ICPGpuPathTest.TerminalAlignmentResidualMatchesSeparateSmallTargetBaseline` so the fused helper writes an
+    output buffer and the test compares that buffer against the baseline transformed residual-stats output.
+  - The end-to-end output test asserts terminal fused kernel launches once, small residual-stats kernel/call counts stay
+    at zero, host synchronizations are at most two, output size matches source size, output values are finite, and
+    final RMSE remains finite and inside the correspondence radius.
+- Targeted verification:
+  - RED reproduced before implementation on
+    `ICPGpuPathTest.AlignSmallFiniteRadiusFinalMetricsWithOutputAvoidExtraHostSynchronization`.
+  - After implementation, focused tests passed 2/2:
+    `TerminalAlignmentResidualMatchesSeparateSmallTargetBaseline` and
+    `AlignSmallFiniteRadiusFinalMetricsWithOutputAvoidExtraHostSynchronization`.
+  - Small-target and terminal-metrics focused regression passed 15/15.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+- Benchmark:
+  - GPU: NVIDIA GeForce RTX 4060 Laptop GPU, driver 580.159.03, 8188 MiB.
+  - 3-iteration sample with `--icp-points 1024`:
+    `gpu_icp_small_finite_radius_nonrigid_transform_only_two_iterations_below_grid_threshold` = 0.175511 ms,
+    `gpu_icp_small_finite_radius_nonrigid_final_metrics_two_iterations_below_grid_threshold` = 1.23754 ms, and
+    `gpu_icp_small_finite_radius_nonrigid_output_final_metrics_two_iterations_below_grid_threshold` = 1.24328 ms.
+- Current conclusion:
+  keep this non-alias output extension. It removes the third host synchronization from the small-target two-step
+  `align(output)` final-metrics path while preserving target-alias safety. The next safe extension is either explicit
+  target-alias handling with a pre-read target snapshot, or a batched/asynchronous API to reduce fixed launch/sync cost.
