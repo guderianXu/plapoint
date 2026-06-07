@@ -69,6 +69,7 @@ set(expected_gpu_icp_rows
     gpu_icp_stats_step_finite_radius_translation_cached_grid
     gpu_icp_stats_step_finite_radius_translation_ordered
     gpu_icp_alignment_step_finite_radius_translation_new_workspace
+    gpu_icp_alignment_step_finite_radius_translation_new_workspace_one_source
     gpu_icp_alignment_step_finite_radius_translation_cached_grid
     gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace
     gpu_icp_alignment_step_finite_radius_translation_async_launch_cached_grid

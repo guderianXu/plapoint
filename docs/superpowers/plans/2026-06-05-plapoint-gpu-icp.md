@@ -10559,3 +10559,28 @@ Verification evidence:
 - Current conclusion:
   this trims a small first-build cost in direct lookup setup while leaving cached-grid timing unchanged. The remaining
   fresh-target gap is still mainly the target-key sort, unique-cell reduction, and scan.
+
+## Task 262: Add Target-Grid-Dominated Alignment-Step Benchmark
+
+- Goal: make the remaining first-build bottleneck measurable by adding a benchmark where the source has one point while
+  the target still has the full ICP point count.
+- RED check:
+  - Added `gpu_icp_alignment_step_finite_radius_translation_new_workspace_one_source` to the GPU ICP benchmark row
+    checker.
+  - Bench-only CTest failed as intended because the row was not emitted yet.
+- Implementation:
+  - Added a benchmark that runs `computeIcpAlignmentStepColumnMajor()` with a fresh workspace each iteration, one source
+    point, and a full-size finite-radius translated target.
+  - Registered the row immediately after the existing full-source new-workspace alignment-step benchmark.
+- Verification:
+  - Bench-only CTest after implementation: 1/1 passed.
+- Benchmark:
+  - 8-iteration 10k-point sample after implementation:
+    `gpu_icp_alignment_step_finite_radius_translation_new_workspace` = 0.72966 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_new_workspace_one_source` = 0.689117 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.097002 ms, and
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid_reserved_workspace` = 0.097083 ms.
+- Current conclusion:
+  reducing the source-side work alone cannot close the first-build gap; a one-source call is still close to the full
+  source-count timing. The next useful optimization target remains the target spatial-grid build pipeline, especially
+  sort, unique-cell reduction, and scan.
