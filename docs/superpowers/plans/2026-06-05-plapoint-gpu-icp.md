@@ -9723,3 +9723,39 @@ Verification evidence:
   the large-target initial alignment step now has a launch-only building block with explicit host result collection.
   It does not change high-level `align()` yet; the next useful step is the transformed accumulated large-target
   alignment-step launch helper, then a two-step high-level path or batched/asynchronous public surface.
+
+## Task 239: Add Async Launch Building Block for Large-Target Transformed Accumulated Alignment Step
+
+- Goal: extend the large-target async split to the transformed second-step building block by enqueueing a transformed
+  compact alignment step and accumulated transform update without copying the compact result to host.
+- RED check:
+  - Added
+    `ICPGpuPathTest.TransformedAccumulatedAlignmentStepAsyncLaunchUsesSpatialGridAndDefersHostSynchronization`.
+  - The RED build failed because
+    `plapoint::gpu::detail::launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace()`
+    did not exist.
+- Implementation:
+  - Added float/double detail overloads of
+    `launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace()`.
+  - Small finite-radius targets still delegate to the existing small-target async helper.
+  - Large targets enqueue the transformed spatial-grid or tile-bounds nearest-neighbor path directly, then run the
+    existing accumulated-transform reduce kernel. This intentionally skips the host-guided transformed exact-pointwise
+    preflight; the spatial-grid kernel still keeps its per-source same-index fast accept path and falls back within the
+    same kernel when needed.
+  - Added benchmark row `gpu_icp_alignment_step_transformed_accumulated_async_launch_cached_grid`.
+- Verification:
+  - New large-target transformed accumulated async launch test: passed.
+  - Focused small/large transformed accumulated async subset: 2/2 passed.
+  - Full `ICPGpuPathTest.*`: 192/192 passed.
+  - Full CUDA CTest: 373/373 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+- Benchmark:
+  - 10-iteration sample with `--icp-points 1024`:
+    `gpu_icp_alignment_step_finite_radius_translation_async_launch_cached_grid` = 0.055215 ms and
+    `gpu_icp_alignment_step_transformed_accumulated_async_launch_cached_grid` = 0.055968 ms.
+- Current conclusion:
+  the first and transformed accumulated large-target alignment steps now both have launch-only detail helpers. The next
+  useful slice is a two-step large-target path that queues both kernels and performs one compact host-result collection,
+  with explicit invalid-first-step handling.

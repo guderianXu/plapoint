@@ -9467,6 +9467,137 @@ bool launchTransformedSmallTargetAlignmentStepAndAccumulateTransformColumnMajorI
 }
 
 template <typename Scalar>
+bool launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorImpl(
+    const Scalar* d_source_transform,
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    Scalar* d_step_transform,
+    const Scalar* d_previous_accumulated_transform,
+    Scalar* d_accumulated_transform,
+    cudaStream_t stream)
+{
+    if (source_count <= 0 || target_count <= 0)
+    {
+        return false;
+    }
+    if (!d_source_points ||
+        !d_target_points ||
+        !d_step_transform ||
+        !d_source_transform ||
+        !d_previous_accumulated_transform ||
+        !d_accumulated_transform)
+    {
+        throw std::invalid_argument("ICP GPU: device pointers must not be null");
+    }
+
+    const bool small_target_step = shouldUseSmallFiniteRadiusTargetTileCapacityKernel(
+        max_correspondence_distance,
+        source_count,
+        target_count);
+    if (small_target_step)
+    {
+        return launchTransformedSmallTargetAlignmentStepAndAccumulateTransformColumnMajorImpl(
+            d_source_transform,
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            stats_workspace,
+            d_step_transform,
+            d_previous_accumulated_transform,
+            d_accumulated_transform,
+            stream);
+    }
+
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_alignment_step_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_transformed_alignment_step_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_accumulated_alignment_step_call_count.fetch_add(1, std::memory_order_relaxed);
+    std::uintptr_t empty = 0;
+    g_icp_first_stats_source_pointer.compare_exchange_strong(
+        empty,
+        reinterpret_cast<std::uintptr_t>(d_source_points),
+        std::memory_order_relaxed,
+        std::memory_order_relaxed);
+#endif
+
+    if constexpr (std::is_same_v<Scalar, float>)
+    {
+        stats_workspace.reserveFloatAlignmentStep(source_count);
+    }
+    else
+    {
+        stats_workspace.reserveDoubleAlignmentStep(source_count);
+    }
+
+    constexpr int block_size = kIcpStatsBlockSize;
+    const int grid_size = icpStatsPartialCount(source_count);
+    auto* d_partials = reinterpret_cast<RawIcpStats*>(stats_workspace.partialStorage());
+    auto* d_result = reinterpret_cast<IcpAlignmentStepRawResult<Scalar>*>(stats_workspace.statsStorage());
+
+    const IcpTargetSpatialGrid target_grid = prepareTargetSpatialGrid(
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        stream,
+        true);
+
+    if (target_grid.active)
+    {
+        launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
+            grid_size,
+            block_size,
+            stream,
+            d_source_transform,
+            d_source_points,
+            source_count,
+            max_correspondence_distance,
+            target_grid,
+            true,
+            d_partials);
+    }
+    else
+    {
+        const IcpTargetTileBounds* d_target_tile_bounds = prepareTargetTileBounds(
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            stats_workspace,
+            stream);
+        launchTransformAndCollectCorrespondenceStatsKernel(
+            grid_size,
+            block_size,
+            stream,
+            d_source_transform,
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            d_target_tile_bounds,
+            d_partials);
+    }
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    reduceRawIcpStatsAndComputeAlignmentStepAccumulatedTransformKernel<Scalar><<<1, block_size, 0, stream>>>(
+        d_partials,
+        grid_size,
+        d_previous_accumulated_transform,
+        d_step_transform,
+        d_accumulated_transform,
+        d_result);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    return true;
+}
+
+template <typename Scalar>
 bool launchSmallTargetTwoStepAlignmentColumnMajorImpl(
     const Scalar* d_source_points,
     int source_count,
@@ -11619,6 +11750,60 @@ bool launchTransformedSmallTargetAlignmentStepAndAccumulateTransformColumnMajorW
     cudaStream_t stream)
 {
     return launchTransformedSmallTargetAlignmentStepAndAccumulateTransformColumnMajorImpl(
+        d_source_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        d_step_transform,
+        d_previous_accumulated_transform,
+        d_accumulated_transform,
+        stream);
+}
+
+bool launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
+    const float* d_source_transform,
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    const float* d_previous_accumulated_transform,
+    float* d_accumulated_transform,
+    cudaStream_t stream)
+{
+    return launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorImpl(
+        d_source_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        d_step_transform,
+        d_previous_accumulated_transform,
+        d_accumulated_transform,
+        stream);
+}
+
+bool launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
+    const double* d_source_transform,
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    const double* d_previous_accumulated_transform,
+    double* d_accumulated_transform,
+    cudaStream_t stream)
+{
+    return launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorImpl(
         d_source_transform,
         d_source_points,
         source_count,

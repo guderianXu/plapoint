@@ -813,6 +813,38 @@ IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepAndAccumulateTr
     bool assume_ordered_correspondences = false,
     bool probe_transformed_exact_pointwise_on_cache_hit = false);
 
+/// Enqueue a transformed compact ICP alignment step and write accumulated_transform = step * previous_accumulated.
+/// The helper does not copy the compact alignment-step result to host or synchronize with the host. It enqueues the
+/// spatial-grid or fallback nearest-neighbor path directly instead of using host-guided exact-pointwise preflight.
+bool launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
+    const float* d_source_transform,
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    const float* d_previous_accumulated_transform,
+    float* d_accumulated_transform,
+    cudaStream_t stream = 0);
+
+/// Enqueue a transformed compact ICP alignment step and write accumulated_transform = step * previous_accumulated.
+/// The helper does not copy the compact alignment-step result to host or synchronize with the host. It enqueues the
+/// spatial-grid or fallback nearest-neighbor path directly instead of using host-guided exact-pointwise preflight.
+bool launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
+    const double* d_source_transform,
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    const double* d_previous_accumulated_transform,
+    double* d_accumulated_transform,
+    cudaStream_t stream = 0);
+
 /// Enqueue a small-target transformed alignment step and write accumulated_transform = step * previous_accumulated.
 /// The helper does not copy the compact alignment-step result to host or synchronize with the host.
 /// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
