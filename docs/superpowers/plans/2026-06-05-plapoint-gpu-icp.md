@@ -9803,3 +9803,33 @@ Verification evidence:
   steps. The current cost is still higher than the sum of the two single-step rows because the helper uses distinct
   workspaces, so the next optimization target is sharing or externally reusing the target spatial-grid cache between
   the first and second large-target steps before wiring this into high-level `align()`.
+
+## Task 241: Reuse First-Step Spatial Grid in Large-Target Two-Step Async Helper
+
+- Goal: avoid building and storing a duplicate target spatial grid for the second step of the generic large-target
+  two-step async helper.
+- RED check:
+  - Tightened `ICPGpuPathTest.TwoStepAlignmentAsyncLaunchUsesSpatialGridAndCopiesResultsWithOneSynchronization` to
+    expect one target spatial-grid prepare and one target spatial-grid build for the two queued large-target steps.
+  - The RED run failed as intended because the existing helper reported prepare/build counts of 2/2.
+- Implementation:
+  - Added `makeCachedTargetSpatialGrid()` to reconstruct an `IcpTargetSpatialGrid` view from an existing workspace
+    cache without calling `prepareTargetSpatialGrid()`.
+  - Added an internal transformed accumulated launch path that consumes a prepared target spatial grid while reserving
+    only the second step's partial/result storage in its own workspace.
+  - Updated `launchIcpTwoStepAlignmentColumnMajorImpl()` to reuse the first step workspace's cached spatial grid for
+    the second step when available, falling back to the older second-workspace prepare path otherwise.
+- Verification:
+  - RED run failed on duplicate prepare/build counts: observed 2/2 while expecting 1/1.
+  - New shared-grid two-step test: passed.
+  - Focused transformed/two-step subset: 4/4 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 10000`:
+    `gpu_icp_alignment_step_finite_radius_translation_async_launch_cached_grid` = 0.097046 ms,
+    `gpu_icp_alignment_step_transformed_accumulated_async_launch_cached_grid` = 0.088836 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.23942 ms.
+- Current conclusion:
+  the first invocation of the large-target two-step helper no longer builds two spatial grids. The steady-state
+  benchmark is essentially unchanged because its warmup already leaves both workspaces cached in the older code; the
+  remaining runtime win still requires using this two-step helper from the high-level large-target two-iteration
+  `align()` path to remove a host synchronization.

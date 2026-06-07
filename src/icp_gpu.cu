@@ -7678,6 +7678,56 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
 }
 
 template <typename Scalar>
+IcpTargetSpatialGrid makeCachedTargetSpatialGrid(
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace)
+{
+    IcpTargetSpatialGrid grid{};
+    if (!shouldUseTargetSpatialGrid(max_correspondence_distance, target_count))
+    {
+        return grid;
+    }
+
+    const double cell_size = static_cast<double>(max_correspondence_distance);
+    if (!workspace.targetSpatialGridCacheMatchesForScalar<Scalar>(d_target_points, target_count, cell_size) ||
+        workspace.targetSpatialGridCellCount() <= 0 ||
+        workspace.targetSpatialGridCapacity() < target_count)
+    {
+        return grid;
+    }
+
+    grid.active = true;
+    grid.target_points = d_target_points;
+    grid.target_count = target_count;
+    grid.cell_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridUniqueKeysStorage());
+    grid.sorted_target_indices = reinterpret_cast<int*>(workspace.targetSpatialGridIndicesStorage());
+    grid.sorted_target_offsets = reinterpret_cast<int*>(workspace.targetSpatialGridSortedOffsetsStorage());
+    grid.sorted_target_x = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedXStorage());
+    grid.sorted_target_y = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedYStorage());
+    grid.sorted_target_z = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedZStorage());
+    grid.cell_starts = reinterpret_cast<int*>(workspace.targetSpatialGridCellStartsStorage());
+    grid.cell_counts = reinterpret_cast<int*>(workspace.targetSpatialGridCellCountsStorage());
+    grid.cell_size = cell_size;
+    grid.finite_cell_bounds = icpGridCellBoundsAreFinite(cell_size);
+    grid.cell_count = workspace.targetSpatialGridCellCount();
+    if (!grid.cell_keys ||
+        !grid.sorted_target_indices ||
+        !grid.sorted_target_offsets ||
+        !grid.sorted_target_x ||
+        !grid.sorted_target_y ||
+        !grid.sorted_target_z ||
+        !grid.cell_starts ||
+        !grid.cell_counts)
+    {
+        return {};
+    }
+    populateTargetSpatialGridDirectLookup(grid, workspace);
+    return grid;
+}
+
+template <typename Scalar>
 IcpCorrespondenceStats<Scalar> makeHostStats(const RawIcpStats& raw)
 {
     IcpCorrespondenceStats<Scalar> stats;
@@ -9670,6 +9720,92 @@ bool launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorImpl(
 }
 
 template <typename Scalar>
+bool launchTransformedIcpAlignmentStepAndAccumulateTransformWithTargetSpatialGridImpl(
+    const Scalar* d_source_transform,
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    const IcpTargetSpatialGrid& target_grid,
+    Scalar* d_step_transform,
+    const Scalar* d_previous_accumulated_transform,
+    Scalar* d_accumulated_transform,
+    cudaStream_t stream,
+    const IcpAlignmentStepRawResult<Scalar>* d_source_transform_alignment_step)
+{
+    if (source_count <= 0 || target_count <= 0)
+    {
+        return false;
+    }
+    if (!target_grid.active)
+    {
+        return false;
+    }
+    if (!d_source_points ||
+        !d_target_points ||
+        !d_step_transform ||
+        !d_source_transform ||
+        !d_previous_accumulated_transform ||
+        !d_accumulated_transform)
+    {
+        throw std::invalid_argument("ICP GPU: device pointers must not be null");
+    }
+
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_alignment_step_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_transformed_alignment_step_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_accumulated_alignment_step_call_count.fetch_add(1, std::memory_order_relaxed);
+    std::uintptr_t empty = 0;
+    g_icp_first_stats_source_pointer.compare_exchange_strong(
+        empty,
+        reinterpret_cast<std::uintptr_t>(d_source_points),
+        std::memory_order_relaxed,
+        std::memory_order_relaxed);
+#endif
+
+    if constexpr (std::is_same_v<Scalar, float>)
+    {
+        stats_workspace.reserveFloatAlignmentStep(source_count);
+    }
+    else
+    {
+        stats_workspace.reserveDoubleAlignmentStep(source_count);
+    }
+
+    constexpr int block_size = kIcpStatsBlockSize;
+    const int grid_size = icpStatsPartialCount(source_count);
+    auto* d_partials = reinterpret_cast<RawIcpStats*>(stats_workspace.partialStorage());
+    auto* d_result = reinterpret_cast<IcpAlignmentStepRawResult<Scalar>*>(stats_workspace.statsStorage());
+
+    launchTransformAndCollectCorrespondenceStatsSpatialGridKernel(
+        grid_size,
+        block_size,
+        stream,
+        d_source_transform,
+        d_source_points,
+        source_count,
+        max_correspondence_distance,
+        target_grid,
+        true,
+        d_source_transform_alignment_step,
+        d_partials);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    reduceRawIcpStatsAndComputeAlignmentStepAccumulatedTransformKernel<Scalar><<<1, block_size, 0, stream>>>(
+        d_partials,
+        grid_size,
+        d_previous_accumulated_transform,
+        d_step_transform,
+        d_accumulated_transform,
+        d_result);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    return true;
+}
+
+template <typename Scalar>
 bool launchSmallTargetTwoStepAlignmentColumnMajorImpl(
     const Scalar* d_source_points,
     int source_count,
@@ -9913,6 +10049,26 @@ bool launchIcpTwoStepAlignmentColumnMajorImpl(
     if (!first_launched)
     {
         return false;
+    }
+
+    const auto shared_target_grid =
+        makeCachedTargetSpatialGrid(d_target_points, target_count, max_correspondence_distance, first_step_workspace);
+    if (shared_target_grid.active)
+    {
+        return launchTransformedIcpAlignmentStepAndAccumulateTransformWithTargetSpatialGridImpl(
+            d_first_step_transform,
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            second_step_workspace,
+            shared_target_grid,
+            d_second_step_transform,
+            d_first_step_transform,
+            d_accumulated_transform,
+            stream,
+            reinterpret_cast<IcpAlignmentStepRawResult<Scalar>*>(first_step_workspace.statsStorage()));
     }
 
     return launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorImpl(

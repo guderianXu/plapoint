@@ -2024,8 +2024,8 @@ TEST(ICPGpuPathTest, TwoStepAlignmentAsyncLaunchUsesSpatialGridAndCopiesResultsW
 
     ASSERT_TRUE(launched);
     EXPECT_EQ(plapoint::gpu::icpSmallAlignmentStepKernelLaunchCountForTesting(), 0);
-    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 2);
-    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 0);
 
