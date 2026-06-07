@@ -26,6 +26,8 @@ set(expected_gpu_icp_rows
     gpu_icp_identity
     gpu_icp_identity_same_buffer_reuse_output
     gpu_icp_finite_radius
+    gpu_icp_finite_radius_identity_reuse_output
+    gpu_icp_finite_radius_identity_exact_probe_reuse_output
     gpu_icp_finite_radius_translation
     gpu_icp_finite_radius_translation_reuse
     gpu_icp_finite_radius_translation_reuse_shrinking

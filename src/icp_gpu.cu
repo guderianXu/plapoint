@@ -5605,7 +5605,8 @@ bool shouldTryExactPointwiseStats(
     const Scalar* d_target_points,
     int target_count,
     Scalar max_correspondence_distance,
-    const int* d_correspondence_indices)
+    const int* d_correspondence_indices,
+    bool probe_exact_pointwise_on_finite_radius = false)
 {
     return detail::canProbeExactPointwiseStats(
         d_source_points,
@@ -5613,7 +5614,8 @@ bool shouldTryExactPointwiseStats(
         d_target_points,
         target_count,
         max_correspondence_distance,
-        d_correspondence_indices);
+        d_correspondence_indices,
+        probe_exact_pointwise_on_finite_radius);
 }
 
 template <typename Scalar>
@@ -5853,7 +5855,8 @@ bool launchExactPointwiseAlignmentStep(
     Scalar* d_step_transform,
     IcpAlignmentStepRawResult<Scalar>* d_result,
     cudaStream_t stream,
-    bool assume_ordered_correspondences)
+    bool assume_ordered_correspondences,
+    bool probe_exact_pointwise_on_finite_radius)
 {
     constexpr int block_size = kIcpStatsBlockSize;
     if (detail::canUseSameBufferExactPointwiseStats(
@@ -5918,7 +5921,8 @@ bool launchExactPointwiseAlignmentStep(
             d_target_points,
             target_count,
             max_correspondence_distance,
-            nullptr))
+            nullptr,
+            probe_exact_pointwise_on_finite_radius))
     {
         return false;
     }
@@ -7663,7 +7667,8 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
     cudaStream_t stream,
     bool reserve_workspace,
     bool assume_ordered_correspondences,
-    bool probe_transformed_exact_pointwise_on_cache_hit)
+    bool probe_transformed_exact_pointwise_on_cache_hit,
+    bool probe_exact_pointwise_on_finite_radius = false)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
@@ -7744,7 +7749,8 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
             d_step_transform,
             d_result,
             stream,
-            assume_ordered_correspondences);
+            assume_ordered_correspondences,
+            probe_exact_pointwise_on_finite_radius);
 
         if (exact_pointwise_stats)
         {
@@ -9620,7 +9626,8 @@ IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajorWithReservedWork
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     float* d_step_transform,
     cudaStream_t stream,
-    bool assume_ordered_correspondences)
+    bool assume_ordered_correspondences,
+    bool probe_exact_pointwise_on_finite_radius)
 {
     return computeIcpAlignmentStepColumnMajorImpl<float, false, false>(
         nullptr,
@@ -9636,7 +9643,8 @@ IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajorWithReservedWork
         stream,
         false,
         assume_ordered_correspondences,
-        false);
+        false,
+        probe_exact_pointwise_on_finite_radius);
 }
 
 IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
@@ -9648,7 +9656,8 @@ IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajorWithReservedWor
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     double* d_step_transform,
     cudaStream_t stream,
-    bool assume_ordered_correspondences)
+    bool assume_ordered_correspondences,
+    bool probe_exact_pointwise_on_finite_radius)
 {
     return computeIcpAlignmentStepColumnMajorImpl<double, false, false>(
         nullptr,
@@ -9664,7 +9673,8 @@ IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajorWithReservedWor
         stream,
         false,
         assume_ordered_correspondences,
-        false);
+        false,
+        probe_exact_pointwise_on_finite_radius);
 }
 
 IcpAlignmentStepResult<float> computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(

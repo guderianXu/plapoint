@@ -8281,3 +8281,57 @@ Verification evidence:
   keep the finite-radius ordered SSE-bound terminal-metrics reuse. It removes the terminal ordered residual-stats pass
   for low-residual ordered workloads while preserving the residual-stats fallback when the aggregate SSE cannot prove
   all transformed ordered residuals remain inside the radius.
+
+## Task 210: Opt In Finite-Radius Exact Pointwise Probe
+
+- Goal: add an explicit GPU ICP switch for finite-radius first-iteration identity-like workloads where `source[i]` is
+  expected to equal `target[i]`, while keeping the default finite-radius nearest-neighbor path unchanged. Automatic
+  probing would add a failed O(N) probe plus a host decision point to ordinary finite-radius workloads, so this remains
+  opt-in.
+- RED check:
+  - Added `ICPGpuPathTest.AlignCanProbeExactPointwiseForEqualFiniteRadiusInputsWhenEnabled`.
+  - Before implementation, the CUDA build failed as expected because
+    `IterativeClosestPoint<float, GPU>` had no `setGpuProbeExactPointwiseOnFiniteRadius()` setter.
+- Implementation:
+  - Added `IterativeClosestPoint::setGpuProbeExactPointwiseOnFiniteRadius(bool)` and a private default-false flag.
+  - Threaded the flag through the non-transformed first-iteration GPU alignment-step wrapper and into
+    `canProbeExactPointwiseStats()`.
+  - Kept transformed cached-target probes on their existing separate flag, and kept finite-radius exact probing off by
+    default for separate source/target buffers.
+  - Added `ICPGpuPathTest.AlignDoesNotProbeExactPointwiseForEqualFiniteRadiusInputsByDefault` to lock the default path
+    to the spatial-grid finite-radius search.
+  - Added `gpu_icp_finite_radius_identity_reuse_output` and
+    `gpu_icp_finite_radius_identity_exact_probe_reuse_output` benchmark rows to compare default versus opt-in behavior.
+- Targeted verification:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignCanProbeExactPointwiseForEqualFiniteRadiusInputsWhenEnabled`
+    failed before implementation with the missing-setter compile error, then passed after implementation.
+  - Default/opt-in regression pair passed 2/2:
+    `AlignDoesNotProbeExactPointwiseForEqualFiniteRadiusInputsByDefault` and
+    `AlignCanProbeExactPointwiseForEqualFiniteRadiusInputsWhenEnabled`.
+  - Related exact/ordered regression set passed 5/5:
+    `AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs`,
+    `AlignDoesNotProbeExactPointwiseForEqualFiniteRadiusInputsByDefault`,
+    `AlignCanProbeExactPointwiseForEqualFiniteRadiusInputsWhenEnabled`,
+    `AlignCanUseOrderedPointwiseCorrespondencesForFiniteRadiusTranslation`, and
+    `AlignmentStepPrefersSameBufferExactIdentityWhenOrdered`.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*`: 149/149 passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed, including the new benchmark rows.
+- Benchmark:
+  - Rebuilt `build-codex-cuda-bench-only` and ran:
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 100 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`.
+  - Relevant sample after this change:
+    `gpu_icp_identity` = 0.682894 ms,
+    `gpu_icp_identity_same_buffer_reuse_output` = 0.058065 ms,
+    `gpu_icp_finite_radius` = 1.25981 ms,
+    `gpu_icp_finite_radius_identity_reuse_output` = 0.233124 ms,
+    `gpu_icp_finite_radius_identity_exact_probe_reuse_output` = 0.135991 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_one_iteration` = 0.707917 ms, and
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 1.42228 ms.
+- Full verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 330/330 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 143/144
+    executed tests passed, with `plapoint.PointCloudTest.GpuTransfer` skipped by the CPU-only build.
+- Current conclusion:
+  keep the finite-radius exact pointwise probe opt-in. It improves exact separate-buffer finite-radius identity
+  workloads in the benchmark sample while preserving the default path for ordinary finite-radius nearest-neighbor ICP.

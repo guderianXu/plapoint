@@ -599,7 +599,8 @@ inline bool canProbeExactPointwiseStats(
     const Scalar* d_target_points,
     int target_count,
     Scalar max_correspondence_distance,
-    const int* d_correspondence_indices)
+    const int* d_correspondence_indices,
+    bool probe_exact_pointwise_on_finite_radius = false)
 {
     if (d_correspondence_indices || source_count != target_count)
     {
@@ -616,7 +617,7 @@ inline bool canProbeExactPointwiseStats(
     }
 
     const double max_dist = static_cast<double>(max_correspondence_distance);
-    return !std::isfinite(max_dist);
+    return probe_exact_pointwise_on_finite_radius || !std::isfinite(max_dist);
 }
 
 /// Return true when transformed stats may accept same-index target matches before nearest-neighbor search.
@@ -642,7 +643,8 @@ IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajorWithReservedWork
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     float* d_step_transform,
     cudaStream_t stream = 0,
-    bool assume_ordered_correspondences = false);
+    bool assume_ordered_correspondences = false,
+    bool probe_exact_pointwise_on_finite_radius = false);
 
 /// Compute the compact ICP alignment step using workspace already reserved for source_count.
 /// The caller must call IcpCorrespondenceStatsWorkspace::reserveDoubleAlignmentStep(source_count) first.
@@ -655,7 +657,8 @@ IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajorWithReservedWor
     IcpCorrespondenceStatsWorkspace& stats_workspace,
     double* d_step_transform,
     cudaStream_t stream = 0,
-    bool assume_ordered_correspondences = false);
+    bool assume_ordered_correspondences = false,
+    bool probe_exact_pointwise_on_finite_radius = false);
 
 /// Compute the compact ICP alignment step from source points transformed by d_source_transform.
 /// The caller must call IcpCorrespondenceStatsWorkspace::reserveFloatAlignmentStep(source_count) first.

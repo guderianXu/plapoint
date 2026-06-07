@@ -95,6 +95,13 @@ public:
     /// Use only for ordered or paired clouds where same-index correspondences are part of the input contract.
     void setGpuAssumeOrderedCorrespondences(bool enabled) { _gpu_assume_ordered_correspondences = enabled; }
 
+    /// Probe exact same-index matches for finite-radius first-iteration GPU alignment before nearest-neighbor search.
+    /// Enable only when source[i] is expected to equal target[i] often enough to pay an extra O(N) failed probe.
+    void setGpuProbeExactPointwiseOnFiniteRadius(bool enabled)
+    {
+        _gpu_probe_exact_pointwise_on_finite_radius = enabled;
+    }
+
     /// Probe transformed same-index exact matches before reusing a cached target spatial grid.
     /// Enable only when transformed source[i] is expected to equal target[i] often enough to pay an extra O(N) probe.
     void setGpuProbeTransformedExactPointwiseOnCacheHit(bool enabled)
@@ -470,7 +477,8 @@ private:
                     _gpu_stats_workspace,
                     _gpu_T_step->data(),
                     0,
-                    _gpu_assume_ordered_correspondences);
+                    _gpu_assume_ordered_correspondences,
+                    _gpu_probe_exact_pointwise_on_finite_radius);
             }
             const auto& stats = stats_and_step;
             if (stats.invalid_source_count > 0)
@@ -1363,6 +1371,7 @@ private:
     std::uint64_t _gpu_target_cache_points_version = 0;
     bool _final_T_gpu_valid = false;
     bool _gpu_assume_ordered_correspondences = false;
+    bool _gpu_probe_exact_pointwise_on_finite_radius = false;
     bool _gpu_probe_transformed_exact_pointwise_on_cache_hit = false;
 #ifdef PLAPOINT_ENABLE_TESTING
     int _gpu_step_transform_reserve_check_count = 0;
