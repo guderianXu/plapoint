@@ -2403,6 +2403,7 @@ TEST(ICPGpuPathTest, AlignmentStepUsesTargetSpatialGridForLargeFiniteRadiusTarge
 
     plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridKeyInitKernelLaunchCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridRunLengthEncodeCountForTesting();
     const auto result = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
         source_gpu.data(),
