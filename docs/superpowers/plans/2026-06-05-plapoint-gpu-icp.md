@@ -9480,3 +9480,46 @@ Verification evidence:
   high-level no-output small-target final metrics now benefits from the two-step async primitive. The remaining obvious
   high-level follow-up is to extend the same path to ordinary output and target-alias output, where the benchmark still
   runs through the previous two-sync flow.
+
+## Task 233: Extend High-Level Two-Step Small-Target Path to Output Writes
+
+- Goal: extend the Task 232 high-level two-step fast path from no-output final metrics to ordinary output and
+  target-alias output. The output variants should keep one compact-result host synchronization and avoid corrupting the
+  target before residual metrics are computed.
+- RED checks:
+  - Tightened `ICPGpuPathTest.AlignSmallFiniteRadiusFinalMetricsWithOutputAvoidExtraHostSynchronization` to require two
+    compact result copies, exactly one host synchronization, and one final transform kernel. The RED showed the old
+    output path still synchronized twice and did not use the final transform kernel.
+  - Tightened `ICPGpuPathTest.AlignSmallFiniteRadiusFinalMetricsWithTargetAliasOutputAvoidsScratchCopy` to require one
+    host synchronization, one final transform kernel, zero terminal residual-output writes, and no scratch output copy.
+    The RED showed the previous path synchronized twice and wrote output directly inside the terminal residual kernel.
+- Implementation:
+  - Generalized the high-level small-target two-step helper to accept optional output.
+  - The two-step terminal kernel now computes final residual metrics without writing output. After the single compact
+    result copy confirms the terminal step is valid, high-level `align()` enqueues one `transformPointsColumnMajorAsync`
+    to write the final output.
+  - Target-alias output stays safe because the original target buffer is not overwritten until after residual metrics
+    have already been computed. The target workspace cache is invalidated when the final transform overwrites target.
+- Correctness coverage:
+  - Ordinary output is checked by reading the output back to CPU and verifying finite coordinates.
+  - Target-alias output checks pointer stability, no scratch buffers, no device-to-device copy, zero residual-kernel
+    output writes, and finite output coordinates after the asynchronous transform.
+  - Existing path-shape tests were updated to distinguish non-terminal transform materialization from the one required
+    final output transform, and to account for the two distinct compact-result workspaces used by the two-step path.
+- Targeted verification:
+  - Output and target-alias tightened tests: 2/2 passed.
+  - Small-target terminal/high-level related tests: 7/7 passed.
+  - Full CUDA CTest: 366/366 passed.
+  - CPU build and CTest: 144/144 passed, with the CUDA-only transfer test skipped as expected.
+  - Bench-only CTest: 1/1 passed.
+  - `git diff --check`: passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 1024`:
+    `gpu_icp_small_finite_radius_nonrigid_final_metrics_two_iterations_below_grid_threshold` = 0.757308 ms,
+    `gpu_icp_small_finite_radius_nonrigid_output_final_metrics_two_iterations_below_grid_threshold` = 0.767082 ms,
+    `gpu_icp_small_finite_radius_nonrigid_target_alias_final_metrics_two_iterations_below_grid_threshold` = 0.763153 ms,
+    and `gpu_icp_small_finite_radius_two_step_terminal_async_launch_below_grid_threshold` = 0.204732 ms.
+- Current conclusion:
+  the common high-level small-target two-iteration final-metrics paths now share the one-sync two-step flow for
+  no-output, ordinary output, and target-alias output. The remaining gap is broader iteration counts or batched
+  multi-alignment submission, not this narrow two-iteration path.

@@ -1719,10 +1719,12 @@ TEST(ICPGpuPathTest, AlignSmallFiniteRadiusFinalMetricsWithOutputAvoidExtraHostS
     icp.setTransformationEpsilon(1.0e-12f);
 
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
+    plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
     plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
     plapoint::gpu::resetIcpSmallResidualStatsKernelLaunchCountForTesting();
     plapoint::gpu::resetIcpSmallTerminalAlignmentResidualKernelLaunchCountForTesting();
     plapoint::gpu::resetIcpResidualStatsCallCountForTesting();
+    plapoint::gpu::resetIcpTransformPointsCallCountForTesting();
     GpuCloud output;
     icp.align(output);
 
@@ -1730,7 +1732,9 @@ TEST(ICPGpuPathTest, AlignSmallFiniteRadiusFinalMetricsWithOutputAvoidExtraHostS
     EXPECT_EQ(plapoint::gpu::icpSmallTerminalAlignmentResidualKernelLaunchCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpSmallResidualStatsKernelLaunchCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 0);
-    EXPECT_LE(plapoint::gpu::icpHostSynchronizationCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 1);
     EXPECT_EQ(output.size(), source->size());
     EXPECT_GT(icp.getFinalRmse(), 0.0f);
     EXPECT_LT(icp.getFinalRmse(), 0.08f);
@@ -1776,21 +1780,23 @@ TEST(ICPGpuPathTest, AlignSmallFiniteRadiusFinalMetricsWithTargetAliasOutputAvoi
     icp.setTransformationEpsilon(1.0e-12f);
 
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
+    plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
     plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
     plapoint::gpu::resetIcpSmallResidualStatsKernelLaunchCountForTesting();
     plapoint::gpu::resetIcpSmallTerminalAlignmentResidualKernelLaunchCountForTesting();
     plapoint::gpu::resetIcpResidualStatsCallCountForTesting();
     plapoint::gpu::resetIcpTransformResidualOutputPointWriteCountForTesting();
+    plapoint::gpu::resetIcpTransformPointsCallCountForTesting();
     icp.align(*target);
 
     EXPECT_EQ(plapoint::gpu::icpSmallAlignmentStepKernelLaunchCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpSmallTerminalAlignmentResidualKernelLaunchCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpSmallResidualStatsKernelLaunchCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 0);
-    EXPECT_EQ(
-        plapoint::gpu::icpTransformResidualOutputPointWriteCountForTesting(),
-        static_cast<unsigned long long>(source->size()));
-    EXPECT_LE(plapoint::gpu::icpHostSynchronizationCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpTransformResidualOutputPointWriteCountForTesting(), 0ull);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 1);
     EXPECT_EQ(target->points().data(), target_points);
     EXPECT_EQ(target->size(), source->size());
     EXPECT_EQ(icp._gpu_points_a, nullptr);
@@ -5810,7 +5816,7 @@ TEST(ICPGpuPathTest, AlignSkipsNonTerminalPointTransformMaterialization)
 
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepCallCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpTransformedAlignmentStepCallCountForTesting(), 1);
-    EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 0);
+    EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 1);
     EXPECT_EQ(output.size(), source->size());
 }
 
@@ -7978,7 +7984,7 @@ TEST(ICPGpuPathTest, AlignSkipsInitialIdentityTransformWriteForNonIdentityFirstS
     EXPECT_EQ(output.size(), source->size());
 }
 
-TEST(ICPGpuPathTest, AlignChecksAlignmentStepWorkspaceOnceBeforeLoop)
+TEST(ICPGpuPathTest, AlignChecksTwoStepAlignmentWorkspacesOnceBeforeReturn)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -8010,7 +8016,7 @@ TEST(ICPGpuPathTest, AlignChecksAlignmentStepWorkspaceOnceBeforeLoop)
 
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepCallCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepReserveCountForTesting(), 1);
-    EXPECT_EQ(plapoint::gpu::icpAlignmentStepReserveCheckCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepReserveCheckCountForTesting(), 2);
     EXPECT_EQ(output.size(), source->size());
 }
 

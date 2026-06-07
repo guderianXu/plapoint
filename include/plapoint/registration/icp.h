@@ -438,12 +438,13 @@ private:
         {
             return;
         }
-        if (tryAlignGpuSmallTargetTwoStepTerminalNoOutput(
+        if (tryAlignGpuSmallTargetTwoStepTerminal(
                 output,
                 source_count,
                 target_count,
                 source_points,
-                target_points))
+                target_points,
+                output_aliases_target))
         {
             return;
         }
@@ -1192,15 +1193,15 @@ private:
 
     template <plamatrix::Device D = Dev>
     std::enable_if_t<D == plamatrix::Device::GPU, bool>
-    tryAlignGpuSmallTargetTwoStepTerminalNoOutput(
+    tryAlignGpuSmallTargetTwoStepTerminal(
         PointCloudType* output,
         int source_count,
         int target_count,
         const Scalar* source_points,
-        const Scalar* target_points)
+        const Scalar* target_points,
+        bool output_aliases_target)
     {
-        if (output ||
-            !_compute_final_metrics ||
+        if (!_compute_final_metrics ||
             _max_iter != 2 ||
             _gpu_assume_ordered_correspondences ||
             _gpu_assume_ordered_correspondences_after_same_index_step ||
@@ -1217,6 +1218,12 @@ private:
             target_count > small_target_tile_capacity ||
             !std::isfinite(max_corr_dist) ||
             max_corr_dist <= 0.0)
+        {
+            return false;
+        }
+        if (output_aliases_target &&
+            output &&
+            !canReuseGpuOutputPointBuffer(*output, source_count))
         {
             return false;
         }
@@ -1257,12 +1264,14 @@ private:
         if (first_step_terminal)
         {
             std::swap(_gpu_T_acc, _gpu_T_step);
-            finishGpuSingleStepTerminalMetricsNoOutput(
+            finishGpuSingleStepTerminalMetrics(
                 two_step_result.first_alignment_step,
                 source_count,
                 target_count,
                 source_points,
-                target_points);
+                target_points,
+                output,
+                output_aliases_target);
             _final_T_cpu_valid = false;
             _final_T_gpu_valid = true;
             return true;
@@ -1311,6 +1320,13 @@ private:
         {
             invalidateGpuFullCoverageTransformResultCache();
         }
+        writeGpuFinalTransformOutputIfRequested(
+            output,
+            source_count,
+            target_count,
+            source_points,
+            target_points,
+            output_aliases_target);
         _final_T_cpu_valid = false;
         _final_T_gpu_valid = true;
         return true;
@@ -1346,12 +1362,14 @@ private:
 
     template <plamatrix::Device D = Dev>
     std::enable_if_t<D == plamatrix::Device::GPU, void>
-    finishGpuSingleStepTerminalMetricsNoOutput(
+    finishGpuSingleStepTerminalMetrics(
         const gpu::IcpAlignmentStepResult<Scalar>& step,
         int source_count,
         int target_count,
         const Scalar* source_points,
-        const Scalar* target_points)
+        const Scalar* target_points,
+        PointCloudType* output,
+        bool output_aliases_target)
     {
         const auto final_stats =
             gpu::detail::transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
@@ -1397,6 +1415,55 @@ private:
         else
         {
             invalidateGpuFullCoverageTransformResultCache();
+        }
+        writeGpuFinalTransformOutputIfRequested(
+            output,
+            source_count,
+            target_count,
+            source_points,
+            target_points,
+            output_aliases_target);
+    }
+
+    template <plamatrix::Device D = Dev>
+    std::enable_if_t<D == plamatrix::Device::GPU, void>
+    writeGpuFinalTransformOutputIfRequested(
+        PointCloudType* output,
+        int source_count,
+        int target_count,
+        const Scalar* source_points,
+        const Scalar* target_points,
+        bool output_aliases_target)
+    {
+        if (!output)
+        {
+            return;
+        }
+
+        Scalar* output_points = prepareGpuOutputPointBuffer(*output, source_count);
+        if (output_aliases_target)
+        {
+            invalidateGpuTargetWorkspaceCache();
+        }
+        gpu::transformPointsColumnMajorAsync(
+            _gpu_T_acc->data(),
+            source_points,
+            source_count,
+            output_points,
+            0);
+        invalidateGpuIdentityOutputCache();
+        if (!output_aliases_target &&
+            gpuFullCoverageTransformResultCacheMatches(
+                source_count,
+                target_count,
+                source_points,
+                target_points))
+        {
+            markGpuFullCoverageTransformOutputCache(*output, source_count, source_points, target_points);
+        }
+        else
+        {
+            invalidateGpuFullCoverageTransformOutputCache();
         }
     }
 
