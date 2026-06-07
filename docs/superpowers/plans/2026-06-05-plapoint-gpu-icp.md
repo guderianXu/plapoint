@@ -8933,3 +8933,68 @@ Verification evidence:
   sub-128 two-iteration finite-radius GPU ICP without changing 128+ target rows, spatial-grid search, or large-target
   cached-grid behavior. Further speedups in this size class likely need reducing per-iteration host synchronization or
   batching small ICP calls.
+
+## Task 222: Fuse Small-Target GPU ICP Residual Stats
+
+- Goal: extend the sub-128 finite-radius fused-kernel treatment from alignment steps to final residual metrics.
+  Small-target residual stats should no longer launch a collect kernel and then a separate reduce kernel when source
+  rows fit in one ICP stats block.
+- RED checks:
+  - Added `ICPGpuPathTest.ResidualStatsUsesFusedSmallTargetKernelForFiniteRadiusTarget` and
+    `ICPGpuPathTest.TransformResidualStatsUsesFusedSmallTargetKernelForFiniteRadiusTarget`.
+  - The first build failed at link time because
+    `resetIcpSmallResidualStatsKernelLaunchCountForTesting()` and
+    `icpSmallResidualStatsKernelLaunchCountForTesting()` did not exist.
+- Implementation:
+  - Added `computeSmallTargetIcpResidualStatsKernel()`, which loads a sub-128 target tile once, scans nearest residuals
+    for up to 128 source rows, reduces `RawIcpResidualStats`, and writes the final compact residual result in one
+    kernel.
+  - Added transformed-source support in the same small residual kernel, including optional transformed output writes.
+  - Preserved the existing transformed exact-pointwise residual probe inside the fused transformed kernel. Exact
+    same-index residual matches still skip candidate scanning; probe misses fall through to the small target scan
+    without a duplicate probe.
+  - Added benchmark rows
+    `gpu_icp_residual_stats_small_finite_radius_target_below_grid_threshold` and
+    `gpu_icp_transform_residual_stats_small_finite_radius_target_below_grid_threshold`, using compact non-collinear
+    127-point fixtures.
+- Debug note:
+  - The first CUDA full run after the initial implementation failed
+    `TransformResidualStatsSkipsSearchForExactPointwiseMatches` and
+    `TransformResidualStatsFallbackSkipsDuplicateExactPointwiseProbeAfterPreflightMiss`.
+  - Root cause: the new small transformed residual path bypassed the exact-pointwise probe that used to live in the
+    fallback transformed residual kernel. The fix moved that probe into the fused small transformed residual kernel.
+- Targeted verification:
+  - RED link failure reproduced on the two new tests.
+  - After implementation, the two new small residual tests passed 2/2.
+  - After preserving transformed exact-pointwise probing, the focused regression passed 4/4:
+    `ResidualStatsUsesFusedSmallTargetKernelForFiniteRadiusTarget`,
+    `TransformResidualStatsUsesFusedSmallTargetKernelForFiniteRadiusTarget`,
+    `TransformResidualStatsSkipsSearchForExactPointwiseMatches`, and
+    `TransformResidualStatsFallbackSkipsDuplicateExactPointwiseProbeAfterPreflightMiss`.
+  - Adjacent GPU path regression passed 10/10, covering small residual, transformed small residual, small alignment,
+    transformed small alignment, direct spatial-grid residual, transformed exact-pointwise residual, count-mismatch
+    probe skip, and terminal final metrics.
+- Benchmark:
+  - GPU: NVIDIA GeForce RTX 4060 Laptop GPU, driver 580.159.03, 8188 MiB.
+  - 300-iteration sample after the exact-probe fix:
+    4-row small alignment step = 0.561425 ms,
+    16-row = 0.563713 ms,
+    64-row = 0.578431 ms,
+    127-row = 0.591505 ms,
+    128-row = 0.672915 ms,
+    256-row = 0.672368 ms,
+    `gpu_icp_residual_stats_small_finite_radius_target_below_grid_threshold` = 0.5479 ms,
+    `gpu_icp_transform_residual_stats_small_finite_radius_target_below_grid_threshold` = 0.554719 ms, and
+    `gpu_icp_small_finite_radius_nonrigid_transform_only_two_iterations_below_grid_threshold` = 0.174137 ms.
+  - Interpretation: small residual stats are now in the same fixed-overhead range as the fused small alignment-step
+    row. The dominant cost is still one tiny kernel plus host result synchronization.
+- Full verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 355/355 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 144/144
+    reported no failures; `plapoint.PointCloudTest.GpuTransfer` was skipped in the CPU-only configuration.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+- Current conclusion:
+  keep the small residual fused kernel. It removes the residual collect/reduce pair for sub-128 finite-radius final
+  metrics without changing 128+ spatial-grid behavior and without regressing transformed exact-pointwise residual
+  shortcuts. Further small-cloud speedups need fewer host synchronizations or a batched multi-ICP API.

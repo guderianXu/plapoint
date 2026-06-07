@@ -2396,6 +2396,85 @@ void benchmarkGpuIcpAlignmentStepSmallFiniteRadiusTarget(
     }
 }
 
+void benchmarkGpuIcpResidualStatsSmallFiniteRadiusTarget(
+    const std::string& benchmark_name,
+    int target_points,
+    int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(benchmark_name, "no_usable_cuda_device");
+        return;
+    }
+
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeTranslatedCompactNonCollinearGridPoints<float>(target_points, 0.01f, -0.005f, 0.0025f));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeCompactNonCollinearGridPoints<float>(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+        const auto stats = plapoint::gpu::computeIcpResidualStatsColumnMajor(
+            source->points().data(),
+            static_cast<int>(source->size()),
+            target->points().data(),
+            static_cast<int>(target->size()),
+            0.08f,
+            stats_workspace);
+        sink += static_cast<std::size_t>(std::max(0, stats.active_count));
+    });
+    printResult(benchmark_name, target_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << benchmark_name << " produced no correspondences\n";
+    }
+}
+
+void benchmarkGpuIcpTransformResidualStatsSmallFiniteRadiusTarget(
+    const std::string& benchmark_name,
+    int target_points,
+    int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(benchmark_name, "no_usable_cuda_device");
+        return;
+    }
+
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeTranslatedCompactNonCollinearGridPoints<float>(target_points, 0.01f, -0.005f, 0.0025f));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeCompactNonCollinearGridPoints<float>(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> transform(4, 4);
+    plapoint::gpu::setIdentityTransform4x4(transform.data());
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output(target_points, 3);
+
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
+        const auto stats = plapoint::gpu::transformPointsAndComputeIcpResidualStatsColumnMajor(
+            transform.data(),
+            source->points().data(),
+            static_cast<int>(source->size()),
+            target->points().data(),
+            static_cast<int>(target->size()),
+            0.08f,
+            output.data(),
+            stats_workspace);
+        sink += static_cast<std::size_t>(std::max(0, stats.active_count));
+    });
+    printResult(benchmark_name, target_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << benchmark_name << " produced no correspondences\n";
+    }
+}
+
 void benchmarkGpuIcpSmallFiniteRadiusTransformOnlyTwoIterations(
     const std::string& benchmark_name,
     int target_points,
@@ -2714,6 +2793,14 @@ int main(int argc, char** argv)
     benchmarkGpuIcpAlignmentStepSmallFiniteRadiusTarget(
         "gpu_icp_alignment_step_small_finite_radius_target_256",
         256,
+        options.iterations);
+    benchmarkGpuIcpResidualStatsSmallFiniteRadiusTarget(
+        "gpu_icp_residual_stats_small_finite_radius_target_below_grid_threshold",
+        127,
+        options.iterations);
+    benchmarkGpuIcpTransformResidualStatsSmallFiniteRadiusTarget(
+        "gpu_icp_transform_residual_stats_small_finite_radius_target_below_grid_threshold",
+        127,
         options.iterations);
     benchmarkGpuIcpSmallFiniteRadiusTransformOnlyTwoIterations(
         "gpu_icp_small_finite_radius_nonrigid_transform_only_two_iterations_below_grid_threshold",
