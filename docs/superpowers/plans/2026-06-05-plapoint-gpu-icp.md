@@ -10365,3 +10365,26 @@ Verification evidence:
   both large-target two-step source-alias modes now use the queued two-step helper: transform-only avoids terminal
   residual work, while default finalMetrics still computes terminal metrics. Both defer source overwrite until host
   validation and both avoid stale transform-cache reuse after mutating the source buffer.
+
+## Task 255: Guard Small-Target Single-Step Source-Alias Terminal Cache
+
+- Goal: prevent the small-target, `maxIterations == 1`, finalMetrics=true terminal helper from caching a full-coverage
+  transform for the pre-overwrite source buffer when the caller uses `align(*source)`.
+- RED check:
+  - Added
+    `ICPGpuPathTest.AlignSmallTargetSingleIterationSourceAliasAvoidsStaleFullCoverageCache`.
+  - RED failed as intended after the NVIDIA driver fix: the first `align(*source)` took the small-target single-step
+    terminal path, then the second `align()` reused the stale full-coverage transform cache, launched zero alignment
+    steps, and returned the old translation instead of identity.
+- Implementation:
+  - `tryAlignGpuSmallTargetSingleStepTerminal()` now detects source-alias output and skips full-coverage
+    transform/output cache population when output aliases either source or target.
+- Verification:
+  - Source-alias RED: failed with second-align alignment steps 0 vs expected 1 and the second transform still
+    containing the old translation.
+  - Source-alias test after implementation: passed.
+  - Focused source-alias/cache regression subset: 5/5 passed.
+  - Full `ICPGpuPathTest.*`: 206/206 passed.
+  - Full CUDA CTest: 387/387 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.

@@ -1975,6 +1975,7 @@ private:
         {
             return false;
         }
+        const bool output_aliases_source = output == _source.get();
 
         reserveGpuStepTransformBuffer();
         Scalar* output_points = nullptr;
@@ -2044,7 +2045,8 @@ private:
             std::isfinite(alignment_step.step_residual_sq_sum)
                 ? std::max(0.0, alignment_step.step_residual_sq_sum)
                 : alignment_step.step_residual_sq_sum;
-        if (!output_aliases_target &&
+        if (!output_aliases_source &&
+            !output_aliases_target &&
             canCacheGpuFullCoverageTransformResult(
                 source_count,
                 target_count,
