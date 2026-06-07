@@ -6710,6 +6710,45 @@ TEST(ICPGpuPathTest, AlignCanUseOrderedCorrespondencesAfterSameIndexStepWhenEnab
     EXPECT_EQ(plapoint::gpu::icpTransformPointsCallCountForTesting(), 0);
 }
 
+TEST(ICPGpuPathTest, AlignUsesVerifiedOrderedResidualStatsForTerminalMetrics)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_cpu =
+        std::make_shared<CpuCloud>(makeTranslatedPerturbedGridPoints(4096, 0.003f, -0.002f, 0.001f));
+    auto target_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.02f);
+    icp.setMaxIterations(2);
+    icp.setTransformationEpsilon(1.0e-12f);
+    icp.setGpuAssumeOrderedCorrespondencesAfterSameIndexStep(true);
+
+    plapoint::gpu::resetIcpAlignmentStepCallCountForTesting();
+    plapoint::gpu::resetIcpTransformedAlignmentStepCallCountForTesting();
+    plapoint::gpu::resetIcpResidualStatsCallCountForTesting();
+    plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
+    plapoint::gpu::resetIcpDirectSpatialGridKernelLaunchCountForTesting();
+    icp.align();
+
+    EXPECT_GT(icp.getFinalRmse(), 0.0f);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepCallCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpTransformedAlignmentStepCallCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpDirectSpatialGridKernelLaunchCountForTesting(), 1);
+}
+
 TEST(ICPGpuPathTest, AlignRecomputesCachedResidualResultAfterMutableTargetAccessWhenEnabled)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

@@ -575,7 +575,7 @@ private:
             const bool terminal_final_metrics_can_reuse_ordered_step_base =
                 terminal_iteration &&
                 _compute_final_metrics &&
-                _gpu_assume_ordered_correspondences &&
+                assume_ordered_correspondences_for_step &&
                 source_count == target_count &&
                 stats.active_count == source_count &&
                 std::isfinite(stats.step_residual_sq_sum);
@@ -593,7 +593,7 @@ private:
             const bool terminal_final_metrics_can_use_ordered_correspondences =
                 terminal_iteration &&
                 _compute_final_metrics &&
-                _gpu_assume_ordered_correspondences &&
+                assume_ordered_correspondences_for_step &&
                 source_count == target_count;
             const bool terminal_final_metrics_can_use_target_snapshot =
                 terminal_iteration &&

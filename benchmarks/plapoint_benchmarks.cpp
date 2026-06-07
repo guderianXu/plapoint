@@ -1166,7 +1166,8 @@ void benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
     bool assume_ordered_correspondences,
     bool probe_transformed_exact_pointwise_on_cache_hit,
     bool cache_full_coverage_residual_results,
-    bool assume_ordered_after_same_index_step)
+    bool assume_ordered_after_same_index_step,
+    bool compute_final_metrics = false)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -1185,7 +1186,10 @@ void benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
     icp.setMaxCorrespondenceDistance(0.02f);
     icp.setMaxIterations(2);
     icp.setTransformationEpsilon(1.0e-12f);
-    icp.setComputeFinalMetrics(false);
+    if (!compute_final_metrics)
+    {
+        icp.setComputeFinalMetrics(false);
+    }
     if (assume_ordered_correspondences)
     {
         icp.setGpuAssumeOrderedCorrespondences(true);
@@ -2673,6 +2677,15 @@ int main(int argc, char** argv)
         false,
         false,
         false,
+        true);
+    benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
+        "gpu_icp_finite_radius_nonrigid_verified_ordered_final_metrics_two_iterations",
+        options.icp_points,
+        options.iterations,
+        false,
+        false,
+        false,
+        true,
         true);
     benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
         "gpu_icp_finite_radius_nonrigid_ordered_transform_only_two_iterations",

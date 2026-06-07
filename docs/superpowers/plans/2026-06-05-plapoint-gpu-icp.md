@@ -8998,3 +8998,52 @@ Verification evidence:
   keep the small residual fused kernel. It removes the residual collect/reduce pair for sub-128 finite-radius final
   metrics without changing 128+ spatial-grid behavior and without regressing transformed exact-pointwise residual
   shortcuts. Further small-cloud speedups need fewer host synchronizations or a batched multi-ICP API.
+
+## Task 223: Reuse Verified Ordered Correspondences for Terminal GPU ICP Metrics
+
+- Goal: when `setGpuAssumeOrderedCorrespondencesAfterSameIndexStep(true)` verifies full same-index coverage in one
+  step, terminal final metrics should use the same ordered-correspondence knowledge on the following transformed step.
+  This avoids falling back to the spatial-grid residual stats path for finite-radius non-rigid alignments.
+- RED and debug checks:
+  - First added a test expecting the terminal residual stats pass to disappear completely. It failed with
+    `icpResidualStatsCallCountForTesting() == 1`, which exposed a bad test assumption: for finite radius and residual
+    sums greater than `radius^2`, the existing safety rule must keep a final residual stats pass.
+  - Refined the test to assert the real optimization: `AlignUsesVerifiedOrderedResidualStatsForTerminalMetrics` keeps
+    the one final residual stats pass but expects no extra direct spatial-grid residual kernel after the verified
+    ordered transformed step.
+- Implementation:
+  - Changed the terminal ordered-metrics predicates in `alignGpu()` to use the per-iteration
+    `assume_ordered_correspondences_for_step` value instead of the global `_gpu_assume_ordered_correspondences` flag.
+  - This covers both explicit ordered ICP and the verified follow-up path enabled by
+    `_gpu_assume_ordered_correspondences_after_same_index_step`.
+  - Added benchmark row `gpu_icp_finite_radius_nonrigid_verified_ordered_final_metrics_two_iterations` to track this
+    final-metrics path separately from the existing transform-only row.
+- Targeted verification:
+  - Focused ordered/final-metrics regression passed 7/7:
+    `AlignUsesVerifiedOrderedResidualStatsForTerminalMetrics`,
+    `AlignReusesOrderedFiniteRadiusStepWhenResidualSumFitsRadius`,
+    `AlignKeepsOrderedFiniteRadiusResidualStatsWhenResidualSumExceedsRadius`,
+    `AlignReusesOrderedInfiniteRadiusStepForTerminalMetrics`,
+    `AlignOrderedFinalMetricsSkipTargetSpatialGridSearch`,
+    `AlignCanUseOrderedCorrespondencesAfterSameIndexStepWhenEnabled`, and
+    `AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput`.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+- Benchmark:
+  - GPU: NVIDIA GeForce RTX 4060 Laptop GPU, driver 580.159.03, 8188 MiB.
+  - 120-iteration sample with 100000 ICP points:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 1.42905 ms,
+    `gpu_icp_finite_radius_nonrigid_verified_ordered_transform_only_two_iterations` = 0.73287 ms,
+    `gpu_icp_finite_radius_nonrigid_verified_ordered_final_metrics_two_iterations` = 0.763668 ms, and
+    `gpu_icp_finite_radius_nonrigid_ordered_transform_only_two_iterations` = 0.369026 ms.
+  - Interpretation: verified ordered final metrics now add only about 0.031 ms over the verified ordered transform-only
+    path in this sample, so the terminal metrics path is no longer dominated by spatial-grid residual search.
+- Full verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 356/356 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 144/144
+    reported no failures; `plapoint.PointCloudTest.GpuTransfer` was skipped in the CPU-only configuration.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+- Current conclusion:
+  keep the per-step ordered terminal-metrics predicate. It preserves the finite-radius residual safety rule while
+  removing the unnecessary spatial-grid residual kernel when same-index correspondences were already verified by the
+  previous GPU ICP step.
