@@ -208,6 +208,13 @@ struct IcpStatsAndStepRawResult
     IcpStepTransformRawResult step;
 };
 
+template <typename Scalar>
+struct IcpTerminalAlignmentAndResidualRawResult
+{
+    IcpAlignmentStepRawResult<Scalar> alignment_step;
+    RawIcpResidualStats residual_stats;
+};
+
 static_assert(sizeof(RawIcpStats) >= sizeof(RawIcpResidualStats),
               "ICP alignment-step partial workspace must cover residual-stats partials");
 static_assert(sizeof(RawIcpStats) >= sizeof(RawIcpIdentityStats),
@@ -220,6 +227,8 @@ static_assert(sizeof(IcpAlignmentStepRawResult<double>) <= 40,
               "ICP alignment-step host result should stay compact");
 static_assert(offsetof(IcpStatsAndStepRawResult, stats) == 0,
               "ICP stats-step result must expose RawIcpStats at the start of the storage");
+static_assert(sizeof(IcpTerminalAlignmentAndResidualRawResult<double>) <= sizeof(IcpStatsAndStepRawResult),
+              "Terminal alignment/residual result must fit stats-step result workspace");
 
 constexpr int kIcpStatsBlockSize = 128;
 constexpr int kIcpSpatialGridMinTargetCount = kIcpStatsBlockSize;
@@ -274,6 +283,7 @@ std::atomic<int> g_icp_raw_stats_step_kernel_launch_count{0};
 std::atomic<int> g_icp_small_alignment_step_kernel_launch_count{0};
 std::atomic<int> g_icp_small_stats_step_kernel_launch_count{0};
 std::atomic<int> g_icp_small_residual_stats_kernel_launch_count{0};
+std::atomic<int> g_icp_small_terminal_alignment_residual_kernel_launch_count{0};
 std::atomic<int> g_icp_stats_step_host_result_copy_count{0};
 std::atomic<int> g_icp_alignment_step_host_result_copy_count{0};
 std::atomic<int> g_icp_alignment_step_call_count{0};
@@ -5252,6 +5262,247 @@ __global__ void computeSmallTargetIcpAlignmentStepKernel(
     }
 }
 
+template <typename Scalar>
+__global__ void computeSmallTargetTerminalIcpAlignmentAndResidualKernel(
+    const Scalar* __restrict__ source_transform,
+    const Scalar* source_points,
+    int source_count,
+    const Scalar* target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    Scalar* __restrict__ step_transform,
+    const Scalar* __restrict__ previous_accumulated_transform,
+    Scalar* __restrict__ accumulated_transform,
+    IcpTerminalAlignmentAndResidualRawResult<Scalar>* __restrict__ result)
+{
+    const int source_idx = threadIdx.x;
+    const int local_idx = threadIdx.x;
+    RawIcpStats local{};
+    bool source_valid = false;
+    double sx = 0.0;
+    double sy = 0.0;
+    double sz = 0.0;
+    __shared__ Scalar block_transform[kIcpTransform3x4ValueCount];
+    __shared__ Scalar block_accumulated_transform[kIcpTransform3x4ValueCount];
+    __shared__ int shared_step_valid;
+    loadColumnMajorTransform3x4Block(source_transform, block_transform, local_idx);
+
+    if (source_idx < source_count)
+    {
+        if (!loadFiniteTransformedColumnMajorPoint(
+                source_points,
+                source_count,
+                source_idx,
+                block_transform,
+                sx,
+                sy,
+                sz))
+        {
+            local.invalid_source_count = 1;
+        }
+        else
+        {
+            source_valid = true;
+        }
+    }
+
+    const int active_source_count = __syncthreads_count(source_valid);
+    __shared__ double target_tile_x[kIcpStatsBlockSize];
+    __shared__ double target_tile_y[kIcpStatsBlockSize];
+    __shared__ double target_tile_z[kIcpStatsBlockSize];
+    __shared__ int target_tile_valid[kIcpStatsBlockSize];
+
+    double tx = 0.0;
+    double ty = 0.0;
+    double tz = 0.0;
+    const bool target_valid =
+        active_source_count > 0 &&
+        local_idx < target_count &&
+        loadFiniteColumnMajorPoint(target_points, target_count, local_idx, tx, ty, tz);
+    target_tile_x[local_idx] = tx;
+    target_tile_y[local_idx] = ty;
+    target_tile_z[local_idx] = tz;
+    target_tile_valid[local_idx] = target_valid ? 1 : 0;
+#ifdef PLAPOINT_ENABLE_TESTING
+    if (active_source_count > 0 && local_idx == 0)
+    {
+        atomicAdd(&g_icp_target_tile_load_count, 1ull);
+    }
+#endif
+    __syncthreads();
+
+    int best_idx = -1;
+    double best_dist_sq = INFINITY;
+    double best_tx = 0.0;
+    double best_ty = 0.0;
+    double best_tz = 0.0;
+    const double max_dist = static_cast<double>(max_correspondence_distance);
+    const double max_dist_sq = max_dist * max_dist;
+    if (source_valid)
+    {
+        for (int target_idx = 0; target_idx < target_count; ++target_idx)
+        {
+#ifdef PLAPOINT_ENABLE_TESTING
+            atomicAdd(&g_icp_target_candidate_visit_count, 1ull);
+#endif
+            if (!target_tile_valid[target_idx])
+            {
+                continue;
+            }
+
+            const double dx = sx - target_tile_x[target_idx];
+            const double dy = sy - target_tile_y[target_idx];
+            const double dz = sz - target_tile_z[target_idx];
+            const double dist_sq = dx * dx + dy * dy + dz * dz;
+#ifdef PLAPOINT_ENABLE_TESTING
+            atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
+#endif
+            if (isfinite(dist_sq) && dist_sq < best_dist_sq)
+            {
+                best_dist_sq = dist_sq;
+                best_idx = target_idx;
+                best_tx = target_tile_x[target_idx];
+                best_ty = target_tile_y[target_idx];
+                best_tz = target_tile_z[target_idx];
+                if (dist_sq <= 0.0)
+                {
+                    break;
+                }
+            }
+        }
+    }
+
+    if (source_valid && best_idx >= 0 && best_dist_sq <= max_dist_sq)
+    {
+        recordAcceptedCorrespondence(
+            local,
+            sx,
+            sy,
+            sz,
+            best_tx,
+            best_ty,
+            best_tz,
+            best_dist_sq,
+            best_idx == source_idx);
+    }
+
+    __shared__ RawIcpStats shared_stats[kIcpStatsBlockSize];
+    shared_stats[local_idx] = local;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            addRawIcpStats(shared_stats[local_idx], shared_stats[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (local_idx == 0)
+    {
+        writeAlignmentStepRawResultFromRawStats<Scalar>(
+            shared_stats[0],
+            step_transform,
+            &result->alignment_step);
+        shared_step_valid = (result->alignment_step.flags & kIcpAlignmentStepValidFlag) != 0 ? 1 : 0;
+        if (shared_step_valid != 0)
+        {
+            multiplyTransform4x4SingleThread(
+                step_transform,
+                previous_accumulated_transform,
+                accumulated_transform);
+        }
+        result->residual_stats = {};
+    }
+    __syncthreads();
+
+    if (shared_step_valid == 0)
+    {
+        return;
+    }
+
+    loadColumnMajorTransform3x4Block(accumulated_transform, block_accumulated_transform, local_idx);
+    RawIcpResidualStats residual_local{};
+    bool residual_source_valid = false;
+    double fsx = 0.0;
+    double fsy = 0.0;
+    double fsz = 0.0;
+    if (source_idx < source_count)
+    {
+        if (!loadFiniteTransformedColumnMajorPoint(
+                source_points,
+                source_count,
+                source_idx,
+                block_accumulated_transform,
+                fsx,
+                fsy,
+                fsz))
+        {
+            residual_local.invalid_source_count = 1;
+        }
+        else
+        {
+            residual_source_valid = true;
+        }
+    }
+
+    double residual_best_dist_sq = INFINITY;
+    if (residual_source_valid)
+    {
+        for (int target_idx = 0; target_idx < target_count; ++target_idx)
+        {
+#ifdef PLAPOINT_ENABLE_TESTING
+            atomicAdd(&g_icp_target_candidate_visit_count, 1ull);
+#endif
+            if (!target_tile_valid[target_idx])
+            {
+                continue;
+            }
+
+            const double dx = fsx - target_tile_x[target_idx];
+            const double dy = fsy - target_tile_y[target_idx];
+            const double dz = fsz - target_tile_z[target_idx];
+            const double dist_sq = dx * dx + dy * dy + dz * dz;
+#ifdef PLAPOINT_ENABLE_TESTING
+            atomicAdd(&g_icp_full_distance_evaluation_count, 1ull);
+#endif
+            if (isfinite(dist_sq) && dist_sq < residual_best_dist_sq)
+            {
+                residual_best_dist_sq = dist_sq;
+                if (dist_sq <= 0.0)
+                {
+                    break;
+                }
+            }
+        }
+    }
+
+    if (residual_source_valid && isfinite(residual_best_dist_sq) && residual_best_dist_sq <= max_dist_sq)
+    {
+        residual_local.active_count = 1;
+        residual_local.residual_sq_sum = residual_best_dist_sq;
+    }
+
+    __shared__ RawIcpResidualStats shared_residual_stats[kIcpStatsBlockSize];
+    shared_residual_stats[local_idx] = residual_local;
+    __syncthreads();
+
+    for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
+    {
+        if (local_idx < stride)
+        {
+            addRawIcpResidualStats(shared_residual_stats[local_idx], shared_residual_stats[local_idx + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (local_idx == 0)
+    {
+        result->residual_stats = shared_residual_stats[0];
+    }
+}
+
 template <typename Scalar, bool TransformSource, bool TryTransformedExactPointwise>
 __global__ void computeSmallTargetIcpResidualStatsKernel(
     const Scalar* __restrict__ source_transform,
@@ -6540,6 +6791,52 @@ bool launchSmallTargetStatsAndStep(
     return true;
 }
 
+template <typename Scalar>
+bool launchSmallTargetTerminalAlignmentAndResidual(
+    const Scalar* d_source_transform,
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    Scalar* d_step_transform,
+    const Scalar* d_previous_accumulated_transform,
+    Scalar* d_accumulated_transform,
+    IcpTerminalAlignmentAndResidualRawResult<Scalar>* d_result,
+    cudaStream_t stream)
+{
+    if (!shouldUseSmallFiniteRadiusTargetTileCapacityKernel(
+            max_correspondence_distance,
+            source_count,
+            target_count))
+    {
+        return false;
+    }
+    if (!d_source_transform || !d_previous_accumulated_transform || !d_accumulated_transform)
+    {
+        return false;
+    }
+
+    constexpr int block_size = kIcpStatsBlockSize;
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_small_alignment_step_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_small_terminal_alignment_residual_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    computeSmallTargetTerminalIcpAlignmentAndResidualKernel<Scalar><<<1, block_size, 0, stream>>>(
+        d_source_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        d_step_transform,
+        d_previous_accumulated_transform,
+        d_accumulated_transform,
+        d_result);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    return true;
+}
+
 template <typename Scalar, bool AccumulateTransform>
 bool launchTransformedExactPointwiseAlignmentStep(
     const Scalar* d_source_transform,
@@ -7273,6 +7570,17 @@ IcpAlignmentStepResult<Scalar> makeHostAlignmentStepResult(const IcpAlignmentSte
     result.step_maps_correspondences_exactly = (raw.flags & kIcpAlignmentStepExactStepResidualFlag) != 0;
     result.step.delta = static_cast<Scalar>(raw.delta);
     result.step_valid = (raw.flags & kIcpAlignmentStepValidFlag) != 0;
+    return result;
+}
+
+template <typename Scalar>
+IcpTerminalAlignmentAndResidualResult<Scalar> makeHostTerminalAlignmentAndResidualResult(
+    const IcpTerminalAlignmentAndResidualRawResult<Scalar>& raw)
+{
+    IcpTerminalAlignmentAndResidualResult<Scalar> result;
+    result.alignment_step = makeHostAlignmentStepResult(raw.alignment_step);
+    result.residual_stats = makeHostResidualStats<Scalar>(raw.residual_stats);
+    result.launched = true;
     return result;
 }
 
@@ -8749,6 +9057,96 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
     return makeHostAlignmentStepResult<Scalar>(*h_result);
 }
 
+template <typename Scalar>
+IcpTerminalAlignmentAndResidualResult<Scalar>
+computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
+    const Scalar* d_source_transform,
+    const Scalar* d_source_points,
+    int source_count,
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    Scalar* d_step_transform,
+    const Scalar* d_previous_accumulated_transform,
+    Scalar* d_accumulated_transform,
+    cudaStream_t stream)
+{
+    if (source_count <= 0 || target_count <= 0)
+    {
+        return {};
+    }
+    if (!shouldUseSmallFiniteRadiusTargetTileCapacityKernel(
+            max_correspondence_distance,
+            source_count,
+            target_count))
+    {
+        return {};
+    }
+    if (!d_source_points ||
+        !d_target_points ||
+        !d_step_transform ||
+        !d_source_transform ||
+        !d_previous_accumulated_transform ||
+        !d_accumulated_transform)
+    {
+        throw std::invalid_argument("ICP GPU: device pointers must not be null");
+    }
+
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_alignment_step_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_transformed_alignment_step_call_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_accumulated_alignment_step_call_count.fetch_add(1, std::memory_order_relaxed);
+    std::uintptr_t empty = 0;
+    g_icp_first_stats_source_pointer.compare_exchange_strong(
+        empty,
+        reinterpret_cast<std::uintptr_t>(d_source_points),
+        std::memory_order_relaxed,
+        std::memory_order_relaxed);
+#endif
+
+    stats_workspace.reserveStatsAndStep(source_count);
+    auto* d_result =
+        reinterpret_cast<IcpTerminalAlignmentAndResidualRawResult<Scalar>*>(stats_workspace.statsStorage());
+    auto* h_result =
+        reinterpret_cast<IcpTerminalAlignmentAndResidualRawResult<Scalar>*>(stats_workspace.hostResultStorage());
+    if (!h_result)
+    {
+        throw std::invalid_argument("ICP GPU: terminal alignment host result workspace is not reserved");
+    }
+
+    const bool launched = launchSmallTargetTerminalAlignmentAndResidual<Scalar>(
+        d_source_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        d_step_transform,
+        d_previous_accumulated_transform,
+        d_accumulated_transform,
+        d_result,
+        stream);
+    if (!launched)
+    {
+        return {};
+    }
+
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+        h_result,
+        d_result,
+        sizeof(IcpTerminalAlignmentAndResidualRawResult<Scalar>),
+        cudaMemcpyDeviceToHost,
+        stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_alignment_step_host_result_copy_count.fetch_add(1, std::memory_order_relaxed);
+    g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    return makeHostTerminalAlignmentAndResidualResult<Scalar>(*h_result);
+}
+
 } // namespace
 
 #ifdef PLAPOINT_ENABLE_TESTING
@@ -9000,6 +9398,16 @@ void resetIcpSmallResidualStatsKernelLaunchCountForTesting()
 int icpSmallResidualStatsKernelLaunchCountForTesting()
 {
     return g_icp_small_residual_stats_kernel_launch_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpSmallTerminalAlignmentResidualKernelLaunchCountForTesting()
+{
+    g_icp_small_terminal_alignment_residual_kernel_launch_count.store(0, std::memory_order_relaxed);
+}
+
+int icpSmallTerminalAlignmentResidualKernelLaunchCountForTesting()
+{
+    return g_icp_small_terminal_alignment_residual_kernel_launch_count.load(std::memory_order_relaxed);
 }
 
 void resetIcpStatsStepHostResultCopyCountForTesting()
@@ -10264,6 +10672,62 @@ transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajo
         target_spatial_grid_cell_count,
         stream,
         false);
+}
+
+IcpTerminalAlignmentAndResidualResult<float>
+computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+    const float* d_source_transform,
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    const float* d_previous_accumulated_transform,
+    float* d_accumulated_transform,
+    cudaStream_t stream)
+{
+    return computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
+        d_source_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        d_step_transform,
+        d_previous_accumulated_transform,
+        d_accumulated_transform,
+        stream);
+}
+
+IcpTerminalAlignmentAndResidualResult<double>
+computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+    const double* d_source_transform,
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    const double* d_previous_accumulated_transform,
+    double* d_accumulated_transform,
+    cudaStream_t stream)
+{
+    return computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorImpl(
+        d_source_transform,
+        d_source_points,
+        source_count,
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        stats_workspace,
+        d_step_transform,
+        d_previous_accumulated_transform,
+        d_accumulated_transform,
+        stream);
 }
 
 } // namespace detail

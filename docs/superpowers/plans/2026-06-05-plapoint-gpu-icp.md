@@ -9109,3 +9109,57 @@ Verification evidence:
   pair from the low-level API and uses the full shared tile capacity without weakening residual/stats-step spatial-grid
   regression coverage. The remaining dominant small-target cost is still per-call kernel launch plus host
   synchronization.
+
+## Task 225: Fuse Small-Target Terminal Alignment and Final Residual Metrics
+
+- Goal: remove the extra terminal final-metrics host synchronization for no-output, transformed, finite-radius,
+  small-target GPU ICP. The terminal step must still compute true final residual metrics after applying the accumulated
+  transform, not reuse the alignment-step residual unless an existing exact/ordered safety predicate permits it.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignSmallFiniteRadiusFinalMetricsAvoidExtraHostSynchronization`.
+  - The RED failed with small alignment kernels = 2, small residual kernels = 1, residual stats calls = 1, and host
+    synchronizations = 3. This confirmed the terminal small-target path still ran a separate residual-stats kernel and
+    host sync after the second alignment step.
+- Implementation:
+  - Added `IcpTerminalAlignmentAndResidualResult` and a compact raw result containing both
+    `IcpAlignmentStepRawResult` and `RawIcpResidualStats`.
+  - Added `computeSmallTargetTerminalIcpAlignmentAndResidualKernel()`. It scans the transformed source against the
+    small target tile, computes the step transform, writes `accumulated_transform = step * previous_accumulated`, then
+    recomputes final nearest-neighbor residual stats in the same kernel using the final accumulated transform.
+  - Added `computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace()` in the detail
+    API and a dedicated test counter `icpSmallTerminalAlignmentResidualKernelLaunchCountForTesting()`.
+  - Routed only the no-output, non-ordered, non-exact-preflight, terminal max-iteration transformed path through the
+    fused helper. Output, target-alias, ordered, exact-pointwise, and spatial-grid paths continue to use the existing
+    logic.
+  - Added benchmark row
+    `gpu_icp_small_finite_radius_nonrigid_final_metrics_two_iterations_below_grid_threshold` and registered it in
+    `cmake/check_gpu_icp_benchmark_rows.cmake`.
+- Correctness coverage:
+  - Added `ICPGpuPathTest.TerminalAlignmentResidualMatchesSeparateSmallTargetBaseline`, which compares the fused
+    terminal helper against the old separate transformed alignment-step plus transformed residual-stats baseline.
+  - The end-to-end test now asserts the fused terminal kernel launches once, the small residual-stats kernel does not
+    launch, residual-stats call count stays at zero, host synchronizations are at most two, and final RMSE is finite,
+    positive, and within the correspondence radius.
+- Targeted verification:
+  - New tests passed 2/2:
+    `TerminalAlignmentResidualMatchesSeparateSmallTargetBaseline` and
+    `AlignSmallFiniteRadiusFinalMetricsAvoidExtraHostSynchronization`.
+  - Small-target and terminal-metrics focused regression passed 14/14.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+- Benchmark:
+  - GPU: NVIDIA GeForce RTX 4060 Laptop GPU, driver 580.159.03, 8188 MiB.
+  - 3-iteration sample with `--icp-points 1024`:
+    `gpu_icp_small_finite_radius_nonrigid_transform_only_two_iterations_below_grid_threshold` = 0.175829 ms and
+    `gpu_icp_small_finite_radius_nonrigid_final_metrics_two_iterations_below_grid_threshold` = 1.21104 ms.
+  - Note: the sample used `--icp-points 1024` because an older unrelated shrinking benchmark with `--icp-points 512`
+    constructs a 256-point collinear grid and correctly throws `ICP: correspondence geometry is degenerate`.
+- Full verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 359/359 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 144/144
+    reported no failures; `plapoint.PointCloudTest.GpuTransfer` was skipped in the CPU-only configuration.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean before documentation update.
+- Current conclusion:
+  keep the fused terminal small-target helper. It removes the third host synchronization from this no-output two-step
+  final-metrics path while preserving exact final RMSE semantics. Remaining speed work should focus on either widening
+  this fusion to safe output cases or reducing per-call host synchronization through a batched/asynchronous ICP API.

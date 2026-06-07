@@ -72,6 +72,15 @@ struct IcpAlignmentStepResult
     bool step_valid = false;
 };
 
+/// Host-side compact result for a terminal GPU ICP step fused with final residual metrics.
+template <typename Scalar>
+struct IcpTerminalAlignmentAndResidualResult
+{
+    IcpAlignmentStepResult<Scalar> alignment_step;
+    IcpResidualStats<Scalar> residual_stats;
+    bool launched = false;
+};
+
 /// Reusable device storage for ICP correspondence stats reductions.
 /// Reserve it once for a source size and pass it to repeated stats calls to avoid repeated allocations.
 class IcpCorrespondenceStatsWorkspace
@@ -731,6 +740,40 @@ IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepAndAccumulateTr
     cudaStream_t stream = 0,
     bool assume_ordered_correspondences = false,
     bool probe_transformed_exact_pointwise_on_cache_hit = false);
+
+/// Compute a small-target terminal transformed alignment step and exact post-step residual metrics.
+/// The helper writes accumulated_transform = step * previous_accumulated and copies one compact result to host.
+/// It returns launched=false when the source/target sizes or correspondence radius are outside the small-target path.
+IcpTerminalAlignmentAndResidualResult<float>
+computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+    const float* d_source_transform,
+    const float* d_source_points,
+    int source_count,
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    float* d_step_transform,
+    const float* d_previous_accumulated_transform,
+    float* d_accumulated_transform,
+    cudaStream_t stream = 0);
+
+/// Compute a small-target terminal transformed alignment step and exact post-step residual metrics.
+/// The helper writes accumulated_transform = step * previous_accumulated and copies one compact result to host.
+/// It returns launched=false when the source/target sizes or correspondence radius are outside the small-target path.
+IcpTerminalAlignmentAndResidualResult<double>
+computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+    const double* d_source_transform,
+    const double* d_source_points,
+    int source_count,
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& stats_workspace,
+    double* d_step_transform,
+    const double* d_previous_accumulated_transform,
+    double* d_accumulated_transform,
+    cudaStream_t stream = 0);
 
 /// Compute final residual metrics using workspace already reserved for source_count.
 /// The caller must reserve residual-compatible partial and result storage first.

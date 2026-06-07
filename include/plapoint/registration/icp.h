@@ -458,6 +458,8 @@ private:
         for (int iter = 0; iter < _max_iter; ++iter)
         {
             gpu::IcpAlignmentStepResult<Scalar> stats_and_step;
+            gpu::IcpResidualStats<Scalar> fused_terminal_final_stats;
+            bool fused_terminal_final_metrics = false;
             bool alignment_step_accumulated_transform = false;
             const bool assume_ordered_correspondences_for_step =
                 _gpu_assume_ordered_correspondences ||
@@ -473,7 +475,38 @@ private:
                     auto_probe_transformed_exact_pointwise;
                 const bool defer_accumulated_transform =
                     probe_transformed_exact_pointwise && iter + 1 == _max_iter;
-                if (defer_accumulated_transform)
+                const bool try_fused_terminal_final_metrics =
+                    _compute_final_metrics &&
+                    iter + 1 == _max_iter &&
+                    !output &&
+                    !assume_ordered_correspondences_for_step &&
+                    !probe_transformed_exact_pointwise;
+                if (try_fused_terminal_final_metrics)
+                {
+                    reserveGpuNextTransformBuffer();
+                    const auto terminal_result =
+                        gpu::detail::
+                            computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+                            _gpu_T_acc->data(),
+                            source_points,
+                            source_count,
+                            target_points,
+                            target_count,
+                            _max_corr_dist,
+                            _gpu_stats_workspace,
+                            _gpu_T_step->data(),
+                            _gpu_T_acc->data(),
+                            _gpu_next_T_acc->data(),
+                            0);
+                    if (terminal_result.launched)
+                    {
+                        stats_and_step = terminal_result.alignment_step;
+                        fused_terminal_final_stats = terminal_result.residual_stats;
+                        fused_terminal_final_metrics = true;
+                        alignment_step_accumulated_transform = true;
+                    }
+                }
+                if (!fused_terminal_final_metrics && defer_accumulated_transform)
                 {
                     stats_and_step =
                         gpu::detail::computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(
@@ -489,7 +522,7 @@ private:
                             assume_ordered_correspondences_for_step,
                             probe_transformed_exact_pointwise);
                 }
-                else
+                else if (!fused_terminal_final_metrics)
                 {
                     reserveGpuNextTransformBuffer();
                     stats_and_step =
@@ -799,55 +832,62 @@ private:
                 else
                 {
                     gpu::IcpResidualStats<Scalar> final_stats;
-                    try
+                    if (fused_terminal_final_metrics)
                     {
-                        if (terminal_final_metrics_can_use_ordered_correspondences)
+                        final_stats = fused_terminal_final_stats;
+                    }
+                    else
+                    {
+                        try
                         {
-                            final_stats =
-                                gpu::detail::transformPointsAndComputeOrderedIcpResidualStatsColumnMajorWithReservedWorkspace(
-                                    _gpu_T_acc->data(),
-                                    source_points,
-                                    source_count,
-                                    target_points,
-                                    target_count,
-                                    _max_corr_dist,
-                                    transform_output_points,
-                                    _gpu_stats_workspace);
-                        }
-                        else if (terminal_final_metrics_can_use_target_snapshot)
-                        {
-                            final_stats =
-                                gpu::detail::
-                                    transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
+                            if (terminal_final_metrics_can_use_ordered_correspondences)
+                            {
+                                final_stats =
+                                    gpu::detail::transformPointsAndComputeOrderedIcpResidualStatsColumnMajorWithReservedWorkspace(
                                         _gpu_T_acc->data(),
                                         source_points,
                                         source_count,
+                                        target_points,
+                                        target_count,
                                         _max_corr_dist,
                                         transform_output_points,
-                                        _gpu_stats_workspace,
-                                        target_spatial_grid_snapshot_cell_count);
+                                        _gpu_stats_workspace);
+                            }
+                            else if (terminal_final_metrics_can_use_target_snapshot)
+                            {
+                                final_stats =
+                                    gpu::detail::
+                                        transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
+                                            _gpu_T_acc->data(),
+                                            source_points,
+                                            source_count,
+                                            _max_corr_dist,
+                                            transform_output_points,
+                                            _gpu_stats_workspace,
+                                            target_spatial_grid_snapshot_cell_count);
+                            }
+                            else
+                            {
+                                final_stats =
+                                    gpu::detail::transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
+                                        _gpu_T_acc->data(),
+                                        source_points,
+                                        source_count,
+                                        target_points,
+                                        target_count,
+                                        _max_corr_dist,
+                                        transform_output_points,
+                                        _gpu_stats_workspace);
+                            }
                         }
-                        else
+                        catch (...)
                         {
-                            final_stats =
-                                gpu::detail::transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
-                                    _gpu_T_acc->data(),
-                                    source_points,
-                                    source_count,
-                                    target_points,
-                                    target_count,
-                                    _max_corr_dist,
-                                    transform_output_points,
-                                    _gpu_stats_workspace);
+                            if (defer_target_workspace_cache_invalidation)
+                            {
+                                invalidateGpuTargetWorkspaceCache();
+                            }
+                            throw;
                         }
-                    }
-                    catch (...)
-                    {
-                        if (defer_target_workspace_cache_invalidation)
-                        {
-                            invalidateGpuTargetWorkspaceCache();
-                        }
-                        throw;
                     }
                     if (defer_target_workspace_cache_invalidation)
                     {
