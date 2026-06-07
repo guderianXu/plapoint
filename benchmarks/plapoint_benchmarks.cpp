@@ -942,6 +942,7 @@ void benchmarkGpuIcpFiniteRadiusBinaryTranslationTransformOnly(
 void benchmarkGpuIcpFiniteRadiusBinaryTranslationReuseOutput(
     const char* benchmark_name,
     int icp_points,
+    int icp_max_iterations,
     int iterations,
     bool probe_transformed_exact_pointwise_on_cache_hit)
 {
@@ -965,7 +966,7 @@ void benchmarkGpuIcpFiniteRadiusBinaryTranslationReuseOutput(
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.0625f);
-    icp.setMaxIterations(2);
+    icp.setMaxIterations(icp_max_iterations);
     icp.setTransformationEpsilon(1.0e-12f);
     if (probe_transformed_exact_pointwise_on_cache_hit)
     {
@@ -2324,13 +2325,21 @@ int main(int argc, char** argv)
         options.iterations,
         true);
     benchmarkGpuIcpFiniteRadiusBinaryTranslationReuseOutput(
+        "gpu_icp_finite_radius_binary_translation_reuse_output_one_iteration",
+        options.icp_points,
+        1,
+        options.iterations,
+        false);
+    benchmarkGpuIcpFiniteRadiusBinaryTranslationReuseOutput(
         "gpu_icp_finite_radius_binary_translation_reuse_output_two_iterations",
         options.icp_points,
+        2,
         options.iterations,
         false);
     benchmarkGpuIcpFiniteRadiusBinaryTranslationReuseOutput(
         "gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations",
         options.icp_points,
+        2,
         options.iterations,
         true);
     benchmarkGpuIcpFiniteRadiusTranslationReuseTargetOutput(

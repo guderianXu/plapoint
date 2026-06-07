@@ -504,6 +504,11 @@ private:
             const Scalar* step_transform = _gpu_T_step->data();
             const bool terminal_iteration = step_result.delta < _eps || iter + 1 == _max_iter;
             const bool terminal_identity_step = terminal_iteration && step_result.delta == Scalar(0);
+            const bool terminal_final_metrics_can_reuse_exact_step =
+                terminal_iteration &&
+                _compute_final_metrics &&
+                stats.active_count == source_count &&
+                stats.step_maps_correspondences_exactly;
             const bool terminal_final_metrics_can_use_ordered_correspondences =
                 terminal_iteration &&
                 _compute_final_metrics &&
@@ -589,89 +594,122 @@ private:
             }
             else if (terminal_iteration && _compute_final_metrics)
             {
-                gpu::IcpResidualStats<Scalar> final_stats;
-                try
+                if (terminal_final_metrics_can_reuse_exact_step)
                 {
-                    if (terminal_final_metrics_can_use_ordered_correspondences)
+                    if (transform_output_points)
                     {
-                        final_stats =
-                            gpu::detail::transformPointsAndComputeOrderedIcpResidualStatsColumnMajorWithReservedWorkspace(
-                                _gpu_T_acc->data(),
-                                source_points,
-                                source_count,
-                                target_points,
-                                target_count,
-                                _max_corr_dist,
-                                transform_output_points,
-                                _gpu_stats_workspace);
-                    }
-                    else if (terminal_final_metrics_can_use_target_snapshot)
-                    {
-                        final_stats =
-                            gpu::detail::
-                                transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
-                                    _gpu_T_acc->data(),
-                                    source_points,
-                                    source_count,
-                                    _max_corr_dist,
-                                    transform_output_points,
-                                    _gpu_stats_workspace,
-                                    target_spatial_grid_snapshot_cell_count);
+                        gpu::transformPointsColumnMajorAsync(
+                            _gpu_T_acc->data(),
+                            source_points,
+                            source_count,
+                            transform_output_points,
+                            0);
+                        cur_points = transform_output_points;
+                        current_points_use_accumulated_transform = false;
                     }
                     else
                     {
-                        final_stats =
-                            gpu::detail::transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
-                                _gpu_T_acc->data(),
-                                source_points,
-                                source_count,
-                                target_points,
-                                target_count,
-                                _max_corr_dist,
-                                transform_output_points,
-                                _gpu_stats_workspace);
+                        cur_points = source_points;
+                        current_points_use_accumulated_transform = true;
                     }
-                }
-                catch (...)
-                {
                     if (defer_target_workspace_cache_invalidation)
                     {
                         invalidateGpuTargetWorkspaceCache();
                     }
-                    throw;
-                }
-                if (defer_target_workspace_cache_invalidation)
-                {
-                    invalidateGpuTargetWorkspaceCache();
-                }
-                if (transform_output_points)
-                {
-                    cur_points = transform_output_points;
-                    current_points_use_accumulated_transform = false;
-                }
-                else
-                {
-                    cur_points = source_points;
-                    current_points_use_accumulated_transform = true;
-                }
-                if (final_stats.invalid_source_count > 0)
-                {
-                    throw std::invalid_argument("ICP: transformed source contains non-finite point");
-                }
-                if (final_stats.active_count == 0)
-                {
-                    _fitness_score = Scalar(0);
-                    _final_rmse = std::numeric_limits<Scalar>::infinity();
-                }
-                else
-                {
-                    updateResidualMetricsFromGpuStats(final_stats, source_count);
-                }
+                    updateExactResidualMetricsFromActiveCount(stats.active_count, source_count);
 
-                if (step_result.delta < _eps)
+                    if (step_result.delta < _eps)
+                    {
+                        _converged = stats.active_count >= 3 && _fitness_score >= _min_fitness_score;
+                        break;
+                    }
+                }
+                else
                 {
-                    _converged = final_stats.active_count >= 3 && _fitness_score >= _min_fitness_score;
-                    break;
+                    gpu::IcpResidualStats<Scalar> final_stats;
+                    try
+                    {
+                        if (terminal_final_metrics_can_use_ordered_correspondences)
+                        {
+                            final_stats =
+                                gpu::detail::transformPointsAndComputeOrderedIcpResidualStatsColumnMajorWithReservedWorkspace(
+                                    _gpu_T_acc->data(),
+                                    source_points,
+                                    source_count,
+                                    target_points,
+                                    target_count,
+                                    _max_corr_dist,
+                                    transform_output_points,
+                                    _gpu_stats_workspace);
+                        }
+                        else if (terminal_final_metrics_can_use_target_snapshot)
+                        {
+                            final_stats =
+                                gpu::detail::
+                                    transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
+                                        _gpu_T_acc->data(),
+                                        source_points,
+                                        source_count,
+                                        _max_corr_dist,
+                                        transform_output_points,
+                                        _gpu_stats_workspace,
+                                        target_spatial_grid_snapshot_cell_count);
+                        }
+                        else
+                        {
+                            final_stats =
+                                gpu::detail::transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
+                                    _gpu_T_acc->data(),
+                                    source_points,
+                                    source_count,
+                                    target_points,
+                                    target_count,
+                                    _max_corr_dist,
+                                    transform_output_points,
+                                    _gpu_stats_workspace);
+                        }
+                    }
+                    catch (...)
+                    {
+                        if (defer_target_workspace_cache_invalidation)
+                        {
+                            invalidateGpuTargetWorkspaceCache();
+                        }
+                        throw;
+                    }
+                    if (defer_target_workspace_cache_invalidation)
+                    {
+                        invalidateGpuTargetWorkspaceCache();
+                    }
+                    if (transform_output_points)
+                    {
+                        cur_points = transform_output_points;
+                        current_points_use_accumulated_transform = false;
+                    }
+                    else
+                    {
+                        cur_points = source_points;
+                        current_points_use_accumulated_transform = true;
+                    }
+                    if (final_stats.invalid_source_count > 0)
+                    {
+                        throw std::invalid_argument("ICP: transformed source contains non-finite point");
+                    }
+                    if (final_stats.active_count == 0)
+                    {
+                        _fitness_score = Scalar(0);
+                        _final_rmse = std::numeric_limits<Scalar>::infinity();
+                    }
+                    else
+                    {
+                        updateResidualMetricsFromGpuStats(final_stats, source_count);
+                    }
+
+                    if (step_result.delta < _eps)
+                    {
+                        _converged = final_stats.active_count >= 3 && _fitness_score >= _min_fitness_score;
+                        break;
+                    }
                 }
             }
             else
@@ -964,6 +1002,21 @@ private:
         const double rmse = std::sqrt(stats.residual_sq_sum / static_cast<double>(stats.active_count));
         _fitness_score = static_cast<Scalar>(stats.active_count) / static_cast<Scalar>(source_count);
         _final_rmse = metricScalarFromDouble(rmse);
+    }
+
+    void updateExactResidualMetricsFromActiveCount(int active_count, int source_count)
+    {
+#if defined(PLAPOINT_WITH_CUDA) && defined(PLAPOINT_ENABLE_TESTING)
+        ++_gpu_metric_update_count;
+#endif
+        if (active_count <= 0)
+        {
+            _fitness_score = Scalar(0);
+            _final_rmse = std::numeric_limits<Scalar>::infinity();
+            return;
+        }
+        _fitness_score = static_cast<Scalar>(active_count) / static_cast<Scalar>(source_count);
+        _final_rmse = Scalar(0);
     }
 
     static void validateGpuStepTransformStatsInput(

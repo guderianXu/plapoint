@@ -8110,3 +8110,58 @@ Verification evidence:
   keep the exact-post-step-residual gate. It makes exact paired finite-radius translations use the fast transformed
   exact path by default, while avoiding the known nonrigid preflight regression and leaving normal translated-grid
   throughput effectively unchanged.
+
+## Task 207: Reuse Exact Non-Identity Step For Terminal Final Metrics
+
+- Goal: skip the terminal residual nearest-neighbor scan when the just-computed non-identity alignment step already
+  proves that all source points map to accepted target correspondences with exactly zero post-step residual. The old
+  identity-step shortcut handled only `delta == 0`; exact one-step translations still transformed output while
+  recomputing final residual metrics.
+- RED check:
+  - Added `ICPGpuPathTest.AlignReusesExactNonIdentityStepForTerminalMetrics`.
+  - Before implementation, the test failed with two correspondence-stats calls, one residual-stats call, and zero
+    standalone transform-point calls. The expected exact-step path needs one alignment/correspondence stats pass,
+    no residual-stats pass, and one standalone transform-point pass when output points are requested.
+- Implementation:
+  - Added a terminal final-metrics fast path in `alignGpu()` gated by `active_count == source_count` and
+    `step_maps_correspondences_exactly`.
+  - Reused the compact alignment-step result to set fitness and RMSE directly to the exact full-coverage values.
+  - When output points are requested, launched `transformPointsColumnMajorAsync()` instead of the combined
+    transform-and-residual-stats helper. Target-output cache invalidation and the existing non-exact final-metrics
+    path are preserved.
+  - Added `gpu_icp_finite_radius_binary_translation_reuse_output_one_iteration` to the benchmark rows so this exact
+    non-identity final-metrics scenario is tracked directly.
+- Targeted verification:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesExactNonIdentityStepForTerminalMetrics`
+    failed before implementation with the expected extra residual-stats pass, then passed after implementation.
+  - Final-metrics regression set passed 7/7:
+    `AlignReusesIterationStatsForExactIdentityTerminalMetrics`,
+    `AlignReusesExactNonIdentityStepForTerminalMetrics`,
+    `AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics`,
+    `AlignOrderedFinalMetricsSkipTargetSpatialGridSearch`,
+    `AlignUsesReservedWorkspaceForTerminalResidualStats`,
+    `AlignReusesSpatialGridSnapshotForTerminalResidualStatsWithRegularOutput`, and
+    `AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsUseSpatialGrid`.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*`: 144/144 passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed, including the new benchmark row.
+- Benchmark:
+  - Rebuilt `build-codex-cuda-bench-only` and ran:
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 80 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`.
+  - Relevant sample after this change:
+    `gpu_icp_finite_radius_binary_translation_reuse_output_one_iteration` = 0.479214 ms,
+    `gpu_icp_finite_radius_binary_translation_reuse_output_two_iterations` = 0.530852 ms,
+    `gpu_icp_finite_radius_binary_translation_reuse_output_preflight_two_iterations` = 0.530915 ms,
+    `gpu_icp_finite_radius_binary_translation_transform_only_two_iterations` = 0.522081 ms,
+    `gpu_icp_finite_radius_translation_reuse_output` = 1.0332 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_one_iteration` = 0.709591 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 0.919461 ms, and
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 1.42327 ms.
+- Full verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 325/325 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 143/144
+    executed tests passed, with `plapoint.PointCloudTest.GpuTransfer` skipped by the CPU-only build.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+- Current conclusion:
+  keep the exact terminal metrics reuse path. It removes a full residual nearest-neighbor pass from exact one-step
+  non-identity alignments while preserving the residual-stats path for non-exact terminal transforms.
