@@ -1462,7 +1462,8 @@ void benchmarkGpuIcpFiniteRadiusNonRigidFinalMetricsOutput(
     const char* benchmark_name,
     int icp_points,
     int iterations,
-    bool target_alias_output)
+    bool target_alias_output,
+    bool same_size_output = false)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -1472,7 +1473,7 @@ void benchmarkGpuIcpFiniteRadiusNonRigidFinalMetricsOutput(
 
     const int target_points = target_alias_output
         ? icp_points
-        : icp_points + std::max(1, icp_points / 4);
+        : (same_size_output ? icp_points : icp_points + std::max(1, icp_points / 4));
     auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
         makeTranslatedPerturbedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
     auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(target_points));
@@ -1549,17 +1550,19 @@ void benchmarkGpuIcpFiniteRadiusNonRigidTargetAliasTransformOnlyTwoIterations(in
     }
 }
 
-void benchmarkGpuIcpFiniteRadiusNonRigidOutputTransformOnlyTwoIterations(int icp_points, int iterations)
+void benchmarkGpuIcpFiniteRadiusNonRigidOutputTransformOnlyTwoIterations(
+    const char* benchmark_name,
+    int icp_points,
+    int iterations,
+    bool same_size_output = false)
 {
-    constexpr const char* benchmark_name =
-        "gpu_icp_finite_radius_nonrigid_output_transform_only_two_iterations";
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
         printSkipped(benchmark_name, "no_usable_cuda_device");
         return;
     }
 
-    const int target_points = icp_points + std::max(1, icp_points / 4);
+    const int target_points = same_size_output ? icp_points : icp_points + std::max(1, icp_points / 4);
     auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
         makeTranslatedPerturbedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
     auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(target_points));
@@ -4063,8 +4066,14 @@ int main(int argc, char** argv)
         false,
         true);
     benchmarkGpuIcpFiniteRadiusNonRigidOutputTransformOnlyTwoIterations(
+        "gpu_icp_finite_radius_nonrigid_output_transform_only_two_iterations",
         options.icp_points,
         options.iterations);
+    benchmarkGpuIcpFiniteRadiusNonRigidOutputTransformOnlyTwoIterations(
+        "gpu_icp_finite_radius_nonrigid_same_size_output_transform_only_two_iterations",
+        options.icp_points,
+        options.iterations,
+        true);
     benchmarkGpuIcpFiniteRadiusNonRigidOutputTransformOnlyFreshTargetTwoIterations(
         options.icp_points,
         options.iterations);
@@ -4085,6 +4094,12 @@ int main(int argc, char** argv)
         options.icp_points,
         options.iterations,
         false);
+    benchmarkGpuIcpFiniteRadiusNonRigidFinalMetricsOutput(
+        "gpu_icp_finite_radius_nonrigid_same_size_output_final_metrics_two_iterations",
+        options.icp_points,
+        options.iterations,
+        false,
+        true);
     benchmarkGpuIcpFiniteRadiusNonRigidFinalMetricsOutput(
         "gpu_icp_finite_radius_nonrigid_target_alias_final_metrics_two_iterations",
         options.icp_points,

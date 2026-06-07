@@ -1556,10 +1556,6 @@ private:
                 return false;
             }
         }
-        else if (output && source_count == target_count)
-        {
-            return false;
-        }
 
         reserveGpuStepTransformBuffer();
         reserveGpuAccumulatedTransformBuffer();
@@ -1744,10 +1740,6 @@ private:
             {
                 return false;
             }
-        }
-        else if (output && source_count == target_count)
-        {
-            return false;
         }
 
         reserveGpuStepTransformBuffer();
