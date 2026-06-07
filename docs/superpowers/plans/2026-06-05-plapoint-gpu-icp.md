@@ -10066,3 +10066,42 @@ Verification evidence:
   final RMSE/fitness. The remaining speed gap to transform-only is the expected final transformed residual kernel. A
   useful follow-up is extending combined result collection to the regular-output and target-alias final-metrics paths
   without reintroducing target-cache aliasing hazards.
+
+## Task 248: Combine Large-Target Final-Metrics Regular-Output Result Copy
+
+- Goal: reduce the large-target, finite-radius, two-iteration, finalMetrics=true regular `align(output)` path from two
+  host synchronizations to one while still writing transformed points into the caller-owned output cloud.
+- RED check:
+  - Tightened `ICPGpuPathTest.AlignLargeTargetTwoIterationFinalMetricsWithOutputAvoidsPerIterationHostSynchronization`
+    from two expected host synchronizations to one.
+  - The first attempt at RED did not fail because a short patch hit an earlier host-sync assertion. Root cause was
+    confirmed from `git diff`, the accidental edit was reverted, and the output test was patched with local context.
+  - The corrected RED run failed as intended: observed two host synchronizations.
+- Implementation:
+  - Reused the cached target spatial-grid snapshot predicate once in `tryAlignGpuTwoStepFinalMetrics()`.
+  - For non-target-aliased output, prepared the GPU output point buffer before the async final residual launch.
+  - Passed that output pointer to the async transform+residual kernel so final output writing, final residual
+    collection, and the two compact alignment results are all queued before the combined copy.
+  - Left target-alias output on the previous two-sync path because it still needs stricter target-cache invalidation and
+    alias-order coverage.
+- Verification:
+  - Corrected RED failed on the output test: observed host synchronizations 2 vs expected 1.
+  - New output test: passed.
+  - Targeted large/final-metrics/transform-only/exact/ordered/cache regression subset: 60/60 passed.
+  - Full `ICPGpuPathTest.*`: 200/200 passed.
+  - Full CUDA CTest: 381/381 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 10000`:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 0.240453 ms,
+    `gpu_icp_finite_radius_nonrigid_final_metrics_two_iterations` = 0.318379 ms,
+    `gpu_icp_finite_radius_nonrigid_output_final_metrics_two_iterations` = 0.333622 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_final_metrics_two_iterations` = 0.355273 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.24066 ms.
+- Current conclusion:
+  regular-output large-target finalMetrics now uses the same one-sync result collection pattern as no-output, while
+  preserving caller output contents and final RMSE/fitness. The next narrow slice is target-alias output, where the main
+  risk is keeping the target spatial-grid snapshot valid until residual collection completes and invalidating it
+  immediately after the target buffer is overwritten.

@@ -1564,12 +1564,18 @@ private:
         gpu::IcpTwoStepAlignmentResult<Scalar> two_step_result;
         gpu::IcpResidualStats<Scalar> final_stats;
         bool final_stats_precomputed = false;
-        const bool can_precompute_final_metrics =
-            !output &&
-            !output_aliases_target &&
+        const bool final_metrics_can_use_target_snapshot =
             gpuFinalMetricsCanUseCachedTargetSpatialGridSnapshot(target_points, target_count);
+        Scalar* output_points = nullptr;
+        const bool can_precompute_final_metrics =
+            !output_aliases_target &&
+            final_metrics_can_use_target_snapshot;
         if (can_precompute_final_metrics)
         {
+            if (output)
+            {
+                output_points = prepareGpuOutputPointBuffer(*output, source_count);
+            }
             const bool residual_launched =
                 gpu::detail::
                     launchTransformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
@@ -1577,7 +1583,7 @@ private:
                         source_points,
                         source_count,
                         _max_corr_dist,
-                        nullptr,
+                        output_points,
                         _gpu_stats_workspace,
                         _gpu_final_stats_workspace,
                         _gpu_stats_workspace.targetSpatialGridCellCount());
@@ -1626,15 +1632,14 @@ private:
         invalidateGpuSameBufferIdentityResultCache();
         invalidateGpuExactIdentityResultCache();
 
-        const bool final_metrics_can_use_target_snapshot =
-            gpuFinalMetricsCanUseCachedTargetSpatialGridSnapshot(target_points, target_count);
         if (output_aliases_target && !final_metrics_can_use_target_snapshot)
         {
             throw std::runtime_error("ICP: target spatial-grid snapshot unavailable for target-aliased final metrics");
         }
-        Scalar* output_points = output
-            ? prepareGpuOutputPointBuffer(*output, source_count)
-            : nullptr;
+        if (output && !output_points)
+        {
+            output_points = prepareGpuOutputPointBuffer(*output, source_count);
+        }
         if (!final_stats_precomputed)
         {
             try

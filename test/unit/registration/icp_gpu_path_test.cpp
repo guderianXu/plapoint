@@ -9196,7 +9196,7 @@ TEST(ICPGpuPathTest, AlignLargeTargetTwoIterationFinalMetricsWithOutputAvoidsPer
     GpuCloud output;
     icp.align(output);
 
-    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 2);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepCallCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpResidualStatsCallCountForTesting(), 1);
