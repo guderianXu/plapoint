@@ -10441,3 +10441,34 @@ Verification evidence:
   regular output adds about 0.009 ms over no-output on the current 10k-point transform-only sample, while target-alias
   output adds about 0.111 ms. The next runtime optimization should target the target-alias in-place output constraint
   rather than the ordinary output path.
+
+## Task 258: Add Fresh-Target Regular-Output Transform-Only Benchmark Row
+
+- Goal: make the target-alias transform-only benchmark comparable with a regular-output path that also cannot reuse the
+  previous target spatial-grid cache. The existing regular-output row measured the warm target-cache steady state,
+  while `align(*target)` mutates its target and therefore requires a fresh target object for repeated benchmark calls.
+- RED check:
+  - Added `gpu_icp_finite_radius_nonrigid_output_transform_only_fresh_target_two_iterations` to the benchmark row
+    checker.
+  - RED failed as intended: bench-only CTest reported the row missing from `plapoint_benchmarks` output.
+- Implementation:
+  - Added a dedicated regular-output transform-only benchmark that prebuilds a fresh GPU target cloud for each
+    warmup/measured invocation, keeps the source fixed, and writes to a normal output cloud.
+  - Registered the new row next to the cached-target regular-output and target-alias transform-only rows.
+- Verification:
+  - Bench-only CTest after implementation: 1/1 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 10000`:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 0.240175 ms,
+    `gpu_icp_finite_radius_nonrigid_output_transform_only_two_iterations` = 0.249457 ms,
+    `gpu_icp_finite_radius_nonrigid_output_transform_only_fresh_target_two_iterations` = 0.371585 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_transform_only_two_iterations` = 0.35767 ms,
+    `gpu_icp_finite_radius_nonrigid_final_metrics_two_iterations` = 0.318283 ms,
+    `gpu_icp_finite_radius_nonrigid_output_final_metrics_two_iterations` = 0.334153 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_final_metrics_two_iterations` = 0.353473 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.239877 ms.
+- Current conclusion:
+  the apparent target-alias transform-only overhead is mostly target spatial-grid cache loss, not in-place output
+  transform cost. Against a fresh-target regular-output baseline, target-alias is in the same band. Further runtime work
+  should focus on reducing target-grid rebuild cost or enabling a safe cache reuse strategy for repeated equivalent
+  target buffers.
