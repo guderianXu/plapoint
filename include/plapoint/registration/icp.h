@@ -156,7 +156,10 @@ public:
         }
         reserveGpuAlignmentStepWorkspace(source_count);
         reserveGpuStatsAndStepWorkspace(_gpu_terminal_stats_workspace, source_count);
-        reserveGpuResidualStatsWorkspace(_gpu_final_stats_workspace, source_count);
+        if (_compute_final_metrics)
+        {
+            reserveGpuResidualStatsWorkspace(_gpu_final_stats_workspace, source_count);
+        }
         reserveGpuTargetSpatialGridWorkspace(target_count);
     }
 #endif
