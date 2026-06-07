@@ -9614,3 +9614,37 @@ Verification evidence:
   the small-target transform-only two-step path now has the same one-sync shape as the recent small-target final-metrics
   paths. The next broader step is still either a public batched/asynchronous ICP surface or a generic large-target
   spatial-grid alignment-step launch/copy split.
+
+## Task 236: Extend Two-Step Small-Target Transform-Only Path to Regular Output
+
+- Goal: let the Task 235 one-sync small finite-radius, two-iteration, transform-only path cover ordinary caller-owned
+  GPU output as well as transform-only calls without output.
+- RED check:
+  - Added `ICPGpuPathTest.AlignSmallTargetTwoIterationTransformOnlyWithOutputAvoidsPerIterationHostSynchronization`.
+  - The RED run failed because current high-level `align(output)` still reported two host synchronizations while the
+    one-sync contract expected one.
+- Implementation:
+  - Relaxed `tryAlignGpuSmallTargetTwoStepTransformOnly()` to allow non-target-alias output.
+  - After collecting both compact alignment-step results, the fast path writes ordinary output through the existing
+    final transform output helper. Target-alias output remains on the older path for now.
+  - Added benchmark row
+    `gpu_icp_small_finite_radius_nonrigid_output_transform_only_two_iterations_below_grid_threshold`.
+- Verification:
+  - RED run failed as expected: the new regular-output one-sync test observed two host synchronizations before the
+    implementation change.
+  - New regular-output one-sync test: passed.
+  - Related transform-only/final-metrics/output path subset: 6/6 passed.
+  - Full `ICPGpuPathTest.*`: 188/188 passed.
+  - Full CUDA CTest: 369/369 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+- Benchmark:
+  - 10-iteration sample with `--icp-points 1024`:
+    `gpu_icp_small_finite_radius_nonrigid_transform_only_two_iterations_below_grid_threshold` = 0.171826 ms,
+    `gpu_icp_small_finite_radius_nonrigid_output_transform_only_two_iterations_below_grid_threshold` = 0.17289 ms,
+    and `gpu_icp_small_finite_radius_two_step_transform_only_async_launch_below_grid_threshold` = 0.168521 ms.
+- Current conclusion:
+  ordinary output adds negligible overhead on this small-target transform-only path once per-iteration host roundtrips
+  are removed. Remaining output-specific work is target-alias coverage, while the larger ICP GPUization work still
+  points toward batched async submission or large-target spatial-grid async splitting.

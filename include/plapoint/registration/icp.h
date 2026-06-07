@@ -1222,7 +1222,6 @@ private:
         bool output_aliases_target)
     {
         if (_compute_final_metrics ||
-            output ||
             output_aliases_target ||
             _max_iter != 2 ||
             _gpu_assume_ordered_correspondences ||
@@ -1309,6 +1308,13 @@ private:
             {
                 invalidateGpuFullCoverageTransformResultCache();
             }
+            writeGpuFinalTransformOutputIfRequested(
+                output,
+                source_count,
+                target_count,
+                source_points,
+                target_points,
+                output_aliases_target);
             _final_T_cpu_valid = false;
             _final_T_gpu_valid = true;
             return true;
@@ -1347,6 +1353,13 @@ private:
         {
             invalidateGpuFullCoverageTransformResultCache();
         }
+        writeGpuFinalTransformOutputIfRequested(
+            output,
+            source_count,
+            target_count,
+            source_points,
+            target_points,
+            output_aliases_target);
 
         _final_T_cpu_valid = false;
         _final_T_gpu_valid = true;
