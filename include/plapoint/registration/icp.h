@@ -1328,9 +1328,15 @@ private:
         {
             return false;
         }
-        if (output_aliases_target ||
-            output == _source.get() ||
-            (output && source_count == target_count))
+        if (output_aliases_target)
+        {
+            if (!output || !canReuseGpuOutputPointBuffer(*output, source_count))
+            {
+                return false;
+            }
+        }
+        else if (output == _source.get() ||
+                 (output && source_count == target_count))
         {
             return false;
         }

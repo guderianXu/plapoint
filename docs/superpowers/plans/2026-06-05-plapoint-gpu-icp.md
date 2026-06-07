@@ -9910,3 +9910,38 @@ Verification evidence:
   high-level large-target two-step transform-only `align(output)` now avoids per-iteration host synchronization for
   regular different-count output cases. The next output-related slice is target-alias support, which needs separate
   handling because the target buffer is also the correspondence input.
+
+## Task 244: Extend Large-Target Two-Step Transform-Only Align to Target-Alias Output
+
+- Goal: let the high-level large-target two-step transform-only path also serve reusable `align(*target)` output while
+  preserving the regular same-count output guard.
+- RED check:
+  - Added `ICPGpuPathTest.AlignLargeTargetTwoIterationTransformOnlyWithTargetAliasAvoidsPerIterationHostSynchronization`.
+  - The RED run failed as intended: target-alias output still used two host synchronizations and two target spatial-grid
+    prepares.
+- Implementation:
+  - Relaxed `tryAlignGpuTwoStepTransformOnly()` to allow `output_aliases_target` only when the target point buffer can
+    be reused in place for the source point count.
+  - Kept regular source-alias output and regular same-count output on the existing fallback path, preserving transformed
+    exact-pointwise and full-coverage output-cache behavior.
+  - Reused the existing final transform output writer; it writes after the queued two-step alignment result copy and
+    invalidates the target spatial-grid cache when output aliases the target.
+- Verification:
+  - RED run failed on the new target-alias test: observed host synchronizations 2 vs expected 1, and target spatial-grid
+    prepares 2 vs expected 1.
+  - New target-alias test: passed.
+  - Targeted target-alias/exact-pointwise regression subset: 25/25 passed.
+  - Full `ICPGpuPathTest.*`: 197/197 passed.
+  - Full CUDA CTest: 378/378 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 10000`:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 0.241577 ms,
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.240322 ms, and
+    `gpu_icp_finite_radius_translation_reuse_target_output_skip_final_metrics` = 0.283685 ms.
+- Current conclusion:
+  high-level large-target two-step transform-only `align(*target)` now avoids per-iteration host synchronization when
+  the target point buffer is reusable. A useful follow-up is adding a dedicated nonrigid target-alias benchmark row so
+  the exact optimized case is tracked directly rather than inferred from counters.
