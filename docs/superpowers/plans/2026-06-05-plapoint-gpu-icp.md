@@ -7770,3 +7770,56 @@ Verification evidence:
   stats/alignment steps drop from roughly 0.606 ms to roughly 0.588 ms, cached residual stats drop from roughly
   0.474 ms to roughly 0.457 ms, and the 3-iteration transform-only skip-final path drops from roughly 1.031 ms to
   roughly 0.997 ms.
+
+## Task 201: Rejected Neighbor-Cell Offset Cache Experiment
+
+- Goal tested: reduce repeated `offsetGridCellCoordinate()` work inside finite-radius spatial-grid scans. The direct
+  lookup path recalculates neighbor Y cell coordinates for each X neighbor and neighbor Z cell coordinates for each
+  scanned XY column. A RED test can make this visible by checking `g_icp_grid_cell_offset_count`.
+- RED check:
+  - Added a temporary direct-lookup fixture covering correspondence stats, residual stats, and transformed residual
+    stats.
+  - Before implementation, each path reported 10 neighbor offset computations for one source point; the intended
+    optimized count was 6.
+- Implementation attempts:
+  - First tried a generic per-axis lazy cache for X/Y/Z neighbor coordinates. The test passed, and the exact-center
+    early-stop test still reported 0 offset computations.
+  - Then reduced the change to a Y-axis-only lazy cache after the full cache regressed benchmark timings.
+- Verification:
+  - The targeted tests passed for both implementations, including
+    `ICPGpuPathTest.SpatialGridExactMatchChecksCenterZCellBeforeAdjacentZCells`.
+  - A temporary clean HEAD worktree at commit `5fdea0c` was built with
+    `-DCMAKE_PREFIX_PATH=/tmp/plamatrix-cuda-install-plapoint -DPLAPOINT_WITH_CUDA=ON
+    -DPLAPOINT_BUILD_TESTS=OFF -DPLAPOINT_BUILD_BENCHMARKS=ON -DPLAPOINT_CUDA_ARCHITECTURES=52` to get same-machine
+    baseline numbers.
+  - Clean HEAD baseline, 100k points and 80 iterations:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 0.998616 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.589475 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.588474 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.587728 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.571363 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.456751 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.464795 ms.
+  - Full X/Y/Z cache attempt:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.00524 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.605828 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.596892 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.598143 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.580051 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.473028 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.473045 ms.
+  - Y-only cache attempt:
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics` = 1.00653 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_skip_final_metrics_one_iteration` = 0.605994 ms,
+    `gpu_icp_stats_step_finite_radius_translation_cached_grid` = 0.596938 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.604071 ms,
+    `gpu_icp_stats_finite_radius_translation_cached_grid` = 0.580447 ms,
+    `gpu_icp_residual_stats_finite_radius_translation_cached_grid` = 0.466072 ms, and
+    `gpu_icp_transform_residual_stats_finite_radius_translation_cached_grid` = 0.472998 ms.
+- Decision:
+  - Do not keep this code. The counter improvement did not map to runtime improvement; even the lighter cache was
+    consistently slower than clean HEAD on cached-grid finite-radius rows.
+  - Working hypothesis: the saved integer offset calls are not on the dominant path, while the additional cache state
+    and branches increase register pressure/instruction count in already heavy kernels.
+  - Next optimization work should target candidate coordinate loads, accepted-correspondence statistic payload, or
+    whole-kernel/whole-synchronization elimination rather than neighbor offset arithmetic.
