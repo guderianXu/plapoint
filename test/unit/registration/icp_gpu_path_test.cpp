@@ -5694,6 +5694,69 @@ TEST(ICPGpuPathTest, AlignSkipsRepeatedIdentityOutputCopyWhenOutputIsUnchanged)
     EXPECT_EQ(icp._gpu_output_device_to_device_copy_async_count, 1);
 }
 
+TEST(ICPGpuPathTest, AlignReusesSameBufferIdentityResultAcrossRepeatedCalls)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto cloud_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto cloud = std::make_shared<GpuCloud>(cloud_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(cloud);
+    icp.setInputTarget(cloud);
+    icp.setMaxIterations(1);
+
+    plapoint::gpu::resetIcpAlignmentStepCallCountForTesting();
+    plapoint::gpu::resetIcpExactPointwiseStepCallCountForTesting();
+    plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
+    GpuCloud output;
+    icp.align(output);
+    icp.align(output);
+
+    EXPECT_TRUE(icp.hasConverged());
+    EXPECT_EQ(output.size(), cloud->size());
+    EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-6f);
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepCallCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpExactPointwiseStepCallCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
+    EXPECT_EQ(icp._gpu_output_device_to_device_copy_async_count, 1);
+}
+
+TEST(ICPGpuPathTest, AlignRecomputesSameBufferIdentityAfterMutableSourceAccess)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto cloud_cpu = std::make_shared<CpuCloud>(makeNonCollinearPoints());
+    auto cloud = std::make_shared<GpuCloud>(cloud_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(cloud);
+    icp.setInputTarget(cloud);
+    icp.setMaxIterations(1);
+
+    plapoint::gpu::resetIcpAlignmentStepCallCountForTesting();
+    GpuCloud output;
+    icp.align(output);
+    (void)cloud->points();
+    icp.align(output);
+
+    EXPECT_TRUE(icp.hasConverged());
+    EXPECT_EQ(output.size(), cloud->size());
+    EXPECT_EQ(plapoint::gpu::icpAlignmentStepCallCountForTesting(), 2);
+}
+
 TEST(ICPGpuPathTest, AlignReusesExactNonIdentityStepForTerminalMetrics)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
