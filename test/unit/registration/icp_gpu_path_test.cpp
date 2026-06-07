@@ -364,6 +364,8 @@ void resetIcpTargetTileBoundsReserveCountForTesting();
 int icpTargetTileBoundsReserveCountForTesting();
 void resetIcpDirectSpatialGridKernelLaunchCountForTesting();
 int icpDirectSpatialGridKernelLaunchCountForTesting();
+void resetIcpDirectSpatialGridTargetPointBoundsFallbackCountForTesting();
+int icpDirectSpatialGridTargetPointBoundsFallbackCountForTesting();
 void resetIcpGridCellLookupCountForTesting();
 unsigned long long icpGridCellLookupCountForTesting();
 void resetIcpGridCellOffsetCountForTesting();
@@ -3181,6 +3183,7 @@ TEST(ICPGpuPathTest, SpatialGridDirectLookupIgnoresNonFiniteTargetSentinelForCom
     auto target_gpu = target.toGpu();
 
     plapoint::gpu::resetIcpDirectSpatialGridKernelLaunchCountForTesting();
+    plapoint::gpu::resetIcpDirectSpatialGridTargetPointBoundsFallbackCountForTesting();
     plapoint::gpu::resetIcpGridCellLookupCountForTesting();
     plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
     const auto stats = plapoint::gpu::computeIcpCorrespondenceStatsColumnMajor(
@@ -3196,6 +3199,7 @@ TEST(ICPGpuPathTest, SpatialGridDirectLookupIgnoresNonFiniteTargetSentinelForCom
     EXPECT_NEAR(stats.residual_sq_sum, 0.0, 1.0e-12);
     EXPECT_GT(workspace.targetSpatialGridDirectLookupEntryCount(), 0);
     EXPECT_EQ(plapoint::gpu::icpDirectSpatialGridKernelLaunchCountForTesting(), 1);
+    EXPECT_EQ(plapoint::gpu::icpDirectSpatialGridTargetPointBoundsFallbackCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpGridCellLookupCountForTesting(), 0ull);
 }
 

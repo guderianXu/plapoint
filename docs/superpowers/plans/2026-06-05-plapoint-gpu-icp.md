@@ -10501,3 +10501,28 @@ Verification evidence:
   the fused initialization trims a small part of the first-build cost, but target spatial-grid sorting/reduction still
   dominates fresh-target and target-alias one-shot cases. Further speed work should focus on reducing or amortizing the
   sort/reduce build cost rather than target-alias output writes.
+
+## Task 260: Avoid Direct-Lookup Bounds Fallback for Non-Finite Target Sentinels
+
+- Goal: avoid an extra target-point bounds scan when target spatial-grid unique keys contain the non-finite sentinel
+  `{INT_MAX, INT_MAX, INT_MAX}` but valid compact cells still allow a direct lookup table.
+- RED check:
+  - Added a testing counter for the direct-lookup target-point-bounds fallback.
+  - The existing sentinel direct-lookup test first failed at link time before the counter existed, then failed with
+    fallback count 1 vs expected 0 after the counter was wired to the current fallback branch.
+- Implementation:
+  - `IcpGridCellBoundsFromKey` now treats the `{INT_MAX, INT_MAX, INT_MAX}` sentinel as empty bounds, so valid unique
+    keys can define the direct-lookup shape without rescanning target points.
+- Verification:
+  - Focused direct-lookup subset after implementation: 5/5 passed.
+  - The sentinel direct-lookup test passed and reports no target-point-bounds fallback.
+- Benchmark:
+  - 8-iteration 10k-point sample after implementation:
+    `gpu_icp_finite_radius_nonrigid_output_transform_only_fresh_target_two_iterations` = 0.360498 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_transform_only_two_iterations` = 0.339758 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_new_workspace` = 0.711266 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.097176 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.23934 ms.
+- Current conclusion:
+  this is a narrow robustness/performance fix for non-finite target rows. The common finite-target path still remains
+  dominated by spatial-grid sort/reduce build cost.

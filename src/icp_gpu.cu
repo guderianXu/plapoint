@@ -112,6 +112,10 @@ struct IcpGridCellBoundsFromKey
 {
     __host__ __device__ __forceinline__ IcpGridCellBounds operator()(const IcpGridCellKey& key) const
     {
+        if (key.x == INT_MAX && key.y == INT_MAX && key.z == INT_MAX)
+        {
+            return {INT_MAX, INT_MAX, INT_MAX, INT_MIN, INT_MIN, INT_MIN};
+        }
         return {key.x, key.y, key.z, key.x, key.y, key.z};
     }
 };
@@ -320,6 +324,7 @@ std::atomic<int> g_icp_target_spatial_grid_reserve_count{0};
 std::atomic<int> g_icp_target_tile_bounds_reserve_count{0};
 std::atomic<int> g_icp_host_result_storage_allocation_count{0};
 std::atomic<int> g_icp_direct_spatial_grid_kernel_launch_count{0};
+std::atomic<int> g_icp_direct_spatial_grid_target_point_bounds_fallback_count{0};
 __device__ unsigned long long g_icp_full_distance_evaluation_count;
 __device__ unsigned long long g_icp_target_candidate_visit_count;
 __device__ unsigned long long g_icp_target_index_load_count;
@@ -7514,6 +7519,9 @@ void buildTargetSpatialGridDirectLookup(
     IcpDirectGridCellLookupShape shape = makeIcpDirectGridCellLookupShape(bounds, target_count, cell_count);
     if (!shape.active && bounds.max_x == INT_MAX && bounds.max_y == INT_MAX && bounds.max_z == INT_MAX)
     {
+#ifdef PLAPOINT_ENABLE_TESTING
+        g_icp_direct_spatial_grid_target_point_bounds_fallback_count.fetch_add(1, std::memory_order_relaxed);
+#endif
         auto point_indices = thrust::make_counting_iterator<int>(0);
         bounds = thrust::transform_reduce(
             policy,
@@ -11154,6 +11162,16 @@ void resetIcpDirectSpatialGridKernelLaunchCountForTesting()
 int icpDirectSpatialGridKernelLaunchCountForTesting()
 {
     return g_icp_direct_spatial_grid_kernel_launch_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpDirectSpatialGridTargetPointBoundsFallbackCountForTesting()
+{
+    g_icp_direct_spatial_grid_target_point_bounds_fallback_count.store(0, std::memory_order_relaxed);
+}
+
+int icpDirectSpatialGridTargetPointBoundsFallbackCountForTesting()
+{
+    return g_icp_direct_spatial_grid_target_point_bounds_fallback_count.load(std::memory_order_relaxed);
 }
 
 void resetIcpGridCellLookupCountForTesting()
