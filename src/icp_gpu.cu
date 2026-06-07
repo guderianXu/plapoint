@@ -308,6 +308,7 @@ std::atomic<int> g_icp_alignment_step_reserve_check_count{0};
 std::atomic<int> g_icp_residual_stats_reserve_check_count{0};
 std::atomic<int> g_icp_host_synchronization_count{0};
 std::atomic<int> g_icp_target_spatial_grid_build_count{0};
+std::atomic<int> g_icp_target_spatial_grid_key_init_kernel_launch_count{0};
 std::atomic<int> g_icp_fallback_tile_bound_kernel_launch_count{0};
 std::atomic<int> g_icp_fallback_unbounded_kernel_launch_count{0};
 std::atomic<std::uintptr_t> g_icp_last_transform_output_pointer{0};
@@ -842,6 +843,28 @@ struct ComputeIcpTargetGridCellKey
         };
     }
 };
+
+template <typename Scalar>
+__global__ void initializeIcpTargetSpatialGridKeysAndIndicesKernel(
+    const Scalar* __restrict__ target_points,
+    int target_count,
+    double cell_size,
+    IcpGridCellKey* __restrict__ keys,
+    int* __restrict__ indices)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= target_count)
+    {
+        return;
+    }
+
+    indices[idx] = idx;
+    keys[idx] = ComputeIcpTargetGridCellKey<Scalar>{
+        target_points,
+        target_count,
+        cell_size
+    }(idx);
+}
 
 template <typename Scalar>
 struct IcpGridCellBoundsFromTargetPoint
@@ -7619,17 +7642,17 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     auto cell_starts = thrust::device_pointer_cast(d_cell_starts);
     auto cell_counts = thrust::device_pointer_cast(d_cell_counts);
 
-    thrust::sequence(policy, indices, indices + target_count, 0);
-    thrust::transform(
-        policy,
-        indices,
-        indices + target_count,
-        keys,
-        ComputeIcpTargetGridCellKey<Scalar>{
+    initializeIcpTargetSpatialGridKeysAndIndicesKernel<Scalar>
+        <<<icpStatsPartialCount(target_count), kIcpStatsBlockSize, 0, stream>>>(
             d_target_points,
             target_count,
-            cell_size
-        });
+            cell_size,
+            d_keys,
+            d_indices);
+#ifdef PLAPOINT_ENABLE_TESTING
+    g_icp_target_spatial_grid_key_init_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
     thrust::sort_by_key(policy, keys, keys + target_count, indices, IcpGridCellKeyLess{});
     const int gather_block_size = kIcpStatsBlockSize;
     const int gather_grid_size = icpStatsPartialCount(target_count);
@@ -11081,6 +11104,16 @@ void resetIcpTargetSpatialGridBuildCountForTesting()
 int icpTargetSpatialGridBuildCountForTesting()
 {
     return g_icp_target_spatial_grid_build_count.load(std::memory_order_relaxed);
+}
+
+void resetIcpTargetSpatialGridKeyInitKernelLaunchCountForTesting()
+{
+    g_icp_target_spatial_grid_key_init_kernel_launch_count.store(0, std::memory_order_relaxed);
+}
+
+int icpTargetSpatialGridKeyInitKernelLaunchCountForTesting()
+{
+    return g_icp_target_spatial_grid_key_init_kernel_launch_count.load(std::memory_order_relaxed);
 }
 
 void resetIcpTargetSpatialGridPrepareCountForTesting()

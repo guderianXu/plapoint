@@ -10472,3 +10472,32 @@ Verification evidence:
   transform cost. Against a fresh-target regular-output baseline, target-alias is in the same band. Further runtime work
   should focus on reducing target-grid rebuild cost or enabling a safe cache reuse strategy for repeated equivalent
   target buffers.
+
+## Task 259: Fuse Target Spatial-Grid Key and Index Initialization
+
+- Goal: reduce target spatial-grid first-build overhead by replacing the separate Thrust `sequence` and `transform`
+  initialization launches with one CUDA kernel that writes target cell keys and original point indices together.
+- RED check:
+  - Added a testing counter for the new key/init kernel launch and required the large finite-radius alignment step to
+    launch it once while small-target paths keep it at zero.
+  - RED failed as intended at link time because the new testing counter functions were not implemented yet.
+- Implementation:
+  - Added `initializeIcpTargetSpatialGridKeysAndIndicesKernel()` and used it in `prepareTargetSpatialGrid()` before
+    `thrust::sort_by_key`.
+  - Preserved the existing non-finite target sentinel behavior by reusing `ComputeIcpTargetGridCellKey`.
+- Verification:
+  - Focused GPU path subset after implementation: 4/4 passed, covering small-target no-grid behavior, large-target
+    spatial-grid build, direct lookup, and large-target target-alias transform-only.
+- Benchmark:
+  - 10-iteration sample with `--icp-points 10000` after implementation:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 0.239414 ms,
+    `gpu_icp_finite_radius_nonrigid_output_transform_only_two_iterations` = 0.24944 ms,
+    `gpu_icp_finite_radius_nonrigid_output_transform_only_fresh_target_two_iterations` = 0.359176 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_transform_only_two_iterations` = 0.377789 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_new_workspace` = 0.701142 ms,
+    `gpu_icp_alignment_step_finite_radius_translation_cached_grid` = 0.097116 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.23945 ms.
+- Current conclusion:
+  the fused initialization trims a small part of the first-build cost, but target spatial-grid sorting/reduction still
+  dominates fresh-target and target-alias one-shot cases. Further speed work should focus on reducing or amortizing the
+  sort/reduce build cost rather than target-alias output writes.
