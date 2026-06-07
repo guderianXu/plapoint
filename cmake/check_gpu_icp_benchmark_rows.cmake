@@ -45,6 +45,7 @@ set(expected_gpu_icp_rows
     gpu_icp_ordered_infinite_radius_output_one_iteration
     gpu_icp_finite_radius_translation_ordered_reuse_target_output
     gpu_icp_finite_radius_nonrigid_transform_only_two_iterations
+    gpu_icp_finite_radius_nonrigid_final_metrics_two_iterations
     gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations
     gpu_icp_finite_radius_nonrigid_transform_only_cache_reuse_two_iterations
     gpu_icp_finite_radius_nonrigid_verified_ordered_transform_only_two_iterations

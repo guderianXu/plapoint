@@ -3408,6 +3408,15 @@ int main(int argc, char** argv)
         false,
         false);
     benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
+        "gpu_icp_finite_radius_nonrigid_final_metrics_two_iterations",
+        options.icp_points,
+        options.iterations,
+        false,
+        false,
+        false,
+        false,
+        true);
+    benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
         "gpu_icp_finite_radius_nonrigid_transform_only_preflight_two_iterations",
         options.icp_points,
         options.iterations,

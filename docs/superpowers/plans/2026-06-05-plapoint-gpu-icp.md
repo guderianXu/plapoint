@@ -9945,3 +9945,42 @@ Verification evidence:
   high-level large-target two-step transform-only `align(*target)` now avoids per-iteration host synchronization when
   the target point buffer is reusable. A useful follow-up is adding a dedicated nonrigid target-alias benchmark row so
   the exact optimized case is tracked directly rather than inferred from counters.
+
+## Task 245: Wire Large-Target Two-Step Alignment into Final-Metrics Align
+
+- Goal: reduce synchronization in the high-level large-target, finite-radius, two-iteration `align()` path when final
+  metrics remain enabled.
+- RED check:
+  - Added `ICPGpuPathTest.AlignLargeTargetTwoIterationFinalMetricsAvoidsPerIterationHostSynchronization`.
+  - The RED run failed as intended: the old path used three host synchronizations and two target spatial-grid prepares
+    for two alignment iterations plus terminal final metrics.
+- Implementation:
+  - Added a narrow `tryAlignGpuTwoStepFinalMetrics()` path for no-output, large-target, finite positive radius,
+    exactly two iterations, default ordered/probe flags, and `_compute_final_metrics == true`.
+  - Reused `launchIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces()` to enqueue both large-target alignment steps
+    and copy both compact step results with one host synchronization.
+  - Reused the target spatial-grid snapshot left in the first-step workspace to compute final transformed residual
+    metrics without preparing the target grid a second time.
+  - Left regular output and target-alias final-metrics variants on the existing path; those need separate output
+    lifetime and target-cache invalidation coverage.
+  - Added `gpu_icp_finite_radius_nonrigid_final_metrics_two_iterations` to the benchmark executable and row checker.
+- Verification:
+  - RED run failed on the new final-metrics test: observed host synchronizations 3 vs expected 2, and target
+    spatial-grid prepares 2 vs expected 1.
+  - New test: passed.
+  - Targeted large/final-metrics/exact/ordered/cache regression subset: 69/69 passed.
+  - Full `ICPGpuPathTest.*`: 198/198 passed.
+  - Full CUDA CTest: 379/379 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 10000`:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 0.240468 ms,
+    `gpu_icp_finite_radius_nonrigid_final_metrics_two_iterations` = 0.335871 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.247676 ms.
+- Current conclusion:
+  high-level large-target two-iteration final-metrics `align()` now removes one per-iteration host synchronization and
+  one duplicate target spatial-grid prepare while preserving final RMSE/fitness semantics. The next useful slices are
+  regular output and target-alias final-metrics variants, followed by a deeper combined large-target terminal helper
+  if a single host synchronization for step results plus final residual metrics is needed.
