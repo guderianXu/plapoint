@@ -8220,3 +8220,64 @@ Verification evidence:
   keep the ordered infinite-radius terminal-metrics reuse path. It brings the final-metrics-enabled ordered infinite
   one-iteration output benchmark down to the same range as the skip-final-metrics ordered path, while leaving
   finite-radius ordered final metrics on the conservative residual-stats path.
+
+## Task 209: Reuse Ordered Finite-Radius Step When Residual Sum Fits Radius
+
+- Goal: extend the ordered terminal-metrics reuse path to a conservative finite-radius case. If the ordered alignment
+  step has full coverage and the post-step residual SSE is no larger than `max_corr_dist^2`, then every individual
+  squared residual must also be within the radius because residual squares are non-negative. That lets final metrics
+  reuse the alignment-step SSE without a terminal ordered residual-stats pass.
+- RED check:
+  - Added `ICPGpuPathTest.AlignReusesOrderedFiniteRadiusStepWhenResidualSumFitsRadius`.
+  - Before implementation, the test failed with two correspondence-stats calls, one residual-stats call, and zero
+    standalone transform-point calls. The desired path needs one alignment/correspondence stats pass, no residual-stats
+    pass, and one standalone transform-point pass when output points are requested.
+- Implementation:
+  - Added a finite-radius ordered reuse gate in `alignGpu()`:
+    full source coverage, ordered same-size source/target, finite `max_corr_dist`, finite post-step SSE, and
+    `step_residual_sq_sum <= max_corr_dist^2`.
+  - Kept the infinite-radius ordered path and exact-step path as separate gates.
+  - Clamped the reused step SSE to zero for metric computation when the aggregate formula produces a tiny negative
+    value from floating-point cancellation.
+  - Updated existing ordered final-metrics tests to expect the stronger no-residual-stats path when their data satisfies
+    the new gate.
+  - Added `ICPGpuPathTest.AlignKeepsOrderedFiniteRadiusResidualStatsWhenResidualSumExceedsRadius` to prove the finite
+    gate stays conservative when the aggregate post-step SSE exceeds the radius-squared bound.
+  - Added `gpu_icp_finite_radius_ordered_low_residual_output_one_iteration` to benchmark the new finite-radius
+    low-residual ordered path directly.
+- Targeted verification:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignReusesOrderedFiniteRadiusStepWhenResidualSumFitsRadius`
+    failed before implementation with the expected extra residual-stats pass, then passed after implementation.
+  - Positive/negative finite-radius ordered boundary tests passed 2/2:
+    `AlignReusesOrderedFiniteRadiusStepWhenResidualSumFitsRadius` and
+    `AlignKeepsOrderedFiniteRadiusResidualStatsWhenResidualSumExceedsRadius`.
+  - Ordered/final-metrics regression set passed 7/7:
+    `AlignOrderedFinalMetricsSkipTargetSpatialGridSearch`,
+    `AlignReusesOrderedFiniteRadiusStepWhenResidualSumFitsRadius`,
+    `AlignReusesOrderedInfiniteRadiusStepForTerminalMetrics`,
+    `AlignReusesExactNonIdentityStepForTerminalMetrics`,
+    `AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics`,
+    `AlignWithoutOutputOrderedFinalMetricsSkipsScratchPointBuffer`, and
+    `ResidualStatsOrderedHintSkipsSpatialGridSearchForFiniteRadius`.
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.*`: 147/147 passed.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed, including the new benchmark row.
+- Benchmark:
+  - Rebuilt `build-codex-cuda-bench-only` and ran:
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 80 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp --skip-icp-identity`.
+  - Relevant sample after this change:
+    `gpu_icp_finite_radius_translation_reuse_output_one_iteration` = 0.708558 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_one_iteration` = 0.187305 ms,
+    `gpu_icp_finite_radius_translation_ordered_output_skip_final_metrics_one_iteration` = 0.187799 ms,
+    `gpu_icp_finite_radius_ordered_low_residual_output_one_iteration` = 0.188108 ms,
+    `gpu_icp_ordered_infinite_radius_output_one_iteration` = 0.188135 ms, and
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 1.43034 ms.
+- Full verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 328/328 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 143/144
+    executed tests passed, with `plapoint.PointCloudTest.GpuTransfer` skipped by the CPU-only build.
+  - `git diff --check`: clean before the documentation update.
+- Current conclusion:
+  keep the finite-radius ordered SSE-bound terminal-metrics reuse. It removes the terminal ordered residual-stats pass
+  for low-residual ordered workloads while preserving the residual-stats fallback when the aggregate SSE cannot prove
+  all transformed ordered residuals remain inside the radius.

@@ -504,22 +504,35 @@ private:
             const Scalar* step_transform = _gpu_T_step->data();
             const bool terminal_iteration = step_result.delta < _eps || iter + 1 == _max_iter;
             const bool terminal_identity_step = terminal_iteration && step_result.delta == Scalar(0);
+            const double terminal_step_residual_sq_sum =
+                std::isfinite(stats.step_residual_sq_sum)
+                    ? std::max(0.0, stats.step_residual_sq_sum)
+                    : stats.step_residual_sq_sum;
+            const double max_corr_dist_as_double = static_cast<double>(_max_corr_dist);
+            const double max_corr_dist_sq = max_corr_dist_as_double * max_corr_dist_as_double;
             const bool terminal_final_metrics_can_reuse_exact_step =
                 terminal_iteration &&
                 _compute_final_metrics &&
                 stats.active_count == source_count &&
                 stats.step_maps_correspondences_exactly;
-            const bool terminal_final_metrics_can_reuse_ordered_infinite_step =
+            const bool terminal_final_metrics_can_reuse_ordered_step_base =
                 terminal_iteration &&
                 _compute_final_metrics &&
                 _gpu_assume_ordered_correspondences &&
                 source_count == target_count &&
                 stats.active_count == source_count &&
-                !std::isfinite(_max_corr_dist) &&
                 std::isfinite(stats.step_residual_sq_sum);
+            const bool terminal_final_metrics_can_reuse_ordered_infinite_step =
+                terminal_final_metrics_can_reuse_ordered_step_base &&
+                !std::isfinite(_max_corr_dist);
+            const bool terminal_final_metrics_can_reuse_ordered_finite_step =
+                terminal_final_metrics_can_reuse_ordered_step_base &&
+                std::isfinite(_max_corr_dist) &&
+                terminal_step_residual_sq_sum <= max_corr_dist_sq;
             const bool terminal_final_metrics_can_reuse_alignment_step =
                 terminal_final_metrics_can_reuse_exact_step ||
-                terminal_final_metrics_can_reuse_ordered_infinite_step;
+                terminal_final_metrics_can_reuse_ordered_infinite_step ||
+                terminal_final_metrics_can_reuse_ordered_finite_step;
             const bool terminal_final_metrics_can_use_ordered_correspondences =
                 terminal_iteration &&
                 _compute_final_metrics &&
@@ -630,7 +643,7 @@ private:
                     updateResidualMetricsFromActiveCountAndResidualSqSum(
                         stats.active_count,
                         source_count,
-                        terminal_final_metrics_can_reuse_exact_step ? 0.0 : stats.step_residual_sq_sum);
+                        terminal_final_metrics_can_reuse_exact_step ? 0.0 : terminal_step_residual_sq_sum);
 
                     if (step_result.delta < _eps)
                     {
