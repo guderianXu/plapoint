@@ -10023,3 +10023,46 @@ Verification evidence:
   the large-target two-iteration final-metrics path now covers no-output, regular output, and target-alias output with
   the same two-step alignment launch pattern. The remaining deeper optimization is a combined large-target terminal
   helper that can return alignment and final residual metrics with fewer host-side result collection points.
+
+## Task 247: Combine Large-Target Final-Metrics No-Output Result Copy
+
+- Goal: reduce the large-target, finite-radius, two-iteration, finalMetrics=true no-output path from two host
+  synchronizations to one by queuing final residual stats before copying host results.
+- RED check:
+  - Tightened `ICPGpuPathTest.AlignLargeTargetTwoIterationFinalMetricsAvoidsPerIterationHostSynchronization` from two
+    expected host synchronizations to one.
+  - The RED run failed as intended: observed two host synchronizations.
+  - Added a regression assertion to
+    `ICPGpuPathTest.AlignLargeTargetTwoIterationTransformOnlyAvoidsPerIterationHostSynchronization` requiring
+    transform-only no-output alignment to launch zero residual-stats calls.
+  - That regression RED failed as intended after an over-broad first implementation: observed one residual-stats call.
+- Implementation:
+  - Added `IcpTwoStepAlignmentAndResidualResult` for two compact alignment results plus final residual stats.
+  - Added an async target-spatial-grid snapshot residual launch using a separate `_gpu_final_stats_workspace`.
+  - Added a combined copy helper for first-step alignment, second-step alignment, and residual stats with one stream
+    synchronization.
+  - Hooked the combined copy only into the no-output final-metrics path. Regular output and target-alias output keep
+    the Task 246 path for now because they still need output lifetime and target-cache invalidation handling around the
+    final transformed output write.
+  - Kept transform-only paths on the plain two-step result copy and added the residual-stats counter assertion so they
+    cannot silently pick up a final-metrics kernel again.
+- Verification:
+  - New tightened final-metrics test plus transform-only regression: 2/2 passed.
+  - Targeted large/final-metrics/transform-only/exact/ordered/cache regression subset: 60/60 passed.
+  - Full `ICPGpuPathTest.*`: 200/200 passed.
+  - Full CUDA CTest: 381/381 passed.
+  - CPU build plus CTest: build passed; 144 CTest entries, 0 failed, with `plapoint.PointCloudTest.GpuTransfer`
+    skipped in the CPU-only build.
+  - Bench-only CTest: 1/1 passed.
+- Benchmark:
+  - 5-iteration sample with `--icp-points 10000`:
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 0.239636 ms,
+    `gpu_icp_finite_radius_nonrigid_final_metrics_two_iterations` = 0.317374 ms,
+    `gpu_icp_finite_radius_nonrigid_output_final_metrics_two_iterations` = 0.336936 ms,
+    `gpu_icp_finite_radius_nonrigid_target_alias_final_metrics_two_iterations` = 0.35416 ms, and
+    `gpu_icp_alignment_step_two_step_async_launch_separate_workspaces` = 0.240512 ms.
+- Current conclusion:
+  no-output large-target finalMetrics now has transform-only-like host synchronization behavior while still computing
+  final RMSE/fitness. The remaining speed gap to transform-only is the expected final transformed residual kernel. A
+  useful follow-up is extending combined result collection to the regular-output and target-alias final-metrics paths
+  without reintroducing target-cache aliasing hazards.

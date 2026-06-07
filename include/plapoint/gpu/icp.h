@@ -103,6 +103,16 @@ struct IcpSmallTargetTwoStepAlignmentResult
 template <typename Scalar>
 using IcpTwoStepAlignmentResult = IcpSmallTargetTwoStepAlignmentResult<Scalar>;
 
+/// Host-side compact result for two queued GPU ICP alignment iterations and final residual metrics.
+template <typename Scalar>
+struct IcpTwoStepAlignmentAndResidualResult
+{
+    IcpAlignmentStepResult<Scalar> first_alignment_step;
+    IcpAlignmentStepResult<Scalar> second_alignment_step;
+    IcpResidualStats<Scalar> residual_stats;
+    bool launched = false;
+};
+
 /// Reusable device storage for ICP correspondence stats reductions.
 /// Reserve it once for a source size and pass it to repeated stats calls to avoid repeated allocations.
 class IcpCorrespondenceStatsWorkspace
@@ -967,6 +977,15 @@ copyIcpTwoStepAlignmentResultFromReservedWorkspaces(
     IcpCorrespondenceStatsWorkspace& second_step_workspace,
     cudaStream_t stream = 0);
 
+/// Copy two compact alignment-step results and one residual-stats result, then synchronize the stream once.
+template <typename Scalar>
+IcpTwoStepAlignmentAndResidualResult<Scalar>
+copyIcpTwoStepAlignmentAndResidualResultFromReservedWorkspaces(
+    IcpCorrespondenceStatsWorkspace& first_step_workspace,
+    IcpCorrespondenceStatsWorkspace& second_step_workspace,
+    IcpCorrespondenceStatsWorkspace& residual_workspace,
+    cudaStream_t stream = 0);
+
 /// Enqueue an initial small-target alignment step and exact post-step residual metrics.
 /// The helper writes d_step_transform as the final one-step transform and does not synchronize with the host.
 /// If d_output_points is not null, the helper also writes the final transformed source points.
@@ -1257,6 +1276,34 @@ transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajo
     double max_correspondence_distance,
     double* d_output_points,
     IcpCorrespondenceStatsWorkspace& workspace,
+    int target_spatial_grid_cell_count,
+    cudaStream_t stream = 0);
+
+/// Enqueue transformed residual metrics against a cached target spatial-grid snapshot without synchronizing.
+/// Target-grid storage is read from target_grid_workspace; residual partial/result storage is written to
+/// residual_workspace. d_output_points may be null.
+bool launchTransformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
+    const float* d_transform,
+    const float* d_source_points,
+    int source_count,
+    float max_correspondence_distance,
+    float* d_output_points,
+    IcpCorrespondenceStatsWorkspace& target_grid_workspace,
+    IcpCorrespondenceStatsWorkspace& residual_workspace,
+    int target_spatial_grid_cell_count,
+    cudaStream_t stream = 0);
+
+/// Enqueue transformed residual metrics against a cached target spatial-grid snapshot without synchronizing.
+/// Target-grid storage is read from target_grid_workspace; residual partial/result storage is written to
+/// residual_workspace. d_output_points may be null.
+bool launchTransformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
+    const double* d_transform,
+    const double* d_source_points,
+    int source_count,
+    double max_correspondence_distance,
+    double* d_output_points,
+    IcpCorrespondenceStatsWorkspace& target_grid_workspace,
+    IcpCorrespondenceStatsWorkspace& residual_workspace,
     int target_spatial_grid_cell_count,
     cudaStream_t stream = 0);
 

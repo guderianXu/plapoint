@@ -1561,10 +1561,47 @@ private:
         _final_rmse = std::numeric_limits<Scalar>::infinity();
         _final_T_cpu_valid = false;
         _final_T_gpu_valid = false;
-        const auto two_step_result =
-            gpu::detail::copyIcpTwoStepAlignmentResultFromReservedWorkspaces<Scalar>(
-                _gpu_stats_workspace,
-                _gpu_terminal_stats_workspace);
+        gpu::IcpTwoStepAlignmentResult<Scalar> two_step_result;
+        gpu::IcpResidualStats<Scalar> final_stats;
+        bool final_stats_precomputed = false;
+        const bool can_precompute_final_metrics =
+            !output &&
+            !output_aliases_target &&
+            gpuFinalMetricsCanUseCachedTargetSpatialGridSnapshot(target_points, target_count);
+        if (can_precompute_final_metrics)
+        {
+            const bool residual_launched =
+                gpu::detail::
+                    launchTransformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
+                        _gpu_T_acc->data(),
+                        source_points,
+                        source_count,
+                        _max_corr_dist,
+                        nullptr,
+                        _gpu_stats_workspace,
+                        _gpu_final_stats_workspace,
+                        _gpu_stats_workspace.targetSpatialGridCellCount());
+            if (residual_launched)
+            {
+                const auto combined_result =
+                    gpu::detail::copyIcpTwoStepAlignmentAndResidualResultFromReservedWorkspaces<Scalar>(
+                        _gpu_stats_workspace,
+                        _gpu_terminal_stats_workspace,
+                        _gpu_final_stats_workspace);
+                two_step_result.first_alignment_step = combined_result.first_alignment_step;
+                two_step_result.second_alignment_step = combined_result.second_alignment_step;
+                two_step_result.launched = combined_result.launched;
+                final_stats = combined_result.residual_stats;
+                final_stats_precomputed = true;
+            }
+        }
+        if (!final_stats_precomputed)
+        {
+            two_step_result =
+                gpu::detail::copyIcpTwoStepAlignmentResultFromReservedWorkspaces<Scalar>(
+                    _gpu_stats_workspace,
+                    _gpu_terminal_stats_workspace);
+        }
 
         const auto& first_step = two_step_result.first_alignment_step;
         handleGpuAlignmentStepPreconditions(first_step, 0);
@@ -1598,43 +1635,45 @@ private:
         Scalar* output_points = output
             ? prepareGpuOutputPointBuffer(*output, source_count)
             : nullptr;
-        gpu::IcpResidualStats<Scalar> final_stats;
-        try
+        if (!final_stats_precomputed)
         {
-            if (final_metrics_can_use_target_snapshot)
+            try
             {
-                final_stats =
-                    gpu::detail::
-                        transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
+                if (final_metrics_can_use_target_snapshot)
+                {
+                    final_stats =
+                        gpu::detail::
+                            transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
+                                _gpu_T_acc->data(),
+                                source_points,
+                                source_count,
+                                _max_corr_dist,
+                                output_points,
+                                _gpu_stats_workspace,
+                                _gpu_stats_workspace.targetSpatialGridCellCount());
+                }
+                else
+                {
+                    final_stats =
+                        gpu::detail::transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
                             _gpu_T_acc->data(),
                             source_points,
                             source_count,
+                            target_points,
+                            target_count,
                             _max_corr_dist,
                             output_points,
-                            _gpu_stats_workspace,
-                            _gpu_stats_workspace.targetSpatialGridCellCount());
+                            _gpu_stats_workspace);
+                }
             }
-            else
+            catch (...)
             {
-                final_stats =
-                    gpu::detail::transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
-                        _gpu_T_acc->data(),
-                        source_points,
-                        source_count,
-                        target_points,
-                        target_count,
-                        _max_corr_dist,
-                        output_points,
-                        _gpu_stats_workspace);
+                if (output_points && output_aliases_target)
+                {
+                    invalidateGpuTargetWorkspaceCache();
+                }
+                throw;
             }
-        }
-        catch (...)
-        {
-            if (output_points && output_aliases_target)
-            {
-                invalidateGpuTargetWorkspaceCache();
-            }
-            throw;
         }
         if (output_points && output_aliases_target)
         {
@@ -3180,6 +3219,7 @@ private:
 #ifdef PLAPOINT_WITH_CUDA
     gpu::IcpCorrespondenceStatsWorkspace _gpu_stats_workspace;
     gpu::IcpCorrespondenceStatsWorkspace _gpu_terminal_stats_workspace;
+    gpu::IcpCorrespondenceStatsWorkspace _gpu_final_stats_workspace;
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_T_acc;
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_next_T_acc;
     std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_T_step;
