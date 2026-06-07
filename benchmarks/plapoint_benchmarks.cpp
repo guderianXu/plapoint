@@ -187,6 +187,23 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslatedCompactNonC
 }
 
 template <typename Scalar>
+plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslatedPerturbedCompactNonCollinearGridPoints(
+    int count,
+    Scalar tx,
+    Scalar ty,
+    Scalar tz)
+{
+    auto points = makeTranslatedCompactNonCollinearGridPoints<Scalar>(count, tx, ty, tz);
+    for (int i = 0; i < count; ++i)
+    {
+        points(i, 0) += static_cast<Scalar>((i % 7) - 3) * Scalar(0.0002);
+        points(i, 1) += static_cast<Scalar>(((i / 7) % 5) - 2) * Scalar(0.00015);
+        points(i, 2) += static_cast<Scalar>(((i / 35) % 3) - 1) * Scalar(0.0001);
+    }
+    return points;
+}
+
+template <typename Scalar>
 plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslationTransform(
     Scalar tx,
     Scalar ty,
@@ -2378,6 +2395,45 @@ void benchmarkGpuIcpAlignmentStepSmallFiniteRadiusTarget(
         std::cerr << benchmark_name << " produced no correspondences\n";
     }
 }
+
+void benchmarkGpuIcpSmallFiniteRadiusTransformOnlyTwoIterations(
+    const std::string& benchmark_name,
+    int target_points,
+    int iterations)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        printSkipped(benchmark_name, "no_usable_cuda_device");
+        return;
+    }
+
+    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeTranslatedPerturbedCompactNonCollinearGridPoints<float>(target_points, 0.01f, -0.005f, 0.0025f));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+        makeCompactNonCollinearGridPoints<float>(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.08f);
+    icp.setMaxIterations(2);
+    icp.setTransformationEpsilon(1.0e-12f);
+    icp.setComputeFinalMetrics(false);
+
+    std::size_t sink = 0;
+    const double elapsed = bestMilliseconds(iterations, [&] {
+        (void)source->points();
+        icp.align();
+        sink += static_cast<std::size_t>(icp.getFinalTransformationDevice().rows());
+    });
+    printResult(benchmark_name, target_points, iterations, elapsed);
+    if (sink == 0)
+    {
+        std::cerr << benchmark_name << " produced no final transform\n";
+    }
+}
 #endif
 
 } // namespace
@@ -2658,6 +2714,10 @@ int main(int argc, char** argv)
     benchmarkGpuIcpAlignmentStepSmallFiniteRadiusTarget(
         "gpu_icp_alignment_step_small_finite_radius_target_256",
         256,
+        options.iterations);
+    benchmarkGpuIcpSmallFiniteRadiusTransformOnlyTwoIterations(
+        "gpu_icp_small_finite_radius_nonrigid_transform_only_two_iterations_below_grid_threshold",
+        127,
         options.iterations);
 #endif
     return 0;

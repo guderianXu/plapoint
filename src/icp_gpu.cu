@@ -5086,14 +5086,17 @@ __global__ void reduceRawIcpStatsAndComputeAlignmentStepKernel(
     }
 }
 
-template <typename Scalar>
+template <typename Scalar, bool TransformSource, bool AccumulateTransform>
 __global__ void computeSmallTargetIcpAlignmentStepKernel(
+    const Scalar* __restrict__ source_transform,
     const Scalar* source_points,
     int source_count,
     const Scalar* target_points,
     int target_count,
     Scalar max_correspondence_distance,
     Scalar* __restrict__ step_transform,
+    const Scalar* __restrict__ previous_accumulated_transform,
+    Scalar* __restrict__ accumulated_transform,
     IcpAlignmentStepRawResult<Scalar>* __restrict__ result)
 {
     const int source_idx = threadIdx.x;
@@ -5103,10 +5106,32 @@ __global__ void computeSmallTargetIcpAlignmentStepKernel(
     double sx = 0.0;
     double sy = 0.0;
     double sz = 0.0;
+    __shared__ Scalar block_transform[kIcpTransform3x4ValueCount];
+    if constexpr (TransformSource)
+    {
+        loadColumnMajorTransform3x4Block(source_transform, block_transform, local_idx);
+    }
 
     if (source_idx < source_count)
     {
-        if (!loadFiniteColumnMajorPoint(source_points, source_count, source_idx, sx, sy, sz))
+        bool loaded_source = false;
+        if constexpr (TransformSource)
+        {
+            loaded_source = loadFiniteTransformedColumnMajorPoint(
+                source_points,
+                source_count,
+                source_idx,
+                block_transform,
+                sx,
+                sy,
+                sz);
+        }
+        else
+        {
+            loaded_source = loadFiniteColumnMajorPoint(source_points, source_count, source_idx, sx, sy, sz);
+        }
+
+        if (!loaded_source)
         {
             local.invalid_source_count = 1;
         }
@@ -5212,6 +5237,16 @@ __global__ void computeSmallTargetIcpAlignmentStepKernel(
     if (local_idx == 0)
     {
         writeAlignmentStepRawResultFromRawStats<Scalar>(shared_stats[0], step_transform, result);
+        if constexpr (AccumulateTransform)
+        {
+            if (result->flags & kIcpAlignmentStepValidFlag)
+            {
+                multiplyTransform4x4SingleThread(
+                    step_transform,
+                    previous_accumulated_transform,
+                    accumulated_transform);
+            }
+        }
     }
 }
 
@@ -6097,14 +6132,17 @@ bool launchExactPointwiseAlignmentStep(
     return true;
 }
 
-template <typename Scalar>
+template <typename Scalar, bool TransformSource, bool AccumulateTransform>
 bool launchSmallTargetAlignmentStep(
+    const Scalar* d_source_transform,
     const Scalar* d_source_points,
     int source_count,
     const Scalar* d_target_points,
     int target_count,
     Scalar max_correspondence_distance,
     Scalar* d_step_transform,
+    const Scalar* d_previous_accumulated_transform,
+    Scalar* d_accumulated_transform,
     IcpAlignmentStepRawResult<Scalar>* d_result,
     cudaStream_t stream)
 {
@@ -6112,18 +6150,36 @@ bool launchSmallTargetAlignmentStep(
     {
         return false;
     }
+    if constexpr (TransformSource)
+    {
+        if (!d_source_transform)
+        {
+            return false;
+        }
+    }
+    if constexpr (AccumulateTransform)
+    {
+        if (!d_previous_accumulated_transform || !d_accumulated_transform)
+        {
+            return false;
+        }
+    }
 
     constexpr int block_size = kIcpStatsBlockSize;
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_small_alignment_step_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
 #endif
-    computeSmallTargetIcpAlignmentStepKernel<Scalar><<<1, block_size, 0, stream>>>(
+    computeSmallTargetIcpAlignmentStepKernel<Scalar, TransformSource, AccumulateTransform>
+        <<<1, block_size, 0, stream>>>(
+        d_source_transform,
         d_source_points,
         source_count,
         d_target_points,
         target_count,
         max_correspondence_distance,
         d_step_transform,
+        d_previous_accumulated_transform,
+        d_accumulated_transform,
         d_result);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
     return true;
@@ -7953,13 +8009,16 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
 
         if constexpr (!AccumulateTransform)
         {
-            const bool small_target_step = launchSmallTargetAlignmentStep(
+            const bool small_target_step = launchSmallTargetAlignmentStep<Scalar, false, false>(
+                nullptr,
                 d_source_points,
                 source_count,
                 d_target_points,
                 target_count,
                 max_correspondence_distance,
                 d_step_transform,
+                nullptr,
+                nullptr,
                 d_result,
                 stream);
 
@@ -8050,6 +8109,31 @@ IcpAlignmentStepResult<Scalar> computeIcpAlignmentStepColumnMajorImpl(
                 }
                 transformed_exact_pointwise_preflight_missed = true;
             }
+        }
+
+        const bool small_target_step = launchSmallTargetAlignmentStep<Scalar, true, AccumulateTransform>(
+            d_source_transform,
+            d_source_points,
+            source_count,
+            d_target_points,
+            target_count,
+            max_correspondence_distance,
+            d_step_transform,
+            d_previous_accumulated_transform,
+            d_accumulated_transform,
+            d_result,
+            stream);
+
+        if (small_target_step)
+        {
+            PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(AlignmentStepRawResult),
+                                                cudaMemcpyDeviceToHost, stream));
+#ifdef PLAPOINT_ENABLE_TESTING
+            g_icp_alignment_step_host_result_copy_count.fetch_add(1, std::memory_order_relaxed);
+            g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+            PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+            return makeHostAlignmentStepResult<Scalar>(*h_result);
         }
     }
 

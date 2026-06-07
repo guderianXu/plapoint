@@ -8875,3 +8875,61 @@ Verification evidence:
   alignment-step path without changing the large-target spatial-grid path. The remaining fixed cost is the host result
   copy and stream synchronization, so the next meaningful speedup is batching or deferring per-iteration host result
   consumption rather than adding more tiny-kernel special cases.
+
+## Task 221: Fuse Transformed Small-Target GPU ICP Alignment Step
+
+- Goal: extend the fused sub-128 finite-radius alignment-step path to transformed and accumulated GPU ICP iterations.
+  Two-iteration small-target alignments should no longer fall back to collect-correspondences plus reduce after the
+  first step.
+- RED checks:
+  - Added `ICPGpuPathTest.AlignUsesFusedSmallTargetKernelForTransformedFiniteRadiusStep`. After narrowing the test to
+    path counters, it failed as intended because only one small fused kernel launched and one unbounded fallback
+    collect kernel still launched.
+  - Added row-completeness coverage for
+    `gpu_icp_small_finite_radius_nonrigid_transform_only_two_iterations_below_grid_threshold`. The benchmark CTest
+    failed while the row was missing.
+- Implementation:
+  - Templated the small-target fused kernel on source transform and accumulated-transform output.
+  - The transformed variant loads the 3x4 source transform once per block, applies it while reading source points,
+    scans the small target tile, reduces `RawIcpStats`, writes the step transform, and optionally multiplies the
+    accumulated transform in the same kernel.
+  - Routed transformed sub-128 finite-radius alignment steps through the fused kernel after ordered/exact-pointwise
+    shortcuts miss and before the generic spatial-grid/fallback path.
+  - Added a non-rigid compact small-target benchmark row and invalidated the source version inside the timed lambda so
+    the row measures real alignment work instead of the full alignment-result cache.
+- Targeted verification:
+  - `./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignUsesFusedSmallTargetKernelForTransformedFiniteRadiusStep`:
+    1/1 passed.
+  - Adjacent GPU path regression passed 6/6:
+    `AlignUsesFusedSmallTargetKernelForTransformedFiniteRadiusStep`,
+    `AlignmentStepUsesFusedSmallTargetKernelForFiniteRadiusTarget`,
+    `AlignmentStepSkipsTargetTileBoundsForSmallFiniteRadiusTarget`,
+    `AlignmentStepUsesTargetSpatialGridAtTargetCountThreshold`,
+    `AlignPropagatesOrderedCorrespondencesToTransformedIterations`, and
+    `AlignCanProbeTransformedExactPointwiseOnCacheHitWhenRequested`.
+  - `cmake --build build-codex-cuda-bench-only -j$(nproc) && ctest --test-dir build-codex-cuda-bench-only
+    --output-on-failure`: 1/1 passed.
+- Benchmark:
+  - GPU: NVIDIA GeForce RTX 4060 Laptop GPU, driver 580.159.03, 8188 MiB.
+  - 300-iteration sample:
+    4-row small alignment step = 0.583163 ms,
+    16-row = 0.584159 ms,
+    64-row = 0.595574 ms,
+    127-row = 0.604298 ms,
+    128-row = 0.682824 ms,
+    256-row = 0.708369 ms, and
+    `gpu_icp_small_finite_radius_nonrigid_transform_only_two_iterations_below_grid_threshold` = 0.174773 ms.
+  - The new two-iteration row is intentionally non-rigid and source-version invalidated. It is useful for tracking
+    this transformed small-target path, but should not be compared directly with older exact-translation cache-hit
+    rows.
+- Full verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 353/353 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 144/144
+    reported no failures; `plapoint.PointCloudTest.GpuTransfer` was skipped in the CPU-only configuration.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean.
+- Current conclusion:
+  keep the transformed fused small-target path. It removes the remaining fallback collect/reduce launch pair for
+  sub-128 two-iteration finite-radius GPU ICP without changing 128+ target rows, spatial-grid search, or large-target
+  cached-grid behavior. Further speedups in this size class likely need reducing per-iteration host synchronization or
+  batching small ICP calls.
