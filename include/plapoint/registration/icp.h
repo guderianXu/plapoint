@@ -793,7 +793,15 @@ private:
         _final_T_gpu_valid = true;
         if (output && !final_points_written_to_output)
         {
-            if (current_points_use_accumulated_transform)
+            const bool output_has_cached_identity_source =
+                !current_points_use_accumulated_transform &&
+                cur_points == source_points &&
+                gpuOutputAlreadyContainsIdentitySource(*output, source_count, source_points);
+            if (output_has_cached_identity_source)
+            {
+                // Output already contains this exact identity result from a previous align() call.
+            }
+            else if (current_points_use_accumulated_transform)
             {
                 Scalar* output_points = prepareGpuOutputPointBuffer(*output, source_count);
                 if (output_aliases_target)
@@ -806,6 +814,7 @@ private:
                     source_count,
                     output_points,
                     0);
+                invalidateGpuIdentityOutputCache();
             }
             else if (!gpuOutputAlreadyContainsCurrentPoints(*output, source_count, cur_points))
             {
@@ -825,7 +834,31 @@ private:
                         static_cast<std::size_t>(source_count) * 3u * sizeof(Scalar),
                         cudaMemcpyDeviceToDevice,
                         0));
+                    if (cur_points == source_points)
+                    {
+                        markGpuIdentityOutputCache(*output, source_count, source_points);
+                    }
+                    else
+                    {
+                        invalidateGpuIdentityOutputCache();
+                    }
                 }
+                else if (cur_points == source_points)
+                {
+                    markGpuIdentityOutputCache(*output, source_count, source_points);
+                }
+                else
+                {
+                    invalidateGpuIdentityOutputCache();
+                }
+            }
+            else if (cur_points == source_points)
+            {
+                markGpuIdentityOutputCache(*output, source_count, source_points);
+            }
+            else
+            {
+                invalidateGpuIdentityOutputCache();
             }
         }
     }
@@ -922,6 +955,47 @@ private:
     {
         return canReuseGpuOutputPointBuffer(output, point_count) &&
                output.points().data() == current_points;
+    }
+
+    template <plamatrix::Device D = Dev>
+    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    gpuOutputAlreadyContainsIdentitySource(
+        const PointCloudType& output,
+        int point_count,
+        const Scalar* source_points) const
+    {
+        return canReuseGpuOutputPointBuffer(output, point_count) &&
+               _gpu_identity_output_cache_output == &output &&
+               _gpu_identity_output_cache_point_count == point_count &&
+               _gpu_identity_output_cache_source_points == source_points &&
+               _gpu_identity_output_cache_source_points_version == _source->pointsVersion() &&
+               _gpu_identity_output_cache_output_points == output.points().data() &&
+               _gpu_identity_output_cache_output_points_version == output.pointsVersion();
+    }
+
+    template <plamatrix::Device D = Dev>
+    std::enable_if_t<D == plamatrix::Device::GPU, void>
+    markGpuIdentityOutputCache(
+        const PointCloudType& output,
+        int point_count,
+        const Scalar* source_points)
+    {
+        _gpu_identity_output_cache_output = &output;
+        _gpu_identity_output_cache_output_points = output.points().data();
+        _gpu_identity_output_cache_output_points_version = output.pointsVersion();
+        _gpu_identity_output_cache_source_points = source_points;
+        _gpu_identity_output_cache_source_points_version = _source->pointsVersion();
+        _gpu_identity_output_cache_point_count = point_count;
+    }
+
+    void invalidateGpuIdentityOutputCache()
+    {
+        _gpu_identity_output_cache_output = nullptr;
+        _gpu_identity_output_cache_output_points = nullptr;
+        _gpu_identity_output_cache_output_points_version = 0;
+        _gpu_identity_output_cache_source_points = nullptr;
+        _gpu_identity_output_cache_source_points_version = 0;
+        _gpu_identity_output_cache_point_count = 0;
     }
 
     void reserveGpuPointBuffer(
@@ -1369,6 +1443,12 @@ private:
     int _gpu_alignment_step_workspace_source_capacity = 0;
     const void* _gpu_target_cache_points = nullptr;
     std::uint64_t _gpu_target_cache_points_version = 0;
+    const PointCloudType* _gpu_identity_output_cache_output = nullptr;
+    const Scalar* _gpu_identity_output_cache_output_points = nullptr;
+    std::uint64_t _gpu_identity_output_cache_output_points_version = 0;
+    const Scalar* _gpu_identity_output_cache_source_points = nullptr;
+    std::uint64_t _gpu_identity_output_cache_source_points_version = 0;
+    int _gpu_identity_output_cache_point_count = 0;
     bool _final_T_gpu_valid = false;
     bool _gpu_assume_ordered_correspondences = false;
     bool _gpu_probe_exact_pointwise_on_finite_radius = false;

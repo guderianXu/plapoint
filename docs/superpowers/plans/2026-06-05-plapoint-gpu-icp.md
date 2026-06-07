@@ -8335,3 +8335,51 @@ Verification evidence:
 - Current conclusion:
   keep the finite-radius exact pointwise probe opt-in. It improves exact separate-buffer finite-radius identity
   workloads in the benchmark sample while preserving the default path for ordinary finite-radius nearest-neighbor ICP.
+
+## Task 211: Reuse Unchanged Identity Output
+
+- Goal: skip repeated device-to-device output copies when a reused GPU ICP object aligns the same source into the same
+  unchanged output and the terminal transform is identity. Previous identity fast paths avoided residual recomputation
+  and transform kernels, but repeated `align(output)` calls still copied the source points into `output` every time.
+- RED check:
+  - Added `ICPGpuPathTest.AlignSkipsRepeatedIdentityOutputCopyWhenOutputIsUnchanged`.
+  - Before implementation, the test failed because two consecutive identity `align(output)` calls produced two async
+    device-to-device output copies instead of one.
+- Implementation:
+  - Added a small GPU identity-output cache to `IterativeClosestPoint`.
+  - The cache records the output object, output point buffer and version, source point buffer and version, and point
+    count after an identity source-to-output copy.
+  - The final output write path skips the copy only when all recorded identities still match. Any transformed output,
+    different current point buffer, source mutation, output mutation, point-count change, or output buffer replacement
+    falls back to the existing write path and invalidates or refreshes the cache.
+- Targeted verification:
+  - `cmake --build build-codex-cuda -j$(nproc) &&
+    ./build-codex-cuda/test/plapoint_tests --gtest_filter=ICPGpuPathTest.AlignSkipsRepeatedIdentityOutputCopyWhenOutputIsUnchanged`
+    failed before implementation with async copy count `2` vs expected `1`, then passed after implementation.
+  - Identity/final-output regression set passed 6/6:
+    `AlignReusesIterationStatsForExactIdentityTerminalMetrics`,
+    `AlignSkipsRepeatedIdentityOutputCopyWhenOutputIsUnchanged`,
+    `AlignReusesExactNonIdentityStepForTerminalMetrics`,
+    `AlignWritesTerminalTransformDirectlyWhenOutputAliasesTargetAndFinalMetricsUseSpatialGrid`,
+    `AlignOrderedFinalMetricsSkipTargetSpatialGridSearch`, and
+    `AlignUsesResidualStatsForNonIdentityTerminalFinalMetrics`.
+- Benchmark:
+  - Rebuilt `build-codex-cuda-bench-only` and ran:
+    `./build-codex-cuda-bench-only/benchmarks/plapoint_benchmarks --points 1000 --iterations 100 --icp-points 100000 --icp-max-iterations 3 --skip-cpu-icp`.
+  - Relevant sample after this change:
+    `gpu_icp_identity` = 0.665741 ms,
+    `gpu_icp_identity_same_buffer_reuse_output` = 0.046755 ms,
+    `gpu_icp_finite_radius` = 1.22039 ms,
+    `gpu_icp_finite_radius_identity_reuse_output` = 0.210887 ms,
+    `gpu_icp_finite_radius_identity_exact_probe_reuse_output` = 0.121402 ms,
+    `gpu_icp_finite_radius_translation_reuse_output_one_iteration` = 0.709469 ms, and
+    `gpu_icp_finite_radius_nonrigid_transform_only_two_iterations` = 1.4229 ms.
+- Full verification:
+  - `ctest --test-dir build-codex-cuda --output-on-failure`: 331/331 passed.
+  - `cmake --build build-codex-cpu -j$(nproc) && ctest --test-dir build-codex-cpu --output-on-failure`: 143/144
+    executed tests passed, with `plapoint.PointCloudTest.GpuTransfer` skipped by the CPU-only build.
+  - `ctest --test-dir build-codex-cuda-bench-only --output-on-failure`: 1/1 passed.
+  - `git diff --check`: clean before the full verification update.
+- Current conclusion:
+  keep the identity-output cache. It is guarded by point-buffer versions and only affects repeated unchanged identity
+  output writes, so non-identity ICP paths keep the existing transform/copy behavior.
