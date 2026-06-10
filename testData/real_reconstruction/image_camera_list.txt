@@ -1,0 +1,5 @@
+/home/xjw/code/mygithub/plascan/build/real_data/testData_dense/working_images/001.png /home/xjw/code/mygithub/plascan/build/real_data/testData_dense/working_cameras/001.tsai
+/home/xjw/code/mygithub/plascan/build/real_data/testData_dense/working_images/002.png /home/xjw/code/mygithub/plascan/build/real_data/testData_dense/working_cameras/002.tsai
+/home/xjw/code/mygithub/plascan/build/real_data/testData_dense/working_images/003.png /home/xjw/code/mygithub/plascan/build/real_data/testData_dense/working_cameras/003.tsai
+/home/xjw/code/mygithub/plascan/build/real_data/testData_dense/working_images/004.png /home/xjw/code/mygithub/plascan/build/real_data/testData_dense/working_cameras/004.tsai
+/home/xjw/code/mygithub/plascan/build/real_data/testData_dense/working_images/005.png /home/xjw/code/mygithub/plascan/build/real_data/testData_dense/working_cameras/005.tsai

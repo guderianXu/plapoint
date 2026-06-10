@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -63,6 +64,33 @@ void writeBigEndianInt32(std::ofstream& f, std::int32_t value)
     f.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
 }
 
+std::shared_ptr<plapoint::PointCloud<float, plamatrix::Device::CPU>> makeCloudWithColors()
+{
+    using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using PointMatrix = plamatrix::DenseMatrix<float, plamatrix::Device::CPU>;
+    using ColorMatrix = plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>;
+
+    PointMatrix points(2, 3);
+    points.setValue(0, 0, 1.0f);
+    points.setValue(0, 1, 2.0f);
+    points.setValue(0, 2, 3.0f);
+    points.setValue(1, 0, 4.0f);
+    points.setValue(1, 1, 5.0f);
+    points.setValue(1, 2, 6.0f);
+
+    ColorMatrix colors(2, 3);
+    colors.setValue(0, 0, 10);
+    colors.setValue(0, 1, 20);
+    colors.setValue(0, 2, 30);
+    colors.setValue(1, 0, 200);
+    colors.setValue(1, 1, 210);
+    colors.setValue(1, 2, 220);
+
+    auto cloud = std::make_shared<Cloud>(std::move(points));
+    cloud->setColors(std::move(colors));
+    return cloud;
+}
+
 } // namespace
 
 TEST(PlyIOTest, RoundtripASCII)
@@ -112,6 +140,163 @@ TEST(PlyIOTest, ReadOnlyPositions)
     EXPECT_FALSE(cloud->hasNormals());
     EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1.0f);
     EXPECT_FLOAT_EQ(cloud->points().getValue(2, 2), 9.0f);
+
+    std::remove(path.c_str());
+}
+
+TEST(PlyIOTest, ReadsAsciiIntensityAsGrayscaleColors)
+{
+    using Scalar = float;
+
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
+    {
+        std::ofstream f(path);
+        f << "ply\n"
+          << "format ascii 1.0\n"
+          << "element vertex 2\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "property uchar intensity\n"
+          << "end_header\n";
+        f << "1.0 2.0 3.0 17\n"
+          << "4.0 5.0 6.0 240\n";
+    }
+
+    auto cloud = plapoint::io::readPly<Scalar>(path);
+
+    ASSERT_EQ(cloud->size(), 2u);
+    ASSERT_TRUE(cloud->hasColors());
+    EXPECT_EQ(cloud->colors()->getValue(0, 0), 17);
+    EXPECT_EQ(cloud->colors()->getValue(0, 1), 17);
+    EXPECT_EQ(cloud->colors()->getValue(0, 2), 17);
+    EXPECT_EQ(cloud->colors()->getValue(1, 0), 240);
+    EXPECT_EQ(cloud->colors()->getValue(1, 1), 240);
+    EXPECT_EQ(cloud->colors()->getValue(1, 2), 240);
+
+    std::remove(path.c_str());
+}
+
+TEST(PlyIOTest, ReadsAsciiRgbColorsUsingHeaderOrder)
+{
+    using Scalar = float;
+
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
+    {
+        std::ofstream f(path);
+        f << "ply\n"
+          << "format ascii 1.0\n"
+          << "element vertex 2\n"
+          << "property uchar blue\n"
+          << "property float z\n"
+          << "property uchar red\n"
+          << "property float x\n"
+          << "property uchar green\n"
+          << "property float y\n"
+          << "end_header\n";
+        f << "30 3.0 10 1.0 20 2.0\n"
+          << "60 6.0 40 4.0 50 5.0\n";
+    }
+
+    auto cloud = plapoint::io::readPly<Scalar>(path);
+
+    ASSERT_EQ(cloud->size(), 2u);
+    ASSERT_TRUE(cloud->hasColors());
+    EXPECT_EQ(cloud->colors()->getValue(0, 0), 10);
+    EXPECT_EQ(cloud->colors()->getValue(0, 1), 20);
+    EXPECT_EQ(cloud->colors()->getValue(0, 2), 30);
+    EXPECT_EQ(cloud->colors()->getValue(1, 0), 40);
+    EXPECT_EQ(cloud->colors()->getValue(1, 1), 50);
+    EXPECT_EQ(cloud->colors()->getValue(1, 2), 60);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), 2.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 2), 3.0f);
+
+    std::remove(path.c_str());
+}
+
+TEST(PlyIOTest, ReadsBinaryIntensityAsGrayscaleColors)
+{
+    using Scalar = float;
+
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
+    {
+        std::ofstream f(path, std::ios::binary);
+        f << "ply\n"
+          << "format binary_little_endian 1.0\n"
+          << "element vertex 2\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "property uchar intensity\n"
+          << "end_header\n";
+        const float p0[3] = {1.0f, 2.0f, 3.0f};
+        const unsigned char i0 = 18;
+        const float p1[3] = {4.0f, 5.0f, 6.0f};
+        const unsigned char i1 = 241;
+        f.write(reinterpret_cast<const char*>(p0), sizeof(p0));
+        f.write(reinterpret_cast<const char*>(&i0), sizeof(i0));
+        f.write(reinterpret_cast<const char*>(p1), sizeof(p1));
+        f.write(reinterpret_cast<const char*>(&i1), sizeof(i1));
+    }
+
+    auto cloud = plapoint::io::readPly<Scalar>(path);
+
+    ASSERT_EQ(cloud->size(), 2u);
+    ASSERT_TRUE(cloud->hasColors());
+    EXPECT_EQ(cloud->colors()->getValue(0, 0), 18);
+    EXPECT_EQ(cloud->colors()->getValue(0, 1), 18);
+    EXPECT_EQ(cloud->colors()->getValue(0, 2), 18);
+    EXPECT_EQ(cloud->colors()->getValue(1, 0), 241);
+    EXPECT_EQ(cloud->colors()->getValue(1, 1), 241);
+    EXPECT_EQ(cloud->colors()->getValue(1, 2), 241);
+
+    std::remove(path.c_str());
+}
+
+TEST(PlyIOTest, RoundtripAsciiPreservesColors)
+{
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
+
+    const auto cloud = makeCloudWithColors();
+    EXPECT_NO_THROW(plapoint::io::writePly(path, *cloud, plapoint::io::PlyFormat::ASCII));
+
+    auto loaded = plapoint::io::readPly<float>(path);
+
+    ASSERT_EQ(loaded->size(), 2u);
+    ASSERT_TRUE(loaded->hasColors());
+    EXPECT_EQ(loaded->colors()->getValue(0, 0), 10);
+    EXPECT_EQ(loaded->colors()->getValue(0, 1), 20);
+    EXPECT_EQ(loaded->colors()->getValue(0, 2), 30);
+    EXPECT_EQ(loaded->colors()->getValue(1, 0), 200);
+    EXPECT_EQ(loaded->colors()->getValue(1, 1), 210);
+    EXPECT_EQ(loaded->colors()->getValue(1, 2), 220);
+
+    std::remove(path.c_str());
+}
+
+TEST(PlyIOTest, RoundtripBinaryPreservesColors)
+{
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
+
+    const auto cloud = makeCloudWithColors();
+    EXPECT_NO_THROW(plapoint::io::writePly(path, *cloud, plapoint::io::PlyFormat::BinaryLE));
+
+    auto loaded = plapoint::io::readPly<float>(path);
+
+    ASSERT_EQ(loaded->size(), 2u);
+    ASSERT_TRUE(loaded->hasColors());
+    EXPECT_EQ(loaded->colors()->getValue(0, 0), 10);
+    EXPECT_EQ(loaded->colors()->getValue(0, 1), 20);
+    EXPECT_EQ(loaded->colors()->getValue(0, 2), 30);
+    EXPECT_EQ(loaded->colors()->getValue(1, 0), 200);
+    EXPECT_EQ(loaded->colors()->getValue(1, 1), 210);
+    EXPECT_EQ(loaded->colors()->getValue(1, 2), 220);
 
     std::remove(path.c_str());
 }
@@ -471,6 +656,13 @@ TEST(PlyIOTest, ReadsBinaryVertexPropertiesWithUcharColors)
     EXPECT_FLOAT_EQ(cloud->points().getValue(1, 0), 1004.0f);
     EXPECT_FLOAT_EQ(cloud->points().getValue(1, 1), -1995.0f);
     EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 3006.0f);
+    ASSERT_TRUE(cloud->hasColors());
+    EXPECT_EQ(cloud->colors()->getValue(0, 0), 10);
+    EXPECT_EQ(cloud->colors()->getValue(0, 1), 20);
+    EXPECT_EQ(cloud->colors()->getValue(0, 2), 30);
+    EXPECT_EQ(cloud->colors()->getValue(1, 0), 40);
+    EXPECT_EQ(cloud->colors()->getValue(1, 1), 50);
+    EXPECT_EQ(cloud->colors()->getValue(1, 2), 60);
 
     std::remove(path.c_str());
 }

@@ -162,6 +162,34 @@ endif()
 execute_process(
     COMMAND
         "${PLAPOINT_BENCHMARK_EXE}"
+        --points 512
+        --iterations 1
+        --icp-points 512
+        --icp-max-iterations 1
+        --skip-cpu-icp
+        --skip-icp-identity
+    RESULT_VARIABLE shrinking_result
+    OUTPUT_VARIABLE shrinking_output
+    ERROR_VARIABLE shrinking_error
+)
+
+if(NOT shrinking_result EQUAL 0)
+    message(FATAL_ERROR
+        "plapoint_benchmarks shrinking ICP row failed with exit code ${shrinking_result}\n"
+        "stdout:\n${shrinking_output}\n"
+        "stderr:\n${shrinking_error}")
+endif()
+
+if(NOT shrinking_output MATCHES
+        "(^|\n)gpu_icp_finite_radius_translation_reuse_shrinking,")
+    message(FATAL_ERROR
+        "Missing shrinking ICP benchmark row for 512-point input\n"
+        "stdout:\n${shrinking_output}")
+endif()
+
+execute_process(
+    COMMAND
+        "${PLAPOINT_BENCHMARK_EXE}"
         --self-test-benchmark-gpu-sync
     RESULT_VARIABLE sync_self_test_result
     OUTPUT_VARIABLE sync_self_test_output

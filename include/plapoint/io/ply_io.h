@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -40,7 +41,7 @@ enum class PlyFormat { ASCII, BinaryLE, BinaryBE };
 
 namespace detail {
 
-enum class PlyVertexPropertyRole { Ignore, X, Y, Z, NX, NY, NZ };
+enum class PlyVertexPropertyRole { Ignore, X, Y, Z, NX, NY, NZ, Red, Green, Blue, Intensity };
 
 struct PlyScalarProperty
 {
@@ -164,7 +165,22 @@ inline PlyVertexPropertyRole vertexPropertyRole(const std::string& name)
     if (name == "nx") return PlyVertexPropertyRole::NX;
     if (name == "ny") return PlyVertexPropertyRole::NY;
     if (name == "nz") return PlyVertexPropertyRole::NZ;
+    if (name == "red") return PlyVertexPropertyRole::Red;
+    if (name == "green") return PlyVertexPropertyRole::Green;
+    if (name == "blue") return PlyVertexPropertyRole::Blue;
+    if (name == "intensity") return PlyVertexPropertyRole::Intensity;
     return PlyVertexPropertyRole::Ignore;
+}
+
+inline std::uint8_t plyColorByte(double value)
+{
+    if (!std::isfinite(value))
+    {
+        throw std::runtime_error("PLY color property value must be finite");
+    }
+    if (value <= 0.0) return 0;
+    if (value >= 255.0) return 255;
+    return static_cast<std::uint8_t>(std::lround(value));
 }
 
 [[noreturn]] inline void throwPlyParseError(const std::string& path, const std::string& message)
@@ -205,6 +221,7 @@ readPlyImpl(const std::string& path,
     bool saw_vertex_element = false;
     bool has_x = false, has_y = false, has_z = false;
     bool has_nx = false, has_ny = false, has_nz = false;
+    bool has_red = false, has_green = false, has_blue = false, has_intensity = false;
     std::array<double, 3> pointOffset = {0.0, 0.0, 0.0};
     bool hasPointOffset = false;
     bool saw_end_header = false;
@@ -289,6 +306,10 @@ readPlyImpl(const std::string& path,
                 if (role == PlyVertexPropertyRole::NX) has_nx = true;
                 if (role == PlyVertexPropertyRole::NY) has_ny = true;
                 if (role == PlyVertexPropertyRole::NZ) has_nz = true;
+                if (role == PlyVertexPropertyRole::Red) has_red = true;
+                if (role == PlyVertexPropertyRole::Green) has_green = true;
+                if (role == PlyVertexPropertyRole::Blue) has_blue = true;
+                if (role == PlyVertexPropertyRole::Intensity) has_intensity = true;
             }
         }
     }
@@ -311,7 +332,9 @@ readPlyImpl(const std::string& path,
 
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(n_verts, 3);
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> nrm(n_verts, 3);
+    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(n_verts, 3);
     bool have_normals = has_nx && has_ny && has_nz;
+    bool have_colors = has_intensity || (has_red && has_green && has_blue);
 
     if (fmt == PlyFormat::ASCII)
     {
@@ -330,6 +353,8 @@ readPlyImpl(const std::string& path,
                     continue;
                 }
                 std::istringstream iss(line);
+                std::array<std::uint8_t, 3> rgb = {0, 0, 0};
+                std::uint8_t intensity = 0;
                 for (const auto& prop : element.properties)
                 {
                     if (prop.isList)
@@ -362,8 +387,35 @@ readPlyImpl(const std::string& path,
                     case PlyVertexPropertyRole::NZ:
                         nrm(vertexIndex, 2) = static_cast<Scalar>(val);
                         break;
+                    case PlyVertexPropertyRole::Red:
+                        rgb[0] = plyColorByte(val);
+                        break;
+                    case PlyVertexPropertyRole::Green:
+                        rgb[1] = plyColorByte(val);
+                        break;
+                    case PlyVertexPropertyRole::Blue:
+                        rgb[2] = plyColorByte(val);
+                        break;
+                    case PlyVertexPropertyRole::Intensity:
+                        intensity = plyColorByte(val);
+                        break;
                     case PlyVertexPropertyRole::Ignore:
                         break;
+                    }
+                }
+                if (have_colors)
+                {
+                    if (has_red && has_green && has_blue)
+                    {
+                        colors(vertexIndex, 0) = rgb[0];
+                        colors(vertexIndex, 1) = rgb[1];
+                        colors(vertexIndex, 2) = rgb[2];
+                    }
+                    else
+                    {
+                        colors(vertexIndex, 0) = intensity;
+                        colors(vertexIndex, 1) = intensity;
+                        colors(vertexIndex, 2) = intensity;
                     }
                 }
                 ++vertexIndex;
@@ -378,6 +430,8 @@ readPlyImpl(const std::string& path,
         {
             for (int i = 0; i < element.count; ++i)
             {
+                std::array<std::uint8_t, 3> rgb = {0, 0, 0};
+                std::uint8_t intensity = 0;
                 for (const auto& prop : element.properties)
                 {
                     if (prop.isList)
@@ -410,12 +464,39 @@ readPlyImpl(const std::string& path,
                     case PlyVertexPropertyRole::NZ:
                         nrm(vertexIndex, 2) = static_cast<Scalar>(val);
                         break;
+                    case PlyVertexPropertyRole::Red:
+                        rgb[0] = plyColorByte(val);
+                        break;
+                    case PlyVertexPropertyRole::Green:
+                        rgb[1] = plyColorByte(val);
+                        break;
+                    case PlyVertexPropertyRole::Blue:
+                        rgb[2] = plyColorByte(val);
+                        break;
+                    case PlyVertexPropertyRole::Intensity:
+                        intensity = plyColorByte(val);
+                        break;
                     case PlyVertexPropertyRole::Ignore:
                         break;
                     }
                 }
                 if (element.name == "vertex")
                 {
+                    if (have_colors)
+                    {
+                        if (has_red && has_green && has_blue)
+                        {
+                            colors(vertexIndex, 0) = rgb[0];
+                            colors(vertexIndex, 1) = rgb[1];
+                            colors(vertexIndex, 2) = rgb[2];
+                        }
+                        else
+                        {
+                            colors(vertexIndex, 0) = intensity;
+                            colors(vertexIndex, 1) = intensity;
+                            colors(vertexIndex, 2) = intensity;
+                        }
+                    }
                     ++vertexIndex;
                 }
             }
@@ -424,6 +505,7 @@ readPlyImpl(const std::string& path,
 
     auto cloud = std::make_shared<PointCloud<Scalar, plamatrix::Device::CPU>>(std::move(pts));
     if (have_normals) cloud->setNormals(std::move(nrm));
+    if (have_colors) cloud->setColors(std::move(colors));
     return cloud;
 }
 
@@ -458,6 +540,7 @@ void writePly(const std::string& path,
     if (!f) throw std::runtime_error("Cannot write PLY file: " + path);
 
     bool with_normals = cloud.hasNormals();
+    bool with_colors = cloud.hasColors();
 
     f << "ply\n";
     if (fmt == PlyFormat::ASCII)
@@ -469,6 +552,8 @@ void writePly(const std::string& path,
 
     f << "element vertex " << cloud.size() << "\n";
     f << "property float x\nproperty float y\nproperty float z\n";
+    if (with_colors)
+        f << "property uchar red\nproperty uchar green\nproperty uchar blue\n";
     if (with_normals)
         f << "property float nx\nproperty float ny\nproperty float nz\n";
     f << "end_header\n";
@@ -480,6 +565,13 @@ void writePly(const std::string& path,
             f << cloud.points().getValue(static_cast<plamatrix::Index>(i), 0) << " "
               << cloud.points().getValue(static_cast<plamatrix::Index>(i), 1) << " "
               << cloud.points().getValue(static_cast<plamatrix::Index>(i), 2);
+            if (with_colors)
+            {
+                auto* c = cloud.colors();
+                f << " " << static_cast<int>(c->getValue(static_cast<plamatrix::Index>(i), 0))
+                  << " " << static_cast<int>(c->getValue(static_cast<plamatrix::Index>(i), 1))
+                  << " " << static_cast<int>(c->getValue(static_cast<plamatrix::Index>(i), 2));
+            }
             if (with_normals)
             {
                 auto* n = cloud.normals();
@@ -502,6 +594,16 @@ void writePly(const std::string& path,
             f.write(reinterpret_cast<const char*>(&vx), 4);
             f.write(reinterpret_cast<const char*>(&vy), 4);
             f.write(reinterpret_cast<const char*>(&vz), 4);
+            if (with_colors)
+            {
+                auto* c = cloud.colors();
+                const std::uint8_t color[3] = {
+                    c->getValue(static_cast<plamatrix::Index>(i), 0),
+                    c->getValue(static_cast<plamatrix::Index>(i), 1),
+                    c->getValue(static_cast<plamatrix::Index>(i), 2),
+                };
+                f.write(reinterpret_cast<const char*>(color), sizeof(color));
+            }
             if (with_normals)
             {
                 auto* n = cloud.normals();

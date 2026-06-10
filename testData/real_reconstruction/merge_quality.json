@@ -1,0 +1,39 @@
+{
+  "raw_point_count": 252224,
+  "point_count": 252224,
+  "removed_outlier_count": 0,
+  "quality_before_filter": {
+    "passed": true,
+    "reason": "ok",
+    "point_count": 252224,
+    "center": [
+      133.804989,
+      71.3171045,
+      669.4476295
+    ],
+    "distance_p50": 393.2026674207887,
+    "distance_p95": 735.0343928587268,
+    "distance_p99": 843.4312196127913,
+    "distance_max": 2681.075318495252,
+    "p99_to_median_ratio": 2.145029241905389,
+    "max_p99_to_median_ratio": 20.0
+  },
+  "quality": {
+    "passed": true,
+    "reason": "ok",
+    "point_count": 252224,
+    "center": [
+      133.804989,
+      71.3171045,
+      669.4476295
+    ],
+    "distance_p50": 393.2026674207887,
+    "distance_p95": 735.0343928587268,
+    "distance_p99": 843.4312196127913,
+    "distance_max": 2681.075318495252,
+    "p99_to_median_ratio": 2.145029241905389,
+    "max_p99_to_median_ratio": 20.0
+  },
+  "filter_threshold": 8820.412714304723,
+  "path": "build/real_data/testData_dense/merged_dense_filtered.ply"
+}

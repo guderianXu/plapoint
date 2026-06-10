@@ -801,8 +801,9 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuseShrinking(int icp_points, int ic
         return;
     }
 
-    const int large_points = std::max(4, icp_points);
-    const int small_points = std::max(4, large_points / 2);
+    // The shrunken grid must span more than one x-row; otherwise ICP sees collinear geometry.
+    const int large_points = std::max(600, icp_points);
+    const int small_points = large_points / 2;
     auto cpu_large_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
         makeTranslatedGridPoints<float>(large_points, 0.003f, -0.002f, 0.001f));
     auto cpu_large_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(large_points));

@@ -1,0 +1,41 @@
+{
+  "merged_gray_cloud": "build/real_data/testData_dense/merged_dense_gray.ply",
+  "merged_point_count": 252224,
+  "intensity_min": 6,
+  "intensity_max": 255,
+  "intensity_mean": 140.69446603019537,
+  "pairs": [
+    {
+      "pair": "002_001",
+      "point_count": 61161,
+      "gray_cloud": "build/real_data/testData_dense/pairs/002_001/cloud_gray.ply",
+      "intensity_min": 6,
+      "intensity_max": 255,
+      "intensity_mean": 136.53182583672603
+    },
+    {
+      "pair": "003_002",
+      "point_count": 64011,
+      "gray_cloud": "build/real_data/testData_dense/pairs/003_002/cloud_gray.ply",
+      "intensity_min": 6,
+      "intensity_max": 255,
+      "intensity_mean": 137.27671806408273
+    },
+    {
+      "pair": "004_003",
+      "point_count": 64999,
+      "gray_cloud": "build/real_data/testData_dense/pairs/004_003/cloud_gray.ply",
+      "intensity_min": 6,
+      "intensity_max": 255,
+      "intensity_mean": 141.78367359497838
+    },
+    {
+      "pair": "005_004",
+      "point_count": 62053,
+      "gray_cloud": "build/real_data/testData_dense/pairs/005_004/cloud_gray.ply",
+      "intensity_min": 6,
+      "intensity_max": 255,
+      "intensity_mean": 147.18194124377547
+    }
+  ]
+}
