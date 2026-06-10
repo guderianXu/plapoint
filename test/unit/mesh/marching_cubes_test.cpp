@@ -2,6 +2,7 @@
 #include <plapoint/mesh/marching_cubes.h>
 #include <plamatrix/plamatrix.h>
 #include <cmath>
+#include <functional>
 
 TEST(MarchingCubesTest, SphereIsosurface)
 {
@@ -21,5 +22,78 @@ TEST(MarchingCubesTest, SphereIsosurface)
     EXPECT_GT(verts.rows(), 0);
     EXPECT_GT(faces.rows(), 0);
     EXPECT_EQ(verts.cols(), 3);
+    EXPECT_EQ(faces.cols(), 3);
+}
+
+TEST(MarchingCubesTest, ConstantFieldAboveIsoReturnsEmptyMesh)
+{
+    using Scalar = float;
+
+    plapoint::mesh::MarchingCubes<Scalar> mc;
+    mc.setBounds({-1,-1,-1}, {1,1,1});
+    mc.setResolution(4, 4, 4);
+    mc.setIsoLevel(Scalar(0));
+
+    auto [verts, faces] = mc.extract([](Scalar, Scalar, Scalar)
+    {
+        return Scalar(1);
+    });
+
+    EXPECT_EQ(verts.rows(), 0);
+    EXPECT_EQ(verts.cols(), 3);
+    EXPECT_EQ(faces.rows(), 0);
+    EXPECT_EQ(faces.cols(), 3);
+}
+
+TEST(MarchingCubesTest, ConstantFieldEqualToIsoReturnsEmptyMesh)
+{
+    using Scalar = float;
+
+    plapoint::mesh::MarchingCubes<Scalar> mc;
+    mc.setBounds({-1,-1,-1}, {1,1,1});
+    mc.setResolution(4, 4, 4);
+    mc.setIsoLevel(Scalar(0));
+
+    auto [verts, faces] = mc.extract([](Scalar, Scalar, Scalar)
+    {
+        return Scalar(0);
+    });
+
+    EXPECT_EQ(verts.rows(), 0);
+    EXPECT_EQ(verts.cols(), 3);
+    EXPECT_EQ(faces.rows(), 0);
+    EXPECT_EQ(faces.cols(), 3);
+}
+
+TEST(MarchingCubesTest, EmptyScalarFunctionIsRejected)
+{
+    using Scalar = float;
+    using MarchingCubes = plapoint::mesh::MarchingCubes<Scalar>;
+
+    MarchingCubes mc;
+    mc.setResolution(1, 1, 1);
+
+    EXPECT_THROW(
+        (void)mc.extract(typename MarchingCubes::ScalarFunction{}),
+        std::exception);
+}
+
+TEST(MarchingCubesTest, ZeroResolutionAxisReturnsEmptyMesh)
+{
+    using Scalar = float;
+
+    plapoint::mesh::MarchingCubes<Scalar> mc;
+    mc.setBounds({-1,-1,-1}, {1,1,1});
+    mc.setResolution(0, 4, 4);
+    mc.setIsoLevel(Scalar(0));
+
+    auto [verts, faces] = mc.extract([](Scalar, Scalar, Scalar)
+    {
+        return Scalar(1);
+    });
+
+    EXPECT_EQ(verts.rows(), 0);
+    EXPECT_EQ(verts.cols(), 3);
+    EXPECT_EQ(faces.rows(), 0);
     EXPECT_EQ(faces.cols(), 3);
 }

@@ -2,7 +2,9 @@
 #include <plapoint/io/obj_io.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
+#include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <cstdio>
 
 TEST(ObjIoTest, WriteAndReadBackVertexOnly)
@@ -394,6 +396,148 @@ TEST(ObjIoTest, WritesAllTextureCoordinates)
     EXPECT_EQ(read_back->faceTextureIndices()->getValue(0, 2), 3);
 
     std::remove(path.c_str());
+}
+
+TEST(ObjIoTest, ReadsCompleteFaceTextureAndNormalIndices)
+{
+    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_complete_face_indices.obj";
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "v 0 0 0\n";
+        f << "v 1 0 0\n";
+        f << "v 0 1 0\n";
+        f << "vt 0 0\n";
+        f << "vt 1 0\n";
+        f << "vt 0 1\n";
+        f << "vt 1 1\n";
+        f << "vn 1 0 0\n";
+        f << "vn 0 1 0\n";
+        f << "vn 0 0 1\n";
+        f << "f 1/4/3 2/2/2 3/1/1\n";
+    }
+
+    auto read_back = plapoint::io::readObj<float>(path.string());
+
+    ASSERT_NE(read_back, nullptr);
+    ASSERT_TRUE(read_back->hasFaces());
+    EXPECT_EQ(read_back->faces()->getValue(0, 0), 0);
+    EXPECT_EQ(read_back->faces()->getValue(0, 1), 1);
+    EXPECT_EQ(read_back->faces()->getValue(0, 2), 2);
+    ASSERT_TRUE(read_back->hasTextureCoords());
+    EXPECT_EQ(read_back->textureCoords()->rows(), 4);
+    ASSERT_TRUE(read_back->hasFaceTextureIndices());
+    EXPECT_EQ(read_back->faceTextureIndices()->getValue(0, 0), 3);
+    EXPECT_EQ(read_back->faceTextureIndices()->getValue(0, 1), 1);
+    EXPECT_EQ(read_back->faceTextureIndices()->getValue(0, 2), 0);
+    ASSERT_TRUE(read_back->hasNormals());
+    EXPECT_FLOAT_EQ(read_back->normals()->getValue(0, 2), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->getValue(1, 1), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->getValue(2, 0), 1.0f);
+
+    std::filesystem::remove(path);
+}
+
+TEST(ObjIoTest, ReadsVertexLinesWithExtraAttributes)
+{
+    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_vertex_extra_attributes.obj";
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "o colored_vertices\n";
+        f << "v 1 2 3 1.0 255 0 0\n";
+        f << "v 4 5 6 1.0 0 255 0\n";
+        f << "usemtl ignored_material\n";
+    }
+
+    auto read_back = plapoint::io::readObj<float>(path.string());
+
+    ASSERT_NE(read_back, nullptr);
+    ASSERT_EQ(read_back->size(), 2u);
+    EXPECT_FLOAT_EQ(read_back->points().getValue(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->points().getValue(0, 1), 2.0f);
+    EXPECT_FLOAT_EQ(read_back->points().getValue(0, 2), 3.0f);
+    EXPECT_FLOAT_EQ(read_back->points().getValue(1, 0), 4.0f);
+    EXPECT_FLOAT_EQ(read_back->points().getValue(1, 1), 5.0f);
+    EXPECT_FLOAT_EQ(read_back->points().getValue(1, 2), 6.0f);
+
+    std::filesystem::remove(path);
+}
+
+TEST(ObjIoTest, RejectsOutOfRangeFaceVertexIndex)
+{
+    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_oob_face_vertex.obj";
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "v 0 0 0\n";
+        f << "v 1 0 0\n";
+        f << "v 0 1 0\n";
+        f << "f 1 2 4\n";
+    }
+
+    EXPECT_THROW((void)plapoint::io::readObj<float>(path.string()), std::out_of_range);
+
+    std::filesystem::remove(path);
+}
+
+TEST(ObjIoTest, RejectsOutOfRangeRelativeFaceVertexIndex)
+{
+    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_oob_relative_face_vertex.obj";
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "v 0 0 0\n";
+        f << "v 1 0 0\n";
+        f << "v 0 1 0\n";
+        f << "f -4 -2 -1\n";
+    }
+
+    EXPECT_THROW((void)plapoint::io::readObj<float>(path.string()), std::out_of_range);
+
+    std::filesystem::remove(path);
+}
+
+TEST(ObjIoTest, RejectsOutOfRangeFaceTextureIndex)
+{
+    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_oob_face_texture.obj";
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "v 0 0 0\n";
+        f << "v 1 0 0\n";
+        f << "v 0 1 0\n";
+        f << "vt 0 0\n";
+        f << "f 1/1 2/2 3/1\n";
+    }
+
+    EXPECT_THROW((void)plapoint::io::readObj<float>(path.string()), std::out_of_range);
+
+    std::filesystem::remove(path);
+}
+
+TEST(ObjIoTest, RejectsMalformedFaceIndexToken)
+{
+    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_malformed_face_index.obj";
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "v 0 0 0\n";
+        f << "v 1 0 0\n";
+        f << "v 0 1 0\n";
+        f << "vt 0 0\n";
+        f << "f 1/abc 2/1 3/1\n";
+    }
+
+    EXPECT_THROW((void)plapoint::io::readObj<float>(path.string()), std::invalid_argument);
+
+    std::filesystem::remove(path);
 }
 
 TEST(ObjIoTest, ReadNonExistentFileThrows)

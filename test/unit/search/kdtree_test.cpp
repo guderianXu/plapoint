@@ -55,6 +55,59 @@ TEST_F(KdTreeTest, NearestKSearchSinglePoint)
     // points 0,1,2 are closest to origin
 }
 
+TEST_F(KdTreeTest, EmptyCloudBuildsAndReturnsNoSearchResults)
+{
+    auto empty_cloud = std::make_shared<Cloud>(0);
+
+    KdTree tree;
+    tree.setInputCloud(empty_cloud);
+    EXPECT_NO_THROW(tree.build());
+
+    plamatrix::Vec3<Scalar> query{0, 0, 0};
+    EXPECT_TRUE(tree.nearestKSearch(query, 3).empty());
+    EXPECT_TRUE(tree.radiusSearch(query, Scalar(1)).empty());
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(2, 3);
+    queries.fill(0);
+    const auto batch_results = tree.batchNearestKSearch(queries, 3);
+    ASSERT_EQ(batch_results.size(), 2u);
+    EXPECT_TRUE(batch_results[0].empty());
+    EXPECT_TRUE(batch_results[1].empty());
+}
+
+TEST_F(KdTreeTest, NearestKSearchClampsKToPointCount)
+{
+    KdTree tree;
+    tree.setInputCloud(cloud);
+    tree.build();
+
+    plamatrix::Vec3<Scalar> query{0, 0, 0};
+    auto results = tree.nearestKSearch(query, 50);
+    std::sort(results.begin(), results.end());
+
+    EXPECT_EQ(results, (std::vector<int>{0, 1, 2, 3, 4, 5}));
+}
+
+TEST_F(KdTreeTest, NearestKSearchReturnsDuplicatePointTiesBeforeFartherPoint)
+{
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(4, 3);
+    mat.setValue(0, 0, 0); mat.setValue(0, 1, 0); mat.setValue(0, 2, 0);
+    mat.setValue(1, 0, 0); mat.setValue(1, 1, 0); mat.setValue(1, 2, 0);
+    mat.setValue(2, 0, 0); mat.setValue(2, 1, 0); mat.setValue(2, 2, 0);
+    mat.setValue(3, 0, 5); mat.setValue(3, 1, 0); mat.setValue(3, 2, 0);
+    auto duplicate_cloud = std::make_shared<Cloud>(std::move(mat));
+
+    KdTree tree;
+    tree.setInputCloud(duplicate_cloud);
+    tree.build();
+
+    plamatrix::Vec3<Scalar> query{0, 0, 0};
+    auto results = tree.nearestKSearch(query, 3);
+    std::sort(results.begin(), results.end());
+
+    EXPECT_EQ(results, (std::vector<int>{0, 1, 2}));
+}
+
 TEST_F(KdTreeTest, NearestKSearchKeepsExtremeButFiniteDistance)
 {
     constexpr Scalar max_value = std::numeric_limits<Scalar>::max();
@@ -86,6 +139,26 @@ TEST_F(KdTreeTest, RadiusSearch)
     auto results = tree.radiusSearch(query, Scalar(2.0));
     // Should find points 0,1,2 within radius 2 of origin
     ASSERT_EQ(results.size(), 3u);
+}
+
+TEST_F(KdTreeTest, RadiusSearchIncludesPointsExactlyOnBoundary)
+{
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(4, 3);
+    mat.setValue(0, 0, 0);       mat.setValue(0, 1, 0); mat.setValue(0, 2, 0);
+    mat.setValue(1, 0, 1);       mat.setValue(1, 1, 0); mat.setValue(1, 2, 0);
+    mat.setValue(2, 0, 0);       mat.setValue(2, 1, 1); mat.setValue(2, 2, 0);
+    mat.setValue(3, 0, 1.0001f); mat.setValue(3, 1, 0); mat.setValue(3, 2, 0);
+    auto boundary_cloud = std::make_shared<Cloud>(std::move(mat));
+
+    KdTree tree;
+    tree.setInputCloud(boundary_cloud);
+    tree.build();
+
+    plamatrix::Vec3<Scalar> query{0, 0, 0};
+    auto results = tree.radiusSearch(query, Scalar(1));
+    std::sort(results.begin(), results.end());
+
+    EXPECT_EQ(results, (std::vector<int>{0, 1, 2}));
 }
 
 TEST_F(KdTreeTest, RadiusSearchRejectsNegativeRadius)

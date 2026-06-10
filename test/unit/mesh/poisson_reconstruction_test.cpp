@@ -49,6 +49,30 @@ TEST(PoissonReconstructionTest, RejectsInvalidDepthAndSolverIterations)
     EXPECT_THROW(pr.setSolverIterations(0), std::invalid_argument);
 }
 
+TEST(PoissonReconstructionTest, RejectsUnsetInputCloud)
+{
+    plapoint::mesh::PoissonReconstruction<float> pr;
+
+    EXPECT_THROW((void)pr.reconstruct(), std::runtime_error);
+}
+
+TEST(PoissonReconstructionTest, RejectsCloudWithoutNormals)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(1, 3);
+    points.setValue(0, 0, 0);
+    points.setValue(0, 1, 0);
+    points.setValue(0, 2, 0);
+    auto cloud = std::make_shared<Cloud>(std::move(points));
+
+    plapoint::mesh::PoissonReconstruction<Scalar> pr;
+    pr.setInputCloud(cloud);
+
+    EXPECT_THROW((void)pr.reconstruct(), std::runtime_error);
+}
+
 TEST(PoissonReconstructionTest, RejectsEmptyInputCloud)
 {
     using Scalar = float;
@@ -62,6 +86,36 @@ TEST(PoissonReconstructionTest, RejectsEmptyInputCloud)
     pr.setInputCloud(cloud);
 
     EXPECT_THROW((void)pr.reconstruct(), std::invalid_argument);
+}
+
+TEST(PoissonReconstructionTest, SinglePointWithNormalProducesEmptyDegenerateMesh)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(1, 3);
+    points.setValue(0, 0, 0);
+    points.setValue(0, 1, 0);
+    points.setValue(0, 2, 0);
+    auto cloud = std::make_shared<Cloud>(std::move(points));
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(1, 3);
+    normals.setValue(0, 0, 0);
+    normals.setValue(0, 1, 0);
+    normals.setValue(0, 2, 1);
+    cloud->setNormals(std::move(normals));
+
+    plapoint::mesh::PoissonReconstruction<Scalar> pr;
+    pr.setInputCloud(cloud);
+    pr.setDepth(1);
+    pr.setSolverIterations(1);
+
+    auto [verts, faces] = pr.reconstruct();
+
+    EXPECT_EQ(verts.rows(), 0);
+    EXPECT_EQ(verts.cols(), 3);
+    EXPECT_EQ(faces.rows(), 0);
+    EXPECT_EQ(faces.cols(), 3);
 }
 
 TEST(PoissonReconstructionTest, RejectsNonFinitePointsAndNormals)

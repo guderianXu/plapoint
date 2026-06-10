@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <plapoint/filters/filter.h>
 #include <plamatrix/plamatrix.h>
+#include <vector>
 
 namespace
 {
@@ -33,4 +34,11 @@ TEST(FilterTest, ThrowsIfNoInput)
     MockFilter mf;
     plapoint::PointCloud<float, plamatrix::Device::CPU> output;
     EXPECT_THROW(mf.filter(output), std::runtime_error);
+}
+
+TEST(FilterTest, RemovedIndicesOverloadThrowsByDefault)
+{
+    MockFilter mf;
+    std::vector<int> removed_indices;
+    EXPECT_THROW(mf.filter(removed_indices), std::runtime_error);
 }

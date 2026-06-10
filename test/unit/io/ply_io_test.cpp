@@ -5,7 +5,9 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 
 namespace {
@@ -545,4 +547,144 @@ TEST(PlyIOTest, ReadsBigEndianBinaryWhenFaceElementPrecedesVertexElement)
     EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 306.0f);
 
     std::remove(path.c_str());
+}
+
+TEST(PlyIOTest, RejectsInvalidMagicHeader)
+{
+    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_invalid_magic.ply";
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "not_ply\n"
+          << "format ascii 1.0\n"
+          << "element vertex 1\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "end_header\n"
+          << "1 2 3\n";
+    }
+
+    EXPECT_THROW((void)plapoint::io::readPly<float>(path.string()), std::runtime_error);
+
+    std::filesystem::remove(path);
+}
+
+TEST(PlyIOTest, IgnoresIncompleteNormalTriplet)
+{
+    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_incomplete_normals.ply";
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "ply\n"
+          << "format ascii 1.0\n"
+          << "element vertex 1\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "property float nx\n"
+          << "property float ny\n"
+          << "end_header\n"
+          << "1 2 3 0.5 0.25\n";
+    }
+
+    auto cloud = plapoint::io::readPly<float>(path.string());
+
+    ASSERT_EQ(cloud->size(), 1u);
+    EXPECT_FALSE(cloud->hasNormals());
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), 2.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 2), 3.0f);
+
+    std::filesystem::remove(path);
+}
+
+TEST(PlyIOTest, RejectsUnsupportedBinaryVertexPropertyType)
+{
+    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_unsupported_binary_type.ply";
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path, std::ios::binary);
+        ASSERT_TRUE(f);
+        f << "ply\n"
+          << "format binary_little_endian 1.0\n"
+          << "element vertex 1\n"
+          << "property long x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "end_header\n";
+        const std::int64_t x = 1;
+        const float yz[2] = {2.0f, 3.0f};
+        f.write(reinterpret_cast<const char*>(&x), sizeof(x));
+        f.write(reinterpret_cast<const char*>(yz), sizeof(yz));
+    }
+
+    EXPECT_THROW((void)plapoint::io::readPly<float>(path.string()), std::runtime_error);
+
+    std::filesystem::remove(path);
+}
+
+TEST(PlyIOTest, RejectsNegativeBinaryListCount)
+{
+    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_negative_binary_list_count.ply";
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path, std::ios::binary);
+        ASSERT_TRUE(f);
+        f << "ply\n"
+          << "format binary_little_endian 1.0\n"
+          << "element face 1\n"
+          << "property list char int vertex_indices\n"
+          << "element vertex 1\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "end_header\n";
+        const std::int8_t negative_count = -1;
+        const float point[3] = {1.0f, 2.0f, 3.0f};
+        f.write(reinterpret_cast<const char*>(&negative_count), sizeof(negative_count));
+        f.write(reinterpret_cast<const char*>(point), sizeof(point));
+    }
+
+    EXPECT_THROW((void)plapoint::io::readPly<float>(path.string()), std::runtime_error);
+
+    std::filesystem::remove(path);
+}
+
+TEST(PlyIOTest, SkipsBinaryScalarPropertiesOnNonVertexElementsBeforeVertices)
+{
+    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_binary_extra_scalar_element.ply";
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path, std::ios::binary);
+        ASSERT_TRUE(f);
+        f << "ply\n"
+          << "format binary_little_endian 1.0\n"
+          << "element edge 1\n"
+          << "property int vertex1\n"
+          << "property int vertex2\n"
+          << "property float confidence\n"
+          << "element vertex 1\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "end_header\n";
+        const std::int32_t edge_vertices[2] = {10, 11};
+        const float confidence = 0.5f;
+        const float point[3] = {7.0f, 8.0f, 9.0f};
+        f.write(reinterpret_cast<const char*>(edge_vertices), sizeof(edge_vertices));
+        f.write(reinterpret_cast<const char*>(&confidence), sizeof(confidence));
+        f.write(reinterpret_cast<const char*>(point), sizeof(point));
+    }
+
+    auto cloud = plapoint::io::readPly<float>(path.string());
+
+    ASSERT_EQ(cloud->size(), 1u);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 7.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), 8.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 2), 9.0f);
+
+    std::filesystem::remove(path);
 }

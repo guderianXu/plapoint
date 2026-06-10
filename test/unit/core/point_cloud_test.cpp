@@ -23,6 +23,16 @@ TEST(PointCloudTest, CpuCreation)
     EXPECT_EQ(cloud.points().cols(), 3);
 }
 
+TEST(PointCloudTest, DefaultConstructsEmptyNx3Cloud)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud;
+
+    EXPECT_EQ(cloud.size(), 0);
+    EXPECT_EQ(cloud.points().rows(), 0);
+    EXPECT_EQ(cloud.points().cols(), 3);
+    EXPECT_THROW((void)cloud[0], std::out_of_range);
+}
+
 TEST(PointCloudTest, GpuTransfer)
 {
     if (!hasCudaDevice()) { GTEST_SKIP() << "No CUDA device, skipping GPU transfer test"; }

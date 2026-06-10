@@ -144,6 +144,17 @@ TEST(PointCloudAttributesTest, SetFacesRejectsOutOfRangeVertexIndex)
     EXPECT_THROW(cloud.setFaces(faces), std::out_of_range);
 }
 
+TEST(PointCloudAttributesTest, SetFacesRejectsNegativeVertexIndex)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
+    faces.setValue(0, 0, 0);
+    faces.setValue(0, 1, -1);
+    faces.setValue(0, 2, 2);
+
+    EXPECT_THROW(cloud.setFaces(faces), std::out_of_range);
+}
+
 TEST(PointCloudAttributesTest, SetFaceTextureIndicesRejectsMismatchedFaceCount)
 {
     plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(4);
@@ -154,6 +165,25 @@ TEST(PointCloudAttributesTest, SetFaceTextureIndicesRejectsMismatchedFaceCount)
     cloud.setFaces(std::move(faces));
 
     plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(2, 3);
+    face_texture_indices.fill(0);
+
+    EXPECT_THROW(cloud.setFaceTextureIndices(face_texture_indices), std::runtime_error);
+}
+
+TEST(PointCloudAttributesTest, SetFaceTextureIndicesRejectsNonNx3)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(4);
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
+    faces.setValue(0, 0, 0);
+    faces.setValue(0, 1, 1);
+    faces.setValue(0, 2, 2);
+    cloud.setFaces(std::move(faces));
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> tex(4, 2);
+    tex.fill(0.0f);
+    cloud.setTextureCoords(std::move(tex));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(1, 2);
     face_texture_indices.fill(0);
 
     EXPECT_THROW(cloud.setFaceTextureIndices(face_texture_indices), std::runtime_error);
@@ -217,6 +247,30 @@ TEST(PointCloudAttributesTest, ReplacingFacesRevalidatesFaceTextureIndices)
     plamatrix::DenseMatrix<int, plamatrix::Device::CPU> too_many_faces(2, 3);
     too_many_faces.fill(0);
     EXPECT_THROW(cloud.setFaces(std::move(too_many_faces)), std::runtime_error);
+}
+
+TEST(PointCloudAttributesTest, ReplacingTextureCoordsRevalidatesFaceTextureIndices)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(4);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> tex(4, 2);
+    tex.fill(0.0f);
+    cloud.setTextureCoords(std::move(tex));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
+    faces.setValue(0, 0, 0);
+    faces.setValue(0, 1, 1);
+    faces.setValue(0, 2, 2);
+    cloud.setFaces(std::move(faces));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(1, 3);
+    face_texture_indices.setValue(0, 0, 0);
+    face_texture_indices.setValue(0, 1, 1);
+    face_texture_indices.setValue(0, 2, 3);
+    cloud.setFaceTextureIndices(std::move(face_texture_indices));
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> too_few_texture_coords(3, 2);
+    too_few_texture_coords.fill(0.0f);
+    EXPECT_THROW(cloud.setTextureCoords(std::move(too_few_texture_coords)), std::out_of_range);
 }
 
 TEST(PointCloudAttributesTest, MaterialLibraryFileEmptyByDefault)

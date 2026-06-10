@@ -105,6 +105,115 @@ TEST(ICPTest, ThrowsForEmptySourceOrTarget)
     EXPECT_THROW(empty_target_icp.align(output), std::invalid_argument);
 }
 
+TEST(ICPTest, RejectsSmallSampleWithFewerThanThreeCorrespondences)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto src_mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
+    auto tgt_mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
+    src_mat.setValue(0, 0, 0); src_mat.setValue(0, 1, 0); src_mat.setValue(0, 2, 0);
+    src_mat.setValue(1, 0, 1); src_mat.setValue(1, 1, 0); src_mat.setValue(1, 2, 0);
+    tgt_mat.setValue(0, 0, 0); tgt_mat.setValue(0, 1, 0); tgt_mat.setValue(0, 2, 0);
+    tgt_mat.setValue(1, 0, 1); tgt_mat.setValue(1, 1, 0); tgt_mat.setValue(1, 2, 0);
+
+    auto source = std::make_shared<Cloud>(std::move(src_mat));
+    auto target = std::make_shared<Cloud>(std::move(tgt_mat));
+
+    plapoint::IterativeClosestPoint<Scalar, plamatrix::Device::CPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+
+    Cloud output;
+    try
+    {
+        icp.align(output);
+        FAIL() << "Expected fewer than three correspondences to be rejected";
+    }
+    catch (const std::runtime_error& e)
+    {
+        EXPECT_NE(std::string(e.what()).find("fewer than 3 correspondences"), std::string::npos);
+    }
+}
+
+TEST(ICPTest, RejectsDisjointCloudsWhenCorrespondenceDistanceExcludesAllMatches)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto src_mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(4, 3);
+    auto tgt_mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(4, 3);
+    const Scalar pts[4][3] = {
+        {0, 0, 0},
+        {1, 0, 0},
+        {0, 1, 0},
+        {0, 0, 1},
+    };
+    for (int i = 0; i < 4; ++i)
+    {
+        src_mat.setValue(i, 0, pts[i][0]);
+        src_mat.setValue(i, 1, pts[i][1]);
+        src_mat.setValue(i, 2, pts[i][2]);
+        tgt_mat.setValue(i, 0, pts[i][0] + Scalar(100));
+        tgt_mat.setValue(i, 1, pts[i][1] + Scalar(100));
+        tgt_mat.setValue(i, 2, pts[i][2] + Scalar(100));
+    }
+
+    auto source = std::make_shared<Cloud>(std::move(src_mat));
+    auto target = std::make_shared<Cloud>(std::move(tgt_mat));
+
+    plapoint::IterativeClosestPoint<Scalar, plamatrix::Device::CPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(Scalar(1));
+
+    Cloud output;
+    try
+    {
+        icp.align(output);
+        FAIL() << "Expected disjoint clouds to have no valid correspondences";
+    }
+    catch (const std::runtime_error& e)
+    {
+        EXPECT_NE(std::string(e.what()).find("fewer than 3 correspondences"), std::string::npos);
+    }
+}
+
+TEST(ICPTest, RejectsMismatchedTargetWithDegenerateCorrespondenceGeometry)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto src_mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(4, 3);
+    src_mat.setValue(0, 0, 0); src_mat.setValue(0, 1, 0); src_mat.setValue(0, 2, 0);
+    src_mat.setValue(1, 0, 1); src_mat.setValue(1, 1, 0); src_mat.setValue(1, 2, 0);
+    src_mat.setValue(2, 0, 0); src_mat.setValue(2, 1, 1); src_mat.setValue(2, 2, 0);
+    src_mat.setValue(3, 0, 0); src_mat.setValue(3, 1, 0); src_mat.setValue(3, 2, 1);
+
+    auto tgt_mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
+    tgt_mat.setValue(0, 0, 0); tgt_mat.setValue(0, 1, 0); tgt_mat.setValue(0, 2, 0);
+    tgt_mat.setValue(1, 0, 1); tgt_mat.setValue(1, 1, 0); tgt_mat.setValue(1, 2, 0);
+
+    auto source = std::make_shared<Cloud>(std::move(src_mat));
+    auto target = std::make_shared<Cloud>(std::move(tgt_mat));
+
+    plapoint::IterativeClosestPoint<Scalar, plamatrix::Device::CPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(Scalar(10));
+
+    Cloud output;
+    try
+    {
+        icp.align(output);
+        FAIL() << "Expected degenerate target correspondence geometry to be rejected";
+    }
+    catch (const std::runtime_error& e)
+    {
+        EXPECT_NE(std::string(e.what()).find("target correspondence geometry is degenerate"), std::string::npos);
+    }
+}
+
 TEST(ICPTest, RejectsInvalidIterationAndEpsilonParameters)
 {
     plapoint::IterativeClosestPoint<float, plamatrix::Device::CPU> icp;
@@ -503,6 +612,62 @@ TEST(ICPTest, GpuRejectsNonFiniteSourcePointsBeforeAlignment)
     {
         EXPECT_NE(std::string(e.what()).find("source cloud contains non-finite point"), std::string::npos);
     }
+}
+
+TEST(ICPTest, GpuIdentityAlignmentMatchesCpuTransformAndMetrics)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP test";
+    }
+
+    using Scalar = float;
+    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+
+    auto make_points = []()
+    {
+        auto points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(4, 3);
+        points.setValue(0, 0, 0); points.setValue(0, 1, 0); points.setValue(0, 2, 0);
+        points.setValue(1, 0, 1); points.setValue(1, 1, 0); points.setValue(1, 2, 0);
+        points.setValue(2, 0, 0); points.setValue(2, 1, 1); points.setValue(2, 2, 0);
+        points.setValue(3, 0, 0); points.setValue(3, 1, 0); points.setValue(3, 2, 1);
+        return points;
+    };
+
+    auto cpu_source = std::make_shared<CpuCloud>(make_points());
+    auto cpu_target = std::make_shared<CpuCloud>(make_points());
+
+    plapoint::IterativeClosestPoint<Scalar, plamatrix::Device::CPU> cpu_icp;
+    cpu_icp.setInputSource(cpu_source);
+    cpu_icp.setInputTarget(cpu_target);
+    cpu_icp.setMaxIterations(5);
+    CpuCloud cpu_output;
+    cpu_icp.align(cpu_output);
+
+    auto gpu_source = std::make_shared<GpuCloud>(cpu_source->toGpu());
+    auto gpu_target = std::make_shared<GpuCloud>(cpu_target->toGpu());
+
+    plapoint::IterativeClosestPoint<Scalar, plamatrix::Device::GPU> gpu_icp;
+    gpu_icp.setInputSource(gpu_source);
+    gpu_icp.setInputTarget(gpu_target);
+    gpu_icp.setMaxIterations(5);
+    GpuCloud gpu_output;
+    gpu_icp.align(gpu_output);
+
+    const auto& cpu_T = cpu_icp.getFinalTransformation();
+    const auto& gpu_T = gpu_icp.getFinalTransformation();
+    for (int row = 0; row < 4; ++row)
+    {
+        for (int col = 0; col < 4; ++col)
+        {
+            EXPECT_NEAR(gpu_T.getValue(row, col), cpu_T.getValue(row, col), Scalar(1e-5));
+        }
+    }
+    EXPECT_EQ(gpu_icp.hasConverged(), cpu_icp.hasConverged());
+    EXPECT_NEAR(gpu_icp.getFitnessScore(), cpu_icp.getFitnessScore(), Scalar(1e-6));
+    EXPECT_NEAR(gpu_icp.getFinalRmse(), cpu_icp.getFinalRmse(), Scalar(1e-6));
+    EXPECT_EQ(gpu_output.size(), cpu_output.size());
 }
 #endif
 

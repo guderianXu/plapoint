@@ -3,6 +3,7 @@
 #include <plapoint/search/kdtree.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
+#include <cmath>
 
 #ifdef PLAPOINT_WITH_CUDA
 #include <plapoint/gpu/cuda_check.h>
@@ -59,9 +60,112 @@ TEST(NormalEstimationTest, ThrowsIfNoInput)
     EXPECT_THROW(ne.compute(), std::runtime_error);
 }
 
+TEST(NormalEstimationTest, ThrowsIfNoSearchMethod)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto cloud = std::make_shared<Cloud>(1);
+
+    plapoint::NormalEstimation<Scalar, plamatrix::Device::CPU> ne;
+    ne.setInputCloud(cloud);
+
+    EXPECT_THROW(ne.compute(), std::runtime_error);
+}
+
+TEST(NormalEstimationTest, EmptyInputReturnsEmptyNormals)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto cloud = std::make_shared<Cloud>(0);
+    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    tree->setInputCloud(cloud);
+    tree->build();
+
+    plapoint::NormalEstimation<Scalar, plamatrix::Device::CPU> ne;
+    ne.setInputCloud(cloud);
+    ne.setSearchMethod(tree);
+    ne.setKSearch(3);
+
+    auto normals = ne.compute();
+
+    EXPECT_EQ(normals.rows(), 0);
+    EXPECT_EQ(normals.cols(), 3);
+}
+
+TEST(NormalEstimationTest, KGreaterThanPointCountLeavesSmallNeighborhoodNormalsZero)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
+    mat.setValue(0, 0, 0.0f); mat.setValue(0, 1, 0.0f); mat.setValue(0, 2, 0.0f);
+    mat.setValue(1, 0, 1.0f); mat.setValue(1, 1, 0.0f); mat.setValue(1, 2, 0.0f);
+    auto cloud = std::make_shared<Cloud>(std::move(mat));
+
+    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    tree->setInputCloud(cloud);
+    tree->build();
+
+    plapoint::NormalEstimation<Scalar, plamatrix::Device::CPU> ne;
+    ne.setInputCloud(cloud);
+    ne.setSearchMethod(tree);
+    ne.setKSearch(8);
+
+    auto normals = ne.compute();
+
+    ASSERT_EQ(normals.rows(), 2);
+    for (int i = 0; i < 2; ++i)
+    {
+        EXPECT_FLOAT_EQ(normals.getValue(i, 0), 0.0f);
+        EXPECT_FLOAT_EQ(normals.getValue(i, 1), 0.0f);
+        EXPECT_FLOAT_EQ(normals.getValue(i, 2), 0.0f);
+    }
+}
+
+TEST(NormalEstimationTest, DegenerateRepeatedNeighborhoodProducesFiniteNormal)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(3, 3);
+    for (int i = 0; i < 3; ++i)
+    {
+        mat.setValue(i, 0, 1.0f);
+        mat.setValue(i, 1, 1.0f);
+        mat.setValue(i, 2, 1.0f);
+    }
+    auto cloud = std::make_shared<Cloud>(std::move(mat));
+
+    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    tree->setInputCloud(cloud);
+    tree->build();
+
+    plapoint::NormalEstimation<Scalar, plamatrix::Device::CPU> ne;
+    ne.setInputCloud(cloud);
+    ne.setSearchMethod(tree);
+    ne.setKSearch(3);
+
+    auto normals = ne.compute();
+
+    ASSERT_EQ(normals.rows(), 3);
+    for (int i = 0; i < 3; ++i)
+    {
+        const Scalar nx = normals.getValue(i, 0);
+        const Scalar ny = normals.getValue(i, 1);
+        const Scalar nz = normals.getValue(i, 2);
+        EXPECT_TRUE(std::isfinite(nx));
+        EXPECT_TRUE(std::isfinite(ny));
+        EXPECT_TRUE(std::isfinite(nz));
+    }
+}
+
 TEST(NormalEstimationTest, RejectsInvalidKSearch)
 {
     plapoint::NormalEstimation<float, plamatrix::Device::CPU> ne;
+    EXPECT_THROW(ne.setKSearch(-1), std::invalid_argument);
+    EXPECT_THROW(ne.setKSearch(0), std::invalid_argument);
     EXPECT_THROW(ne.setKSearch(2), std::invalid_argument);
 }
 
@@ -161,6 +265,53 @@ TEST(NormalEstimationTest, GpuPlaneNormalsMatchCpuForEveryPoint)
                     std::abs(cpu_normals.getValue(i, 1)), Scalar(1e-5));
         EXPECT_NEAR(std::abs(gpu_normals.getValue(i, 2)),
                     std::abs(cpu_normals.getValue(i, 2)), Scalar(1e-5));
+    }
+}
+
+TEST(NormalEstimationTest, GpuMatchesCpuForKGreaterThanPointCount)
+{
+    if (!hasCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU normal estimation test";
+    }
+
+    using Scalar = float;
+    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
+    mat.setValue(0, 0, 0.0f); mat.setValue(0, 1, 0.0f); mat.setValue(0, 2, 0.0f);
+    mat.setValue(1, 0, 1.0f); mat.setValue(1, 1, 0.0f); mat.setValue(1, 2, 0.0f);
+    auto cpu_cloud = std::make_shared<CpuCloud>(std::move(mat));
+    auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud->toGpu());
+
+    auto cpu_tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    cpu_tree->setInputCloud(cpu_cloud);
+    cpu_tree->build();
+
+    auto gpu_tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::GPU>>();
+    gpu_tree->setInputCloud(gpu_cloud);
+    gpu_tree->build();
+
+    plapoint::NormalEstimation<Scalar, plamatrix::Device::CPU> cpu_ne;
+    cpu_ne.setInputCloud(cpu_cloud);
+    cpu_ne.setSearchMethod(cpu_tree);
+    cpu_ne.setKSearch(8);
+
+    plapoint::NormalEstimation<Scalar, plamatrix::Device::GPU> gpu_ne;
+    gpu_ne.setInputCloud(gpu_cloud);
+    gpu_ne.setSearchMethod(gpu_tree);
+    gpu_ne.setKSearch(8);
+
+    auto cpu_normals = cpu_ne.compute();
+    auto gpu_normals = gpu_ne.compute().toCpu();
+
+    ASSERT_EQ(gpu_normals.rows(), cpu_normals.rows());
+    for (plamatrix::Index i = 0; i < cpu_normals.rows(); ++i)
+    {
+        EXPECT_FLOAT_EQ(gpu_normals.getValue(i, 0), cpu_normals.getValue(i, 0));
+        EXPECT_FLOAT_EQ(gpu_normals.getValue(i, 1), cpu_normals.getValue(i, 1));
+        EXPECT_FLOAT_EQ(gpu_normals.getValue(i, 2), cpu_normals.getValue(i, 2));
     }
 }
 #endif

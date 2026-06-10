@@ -79,10 +79,116 @@ TEST(SORTest, EmptyInputReturnsEmptyOutput)
     EXPECT_EQ(output.size(), 0u);
 }
 
+TEST(SORTest, SinglePointWithKGreaterThanPointCountIsKept)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(1, 3);
+    mat.setValue(0, 0, 1.0f);
+    mat.setValue(0, 1, 2.0f);
+    mat.setValue(0, 2, 3.0f);
+    auto cloud = std::make_shared<Cloud>(std::move(mat));
+
+    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    tree->setInputCloud(cloud);
+    tree->build();
+
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::CPU> sor;
+    sor.setInputCloud(cloud);
+    sor.setSearchMethod(tree);
+    sor.setMeanK(8);
+    sor.setStddevMulThresh(Scalar(0));
+
+    Cloud output;
+    sor.filter(output);
+
+    ASSERT_EQ(output.size(), 1u);
+    EXPECT_FLOAT_EQ(output.points().getValue(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(output.points().getValue(0, 1), 2.0f);
+    EXPECT_FLOAT_EQ(output.points().getValue(0, 2), 3.0f);
+}
+
+TEST(SORTest, RepeatedPointsWithZeroMeanDistanceAreKept)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(3, 3);
+    for (int i = 0; i < 3; ++i)
+    {
+        mat.setValue(i, 0, 2.0f);
+        mat.setValue(i, 1, -1.0f);
+        mat.setValue(i, 2, 0.5f);
+    }
+    auto cloud = std::make_shared<Cloud>(std::move(mat));
+
+    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    tree->setInputCloud(cloud);
+    tree->build();
+
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::CPU> sor;
+    sor.setInputCloud(cloud);
+    sor.setSearchMethod(tree);
+    sor.setMeanK(10);
+    sor.setStddevMulThresh(Scalar(0));
+
+    Cloud output;
+    sor.filter(output);
+
+    EXPECT_EQ(output.size(), 3u);
+}
+
+TEST(SORTest, CopiesNormalsForInliers)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(5, 3);
+    auto normals = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(5, 3);
+    for (int i = 0; i < 4; ++i)
+    {
+        mat.setValue(i, 0, Scalar(i) * Scalar(0.01));
+        mat.setValue(i, 1, 0);
+        mat.setValue(i, 2, 0);
+        normals.setValue(i, 0, Scalar(i + 1));
+        normals.setValue(i, 1, 0);
+        normals.setValue(i, 2, Scalar(10 + i));
+    }
+    mat.setValue(4, 0, 100);
+    mat.setValue(4, 1, 0);
+    mat.setValue(4, 2, 0);
+    normals.setValue(4, 0, 99);
+    normals.setValue(4, 1, 0);
+    normals.setValue(4, 2, 99);
+    auto cloud = std::make_shared<Cloud>(std::move(mat));
+    cloud->setNormals(std::move(normals));
+
+    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    tree->setInputCloud(cloud);
+    tree->build();
+
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::CPU> sor;
+    sor.setInputCloud(cloud);
+    sor.setSearchMethod(tree);
+    sor.setMeanK(2);
+    sor.setStddevMulThresh(Scalar(0.5));
+
+    Cloud output;
+    sor.filter(output);
+
+    ASSERT_TRUE(output.hasNormals());
+    ASSERT_EQ(output.size(), 4u);
+    EXPECT_FLOAT_EQ(output.normals()->getValue(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(output.normals()->getValue(3, 0), 4.0f);
+    EXPECT_FLOAT_EQ(output.normals()->getValue(3, 2), 13.0f);
+}
+
 TEST(SORTest, RejectsInvalidParameters)
 {
     plapoint::StatisticalOutlierRemoval<float, plamatrix::Device::CPU> sor;
 
+    EXPECT_THROW(sor.setMeanK(-1), std::invalid_argument);
     EXPECT_THROW(sor.setMeanK(0), std::invalid_argument);
     EXPECT_THROW(sor.setMeanK(std::numeric_limits<int>::max()), std::invalid_argument);
     EXPECT_THROW(sor.setStddevMulThresh(-0.1f), std::invalid_argument);
@@ -134,5 +240,77 @@ TEST(SORTest, GpuInputUsesBatchKnnWorkspace)
 
     EXPECT_GE(tree->gpuBatchQueryScalarCapacityForTesting(), 36u);
     EXPECT_GE(tree->gpuBatchResultCapacityForTesting(), 60u);
+}
+
+TEST(SORTest, GpuMatchesCpuAndCopiesNormals)
+{
+    if (!hasCudaDeviceForSOR())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU SOR test";
+    }
+
+    using Scalar = float;
+    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(6, 3);
+    auto normals = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(6, 3);
+    for (int i = 0; i < 5; ++i)
+    {
+        mat.setValue(i, 0, Scalar(i) * Scalar(0.02));
+        mat.setValue(i, 1, Scalar(i % 2) * Scalar(0.01));
+        mat.setValue(i, 2, 0);
+        normals.setValue(i, 0, Scalar(i + 1));
+        normals.setValue(i, 1, 0);
+        normals.setValue(i, 2, Scalar(20 + i));
+    }
+    mat.setValue(5, 0, 50);
+    mat.setValue(5, 1, 50);
+    mat.setValue(5, 2, 0);
+    normals.setValue(5, 0, 99);
+    normals.setValue(5, 1, 0);
+    normals.setValue(5, 2, 99);
+
+    auto cpu_cloud = std::make_shared<CpuCloud>(std::move(mat));
+    cpu_cloud->setNormals(std::move(normals));
+    auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud->toGpu());
+
+    auto cpu_tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    cpu_tree->setInputCloud(cpu_cloud);
+    cpu_tree->build();
+
+    auto gpu_tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::GPU>>();
+    gpu_tree->setInputCloud(gpu_cloud);
+    gpu_tree->build();
+
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::CPU> cpu_sor;
+    cpu_sor.setInputCloud(cpu_cloud);
+    cpu_sor.setSearchMethod(cpu_tree);
+    cpu_sor.setMeanK(3);
+    cpu_sor.setStddevMulThresh(Scalar(0.75));
+    CpuCloud cpu_output;
+    cpu_sor.filter(cpu_output);
+
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::GPU> gpu_sor;
+    gpu_sor.setInputCloud(gpu_cloud);
+    gpu_sor.setSearchMethod(gpu_tree);
+    gpu_sor.setMeanK(3);
+    gpu_sor.setStddevMulThresh(Scalar(0.75));
+    GpuCloud gpu_output;
+    gpu_sor.filter(gpu_output);
+    auto gpu_output_cpu = gpu_output.toCpu();
+
+    ASSERT_EQ(gpu_output_cpu.size(), cpu_output.size());
+    ASSERT_TRUE(gpu_output_cpu.hasNormals());
+    ASSERT_TRUE(cpu_output.hasNormals());
+    for (std::size_t i = 0; i < cpu_output.size(); ++i)
+    {
+        EXPECT_FLOAT_EQ(gpu_output_cpu.points().getValue(static_cast<plamatrix::Index>(i), 0),
+                        cpu_output.points().getValue(static_cast<plamatrix::Index>(i), 0));
+        EXPECT_FLOAT_EQ(gpu_output_cpu.normals()->getValue(static_cast<plamatrix::Index>(i), 0),
+                        cpu_output.normals()->getValue(static_cast<plamatrix::Index>(i), 0));
+        EXPECT_FLOAT_EQ(gpu_output_cpu.normals()->getValue(static_cast<plamatrix::Index>(i), 2),
+                        cpu_output.normals()->getValue(static_cast<plamatrix::Index>(i), 2));
+    }
 }
 #endif

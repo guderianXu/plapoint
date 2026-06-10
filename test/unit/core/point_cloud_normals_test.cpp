@@ -36,3 +36,12 @@ TEST(PointCloudTest, NormalsWrongSize)
     bad.fill(0);
     EXPECT_THROW(cloud.setNormals(bad), std::runtime_error);
 }
+
+TEST(PointCloudTest, NormalsWrongColumnCount)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(5);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> bad(5, 2);
+    bad.fill(0);
+
+    EXPECT_THROW(cloud.setNormals(bad), std::runtime_error);
+}
