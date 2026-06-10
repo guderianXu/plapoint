@@ -96,6 +96,103 @@ TEST(PlyIOTest, ReadOnlyPositions)
     std::remove(path.c_str());
 }
 
+TEST(PlyIOTest, ReadsAsciiVertexPropertiesUsingHeaderOrder)
+{
+    using Scalar = float;
+
+    std::string path = "/tmp/plapoint_test_header_order_ascii.ply";
+    {
+        std::ofstream f(path);
+        f << "ply\n"
+          << "format ascii 1.0\n"
+          << "element vertex 2\n"
+          << "property float intensity\n"
+          << "property list uchar int adjacent_vertices\n"
+          << "property float z\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float nx\n"
+          << "property float ny\n"
+          << "property float nz\n"
+          << "end_header\n";
+        f << "99 2 7 8 3.0 1.0 2.0 0.0 0.0 1.0\n"
+          << "42 0 6.0 4.0 5.0 1.0 0.0 0.0\n";
+    }
+
+    auto cloud = plapoint::io::readPly<Scalar>(path);
+    ASSERT_EQ(cloud->size(), 2u);
+    ASSERT_TRUE(cloud->hasNormals());
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), 2.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 2), 3.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 0), 4.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 1), 5.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 6.0f);
+    EXPECT_FLOAT_EQ(cloud->normals()->getValue(0, 2), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->normals()->getValue(1, 0), 1.0f);
+
+    std::remove(path.c_str());
+}
+
+TEST(PlyIOTest, ReadsBinaryVertexPropertiesUsingHeaderOrder)
+{
+    using Scalar = float;
+
+    std::string path = "/tmp/plapoint_test_header_order_binary.ply";
+    {
+        std::ofstream f(path, std::ios::binary);
+        f << "ply\n"
+          << "format binary_little_endian 1.0\n"
+          << "element vertex 2\n"
+          << "property uchar red\n"
+          << "property float intensity\n"
+          << "property list uchar int adjacent_vertices\n"
+          << "property float z\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float nx\n"
+          << "property float ny\n"
+          << "property float nz\n"
+          << "end_header\n";
+
+        const unsigned char red0 = 9;
+        const float intensity0 = 99.0f;
+        const unsigned char listCount0 = 2;
+        const int list0[2] = {7, 8};
+        const float values0[6] = {3.0f, 1.0f, 2.0f, 0.0f, 0.0f, 1.0f};
+
+        const unsigned char red1 = 4;
+        const float intensity1 = 42.0f;
+        const unsigned char listCount1 = 0;
+        const float values1[6] = {6.0f, 4.0f, 5.0f, 1.0f, 0.0f, 0.0f};
+
+        f.write(reinterpret_cast<const char*>(&red0), sizeof(red0));
+        f.write(reinterpret_cast<const char*>(&intensity0), sizeof(intensity0));
+        f.write(reinterpret_cast<const char*>(&listCount0), sizeof(listCount0));
+        f.write(reinterpret_cast<const char*>(list0), sizeof(list0));
+        f.write(reinterpret_cast<const char*>(values0), sizeof(values0));
+
+        f.write(reinterpret_cast<const char*>(&red1), sizeof(red1));
+        f.write(reinterpret_cast<const char*>(&intensity1), sizeof(intensity1));
+        f.write(reinterpret_cast<const char*>(&listCount1), sizeof(listCount1));
+        f.write(reinterpret_cast<const char*>(values1), sizeof(values1));
+    }
+
+    auto cloud = plapoint::io::readPly<Scalar>(path);
+    ASSERT_EQ(cloud->size(), 2u);
+    ASSERT_TRUE(cloud->hasNormals());
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), 2.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 2), 3.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 0), 4.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 1), 5.0f);
+    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 6.0f);
+    EXPECT_FLOAT_EQ(cloud->normals()->getValue(0, 2), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->normals()->getValue(1, 0), 1.0f);
+
+    std::remove(path.c_str());
+}
+
 TEST(PlyIOTest, ReadsPointOffsetComment)
 {
     using Scalar = float;

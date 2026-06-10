@@ -41,17 +41,8 @@ public:
 
         const auto& points_cpu = _cloud->pointsCpu();
 
-        // Build queries for batch KNN
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(n, 3);
-        for (int i = 0; i < n; ++i)
-        {
-            queries(i, 0) = points_cpu(i, 0);
-            queries(i, 1) = points_cpu(i, 1);
-            queries(i, 2) = points_cpu(i, 2);
-        }
-
         // Batch KNN (uses GPU brute-force when Dev == GPU)
-        auto all_neighbors = _tree->batchNearestKSearch(queries, _k);
+        auto all_neighbors = _tree->batchNearestKSearch(points_cpu, _k);
 
         // Compute normals per point
         for (int i = 0; i < n; ++i)

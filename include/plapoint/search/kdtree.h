@@ -14,9 +14,9 @@
 #include <cstddef>
 #include <limits>
 #include <memory>
-#include <queue>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace plapoint {
@@ -112,17 +112,9 @@ public:
         std::vector<int> result;
         if (_nodes.empty() || k <= 0) return result;
 
-        using DistIndex = std::pair<double, int>;
-        std::priority_queue<DistIndex, std::vector<DistIndex>, DistComparator> pq;
-
-        nearestKSearchRecursive(query, k, 0, pq);
-
-        result.resize(pq.size());
-        for (int i = static_cast<int>(pq.size()) - 1; i >= 0; --i)
-        {
-            result[static_cast<std::size_t>(i)] = pq.top().second;
-            pq.pop();
-        }
+        std::vector<std::pair<double, int>> heap;
+        heap.reserve(std::min(static_cast<std::size_t>(k), _nodes.size()));
+        nearestKSearchInto(query, k, result, heap);
         return result;
     }
 
@@ -165,11 +157,12 @@ public:
         if constexpr (Dev == plamatrix::Device::CPU)
         {
             const int N = checkedInt(_cloud->size(), "KdTree: point count");
+            std::vector<std::pair<double, int>> heap;
+            heap.reserve(std::min(static_cast<std::size_t>(k), static_cast<std::size_t>(N)));
             for (int i = 0; i < M; ++i)
             {
                 plamatrix::Vec3<Scalar> q{queries(i, 0), queries(i, 1), queries(i, 2)};
-                auto row = nearestKSearch(q, k);
-                results[static_cast<std::size_t>(i)] = filterFiniteNeighbors(q, row, N);
+                nearestKSearchInto(q, k, results[static_cast<std::size_t>(i)], heap);
             }
         }
         else
@@ -342,11 +335,32 @@ private:
         return node_idx;
     }
 
+    void nearestKSearchInto(const plamatrix::Vec3<Scalar>& query, int k,
+                            std::vector<int>& result,
+                            std::vector<std::pair<double, int>>& heap) const
+    {
+        result.clear();
+        heap.clear();
+        if (_nodes.empty() || k <= 0)
+        {
+            return;
+        }
+
+        nearestKSearchRecursive(query, k, 0, heap);
+
+        result.resize(heap.size());
+        const DistComparator compare;
+        for (int i = static_cast<int>(heap.size()) - 1; i >= 0; --i)
+        {
+            std::pop_heap(heap.begin(), heap.end(), compare);
+            result[static_cast<std::size_t>(i)] = heap.back().second;
+            heap.pop_back();
+        }
+    }
+
     void nearestKSearchRecursive(const plamatrix::Vec3<Scalar>& query, int k,
                                  int node_idx,
-                                 std::priority_queue<std::pair<double, int>,
-                                     std::vector<std::pair<double, int>>,
-                                     DistComparator>& pq) const
+                                 std::vector<std::pair<double, int>>& heap) const
     {
         if (node_idx < 0) return;
         const auto& node = _nodes[static_cast<std::size_t>(node_idx)];
@@ -354,14 +368,17 @@ private:
         auto pt = pointVec(node.point_idx);
         double d = finiteDistance(query, pt);
 
-        if (std::isfinite(d) && static_cast<int>(pq.size()) < k)
+        const DistComparator compare;
+        if (std::isfinite(d) && static_cast<int>(heap.size()) < k)
         {
-            pq.push({d, node.point_idx});
+            heap.push_back({d, node.point_idx});
+            std::push_heap(heap.begin(), heap.end(), compare);
         }
-        else if (std::isfinite(d) && d < pq.top().first)
+        else if (std::isfinite(d) && !heap.empty() && d < heap.front().first)
         {
-            pq.pop();
-            pq.push({d, node.point_idx});
+            std::pop_heap(heap.begin(), heap.end(), compare);
+            heap.back() = {d, node.point_idx};
+            std::push_heap(heap.begin(), heap.end(), compare);
         }
 
         int dim = node.split_dim;
@@ -369,20 +386,20 @@ private:
         const double diff = query_coord - static_cast<double>(node.split_val);
         if (!std::isfinite(diff))
         {
-            nearestKSearchRecursive(query, k, node.left, pq);
-            nearestKSearchRecursive(query, k, node.right, pq);
+            nearestKSearchRecursive(query, k, node.left, heap);
+            nearestKSearchRecursive(query, k, node.right, heap);
             return;
         }
         int near = diff <= 0 ? node.left : node.right;
         int far  = diff <= 0 ? node.right : node.left;
 
-        nearestKSearchRecursive(query, k, near, pq);
+        nearestKSearchRecursive(query, k, near, heap);
 
-        const double max_dist = pq.empty() ? std::numeric_limits<double>::infinity() : pq.top().first;
+        const double max_dist = heap.empty() ? std::numeric_limits<double>::infinity() : heap.front().first;
         const double split_dist = std::abs(diff);
-        if (!std::isfinite(split_dist) || split_dist <= max_dist || static_cast<int>(pq.size()) < k)
+        if (!std::isfinite(split_dist) || split_dist <= max_dist || static_cast<int>(heap.size()) < k)
         {
-            nearestKSearchRecursive(query, k, far, pq);
+            nearestKSearchRecursive(query, k, far, heap);
         }
     }
 

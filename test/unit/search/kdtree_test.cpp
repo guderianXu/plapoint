@@ -4,6 +4,7 @@
 #include <plamatrix/plamatrix.h>
 #include <algorithm>
 #include <limits>
+#include <vector>
 
 class KdTreeTest : public ::testing::Test
 {
@@ -177,6 +178,33 @@ TEST_F(KdTreeTest, BatchNearestKSearchClampsKToPointCount)
 
     ASSERT_EQ(results.size(), 1u);
     EXPECT_EQ(results[0].size(), cloud->size());
+}
+
+TEST_F(KdTreeTest, BatchNearestKSearchMatchesIndividualSearchOrderAcrossRows)
+{
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(5, 3);
+    mat.setValue(0, 0, Scalar(0));  mat.setValue(0, 1, Scalar(0)); mat.setValue(0, 2, Scalar(0));
+    mat.setValue(1, 0, Scalar(2));  mat.setValue(1, 1, Scalar(0)); mat.setValue(1, 2, Scalar(0));
+    mat.setValue(2, 0, Scalar(5));  mat.setValue(2, 1, Scalar(0)); mat.setValue(2, 2, Scalar(0));
+    mat.setValue(3, 0, Scalar(9));  mat.setValue(3, 1, Scalar(0)); mat.setValue(3, 2, Scalar(0));
+    mat.setValue(4, 0, Scalar(14)); mat.setValue(4, 1, Scalar(0)); mat.setValue(4, 2, Scalar(0));
+    auto line_cloud = std::make_shared<Cloud>(std::move(mat));
+
+    KdTree tree;
+    tree.setInputCloud(line_cloud);
+    tree.build();
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(3, 3);
+    queries.setValue(0, 0, Scalar(4));  queries.setValue(0, 1, Scalar(0)); queries.setValue(0, 2, Scalar(0));
+    queries.setValue(1, 0, Scalar(13)); queries.setValue(1, 1, Scalar(0)); queries.setValue(1, 2, Scalar(0));
+    queries.setValue(2, 0, Scalar(0.25)); queries.setValue(2, 1, Scalar(0)); queries.setValue(2, 2, Scalar(0));
+
+    const auto results = tree.batchNearestKSearch(queries, 3);
+
+    ASSERT_EQ(results.size(), 3u);
+    EXPECT_EQ(results[0], (std::vector<int>{2, 1, 0}));
+    EXPECT_EQ(results[1], (std::vector<int>{4, 3, 2}));
+    EXPECT_EQ(results[2], (std::vector<int>{0, 1, 2}));
 }
 
 TEST_F(KdTreeTest, BatchNearestKSearchDropsInvalidInfiniteDistances)

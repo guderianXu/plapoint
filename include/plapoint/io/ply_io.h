@@ -38,12 +38,15 @@ enum class PlyFormat { ASCII, BinaryLE, BinaryBE };
 
 namespace detail {
 
+enum class PlyVertexPropertyRole { Ignore, X, Y, Z, NX, NY, NZ };
+
 struct PlyScalarProperty
 {
     bool isList = false;
     std::string countType;
     std::string type;
     std::string name;
+    PlyVertexPropertyRole role = PlyVertexPropertyRole::Ignore;
 };
 
 struct PlyElement
@@ -138,6 +141,17 @@ inline void skipBinaryList(std::istream& stream,
     }
 }
 
+inline PlyVertexPropertyRole vertexPropertyRole(const std::string& name)
+{
+    if (name == "x") return PlyVertexPropertyRole::X;
+    if (name == "y") return PlyVertexPropertyRole::Y;
+    if (name == "z") return PlyVertexPropertyRole::Z;
+    if (name == "nx") return PlyVertexPropertyRole::NX;
+    if (name == "ny") return PlyVertexPropertyRole::NY;
+    if (name == "nz") return PlyVertexPropertyRole::NZ;
+    return PlyVertexPropertyRole::Ignore;
+}
+
 template <typename Scalar>
 std::shared_ptr<PointCloud<Scalar, plamatrix::Device::CPU>>
 readPlyImpl(const std::string& path,
@@ -209,15 +223,20 @@ readPlyImpl(const std::string& path,
                 std::string itemType, listName;
                 iss >> itemType >> listName;
                 const std::string countType = name;
-                currentElement->properties.push_back({true, countType, itemType, listName});
+                currentElement->properties.push_back(
+                    {true, countType, itemType, listName, PlyVertexPropertyRole::Ignore});
                 continue;
             }
-            currentElement->properties.push_back({false, {}, type, name});
+            const PlyVertexPropertyRole role =
+                currentElement->name == "vertex"
+                    ? vertexPropertyRole(name)
+                    : PlyVertexPropertyRole::Ignore;
+            currentElement->properties.push_back({false, {}, type, name, role});
             if (currentElement->name == "vertex")
             {
-                if (name == "nx") has_nx = true;
-                if (name == "ny") has_ny = true;
-                if (name == "nz") has_nz = true;
+                if (role == PlyVertexPropertyRole::NX) has_nx = true;
+                if (role == PlyVertexPropertyRole::NY) has_ny = true;
+                if (role == PlyVertexPropertyRole::NZ) has_nz = true;
             }
         }
     }
@@ -257,13 +276,29 @@ readPlyImpl(const std::string& path,
                     }
                     double val = 0.0;
                     iss >> val;
-                    const auto& p = prop.name;
-                    if (p == "x")      pts(vertexIndex, 0) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[0] : 0.0));
-                    else if (p == "y") pts(vertexIndex, 1) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[1] : 0.0));
-                    else if (p == "z") pts(vertexIndex, 2) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[2] : 0.0));
-                    else if (p == "nx") nrm(vertexIndex, 0) = static_cast<Scalar>(val);
-                    else if (p == "ny") nrm(vertexIndex, 1) = static_cast<Scalar>(val);
-                    else if (p == "nz") nrm(vertexIndex, 2) = static_cast<Scalar>(val);
+                    switch (prop.role)
+                    {
+                    case PlyVertexPropertyRole::X:
+                        pts(vertexIndex, 0) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[0] : 0.0));
+                        break;
+                    case PlyVertexPropertyRole::Y:
+                        pts(vertexIndex, 1) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[1] : 0.0));
+                        break;
+                    case PlyVertexPropertyRole::Z:
+                        pts(vertexIndex, 2) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[2] : 0.0));
+                        break;
+                    case PlyVertexPropertyRole::NX:
+                        nrm(vertexIndex, 0) = static_cast<Scalar>(val);
+                        break;
+                    case PlyVertexPropertyRole::NY:
+                        nrm(vertexIndex, 1) = static_cast<Scalar>(val);
+                        break;
+                    case PlyVertexPropertyRole::NZ:
+                        nrm(vertexIndex, 2) = static_cast<Scalar>(val);
+                        break;
+                    case PlyVertexPropertyRole::Ignore:
+                        break;
+                    }
                 }
                 ++vertexIndex;
             }
@@ -289,13 +324,29 @@ readPlyImpl(const std::string& path,
                     {
                         continue;
                     }
-                    const auto& p = prop.name;
-                    if (p == "x")      pts(vertexIndex, 0) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[0] : 0.0));
-                    else if (p == "y") pts(vertexIndex, 1) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[1] : 0.0));
-                    else if (p == "z") pts(vertexIndex, 2) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[2] : 0.0));
-                    else if (p == "nx") nrm(vertexIndex, 0) = static_cast<Scalar>(val);
-                    else if (p == "ny") nrm(vertexIndex, 1) = static_cast<Scalar>(val);
-                    else if (p == "nz") nrm(vertexIndex, 2) = static_cast<Scalar>(val);
+                    switch (prop.role)
+                    {
+                    case PlyVertexPropertyRole::X:
+                        pts(vertexIndex, 0) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[0] : 0.0));
+                        break;
+                    case PlyVertexPropertyRole::Y:
+                        pts(vertexIndex, 1) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[1] : 0.0));
+                        break;
+                    case PlyVertexPropertyRole::Z:
+                        pts(vertexIndex, 2) = static_cast<Scalar>(val + (applyPointOffset ? pointOffset[2] : 0.0));
+                        break;
+                    case PlyVertexPropertyRole::NX:
+                        nrm(vertexIndex, 0) = static_cast<Scalar>(val);
+                        break;
+                    case PlyVertexPropertyRole::NY:
+                        nrm(vertexIndex, 1) = static_cast<Scalar>(val);
+                        break;
+                    case PlyVertexPropertyRole::NZ:
+                        nrm(vertexIndex, 2) = static_cast<Scalar>(val);
+                        break;
+                    case PlyVertexPropertyRole::Ignore:
+                        break;
+                    }
                 }
                 if (element.name == "vertex")
                 {
