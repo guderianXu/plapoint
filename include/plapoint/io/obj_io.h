@@ -1,15 +1,17 @@
 #pragma once
 
-#include <plapoint/core/point_cloud.h>
-#include <plamatrix/dense/dense_matrix.h>
 #include <algorithm>
+#include <cstdio>
 #include <fstream>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <cstdio>
+
+#include <plamatrix/dense/dense_matrix.h>
+
+#include <plapoint/core/point_cloud.h>
 
 namespace plapoint {
 namespace io {
@@ -27,7 +29,29 @@ struct ObjVertexIndices
 
 inline int parseObjIndexComponent(const std::string& s)
 {
-    const int value = std::stoi(s);
+    if (s.empty())
+    {
+        throw std::invalid_argument("empty OBJ index component");
+    }
+
+    std::size_t parsed = 0;
+    int value = 0;
+    try
+    {
+        value = std::stoi(s, &parsed);
+    }
+    catch (const std::invalid_argument&)
+    {
+        throw std::invalid_argument("invalid OBJ index component '" + s + "'");
+    }
+    catch (const std::out_of_range&)
+    {
+        throw std::out_of_range("OBJ index component out of range '" + s + "'");
+    }
+    if (parsed != s.size())
+    {
+        throw std::invalid_argument("invalid OBJ index component '" + s + "'");
+    }
     if (value == 0)
     {
         throw std::out_of_range("OBJ indices are 1-based and must not be zero");
@@ -86,6 +110,11 @@ inline ObjVertexIndices parseFaceVertex(const std::string& s)
     return idx;
 }
 
+inline std::string objLineContext(const std::string& path, std::size_t lineNumber)
+{
+    return "OBJ parse error in " + path + " line " + std::to_string(lineNumber) + ": ";
+}
+
 } // namespace detail
 
 template <typename Scalar>
@@ -107,20 +136,30 @@ readObj(const std::string& path)
     std::string mtlLib;
 
     std::string line;
+    std::size_t line_number = 0;
     while (std::getline(f, line))
     {
-        if (line.empty() || line[0] == '#')
+        ++line_number;
+        if (!line.empty() && line.back() == '\r')
+        {
+            line.pop_back();
+        }
+
+        std::istringstream iss(line);
+        std::string token;
+        if (!(iss >> token) || token[0] == '#')
         {
             continue;
         }
-        std::istringstream iss(line);
-        std::string token;
-        iss >> token;
+        const std::string context = detail::objLineContext(path, line_number);
 
         if (token == "v")
         {
             Scalar x, y, z;
-            iss >> x >> y >> z;
+            if (!(iss >> x >> y >> z))
+            {
+                throw std::invalid_argument(context + "vertex line must contain x, y, and z coordinates");
+            }
             vx.push_back(x);
             vy.push_back(y);
             vz.push_back(z);
@@ -128,7 +167,10 @@ readObj(const std::string& path)
         else if (token == "vn")
         {
             Scalar x, y, z;
-            iss >> x >> y >> z;
+            if (!(iss >> x >> y >> z))
+            {
+                throw std::invalid_argument(context + "normal line must contain x, y, and z coordinates");
+            }
             nx.push_back(x);
             ny.push_back(y);
             nz.push_back(z);
@@ -136,7 +178,10 @@ readObj(const std::string& path)
         else if (token == "vt")
         {
             Scalar u, v;
-            iss >> u >> v;
+            if (!(iss >> u >> v))
+            {
+                throw std::invalid_argument(context + "texture coordinate line must contain u and v");
+            }
             tx.push_back(u);
             ty.push_back(v);
         }
@@ -146,22 +191,33 @@ readObj(const std::string& path)
             std::string s;
             while (iss >> s)
             {
-                auto idx = detail::parseFaceVertex(s);
-                fv.push_back(detail::resolveObjIndex(idx.v, vx.size(), "OBJ face vertex"));
-                ft.push_back(-1);
-                fn.push_back(-1);
-                if (idx.has_t)
+                try
                 {
-                    ft.back() = detail::resolveObjIndex(idx.t, tx.size(), "OBJ face texture");
+                    auto idx = detail::parseFaceVertex(s);
+                    fv.push_back(detail::resolveObjIndex(idx.v, vx.size(), "OBJ face vertex"));
+                    ft.push_back(-1);
+                    fn.push_back(-1);
+                    if (idx.has_t)
+                    {
+                        ft.back() = detail::resolveObjIndex(idx.t, tx.size(), "OBJ face texture");
+                    }
+                    if (idx.has_n)
+                    {
+                        fn.back() = detail::resolveObjIndex(idx.n, nx.size(), "OBJ face normal");
+                    }
                 }
-                if (idx.has_n)
+                catch (const std::invalid_argument& e)
                 {
-                    fn.back() = detail::resolveObjIndex(idx.n, nx.size(), "OBJ face normal");
+                    throw std::invalid_argument(context + "invalid face index token '" + s + "': " + e.what());
+                }
+                catch (const std::out_of_range& e)
+                {
+                    throw std::out_of_range(context + "invalid face index token '" + s + "': " + e.what());
                 }
             }
             if (fv.size() < 3)
             {
-                throw std::invalid_argument("OBJ face must contain at least 3 vertices");
+                throw std::invalid_argument(context + "face must contain at least 3 vertices");
             }
             face_verts.push_back(fv);
             face_tex.push_back(ft);
@@ -169,7 +225,10 @@ readObj(const std::string& path)
         }
         else if (token == "mtllib")
         {
-            iss >> mtlLib;
+            if (!(iss >> mtlLib))
+            {
+                throw std::invalid_argument(context + "mtllib line must contain a file name");
+            }
         }
     }
 

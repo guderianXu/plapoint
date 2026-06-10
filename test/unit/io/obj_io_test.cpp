@@ -6,7 +6,27 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <string>
 #include <cstdio>
+
+namespace {
+
+template <typename Exception, typename Fn>
+void expectThrowsMessageContaining(Fn&& fn, const std::string& expected_message)
+{
+    try
+    {
+        fn();
+        FAIL() << "Expected exception containing: " << expected_message;
+    }
+    catch (const Exception& e)
+    {
+        EXPECT_NE(std::string(e.what()).find(expected_message), std::string::npos)
+            << "Actual exception: " << e.what();
+    }
+}
+
+} // namespace
 
 TEST(ObjIoTest, WriteAndReadBackVertexOnly)
 {
@@ -559,6 +579,89 @@ TEST(ObjIoTest, RejectsMalformedFaceIndexToken)
     }
 
     EXPECT_THROW((void)plapoint::io::readObj<float>(path), std::invalid_argument);
+
+    std::filesystem::remove(path);
+}
+
+TEST(ObjIoTest, RejectsMalformedVertexLineWithLineNumber)
+{
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "v 1 2\n";
+    }
+
+    expectThrowsMessageContaining<std::invalid_argument>(
+        [&]() { (void)plapoint::io::readObj<float>(path); },
+        "line 1");
+
+    std::filesystem::remove(path);
+}
+
+TEST(ObjIoTest, RejectsMalformedTextureCoordinateLineWithLineNumber)
+{
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "v 0 0 0\n"
+          << "vt 0\n";
+    }
+
+    expectThrowsMessageContaining<std::invalid_argument>(
+        [&]() { (void)plapoint::io::readObj<float>(path); },
+        "line 2");
+
+    std::filesystem::remove(path);
+}
+
+TEST(ObjIoTest, RejectsMalformedFaceIndexWithLineNumberAndToken)
+{
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "v 0 0 0\n"
+          << "v 1 0 0\n"
+          << "v 0 1 0\n"
+          << "vt 0 0\n"
+          << "f 1/abc 2/1 3/1\n";
+    }
+
+    expectThrowsMessageContaining<std::invalid_argument>(
+        [&]() { (void)plapoint::io::readObj<float>(path); },
+        "line 5");
+    expectThrowsMessageContaining<std::invalid_argument>(
+        [&]() { (void)plapoint::io::readObj<float>(path); },
+        "1/abc");
+
+    std::filesystem::remove(path);
+}
+
+TEST(ObjIoTest, RejectsOutOfRangeFaceIndexWithLineNumber)
+{
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "v 0 0 0\n"
+          << "v 1 0 0\n"
+          << "v 0 1 0\n"
+          << "f 1 2 4\n";
+    }
+
+    expectThrowsMessageContaining<std::out_of_range>(
+        [&]() { (void)plapoint::io::readObj<float>(path); },
+        "line 4");
 
     std::filesystem::remove(path);
 }

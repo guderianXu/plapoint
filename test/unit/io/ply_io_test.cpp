@@ -13,6 +13,21 @@
 
 namespace {
 
+template <typename Exception, typename Fn>
+void expectThrowsMessageContaining(Fn&& fn, const std::string& expected_message)
+{
+    try
+    {
+        fn();
+        FAIL() << "Expected exception containing: " << expected_message;
+    }
+    catch (const Exception& e)
+    {
+        EXPECT_NE(std::string(e.what()).find(expected_message), std::string::npos)
+            << "Actual exception: " << e.what();
+    }
+}
+
 void writeBigEndianFloat(std::ofstream& f, float value)
 {
     static_assert(sizeof(float) == sizeof(std::uint32_t), "float must be 32-bit");
@@ -584,6 +599,129 @@ TEST(PlyIOTest, RejectsInvalidMagicHeader)
     }
 
     EXPECT_THROW((void)plapoint::io::readPly<float>(path), std::runtime_error);
+
+    std::filesystem::remove(path);
+}
+
+TEST(PlyIOTest, RejectsHeaderWithoutEndHeader)
+{
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "ply\n"
+          << "format ascii 1.0\n"
+          << "element vertex 1\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n";
+    }
+
+    expectThrowsMessageContaining<std::runtime_error>(
+        [&]() { (void)plapoint::io::readPly<float>(path); },
+        "end_header");
+
+    std::filesystem::remove(path);
+}
+
+TEST(PlyIOTest, RejectsNegativeElementCount)
+{
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "ply\n"
+          << "format ascii 1.0\n"
+          << "element vertex -1\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "end_header\n";
+    }
+
+    expectThrowsMessageContaining<std::runtime_error>(
+        [&]() { (void)plapoint::io::readPly<float>(path); },
+        "negative element count");
+
+    std::filesystem::remove(path);
+}
+
+TEST(PlyIOTest, RejectsMissingRequiredVertexCoordinates)
+{
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "ply\n"
+          << "format ascii 1.0\n"
+          << "element vertex 1\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "end_header\n"
+          << "1 2\n";
+    }
+
+    expectThrowsMessageContaining<std::runtime_error>(
+        [&]() { (void)plapoint::io::readPly<float>(path); },
+        "x, y, and z");
+
+    std::filesystem::remove(path);
+}
+
+TEST(PlyIOTest, RejectsTruncatedAsciiVertexRow)
+{
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "ply\n"
+          << "format ascii 1.0\n"
+          << "element vertex 2\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "end_header\n"
+          << "1 2 3\n"
+          << "4 5\n";
+    }
+
+    expectThrowsMessageContaining<std::runtime_error>(
+        [&]() { (void)plapoint::io::readPly<float>(path); },
+        "ASCII vertex row");
+
+    std::filesystem::remove(path);
+}
+
+TEST(PlyIOTest, RejectsTruncatedBinaryVertexPayload)
+{
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path, std::ios::binary);
+        ASSERT_TRUE(f);
+        f << "ply\n"
+          << "format binary_little_endian 1.0\n"
+          << "element vertex 1\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "end_header\n";
+        const float xy[2] = {1.0f, 2.0f};
+        f.write(reinterpret_cast<const char*>(xy), sizeof(xy));
+    }
+
+    expectThrowsMessageContaining<std::runtime_error>(
+        [&]() { (void)plapoint::io::readPly<float>(path); },
+        "binary data");
 
     std::filesystem::remove(path);
 }

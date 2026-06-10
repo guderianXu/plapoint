@@ -1,8 +1,7 @@
 #pragma once
 
-#include <plapoint/core/point_cloud.h>
-#include <plamatrix/dense/dense_matrix.h>
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -10,8 +9,11 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <array>
 #include <vector>
+
+#include <plamatrix/dense/dense_matrix.h>
+
+#include <plapoint/core/point_cloud.h>
 
 namespace plapoint {
 namespace io {
@@ -60,7 +62,10 @@ template <typename T>
 T readBinaryValue(std::istream& stream, bool swapBytes)
 {
     T value{};
-    stream.read(reinterpret_cast<char*>(&value), sizeof(T));
+    if (!stream.read(reinterpret_cast<char*>(&value), sizeof(T)))
+    {
+        throw std::runtime_error("Unexpected end of PLY binary data");
+    }
     if (swapBytes && sizeof(T) > 1)
     {
         swapEndian(value);
@@ -122,11 +127,21 @@ inline std::size_t readBinaryListCount(std::istream& stream,
 inline void skipAsciiList(std::istream& stream)
 {
     int count = 0;
-    stream >> count;
+    if (!(stream >> count))
+    {
+        throw std::runtime_error("PLY ASCII list property is missing an item count");
+    }
+    if (count < 0)
+    {
+        throw std::runtime_error("PLY list property has a negative item count");
+    }
     for (int i = 0; i < count; ++i)
     {
         std::string ignored;
-        stream >> ignored;
+        if (!(stream >> ignored))
+        {
+            throw std::runtime_error("PLY ASCII list property is missing items");
+        }
     }
 }
 
@@ -152,6 +167,11 @@ inline PlyVertexPropertyRole vertexPropertyRole(const std::string& name)
     return PlyVertexPropertyRole::Ignore;
 }
 
+[[noreturn]] inline void throwPlyParseError(const std::string& path, const std::string& message)
+{
+    throw std::runtime_error("PLY parse error in " + path + ": " + message);
+}
+
 template <typename Scalar>
 std::shared_ptr<PointCloud<Scalar, plamatrix::Device::CPU>>
 readPlyImpl(const std::string& path,
@@ -163,26 +183,41 @@ readPlyImpl(const std::string& path,
     if (!f) throw std::runtime_error("Cannot open PLY file: " + path);
 
     std::string line;
-    std::getline(f, line);
+    if (!std::getline(f, line))
+    {
+        throwPlyParseError(path, "missing magic header");
+    }
     if (line != "ply") throw std::runtime_error("Not a PLY file: " + path);
 
-    std::getline(f, line);
+    if (!std::getline(f, line))
+    {
+        throwPlyParseError(path, "missing format line");
+    }
     PlyFormat fmt = PlyFormat::ASCII;
-    if (line.find("binary_little_endian") != std::string::npos) fmt = PlyFormat::BinaryLE;
+    if (line.find("format ascii") != std::string::npos) fmt = PlyFormat::ASCII;
+    else if (line.find("binary_little_endian") != std::string::npos) fmt = PlyFormat::BinaryLE;
     else if (line.find("binary_big_endian") != std::string::npos) fmt = PlyFormat::BinaryBE;
+    else throwPlyParseError(path, "unsupported or missing format line");
 
     int n_verts = 0;
     std::vector<PlyElement> elements;
     PlyElement* currentElement = nullptr;
+    bool saw_vertex_element = false;
+    bool has_x = false, has_y = false, has_z = false;
     bool has_nx = false, has_ny = false, has_nz = false;
     std::array<double, 3> pointOffset = {0.0, 0.0, 0.0};
     bool hasPointOffset = false;
+    bool saw_end_header = false;
 
     while (std::getline(f, line))
     {
         // Trim \r
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line == "end_header") break;
+        if (line == "end_header")
+        {
+            saw_end_header = true;
+            break;
+        }
         std::istringstream iss(line);
         std::string token;
         iss >> token;
@@ -190,12 +225,20 @@ readPlyImpl(const std::string& path,
         {
             std::string elem;
             int count = 0;
-            iss >> elem >> count;
+            if (!(iss >> elem >> count))
+            {
+                throwPlyParseError(path, "malformed element declaration");
+            }
+            if (count < 0)
+            {
+                throwPlyParseError(path, "negative element count for " + elem);
+            }
             elements.push_back({elem, count, {}});
             currentElement = &elements.back();
             if (elem == "vertex")
             {
                 n_verts = count;
+                saw_vertex_element = true;
             }
         }
         else if (token == "comment")
@@ -214,14 +257,20 @@ readPlyImpl(const std::string& path,
         {
             if (!currentElement)
             {
-                continue;
+                throwPlyParseError(path, "property declared before any element");
             }
             std::string type, name;
-            iss >> type >> name;
+            if (!(iss >> type >> name))
+            {
+                throwPlyParseError(path, "malformed property declaration");
+            }
             if (type == "list")
             {
                 std::string itemType, listName;
-                iss >> itemType >> listName;
+                if (!(iss >> itemType >> listName))
+                {
+                    throwPlyParseError(path, "malformed list property declaration");
+                }
                 const std::string countType = name;
                 currentElement->properties.push_back(
                     {true, countType, itemType, listName, PlyVertexPropertyRole::Ignore});
@@ -234,11 +283,22 @@ readPlyImpl(const std::string& path,
             currentElement->properties.push_back({false, {}, type, name, role});
             if (currentElement->name == "vertex")
             {
+                if (role == PlyVertexPropertyRole::X) has_x = true;
+                if (role == PlyVertexPropertyRole::Y) has_y = true;
+                if (role == PlyVertexPropertyRole::Z) has_z = true;
                 if (role == PlyVertexPropertyRole::NX) has_nx = true;
                 if (role == PlyVertexPropertyRole::NY) has_ny = true;
                 if (role == PlyVertexPropertyRole::NZ) has_nz = true;
             }
         }
+    }
+    if (!saw_end_header)
+    {
+        throwPlyParseError(path, "missing end_header");
+    }
+    if (saw_vertex_element && (!has_x || !has_y || !has_z))
+    {
+        throwPlyParseError(path, "vertex element must declare x, y, and z properties");
     }
     if (pointOffsetOut)
     {
@@ -260,7 +320,10 @@ readPlyImpl(const std::string& path,
         {
             for (int i = 0; i < element.count; ++i)
             {
-                std::getline(f, line);
+                if (!std::getline(f, line))
+                {
+                    throwPlyParseError(path, "truncated ASCII element rows");
+                }
                 if (!line.empty() && line.back() == '\r') line.pop_back();
                 if (element.name != "vertex")
                 {
@@ -275,7 +338,10 @@ readPlyImpl(const std::string& path,
                         continue;
                     }
                     double val = 0.0;
-                    iss >> val;
+                    if (!(iss >> val))
+                    {
+                        throwPlyParseError(path, "truncated ASCII vertex row");
+                    }
                     switch (prop.role)
                     {
                     case PlyVertexPropertyRole::X:
