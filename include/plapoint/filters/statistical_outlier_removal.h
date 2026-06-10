@@ -68,10 +68,11 @@ protected:
             };
         };
 
+        const auto all_neighbors = _tree->batchNearestKSearch(cpu_points, _mean_k + 1);
         for (std::size_t i = 0; i < n; ++i)
         {
             plamatrix::Vec3<Scalar> pt = make_point(static_cast<int>(i));
-            auto neighbors = _tree->nearestKSearch(pt, _mean_k + 1);
+            const auto& neighbors = all_neighbors[i];
             Scalar sum = 0;
             int count = 0;
             for (int nb : neighbors)
