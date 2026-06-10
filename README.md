@@ -68,6 +68,19 @@ cmake --build . -j$(nproc)
 ./test/plapoint_tests
 ```
 
+## Mesh Quality Reports
+
+When tests are enabled, PlaPoint also builds a mesh quality report tool. The helper
+script builds the tool, generates Marching Cubes and Poisson sphere meshes, and writes
+both machine-readable metrics and inspectable PLY files:
+
+```bash
+./scripts/mesh_quality_report.py --build-dir build
+```
+
+The output directory contains `mesh_quality_report.json`,
+`marching_cubes_sphere.ply`, and `poisson_sphere.ply`.
+
 ## Benchmarks
 
 PlaPoint includes a dependency-free benchmark executable for local performance baselines:

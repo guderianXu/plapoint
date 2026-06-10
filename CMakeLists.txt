@@ -113,6 +113,7 @@ endif()
 if(PLAPOINT_BUILD_TESTS)
     find_package(GTest REQUIRED)
     add_subdirectory(test)
+    add_subdirectory(tools)
 endif()
 
 if(PLAPOINT_BUILD_BENCHMARKS)

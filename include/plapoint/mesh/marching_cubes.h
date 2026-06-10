@@ -396,14 +396,38 @@ public:
                     }
 
                     const auto& tris = detail::triTable(cube_idx);
+                    const Scalar gx = dx == Scalar(0) ? Scalar(0) :
+                        ((vals[1] + vals[2] + vals[5] + vals[6]) -
+                         (vals[0] + vals[3] + vals[4] + vals[7])) / (Scalar(4) * dx);
+                    const Scalar gy = dy == Scalar(0) ? Scalar(0) :
+                        ((vals[2] + vals[3] + vals[6] + vals[7]) -
+                         (vals[0] + vals[1] + vals[4] + vals[5])) / (Scalar(4) * dy);
+                    const Scalar gz = dz == Scalar(0) ? Scalar(0) :
+                        ((vals[4] + vals[5] + vals[6] + vals[7]) -
+                         (vals[0] + vals[1] + vals[2] + vals[3])) / (Scalar(4) * dz);
                     for (std::size_t t = 0; t + 2 < tris.size(); t += 3)
                     {
                         int e0 = tris[t], e1 = tris[t+1], e2 = tris[t+2];
-                        vx.push_back(ev[e0].x); vy.push_back(ev[e0].y); vz.push_back(ev[e0].z);
+                        Vec3 p0 = ev[e0], p1 = ev[e1], p2 = ev[e2];
+                        const Scalar ux = p1.x - p0.x;
+                        const Scalar uy = p1.y - p0.y;
+                        const Scalar uz = p1.z - p0.z;
+                        const Scalar vx_edge = p2.x - p0.x;
+                        const Scalar vy_edge = p2.y - p0.y;
+                        const Scalar vz_edge = p2.z - p0.z;
+                        const Scalar nx = uy * vz_edge - uz * vy_edge;
+                        const Scalar ny = uz * vx_edge - ux * vz_edge;
+                        const Scalar nz = ux * vy_edge - uy * vx_edge;
+                        if (nx * gx + ny * gy + nz * gz < Scalar(0))
+                        {
+                            std::swap(p1, p2);
+                        }
+
+                        vx.push_back(p0.x); vy.push_back(p0.y); vz.push_back(p0.z);
                         tri_idx.push_back(static_cast<int>(vx.size()) - 1);
-                        vx.push_back(ev[e1].x); vy.push_back(ev[e1].y); vz.push_back(ev[e1].z);
+                        vx.push_back(p1.x); vy.push_back(p1.y); vz.push_back(p1.z);
                         tri_idx.push_back(static_cast<int>(vx.size()) - 1);
-                        vx.push_back(ev[e2].x); vy.push_back(ev[e2].y); vz.push_back(ev[e2].z);
+                        vx.push_back(p2.x); vy.push_back(p2.y); vz.push_back(p2.z);
                         tri_idx.push_back(static_cast<int>(vx.size()) - 1);
                     }
                 }
