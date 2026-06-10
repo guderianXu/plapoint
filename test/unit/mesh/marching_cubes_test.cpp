@@ -75,7 +75,7 @@ TEST(MarchingCubesTest, EmptyScalarFunctionIsRejected)
 
     EXPECT_THROW(
         (void)mc.extract(typename MarchingCubes::ScalarFunction{}),
-        std::exception);
+        std::invalid_argument);
 }
 
 TEST(MarchingCubesTest, RejectsNonPositiveResolution)

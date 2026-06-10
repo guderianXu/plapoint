@@ -1,14 +1,15 @@
 #pragma once
 
-#include <plamatrix/dense/dense_matrix.h>
-#include <plamatrix/core/types.h>
-#include <plamatrix/ops/point_cloud.h>
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <stdexcept>
 #include <tuple>
 #include <vector>
+
+#include <plamatrix/core/types.h>
+#include <plamatrix/dense/dense_matrix.h>
+#include <plamatrix/ops/point_cloud.h>
 
 namespace plapoint {
 namespace mesh {
@@ -315,6 +316,7 @@ Scalar interp(Scalar iso, Scalar v0, Scalar v1, Scalar p0, Scalar p1)
 
 } // namespace detail
 
+/// Extract triangle meshes from implicit scalar fields with Marching Cubes.
 template <typename Scalar>
 class MarchingCubes
 {
@@ -323,11 +325,13 @@ public:
     using Vec3 = plamatrix::Vec3<Scalar>;
     using ScalarFunction = std::function<Scalar(Scalar, Scalar, Scalar)>;
 
+    /// Set the axis-aligned extraction bounds.
     void setBounds(const Vec3& min_corner, const Vec3& max_corner)
     {
         _min = min_corner; _max = max_corner;
     }
 
+    /// Set positive grid resolution along x, y, and z axes.
     void setResolution(int nx, int ny, int nz)
     {
         if (nx <= 0 || ny <= 0 || nz <= 0)
@@ -336,10 +340,18 @@ public:
         }
         _nx = nx; _ny = ny; _nz = nz;
     }
+
+    /// Set the scalar isovalue to extract.
     void setIsoLevel(Scalar iso) { _iso = iso; }
 
+    /// Extract vertices and triangular faces from a non-empty scalar function.
     std::tuple<Matrix, Matrix> extract(const ScalarFunction& fn) const
     {
+        if (!fn)
+        {
+            throw std::invalid_argument("MarchingCubes scalar function must be set");
+        }
+
         Scalar dx = (_max.x - _min.x) / Scalar(_nx);
         Scalar dy = (_max.y - _min.y) / Scalar(_ny);
         Scalar dz = (_max.z - _min.z) / Scalar(_nz);

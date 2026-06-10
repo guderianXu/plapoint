@@ -55,8 +55,15 @@ def main() -> int:
         )
 
     if not args.skip_build:
+        build_command = [
+            "cmake",
+            "--build",
+            str(build_dir),
+            "--target",
+            "plapoint_mesh_quality_report",
+        ]
         subprocess.run(
-            ["cmake", "--build", str(build_dir), "--target", "plapoint_mesh_quality_report"],
+            build_command,
             cwd=root,
             check=True,
         )
@@ -79,7 +86,9 @@ def main() -> int:
         check=True,
     )
     print(f"Report JSON: {output_dir / 'mesh_quality_report.json'}")
-    print(f"PLY artifacts: {output_dir / 'marching_cubes_sphere.ply'}, {output_dir / 'poisson_sphere.ply'}")
+    print("PLY artifacts:")
+    print(f"  {output_dir / 'marching_cubes_sphere.ply'}")
+    print(f"  {output_dir / 'poisson_sphere.ply'}")
     return 0
 
 

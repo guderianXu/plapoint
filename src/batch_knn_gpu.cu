@@ -43,6 +43,10 @@ void batchKnnImpl(const Scalar* h_queries, int M,
     {
         throw std::invalid_argument("GPU KNN requires K <= N");
     }
+    if (!h_queries || !h_data)
+    {
+        throw std::invalid_argument("GPU KNN host input pointers must not be null");
+    }
 
     const int K_use = K;
     const std::size_t query_count = static_cast<std::size_t>(M);
@@ -124,6 +128,11 @@ void batchKnnDeviceImpl(const Scalar* d_queries, int M,
     {
         throw std::invalid_argument("GPU KNN requires K <= N");
     }
+    if (!d_queries || !d_data || !d_indices || !d_dists)
+    {
+        throw std::invalid_argument("GPU KNN device pointers must not be null");
+    }
+
     const int K_use = K;
     cudaError_t err = launchBruteForceKnn<Scalar>(
         d_queries, d_data, M, N, K_use, d_indices, d_dists, data_column_major, stream);

@@ -1,17 +1,23 @@
-#include <gtest/gtest.h>
-#include <plapoint/search/kdtree.h>
-#include <plapoint/core/point_cloud.h>
-#include <plapoint/gpu/cuda_check.h>
-#include <plapoint/gpu/knn.h>
-#include <plapoint/features/normal_estimation.h>
-#include <plapoint/registration/icp.h>
-#include <plamatrix/plamatrix.h>
-
 #include <limits>
+#include <stdexcept>
+#include <vector>
 
 #ifdef PLAPOINT_WITH_CUDA
 #include <cuda_runtime.h>
+#endif
 
+#include <gtest/gtest.h>
+
+#include <plamatrix/plamatrix.h>
+
+#include <plapoint/core/point_cloud.h>
+#include <plapoint/features/normal_estimation.h>
+#include <plapoint/gpu/cuda_check.h>
+#include <plapoint/gpu/knn.h>
+#include <plapoint/registration/icp.h>
+#include <plapoint/search/kdtree.h>
+
+#ifdef PLAPOINT_WITH_CUDA
 static bool hasCudaDevice()
 {
     return plapoint::gpu::hasUsableCudaDevice();
@@ -23,6 +29,19 @@ static bool hasCudaDevice()
             GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU test"; \
         } \
     } while(0)
+
+TEST(KdTreeGpuTest, GpuBuffersRejectAllocationSizeOverflow)
+{
+    const auto overflowing_count =
+        std::numeric_limits<std::size_t>::max() / sizeof(int) + std::size_t{1};
+
+    EXPECT_THROW(
+        (void)plapoint::gpu::DeviceBuffer<int>(overflowing_count),
+        std::overflow_error);
+    EXPECT_THROW(
+        (void)plapoint::gpu::HostPinnedBuffer<int>(overflowing_count),
+        std::overflow_error);
+}
 
 // ---- Batch KNN from host pointers ----
 TEST(KdTreeGpuTest, BatchKnnHost)
@@ -63,6 +82,20 @@ TEST(KdTreeGpuTest, BatchKnnHost)
     // or data points closest to zero which is data[0] = (0,0,0)
     EXPECT_EQ(indices[0], 0);
     EXPECT_FLOAT_EQ(dists[0], 0.0f);
+}
+
+TEST(KdTreeGpuTest, BatchKnnHostRejectsNullInputPointers)
+{
+    std::vector<int> indices;
+    std::vector<float> dists;
+    float data[3] = {0.0f, 0.0f, 0.0f};
+
+    EXPECT_THROW(
+        plapoint::gpu::batchKnn(nullptr, 1, data, 1, 1, indices, dists),
+        std::invalid_argument);
+    EXPECT_THROW(
+        plapoint::gpu::batchKnn(data, 1, nullptr, 1, 1, indices, dists),
+        std::invalid_argument);
 }
 
 // ---- Batch KNN from device pointers ----
@@ -108,6 +141,25 @@ TEST(KdTreeGpuTest, BatchKnnDevice)
 
     // First query at 0 should find data[0] = 0
     EXPECT_EQ(h_indices[0], 0);
+}
+
+TEST(KdTreeGpuTest, BatchKnnDeviceRejectsNullPointers)
+{
+    float value = 0.0f;
+    int index = 0;
+
+    EXPECT_THROW(
+        plapoint::gpu::batchKnnDevice(nullptr, 1, &value, 1, 1, &index, &value),
+        std::invalid_argument);
+    EXPECT_THROW(
+        plapoint::gpu::batchKnnDevice(&value, 1, nullptr, 1, 1, &index, &value),
+        std::invalid_argument);
+    EXPECT_THROW(
+        plapoint::gpu::batchKnnDevice(&value, 1, &value, 1, 1, nullptr, &value),
+        std::invalid_argument);
+    EXPECT_THROW(
+        plapoint::gpu::batchKnnDevice(&value, 1, &value, 1, 1, &index, nullptr),
+        std::invalid_argument);
 }
 
 TEST(KdTreeGpuTest, BatchKnnDeviceColumnMajor)

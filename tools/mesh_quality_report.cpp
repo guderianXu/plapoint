@@ -1,7 +1,4 @@
-#include "quality/mesh_quality_utils.h"
-
 #include <cmath>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -9,8 +6,16 @@
 #include <stdexcept>
 #include <string>
 
+#include "quality/mesh_quality_utils.h"
+
 namespace
 {
+
+struct CliOptions
+{
+    std::filesystem::path output_dir = "mesh_quality_report";
+    bool show_help = false;
+};
 
 template <typename Scalar>
 void writeMeshPly(const std::filesystem::path& path,
@@ -71,9 +76,9 @@ void writeMetricJson(std::ostream& out,
     out << '\n';
 }
 
-std::filesystem::path parseOutputDir(int argc, char** argv)
+CliOptions parseCliOptions(int argc, char** argv)
 {
-    std::filesystem::path output_dir = "mesh_quality_report";
+    CliOptions options;
     for (int i = 1; i < argc; ++i)
     {
         const std::string arg = argv[i];
@@ -83,19 +88,18 @@ std::filesystem::path parseOutputDir(int argc, char** argv)
             {
                 throw std::invalid_argument("--output-dir requires a path");
             }
-            output_dir = argv[++i];
+            options.output_dir = argv[++i];
         }
         else if (arg == "--help" || arg == "-h")
         {
-            std::cout << "Usage: plapoint_mesh_quality_report [--output-dir DIR]\n";
-            std::exit(0);
+            options.show_help = true;
         }
         else
         {
             throw std::invalid_argument("Unknown argument: " + arg);
         }
     }
-    return output_dir;
+    return options;
 }
 
 } // namespace
@@ -105,7 +109,14 @@ int main(int argc, char** argv)
     try
     {
         using Scalar = float;
-        const auto output_dir = parseOutputDir(argc, argv);
+        const auto options = parseCliOptions(argc, argv);
+        if (options.show_help)
+        {
+            std::cout << "Usage: plapoint_mesh_quality_report [--output-dir DIR]\n";
+            return 0;
+        }
+
+        const auto output_dir = options.output_dir;
         std::filesystem::create_directories(output_dir);
 
         const auto marching_cubes = plapoint::test::mesh_quality::generateMarchingCubesSphere<Scalar>(

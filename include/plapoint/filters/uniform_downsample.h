@@ -1,18 +1,24 @@
 #pragma once
 
-#include <plapoint/filters/filter.h>
-#include <plapoint/core/point_cloud.h>
-#include <plamatrix/dense/dense_matrix.h>
 #include <algorithm>
+#include <vector>
 
-namespace plapoint {
+#include <plamatrix/dense/dense_matrix.h>
 
+#include <plapoint/core/point_cloud.h>
+#include <plapoint/filters/filter.h>
+
+namespace plapoint
+{
+
+/// Keep every Nth point from the input cloud and preserve normals for retained points.
 template <typename Scalar, plamatrix::Device Dev>
 class UniformDownsample : public Filter<Scalar, Dev>
 {
 public:
     using PointCloudType = PointCloud<Scalar, Dev>;
 
+    /// Set the sampling step. Values less than one are clamped to one.
     void setStep(int s) { _step = std::max(1, s); }
 
 protected:
@@ -37,7 +43,9 @@ protected:
         std::vector<int> kept_indices;
         kept_indices.reserve(out_n);
         for (std::size_t i = 0; i < n; i += static_cast<std::size_t>(_step))
+        {
             kept_indices.push_back(static_cast<int>(i));
+        }
         this->copyNormalsForIndices(kept_indices, output);
     }
 

@@ -1,9 +1,5 @@
 #pragma once
 
-#include <plapoint/core/point_cloud.h>
-#include <plapoint/mesh/marching_cubes.h>
-#include <plamatrix/dense/dense_matrix.h>
-#include <plamatrix/ops/point_cloud.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -13,9 +9,16 @@
 #include <tuple>
 #include <vector>
 
+#include <plamatrix/dense/dense_matrix.h>
+#include <plamatrix/ops/point_cloud.h>
+
+#include <plapoint/core/point_cloud.h>
+#include <plapoint/mesh/marching_cubes.h>
+
 namespace plapoint {
 namespace mesh {
 
+/// Reconstruct a triangle mesh from a point cloud with normals using a Poisson-style field solve.
 template <typename Scalar>
 class PoissonReconstruction
 {
@@ -23,7 +26,10 @@ public:
     using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
     using PointCloudType = PointCloud<Scalar, plamatrix::Device::CPU>;
 
+    /// Set the CPU point cloud with normals used as reconstruction input.
     void setInputCloud(const std::shared_ptr<const PointCloudType>& cloud) { _cloud = cloud; }
+
+    /// Set octree depth in the supported range [1, 8].
     void setDepth(int d)
     {
         if (d <= 0 || d > kMaxDepth)
@@ -33,6 +39,7 @@ public:
         _max_depth = d;
     }
 
+    /// Set positive Gauss-Seidel solver iterations.
     void setSolverIterations(int n)
     {
         if (n <= 0)
@@ -42,6 +49,7 @@ public:
         _solver_iters = n;
     }
 
+    /// Reconstruct vertices and triangular faces from the configured input cloud.
     std::tuple<Matrix, Matrix> reconstruct() const
     {
         if (!_cloud) throw std::runtime_error("Poisson: input cloud not set");
@@ -173,7 +181,8 @@ private:
     void insertPoint(std::vector<OctreeNode>& nodes, int node_idx,
                      Scalar px, Scalar py, Scalar pz, int /*unused*/) const
     {
-        auto& node = nodes[static_cast<std::size_t>(node_idx)];
+        const auto node_pos = static_cast<std::size_t>(node_idx);
+        auto& node = nodes[node_pos];
         Scalar half = node.size * Scalar(0.5);
         Scalar cx = node.ox + half, cy = node.oy + half, cz = node.oz + half;
 
@@ -195,15 +204,17 @@ private:
             Scalar qx = node.ox + (oct & 1 ? half : 0);
             Scalar qy = node.oy + (oct & 2 ? half : 0);
             Scalar qz = node.oz + (oct & 4 ? half : 0);
-            node.children[static_cast<std::size_t>(oct)] = createNode(nodes, qx, qy, qz, half, node.depth + 1);
+            const int child = createNode(nodes, qx, qy, qz, half, node.depth + 1);
+            nodes[node_pos].children[static_cast<std::size_t>(oct)] = child;
         }
 
-        insertPoint(nodes, node.children[static_cast<std::size_t>(oct)], px, py, pz, 0);
+        insertPoint(nodes, nodes[node_pos].children[static_cast<std::size_t>(oct)], px, py, pz, 0);
     }
 
     void subdivideLeaves(std::vector<OctreeNode>& nodes, int node_idx) const
     {
-        auto& node = nodes[static_cast<std::size_t>(node_idx)];
+        const auto node_pos = static_cast<std::size_t>(node_idx);
+        auto& node = nodes[node_pos];
         if (node.depth >= _max_depth) return;
 
         bool is_leaf = true;
@@ -211,20 +222,26 @@ private:
 
         if (is_leaf && node.point_count > 16 && node.depth < _max_depth)
         {
-            Scalar half = node.size * Scalar(0.5);
+            const Scalar half = node.size * Scalar(0.5);
+            const Scalar ox = node.ox;
+            const Scalar oy = node.oy;
+            const Scalar oz = node.oz;
+            const int child_depth = node.depth + 1;
             for (int oct = 0; oct < 8; ++oct)
             {
-                if (node.children[static_cast<std::size_t>(oct)] < 0)
+                if (nodes[node_pos].children[static_cast<std::size_t>(oct)] < 0)
                 {
-                    Scalar qx = node.ox + (oct & 1 ? half : 0);
-                    Scalar qy = node.oy + (oct & 2 ? half : 0);
-                    Scalar qz = node.oz + (oct & 4 ? half : 0);
-                    node.children[static_cast<std::size_t>(oct)] = createNode(nodes, qx, qy, qz, half, node.depth + 1);
+                    Scalar qx = ox + (oct & 1 ? half : 0);
+                    Scalar qy = oy + (oct & 2 ? half : 0);
+                    Scalar qz = oz + (oct & 4 ? half : 0);
+                    const int child = createNode(nodes, qx, qy, qz, half, child_depth);
+                    nodes[node_pos].children[static_cast<std::size_t>(oct)] = child;
                 }
             }
         }
 
-        for (int c : node.children)
+        const auto children = nodes[node_pos].children;
+        for (int c : children)
             if (c >= 0) subdivideLeaves(nodes, c);
     }
 

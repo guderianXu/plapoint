@@ -1,33 +1,40 @@
 #pragma once
 
-#include <plapoint/filters/filter.h>
-#include <plapoint/search/kdtree.h>
-#include <plapoint/core/point_cloud.h>
-#include <plamatrix/dense/dense_matrix.h>
-#include <plamatrix/ops/point_cloud.h>
 #include <cmath>
 #include <limits>
 #include <memory>
 #include <stdexcept>
 #include <vector>
 
-namespace plapoint {
+#include <plamatrix/dense/dense_matrix.h>
+#include <plamatrix/ops/point_cloud.h>
 
+#include <plapoint/core/point_cloud.h>
+#include <plapoint/filters/filter.h>
+#include <plapoint/search/kdtree.h>
+
+namespace plapoint
+{
+
+/// Statistical outlier filter based on each point's mean KNN distance.
 template <typename Scalar, plamatrix::Device Dev>
 class StatisticalOutlierRemoval : public Filter<Scalar, Dev>
 {
 public:
     using PointCloudType = PointCloud<Scalar, Dev>;
 
+    /// Set the positive KNN neighborhood size. Must leave room for the self-neighbor.
     void setMeanK(int k)
     {
         if (k <= 0 || k > std::numeric_limits<int>::max() - 1)
         {
-            throw std::invalid_argument("StatisticalOutlierRemoval: mean k must be positive");
+            throw std::invalid_argument(
+                "StatisticalOutlierRemoval: mean k must be positive and less than INT_MAX");
         }
         _mean_k = k;
     }
 
+    /// Set the finite, non-negative standard-deviation multiplier for rejection thresholding.
     void setStddevMulThresh(Scalar m)
     {
         if (!std::isfinite(m) || m < Scalar(0))
@@ -37,6 +44,7 @@ public:
         _stddev_mul = m;
     }
 
+    /// Set the search structure used to compute each point's neighbor distances.
     void setSearchMethod(std::shared_ptr<search::KdTree<Scalar, Dev>> tree)
     {
         _tree = tree;

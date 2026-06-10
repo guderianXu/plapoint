@@ -1,13 +1,16 @@
 #pragma once
 
-#include <plapoint/core/point_cloud.h>
 #include <memory>
+#include <stdexcept>
 #include <utility>
 #include <vector>
+
+#include <plapoint/core/point_cloud.h>
 
 namespace plapoint
 {
 
+/// Base class for point-cloud filters with shared input validation and attribute-copy helpers.
 template <typename Scalar, plamatrix::Device Dev>
 class Filter
 {
@@ -18,24 +21,27 @@ public:
     Filter() = default;
     virtual ~Filter() = default;
 
+    /// Set the input cloud consumed by subsequent filter calls.
     void setInputCloud(const PointCloudConstPtr& cloud)
     {
         _input = cloud;
     }
 
+    /// Run the filter and throw if no input cloud has been configured.
     void filter(PointCloudType& output)
     {
         if (!_input)
         {
-            throw std::runtime_error("Input cloud not set");
+            throw std::runtime_error("Filter: input cloud not set");
         }
         applyFilter(output);
     }
 
+    /// Optional removed-index overload for filters that expose removal diagnostics.
     virtual void filter(std::vector<int>& removed_indices)
     {
         (void)removed_indices;
-        throw std::runtime_error("Not implemented");
+        throw std::runtime_error("Filter: removed-index overload not implemented");
     }
 
 protected:
@@ -92,6 +98,7 @@ protected:
         }
     }
 
+    /// Return one normal coordinate from the current input cloud.
     Scalar normalCoord(int idx, int dim) const
     {
         auto* n = _input->normals();

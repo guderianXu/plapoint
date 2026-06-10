@@ -1,6 +1,5 @@
 #pragma once
 
-#include <plamatrix/dense/dense_matrix.h>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -10,9 +9,12 @@
 #include <type_traits>
 #include <utility>
 
+#include <plamatrix/dense/dense_matrix.h>
+
 namespace plapoint
 {
 
+/// Nx3 point cloud with optional normals, colors, texture coordinates, faces, and CPU/GPU transfer helpers.
 template <typename Scalar, plamatrix::Device Dev>
 class PointCloud
 {
@@ -22,6 +24,7 @@ class PointCloud
 public:
     using MatrixType = plamatrix::DenseMatrix<Scalar, Dev>;
 
+    /// Lightweight read-only accessor for one point and its optional attributes.
     class PointView
     {
     public:
@@ -62,11 +65,17 @@ public:
 
         void requireTextureCoords() const
         {
-            if (!_cloud.hasTextureCoords() ||
-                !_cloud.hasPointAlignedTextureCoords() ||
-                _idx >= static_cast<size_t>(_cloud.textureCoords()->rows()))
+            if (!_cloud.hasTextureCoords())
             {
-                throw std::runtime_error("PointView: cloud has no texture coordinate for point");
+                throw std::runtime_error("PointView: cloud has no texture coordinates");
+            }
+            if (!_cloud.hasPointAlignedTextureCoords())
+            {
+                throw std::runtime_error("PointView: texture coordinates are face-indexed");
+            }
+            if (_idx >= static_cast<size_t>(_cloud.textureCoords()->rows()))
+            {
+                throw std::runtime_error("PointView: point texture coordinate index out of range");
             }
         }
 
@@ -83,10 +92,13 @@ public:
         return PointView(*this, idx);
     }
 
+    /// Construct an empty Nx3 point cloud.
     PointCloud() : _points(0, 3) {}
 
+    /// Construct an Nx3 point cloud with all coordinates value-initialized.
     explicit PointCloud(size_t num_points) : _points(num_points, 3) {}
 
+    /// Construct from an Nx3 matrix, throwing if the matrix does not have three columns.
     explicit PointCloud(MatrixType&& pts)
     {
         if (pts.cols() != 3)
@@ -102,6 +114,7 @@ public:
 
     std::uint64_t pointsVersion() const { return _points_version; }
 
+    /// Return mutable point storage and invalidate cached CPU mirrors; callers must preserve Nx3 shape.
     MatrixType& points()
     {
         ++_points_version;

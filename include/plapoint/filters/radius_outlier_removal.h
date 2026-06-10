@@ -1,32 +1,38 @@
 #pragma once
 
-#include <plapoint/filters/filter.h>
-#include <plapoint/search/kdtree.h>
-#include <plapoint/core/point_cloud.h>
-#include <plamatrix/dense/dense_matrix.h>
-#include <plamatrix/ops/point_cloud.h>
 #include <cmath>
 #include <memory>
 #include <stdexcept>
 #include <vector>
 
-namespace plapoint {
+#include <plamatrix/dense/dense_matrix.h>
+#include <plamatrix/ops/point_cloud.h>
 
+#include <plapoint/core/point_cloud.h>
+#include <plapoint/filters/filter.h>
+#include <plapoint/search/kdtree.h>
+
+namespace plapoint
+{
+
+/// Radius-based outlier filter that keeps points with enough neighbors in a fixed radius.
 template <typename Scalar, plamatrix::Device Dev>
 class RadiusOutlierRemoval : public Filter<Scalar, Dev>
 {
 public:
     using PointCloudType = PointCloud<Scalar, Dev>;
 
+    /// Set the finite, non-negative neighbor search radius.
     void setRadius(Scalar r)
     {
         if (!std::isfinite(r) || r < Scalar(0))
         {
-            throw std::invalid_argument("RadiusOutlierRemoval: radius must be non-negative");
+            throw std::invalid_argument("RadiusOutlierRemoval: radius must be finite and non-negative");
         }
         _radius = r;
     }
 
+    /// Set the minimum neighbor count required to keep a point.
     void setMinNeighbors(int n)
     {
         if (n <= 0)

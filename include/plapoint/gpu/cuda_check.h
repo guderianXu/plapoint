@@ -6,12 +6,29 @@
 #include <plamatrix/core/error_check.h>
 
 #include <cstddef>
+#include <limits>
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 #define PLAPOINT_CHECK_CUDA(call) PLAMATRIX_CHECK_CUDA(call)
 
 namespace plapoint {
 namespace gpu {
+
+namespace detail {
+
+template <typename T>
+inline std::size_t checkedAllocationBytes(std::size_t count, const char* label)
+{
+    if (count > std::numeric_limits<std::size_t>::max() / sizeof(T))
+    {
+        throw std::overflow_error(std::string(label) + " allocation size overflow");
+    }
+    return count * sizeof(T);
+}
+
+} // namespace detail
 
 inline bool hasUsableCudaDevice()
 {
@@ -81,7 +98,8 @@ public:
             return;
         }
 
-        PLAPOINT_CHECK_CUDA(cudaMalloc(&m_ptr, count * sizeof(T)));
+        const std::size_t bytes = detail::checkedAllocationBytes<T>(count, "DeviceBuffer");
+        PLAPOINT_CHECK_CUDA(cudaMalloc(&m_ptr, bytes));
         m_count = count;
     }
 
@@ -152,7 +170,8 @@ public:
             return;
         }
 
-        PLAPOINT_CHECK_CUDA(cudaHostAlloc(&m_ptr, count * sizeof(T), cudaHostAllocDefault));
+        const std::size_t bytes = detail::checkedAllocationBytes<T>(count, "HostPinnedBuffer");
+        PLAPOINT_CHECK_CUDA(cudaHostAlloc(&m_ptr, bytes, cudaHostAllocDefault));
         m_count = count;
     }
 
