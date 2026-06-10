@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""Unit tests for PlaPoint maintenance scripts."""
+
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
+
+import compare_benchmark_baseline as compare_benchmark
+import run_cpu_only_validation as cpu_validation
+import run_real_reconstruction_regression as real_regression
+
+
+def write_json(path: Path, rows: list[dict[str, object]]) -> None:
+    path.write_text(json.dumps({"rows": rows}, indent=2) + "\n", encoding="utf-8")
+
+
+def write_ply(path: Path, rows: list[tuple[float, float, float, float, int]]) -> None:
+    lines = [
+        "ply",
+        "format ascii 1.0",
+        f"element vertex {len(rows)}",
+        "property float x",
+        "property float y",
+        "property float z",
+        "property float error",
+        "property uchar intensity",
+        "end_header",
+    ]
+    for x, y, z, error, intensity in rows:
+        lines.append(f"{x} {y} {z} {error} {intensity}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+class BenchmarkBaselineCompareTest(unittest.TestCase):
+    def test_detects_regression_and_improvement(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            baseline = root / "baseline.json"
+            current = root / "current.json"
+            write_json(
+                baseline,
+                [
+                    {"benchmark": "stable", "status": "measured", "best_ms": 10.0},
+                    {"benchmark": "slow", "status": "measured", "best_ms": 10.0},
+                    {"benchmark": "fast", "status": "measured", "best_ms": 10.0},
+                ],
+            )
+            write_json(
+                current,
+                [
+                    {"benchmark": "stable", "status": "measured", "best_ms": 10.5},
+                    {"benchmark": "slow", "status": "measured", "best_ms": 13.0},
+                    {"benchmark": "fast", "status": "measured", "best_ms": 7.0},
+                ],
+            )
+
+            result = compare_benchmark.compare_files(
+                baseline,
+                current,
+                regression_threshold=0.20,
+                improvement_threshold=0.20,
+                min_ms=0.001,
+            )
+
+        by_name = {row.name: row for row in result.rows}
+        self.assertEqual(by_name["stable"].status, "unchanged")
+        self.assertEqual(by_name["slow"].status, "regressed")
+        self.assertEqual(by_name["fast"].status, "improved")
+        self.assertEqual(result.regression_count, 1)
+        self.assertEqual(result.improvement_count, 1)
+        self.assertEqual(result.exit_code(fail_on_regression=True), 1)
+
+    def test_marks_missing_and_added_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            baseline = root / "baseline.json"
+            current = root / "current.json"
+            write_json(
+                baseline,
+                [{"benchmark": "old", "status": "measured", "best_ms": 1.0}],
+            )
+            write_json(
+                current,
+                [{"benchmark": "new", "status": "measured", "best_ms": 2.0}],
+            )
+
+            result = compare_benchmark.compare_files(baseline, current)
+
+        by_name = {row.name: row for row in result.rows}
+        self.assertEqual(by_name["old"].status, "missing")
+        self.assertEqual(by_name["new"].status, "added")
+
+
+class RealReconstructionRegressionTest(unittest.TestCase):
+    def test_compares_matching_ply_trees(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            expected = root / "expected"
+            actual = root / "actual"
+            for base in (expected, actual):
+                (base / "pairs" / "002_001").mkdir(parents=True)
+                write_ply(
+                    base / "pairs" / "002_001" / "cloud_gray.ply",
+                    [(1.0, 2.0, 3.0, 0.1, 10), (2.0, 3.0, 4.0, 0.2, 20)],
+                )
+
+            result = real_regression.compare_reference_tree(
+                expected,
+                actual,
+                ["pairs/002_001/cloud_gray.ply"],
+                point_tolerance=0,
+                mean_tolerance=0.0,
+                bbox_tolerance=0.0,
+                intensity_mean_tolerance=0.0,
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.compared_files, 1)
+
+    def test_detects_intensity_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            expected = root / "expected"
+            actual = root / "actual"
+            for base, intensity in ((expected, 10), (actual, 30)):
+                (base / "pairs" / "002_001").mkdir(parents=True)
+                write_ply(
+                    base / "pairs" / "002_001" / "cloud_gray.ply",
+                    [(1.0, 2.0, 3.0, 0.1, intensity)],
+                )
+
+            result = real_regression.compare_reference_tree(
+                expected,
+                actual,
+                ["pairs/002_001/cloud_gray.ply"],
+                point_tolerance=0,
+                mean_tolerance=0.0,
+                bbox_tolerance=0.0,
+                intensity_mean_tolerance=0.0,
+            )
+
+        self.assertFalse(result.ok)
+        self.assertIn("intensity mean", result.failures[0])
+
+    def test_compares_plascan_legacy_merged_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            expected = root / "expected"
+            actual = root / "actual"
+            (expected / "merged").mkdir(parents=True)
+            actual.mkdir(parents=True)
+            write_ply(
+                expected / "merged" / "merged_dense_gray.ply",
+                [(1.0, 2.0, 3.0, 0.1, 10)],
+            )
+            write_ply(
+                actual / "merged_dense_gray.ply",
+                [(1.0, 2.0, 3.0, 0.1, 10)],
+            )
+
+            result = real_regression.compare_reference_tree(
+                expected,
+                actual,
+                ["merged/merged_dense_gray.ply"],
+                point_tolerance=0,
+                mean_tolerance=0.0,
+                bbox_tolerance=0.0,
+                intensity_mean_tolerance=0.0,
+                actual_layout="plascan-legacy",
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.compared_files, 1)
+
+
+class CpuOnlyValidationTest(unittest.TestCase):
+    def test_cmake_configure_command_disables_cuda(self) -> None:
+        command = cpu_validation.cmake_configure_command(
+            source_dir=Path("/repo"),
+            build_dir=Path("/repo/build-cpu"),
+            generator="Ninja",
+            extra_cmake_args=["-DCMAKE_BUILD_TYPE=Release"],
+            prefix_paths=[Path("/deps/plamatrix")],
+        )
+
+        self.assertIn("-DPLAPOINT_WITH_CUDA=OFF", command)
+        self.assertIn("-DPLAPOINT_BUILD_TESTS=ON", command)
+        self.assertIn("-DPLAPOINT_BUILD_BENCHMARKS=ON", command)
+        self.assertIn("-DCMAKE_BUILD_TYPE=Release", command)
+        self.assertIn("-DCMAKE_PREFIX_PATH=/deps/plamatrix", command)
+        self.assertIn("-Dplamatrix_DIR=/deps/plamatrix/lib/cmake/plamatrix", command)
+
+    def test_default_prefix_path_finds_sibling_plamatrix_build(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            plapoint = root / "plapoint"
+            plamatrix_prefix = root / "plamatrix" / "build-task-c" / "install"
+            plamatrix_config = plamatrix_prefix / "lib" / "cmake" / "plamatrix" / "plamatrixConfig.cmake"
+            plamatrix_targets = plamatrix_config.parent / "plamatrixTargets.cmake"
+            plapoint.mkdir()
+            plamatrix_config.parent.mkdir(parents=True)
+            plamatrix_config.write_text("# config\n", encoding="utf-8")
+            plamatrix_targets.write_text("# targets\n", encoding="utf-8")
+
+            prefixes = cpu_validation.default_cmake_prefix_paths(plapoint)
+
+        self.assertEqual(prefixes, [plamatrix_prefix])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

@@ -114,6 +114,13 @@ if(PLAPOINT_BUILD_TESTS)
     find_package(GTest REQUIRED)
     add_subdirectory(test)
     add_subdirectory(tools)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME plapoint.scripts.python_tools
+            COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_python_tools.py
+        )
+    endif()
 endif()
 
 if(PLAPOINT_BUILD_BENCHMARKS)

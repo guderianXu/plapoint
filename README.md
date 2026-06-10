@@ -118,6 +118,54 @@ benchmark,points,iterations,best_ms
 Each benchmark case runs one unmeasured warm-up before reporting the best timed iteration.
 CUDA benchmark rows are emitted only when PlaPoint is built with `PLAPOINT_WITH_CUDA=ON` and a usable CUDA device is available.
 
+For repeatable local baseline artifacts, use the wrapper script. It writes CSV,
+JSON, and Markdown into the selected build output directory:
+
+```bash
+./scripts/run_benchmark_baseline.py \
+  --benchmark-exe build-bench/benchmarks/plapoint_benchmarks \
+  --output-dir build-bench/benchmark_baseline
+```
+
+Compare two baseline JSON files with:
+
+```bash
+./scripts/compare_benchmark_baseline.py \
+  build-bench/benchmark_baseline_old/plapoint_benchmark_baseline.json \
+  build-bench/benchmark_baseline/plapoint_benchmark_baseline.json \
+  --json-output build-bench/benchmark_baseline/comparison.json \
+  --markdown-output build-bench/benchmark_baseline/comparison.md
+```
+
+The comparison script reports regressions, improvements, added rows, and missing
+rows. Add `--fail-on-regression` when using it as a CI gate.
+
+## Validation Helpers
+
+Run a CPU-only configure, build, and CTest pass with:
+
+```bash
+./scripts/run_cpu_only_validation.py --parallel $(nproc)
+```
+
+The script configures `PLAPOINT_WITH_CUDA=OFF`, enables tests and benchmarks, and
+auto-detects a sibling PlaMatrix install prefix when available.
+
+The real reconstruction regression helper validates the source image/camera set
+and compares generated PLY files against `testData/real_reconstruction`:
+
+```bash
+./scripts/run_real_reconstruction_regression.py \
+  --generated-root /path/to/generated/testData_dense \
+  --actual-layout plascan-legacy \
+  --json-output build/real_reconstruction_regression/comparison.json
+```
+
+Without `--generated-root` or `--pipeline-command`, the script compares the
+checked-in reference tree to itself as a fast smoke test. Use `--pipeline-command`
+with `{img_dir}`, `{tsai_dir}`, `{output_dir}`, and `{plapoint_root}` placeholders
+to regenerate outputs before comparison.
+
 ## API Overview
 
 ```cpp
