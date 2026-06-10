@@ -36,6 +36,19 @@ struct Options
     bool self_test_benchmark_gpu_sync = false;
 };
 
+int parseIntegerOption(const std::string& option, const std::string& value, int minimum)
+{
+    int parsed = 0;
+    const auto* begin = value.data();
+    const auto* end = value.data() + value.size();
+    const auto result = std::from_chars(begin, end, parsed);
+    if (result.ec != std::errc() || result.ptr != end)
+    {
+        throw std::invalid_argument("Invalid value for " + option + ": " + value);
+    }
+    return std::max(minimum, parsed);
+}
+
 Options parseOptions(int argc, char** argv)
 {
     Options options;
@@ -44,19 +57,19 @@ Options parseOptions(int argc, char** argv)
         const std::string arg = argv[i];
         if (arg == "--points" && i + 1 < argc)
         {
-            options.points = std::max(1, std::atoi(argv[++i]));
+            options.points = parseIntegerOption(arg, argv[++i], 1);
         }
         else if (arg == "--iterations" && i + 1 < argc)
         {
-            options.iterations = std::max(1, std::atoi(argv[++i]));
+            options.iterations = parseIntegerOption(arg, argv[++i], 1);
         }
         else if (arg == "--icp-points" && i + 1 < argc)
         {
-            options.icp_points = std::max(3, std::atoi(argv[++i]));
+            options.icp_points = parseIntegerOption(arg, argv[++i], 3);
         }
         else if (arg == "--icp-max-iterations" && i + 1 < argc)
         {
-            options.icp_max_iterations = std::max(1, std::atoi(argv[++i]));
+            options.icp_max_iterations = parseIntegerOption(arg, argv[++i], 1);
         }
         else if (arg == "--skip-cpu-icp")
         {
@@ -364,4 +377,3 @@ int runBenchmarkGpuSyncSelfTest()
 
 template <plamatrix::Device Dev>
 using Cloud = plapoint::PointCloud<float, Dev>;
-

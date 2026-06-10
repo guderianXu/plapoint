@@ -11,13 +11,16 @@
 #endif
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -32,7 +35,17 @@ namespace
 
 int main(int argc, char** argv)
 {
-    const Options options = parseOptions(argc, argv);
+    Options options;
+    try
+    {
+        options = parseOptions(argc, argv);
+    }
+    catch (const std::invalid_argument& error)
+    {
+        std::cerr << error.what() << '\n';
+        return 2;
+    }
+
     if (options.self_test_benchmark_gpu_sync)
     {
 #ifdef PLAPOINT_WITH_CUDA
