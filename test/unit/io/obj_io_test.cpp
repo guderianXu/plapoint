@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "temp_file.h"
 #include <plapoint/io/obj_io.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
@@ -18,7 +19,8 @@ TEST(ObjIoTest, WriteAndReadBackVertexOnly)
 
     Cloud cloud(std::move(pts));
 
-    std::string path = "/tmp/plapoint_test_vertex.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     plapoint::io::writeObj<float>(path, cloud);
 
     auto read_back = plapoint::io::readObj<float>(path);
@@ -39,7 +41,8 @@ TEST(ObjIoTest, WriteAndReadBackWithFaces)
     faces.setValue(1, 0, 3); faces.setValue(1, 1, 4); faces.setValue(1, 2, 5);
     cloud.setFaces(std::move(faces));
 
-    std::string path = "/tmp/plapoint_test_faces.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     plapoint::io::writeObj<float>(path, cloud);
 
     auto read_back = plapoint::io::readObj<float>(path);
@@ -62,7 +65,8 @@ TEST(ObjIoTest, WriteAndReadBackWithNormals)
     normals.setValue(2, 0, 0.0f); normals.setValue(2, 1, 1.0f); normals.setValue(2, 2, 0.0f);
     cloud.setNormals(std::move(normals));
 
-    std::string path = "/tmp/plapoint_test_normals.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     plapoint::io::writeObj<float>(path, cloud);
 
     auto read_back = plapoint::io::readObj<float>(path);
@@ -76,7 +80,8 @@ TEST(ObjIoTest, WriteAndReadBackWithNormals)
 
 TEST(ObjIoTest, ReadsFaceNormalIndicesIntoPointNormals)
 {
-    const std::string path = "/tmp/plapoint_test_face_normal_indices.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "v 0 0 0\n";
@@ -102,7 +107,8 @@ TEST(ObjIoTest, ReadsFaceNormalIndicesIntoPointNormals)
 
 TEST(ObjIoTest, ReadsFaceNormalIndicesWithUnreferencedVertex)
 {
-    const std::string path = "/tmp/plapoint_test_face_normal_unreferenced_vertex.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "v 0 0 0\n";
@@ -129,7 +135,8 @@ TEST(ObjIoTest, ReadsFaceNormalIndicesWithUnreferencedVertex)
 
 TEST(ObjIoTest, ReadsRelativeFaceNormalIndices)
 {
-    const std::string path = "/tmp/plapoint_test_relative_face_normal_indices.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "v 0 0 0\n";
@@ -154,7 +161,8 @@ TEST(ObjIoTest, ReadsRelativeFaceNormalIndices)
 
 TEST(ObjIoTest, FallsBackToOrderedNormalsWhenFaceNormalIndicesConflict)
 {
-    const std::string path = "/tmp/plapoint_test_conflicting_face_normals.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "v 0 0 0\n";
@@ -180,7 +188,8 @@ TEST(ObjIoTest, FallsBackToOrderedNormalsWhenFaceNormalIndicesConflict)
 
 TEST(ObjIoTest, DoesNotFallbackToOrderedNormalsWhenConflictLeavesReferencedVertexMissingNormal)
 {
-    const std::string path = "/tmp/plapoint_test_conflict_and_missing_face_normal.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "v 0 0 0\n";
@@ -203,7 +212,8 @@ TEST(ObjIoTest, DoesNotFallbackToOrderedNormalsWhenConflictLeavesReferencedVerte
 
 TEST(ObjIoTest, RejectsZeroObjIndices)
 {
-    const std::string path = "/tmp/plapoint_test_zero_indices.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "v 0 0 0\n";
@@ -221,7 +231,8 @@ TEST(ObjIoTest, RejectsZeroObjIndices)
 
 TEST(ObjIoTest, RejectsFacesWithFewerThanThreeVertices)
 {
-    const std::string path = "/tmp/plapoint_test_short_face.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "v 0 0 0\n";
@@ -236,7 +247,8 @@ TEST(ObjIoTest, RejectsFacesWithFewerThanThreeVertices)
 
 TEST(ObjIoTest, IgnoresPartialFaceTextureIndicesWithoutShiftingCorners)
 {
-    const std::string path = "/tmp/plapoint_test_partial_face_texture_indices.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "v 0 0 0\n";
@@ -259,7 +271,8 @@ TEST(ObjIoTest, IgnoresPartialFaceTextureIndicesWithoutShiftingCorners)
 
 TEST(ObjIoTest, ReadsFaceNormalIndicesWhenSomeFacesOmitNormals)
 {
-    const std::string path = "/tmp/plapoint_test_mixed_face_normal_indices.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "v 0 0 0\n";
@@ -284,7 +297,8 @@ TEST(ObjIoTest, ReadsFaceNormalIndicesWhenSomeFacesOmitNormals)
 
 TEST(ObjIoTest, DoesNotInventNormalsForCornersThatOmitNormalIndices)
 {
-    const std::string path = "/tmp/plapoint_test_missing_corner_normal.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "v 0 0 0\n";
@@ -306,7 +320,8 @@ TEST(ObjIoTest, DoesNotInventNormalsForCornersThatOmitNormalIndices)
 
 TEST(ObjIoTest, ReadsIndependentTextureCoordinateTable)
 {
-    const std::string path = "/tmp/plapoint_test_independent_uv.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "v 0 0 0\n";
@@ -331,7 +346,8 @@ TEST(ObjIoTest, ReadsIndependentTextureCoordinateTable)
 
 TEST(ObjIoTest, PreservesFirstTriangleTextureIndicesForQuad)
 {
-    const std::string path = "/tmp/plapoint_test_quad_face_texture_indices.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "v 0 0 0\n";
@@ -386,7 +402,8 @@ TEST(ObjIoTest, WritesAllTextureCoordinates)
     face_texture_indices.setValue(0, 2, 3);
     cloud.setFaceTextureIndices(std::move(face_texture_indices));
 
-    const std::string path = "/tmp/plapoint_test_write_independent_uv.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     plapoint::io::writeObj<float>(path, cloud);
     auto read_back = plapoint::io::readObj<float>(path);
 
@@ -400,7 +417,8 @@ TEST(ObjIoTest, WritesAllTextureCoordinates)
 
 TEST(ObjIoTest, ReadsCompleteFaceTextureAndNormalIndices)
 {
-    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_complete_face_indices.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     std::filesystem::remove(path);
     {
         std::ofstream f(path);
@@ -418,7 +436,7 @@ TEST(ObjIoTest, ReadsCompleteFaceTextureAndNormalIndices)
         f << "f 1/4/3 2/2/2 3/1/1\n";
     }
 
-    auto read_back = plapoint::io::readObj<float>(path.string());
+    auto read_back = plapoint::io::readObj<float>(path);
 
     ASSERT_NE(read_back, nullptr);
     ASSERT_TRUE(read_back->hasFaces());
@@ -441,7 +459,8 @@ TEST(ObjIoTest, ReadsCompleteFaceTextureAndNormalIndices)
 
 TEST(ObjIoTest, ReadsVertexLinesWithExtraAttributes)
 {
-    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_vertex_extra_attributes.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     std::filesystem::remove(path);
     {
         std::ofstream f(path);
@@ -452,7 +471,7 @@ TEST(ObjIoTest, ReadsVertexLinesWithExtraAttributes)
         f << "usemtl ignored_material\n";
     }
 
-    auto read_back = plapoint::io::readObj<float>(path.string());
+    auto read_back = plapoint::io::readObj<float>(path);
 
     ASSERT_NE(read_back, nullptr);
     ASSERT_EQ(read_back->size(), 2u);
@@ -468,7 +487,8 @@ TEST(ObjIoTest, ReadsVertexLinesWithExtraAttributes)
 
 TEST(ObjIoTest, RejectsOutOfRangeFaceVertexIndex)
 {
-    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_oob_face_vertex.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     std::filesystem::remove(path);
     {
         std::ofstream f(path);
@@ -479,14 +499,15 @@ TEST(ObjIoTest, RejectsOutOfRangeFaceVertexIndex)
         f << "f 1 2 4\n";
     }
 
-    EXPECT_THROW((void)plapoint::io::readObj<float>(path.string()), std::out_of_range);
+    EXPECT_THROW((void)plapoint::io::readObj<float>(path), std::out_of_range);
 
     std::filesystem::remove(path);
 }
 
 TEST(ObjIoTest, RejectsOutOfRangeRelativeFaceVertexIndex)
 {
-    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_oob_relative_face_vertex.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     std::filesystem::remove(path);
     {
         std::ofstream f(path);
@@ -497,14 +518,15 @@ TEST(ObjIoTest, RejectsOutOfRangeRelativeFaceVertexIndex)
         f << "f -4 -2 -1\n";
     }
 
-    EXPECT_THROW((void)plapoint::io::readObj<float>(path.string()), std::out_of_range);
+    EXPECT_THROW((void)plapoint::io::readObj<float>(path), std::out_of_range);
 
     std::filesystem::remove(path);
 }
 
 TEST(ObjIoTest, RejectsOutOfRangeFaceTextureIndex)
 {
-    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_oob_face_texture.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     std::filesystem::remove(path);
     {
         std::ofstream f(path);
@@ -516,14 +538,15 @@ TEST(ObjIoTest, RejectsOutOfRangeFaceTextureIndex)
         f << "f 1/1 2/2 3/1\n";
     }
 
-    EXPECT_THROW((void)plapoint::io::readObj<float>(path.string()), std::out_of_range);
+    EXPECT_THROW((void)plapoint::io::readObj<float>(path), std::out_of_range);
 
     std::filesystem::remove(path);
 }
 
 TEST(ObjIoTest, RejectsMalformedFaceIndexToken)
 {
-    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_malformed_face_index.obj";
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
     std::filesystem::remove(path);
     {
         std::ofstream f(path);
@@ -535,12 +558,16 @@ TEST(ObjIoTest, RejectsMalformedFaceIndexToken)
         f << "f 1/abc 2/1 3/1\n";
     }
 
-    EXPECT_THROW((void)plapoint::io::readObj<float>(path.string()), std::invalid_argument);
+    EXPECT_THROW((void)plapoint::io::readObj<float>(path), std::invalid_argument);
 
     std::filesystem::remove(path);
 }
 
 TEST(ObjIoTest, ReadNonExistentFileThrows)
 {
-    EXPECT_THROW(plapoint::io::readObj<float>("/tmp/nonexistent_plapoint.obj"), std::runtime_error);
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
+    std::filesystem::remove(path);
+
+    EXPECT_THROW(plapoint::io::readObj<float>(path), std::runtime_error);
 }

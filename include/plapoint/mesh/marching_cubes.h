@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <stdexcept>
 #include <tuple>
 #include <vector>
 
@@ -327,7 +328,14 @@ public:
         _min = min_corner; _max = max_corner;
     }
 
-    void setResolution(int nx, int ny, int nz) { _nx = nx; _ny = ny; _nz = nz; }
+    void setResolution(int nx, int ny, int nz)
+    {
+        if (nx <= 0 || ny <= 0 || nz <= 0)
+        {
+            throw std::invalid_argument("MarchingCubes resolution must be positive");
+        }
+        _nx = nx; _ny = ny; _nz = nz;
+    }
     void setIsoLevel(Scalar iso) { _iso = iso; }
 
     std::tuple<Matrix, Matrix> extract(const ScalarFunction& fn) const

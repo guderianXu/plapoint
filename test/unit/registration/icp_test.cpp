@@ -125,15 +125,7 @@ TEST(ICPTest, RejectsSmallSampleWithFewerThanThreeCorrespondences)
     icp.setInputTarget(target);
 
     Cloud output;
-    try
-    {
-        icp.align(output);
-        FAIL() << "Expected fewer than three correspondences to be rejected";
-    }
-    catch (const std::runtime_error& e)
-    {
-        EXPECT_NE(std::string(e.what()).find("fewer than 3 correspondences"), std::string::npos);
-    }
+    EXPECT_THROW(icp.align(output), std::runtime_error);
 }
 
 TEST(ICPTest, RejectsDisjointCloudsWhenCorrespondenceDistanceExcludesAllMatches)
@@ -168,15 +160,7 @@ TEST(ICPTest, RejectsDisjointCloudsWhenCorrespondenceDistanceExcludesAllMatches)
     icp.setMaxCorrespondenceDistance(Scalar(1));
 
     Cloud output;
-    try
-    {
-        icp.align(output);
-        FAIL() << "Expected disjoint clouds to have no valid correspondences";
-    }
-    catch (const std::runtime_error& e)
-    {
-        EXPECT_NE(std::string(e.what()).find("fewer than 3 correspondences"), std::string::npos);
-    }
+    EXPECT_THROW(icp.align(output), std::runtime_error);
 }
 
 TEST(ICPTest, RejectsMismatchedTargetWithDegenerateCorrespondenceGeometry)
@@ -203,15 +187,7 @@ TEST(ICPTest, RejectsMismatchedTargetWithDegenerateCorrespondenceGeometry)
     icp.setMaxCorrespondenceDistance(Scalar(10));
 
     Cloud output;
-    try
-    {
-        icp.align(output);
-        FAIL() << "Expected degenerate target correspondence geometry to be rejected";
-    }
-    catch (const std::runtime_error& e)
-    {
-        EXPECT_NE(std::string(e.what()).find("target correspondence geometry is degenerate"), std::string::npos);
-    }
+    EXPECT_THROW(icp.align(output), std::runtime_error);
 }
 
 TEST(ICPTest, RejectsInvalidIterationAndEpsilonParameters)

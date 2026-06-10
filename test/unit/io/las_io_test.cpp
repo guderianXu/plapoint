@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "temp_file.h"
 #include <plapoint/io/las_io.h>
 
 #include <array>
@@ -27,7 +28,8 @@ std::array<char, 28> makeLasFormat1Record(int32_t x, int32_t y, int32_t z)
 
 TEST(LasIOTest, ReadsLasFormat1UsingHeaderRecordLength)
 {
-    const auto path = std::filesystem::temp_directory_path() / "plapoint_format1_record_length_test.las";
+    const plapoint::test::TempFile temp_file(".las");
+    const auto path = temp_file.string();
 
     plapoint::io::LasHeader header{};
     std::memcpy(header.file_signature, "LASF", 4);
@@ -54,7 +56,7 @@ TEST(LasIOTest, ReadsLasFormat1UsingHeaderRecordLength)
         out.write(second.data(), static_cast<std::streamsize>(second.size()));
     }
 
-    auto cloud = plapoint::io::readLas<float>(path.string());
+    auto cloud = plapoint::io::readLas<float>(path);
 
     std::filesystem::remove(path);
 
@@ -69,14 +71,15 @@ TEST(LasIOTest, ReadsLasFormat1UsingHeaderRecordLength)
 
 TEST(LasIOTest, WriteLasUsesPointFormatMatchingRecordLength)
 {
-    const auto path = std::filesystem::temp_directory_path() / "plapoint_written_las_header_test.las";
+    const plapoint::test::TempFile temp_file(".las");
+    const auto path = temp_file.string();
 
     plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(1);
     cloud.points().setValue(0, 0, 1.0f);
     cloud.points().setValue(0, 1, 2.0f);
     cloud.points().setValue(0, 2, 3.0f);
 
-    plapoint::io::writeLas(path.string(), cloud, 0.01);
+    plapoint::io::writeLas(path, cloud, 0.01);
 
     plapoint::io::LasHeader header{};
     {

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "temp_file.h"
 #include <plapoint/io/ply_io.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
@@ -20,7 +21,8 @@ TEST(PlyIOTest, BinaryLERoundtrip)
     }
     Cloud cloud(std::move(pts));
 
-    std::string path = "/tmp/plapoint_test_ble.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     plapoint::io::writePly(path, cloud, plapoint::io::PlyFormat::BinaryLE);
 
     auto loaded = plapoint::io::readPly<Scalar>(path);
@@ -46,7 +48,8 @@ TEST(PlyIOTest, BinaryBERoundtrip)
     }
     Cloud cloud(std::move(pts));
 
-    std::string path = "/tmp/plapoint_test_bbe.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     plapoint::io::writePly(path, cloud, plapoint::io::PlyFormat::BinaryBE);
 
     auto loaded = plapoint::io::readPly<Scalar>(path);

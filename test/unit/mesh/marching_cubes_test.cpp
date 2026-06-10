@@ -78,22 +78,13 @@ TEST(MarchingCubesTest, EmptyScalarFunctionIsRejected)
         std::exception);
 }
 
-TEST(MarchingCubesTest, ZeroResolutionAxisReturnsEmptyMesh)
+TEST(MarchingCubesTest, RejectsNonPositiveResolution)
 {
     using Scalar = float;
 
     plapoint::mesh::MarchingCubes<Scalar> mc;
-    mc.setBounds({-1,-1,-1}, {1,1,1});
-    mc.setResolution(0, 4, 4);
-    mc.setIsoLevel(Scalar(0));
 
-    auto [verts, faces] = mc.extract([](Scalar, Scalar, Scalar)
-    {
-        return Scalar(1);
-    });
-
-    EXPECT_EQ(verts.rows(), 0);
-    EXPECT_EQ(verts.cols(), 3);
-    EXPECT_EQ(faces.rows(), 0);
-    EXPECT_EQ(faces.cols(), 3);
+    EXPECT_THROW(mc.setResolution(0, 4, 4), std::invalid_argument);
+    EXPECT_THROW(mc.setResolution(4, -1, 4), std::invalid_argument);
+    EXPECT_THROW(mc.setResolution(4, 4, 0), std::invalid_argument);
 }

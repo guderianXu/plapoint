@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "temp_file.h"
 #include <plapoint/io/xyz_io.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
@@ -23,7 +24,8 @@ TEST(XyzIOTest, Roundtrip)
     }
     Cloud cloud(std::move(pts));
 
-    std::string path = "/tmp/plapoint_test.xyz";
+    const plapoint::test::TempFile temp_file(".xyz");
+    const auto path = temp_file.string();
     plapoint::io::writeXyz(path, cloud);
 
     auto loaded = plapoint::io::readXyz<Scalar>(path);
@@ -35,14 +37,15 @@ TEST(XyzIOTest, Roundtrip)
 
 TEST(XyzIOTest, EmptyFileProducesEmptyCloud)
 {
-    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_empty.xyz";
+    const plapoint::test::TempFile temp_file(".xyz");
+    const auto path = temp_file.string();
     std::filesystem::remove(path);
     {
         std::ofstream f(path);
         ASSERT_TRUE(f);
     }
 
-    auto loaded = plapoint::io::readXyz<float>(path.string());
+    auto loaded = plapoint::io::readXyz<float>(path);
 
     EXPECT_EQ(loaded->size(), 0u);
 
@@ -51,7 +54,8 @@ TEST(XyzIOTest, EmptyFileProducesEmptyCloud)
 
 TEST(XyzIOTest, IgnoresCommentsPartialInvalidAndExtraColumns)
 {
-    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_mixed_lines.xyz";
+    const plapoint::test::TempFile temp_file(".xyz");
+    const auto path = temp_file.string();
     std::filesystem::remove(path);
     {
         std::ofstream f(path);
@@ -65,7 +69,7 @@ TEST(XyzIOTest, IgnoresCommentsPartialInvalidAndExtraColumns)
         f << "   # indented comment is ignored as an invalid numeric row\n";
     }
 
-    auto loaded = plapoint::io::readXyz<float>(path.string());
+    auto loaded = plapoint::io::readXyz<float>(path);
 
     ASSERT_EQ(loaded->size(), 2u);
     EXPECT_FLOAT_EQ(loaded->points().getValue(0, 0), 1.0f);
@@ -80,8 +84,9 @@ TEST(XyzIOTest, IgnoresCommentsPartialInvalidAndExtraColumns)
 
 TEST(XyzIOTest, ReadNonExistentFileThrows)
 {
-    const auto path = std::filesystem::temp_directory_path() / "plapoint_missing_test.xyz";
+    const plapoint::test::TempFile temp_file(".xyz");
+    const auto path = temp_file.string();
     std::filesystem::remove(path);
 
-    EXPECT_THROW((void)plapoint::io::readXyz<float>(path.string()), std::runtime_error);
+    EXPECT_THROW((void)plapoint::io::readXyz<float>(path), std::runtime_error);
 }

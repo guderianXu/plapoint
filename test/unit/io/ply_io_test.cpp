@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "temp_file.h"
 #include <plapoint/io/ply_io.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
@@ -67,7 +68,8 @@ TEST(PlyIOTest, RoundtripASCII)
     auto cloud = std::make_shared<Cloud>(std::move(pts));
     cloud->setNormals(std::move(nrm));
 
-    std::string path = "/tmp/plapoint_test_ascii.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     EXPECT_NO_THROW(plapoint::io::writePly(path, *cloud));
 
     auto loaded = plapoint::io::readPly<Scalar>(path);
@@ -82,7 +84,8 @@ TEST(PlyIOTest, ReadOnlyPositions)
 {
     using Scalar = float;
 
-    std::string path = "/tmp/plapoint_test_minimal.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nend_header\n";
@@ -102,7 +105,8 @@ TEST(PlyIOTest, ReadsAsciiVertexPropertiesUsingHeaderOrder)
 {
     using Scalar = float;
 
-    std::string path = "/tmp/plapoint_test_header_order_ascii.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "ply\n"
@@ -140,7 +144,8 @@ TEST(PlyIOTest, ReadsBinaryVertexPropertiesUsingHeaderOrder)
 {
     using Scalar = float;
 
-    std::string path = "/tmp/plapoint_test_header_order_binary.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path, std::ios::binary);
         f << "ply\n"
@@ -199,7 +204,8 @@ TEST(PlyIOTest, ReadsPointOffsetComment)
 {
     using Scalar = float;
 
-    std::string path = "/tmp/plapoint_test_point_offset.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "ply\n"
@@ -226,7 +232,8 @@ TEST(PlyIOTest, ReadsBinaryLittleEndianPointOffsetComment)
 {
     using Scalar = float;
 
-    std::string path = "/tmp/plapoint_test_binary_point_offset.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path, std::ios::binary);
         f << "ply\n"
@@ -256,7 +263,8 @@ TEST(PlyIOTest, ReadsBinaryBigEndianPointOffsetComment)
 {
     using Scalar = float;
 
-    std::string path = "/tmp/plapoint_test_binary_be_point_offset.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path, std::ios::binary);
         f << "ply\n"
@@ -287,7 +295,8 @@ TEST(PlyIOTest, ReadsPointOffsetAsLocalCoordinatesWhenRequested)
 {
     using Scalar = float;
 
-    std::string path = "/tmp/plapoint_test_local_point_offset.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "ply\n"
@@ -367,15 +376,18 @@ TEST(PlyIOTest, ReadsBinaryPointOffsetAsLocalCoordinatesWhenRequested)
         std::remove(path.c_str());
     };
 
-    writeAndRead("/tmp/plapoint_test_local_binary_le_point_offset.ply", false);
-    writeAndRead("/tmp/plapoint_test_local_binary_be_point_offset.ply", true);
+    const plapoint::test::TempFile little_endian_file(".ply");
+    const plapoint::test::TempFile big_endian_file(".ply");
+    writeAndRead(little_endian_file.string(), false);
+    writeAndRead(big_endian_file.string(), true);
 }
 
 TEST(PlyIOTest, FaceElementDoesNotOverrideVertexCount)
 {
     using Scalar = float;
 
-    std::string path = "/tmp/plapoint_test_face_element_vertex_count.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "ply\n"
@@ -405,7 +417,8 @@ TEST(PlyIOTest, ReadsBinaryVertexPropertiesWithUcharColors)
 {
     using Scalar = float;
 
-    std::string path = "/tmp/plapoint_test_binary_uchar_colors.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path, std::ios::binary);
         f << "ply\n"
@@ -451,7 +464,8 @@ TEST(PlyIOTest, ReadsAsciiWhenFaceElementPrecedesVertexElement)
 {
     using Scalar = float;
 
-    std::string path = "/tmp/plapoint_test_face_before_vertex_ascii.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path);
         f << "ply\n"
@@ -481,7 +495,8 @@ TEST(PlyIOTest, ReadsBinaryWhenFaceElementPrecedesVertexElement)
 {
     using Scalar = float;
 
-    std::string path = "/tmp/plapoint_test_face_before_vertex_binary.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path, std::ios::binary);
         f << "ply\n"
@@ -517,7 +532,8 @@ TEST(PlyIOTest, ReadsBigEndianBinaryWhenFaceElementPrecedesVertexElement)
 {
     using Scalar = float;
 
-    std::string path = "/tmp/plapoint_test_face_before_vertex_binary_be.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     {
         std::ofstream f(path, std::ios::binary);
         f << "ply\n"
@@ -551,7 +567,8 @@ TEST(PlyIOTest, ReadsBigEndianBinaryWhenFaceElementPrecedesVertexElement)
 
 TEST(PlyIOTest, RejectsInvalidMagicHeader)
 {
-    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_invalid_magic.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     std::filesystem::remove(path);
     {
         std::ofstream f(path);
@@ -566,14 +583,15 @@ TEST(PlyIOTest, RejectsInvalidMagicHeader)
           << "1 2 3\n";
     }
 
-    EXPECT_THROW((void)plapoint::io::readPly<float>(path.string()), std::runtime_error);
+    EXPECT_THROW((void)plapoint::io::readPly<float>(path), std::runtime_error);
 
     std::filesystem::remove(path);
 }
 
 TEST(PlyIOTest, IgnoresIncompleteNormalTriplet)
 {
-    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_incomplete_normals.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     std::filesystem::remove(path);
     {
         std::ofstream f(path);
@@ -590,7 +608,7 @@ TEST(PlyIOTest, IgnoresIncompleteNormalTriplet)
           << "1 2 3 0.5 0.25\n";
     }
 
-    auto cloud = plapoint::io::readPly<float>(path.string());
+    auto cloud = plapoint::io::readPly<float>(path);
 
     ASSERT_EQ(cloud->size(), 1u);
     EXPECT_FALSE(cloud->hasNormals());
@@ -603,7 +621,8 @@ TEST(PlyIOTest, IgnoresIncompleteNormalTriplet)
 
 TEST(PlyIOTest, RejectsUnsupportedBinaryVertexPropertyType)
 {
-    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_unsupported_binary_type.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     std::filesystem::remove(path);
     {
         std::ofstream f(path, std::ios::binary);
@@ -621,14 +640,15 @@ TEST(PlyIOTest, RejectsUnsupportedBinaryVertexPropertyType)
         f.write(reinterpret_cast<const char*>(yz), sizeof(yz));
     }
 
-    EXPECT_THROW((void)plapoint::io::readPly<float>(path.string()), std::runtime_error);
+    EXPECT_THROW((void)plapoint::io::readPly<float>(path), std::runtime_error);
 
     std::filesystem::remove(path);
 }
 
 TEST(PlyIOTest, RejectsNegativeBinaryListCount)
 {
-    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_negative_binary_list_count.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     std::filesystem::remove(path);
     {
         std::ofstream f(path, std::ios::binary);
@@ -648,14 +668,15 @@ TEST(PlyIOTest, RejectsNegativeBinaryListCount)
         f.write(reinterpret_cast<const char*>(point), sizeof(point));
     }
 
-    EXPECT_THROW((void)plapoint::io::readPly<float>(path.string()), std::runtime_error);
+    EXPECT_THROW((void)plapoint::io::readPly<float>(path), std::runtime_error);
 
     std::filesystem::remove(path);
 }
 
 TEST(PlyIOTest, SkipsBinaryScalarPropertiesOnNonVertexElementsBeforeVertices)
 {
-    const auto path = std::filesystem::temp_directory_path() / "plapoint_test_binary_extra_scalar_element.ply";
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
     std::filesystem::remove(path);
     {
         std::ofstream f(path, std::ios::binary);
@@ -679,7 +700,7 @@ TEST(PlyIOTest, SkipsBinaryScalarPropertiesOnNonVertexElementsBeforeVertices)
         f.write(reinterpret_cast<const char*>(point), sizeof(point));
     }
 
-    auto cloud = plapoint::io::readPly<float>(path.string());
+    auto cloud = plapoint::io::readPly<float>(path);
 
     ASSERT_EQ(cloud->size(), 1u);
     EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 7.0f);
