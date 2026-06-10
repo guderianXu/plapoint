@@ -243,6 +243,18 @@ public:
         return results;
     }
 
+#if defined(PLAPOINT_ENABLE_TESTING) && defined(PLAPOINT_WITH_CUDA)
+    std::size_t gpuBatchQueryScalarCapacityForTesting() const
+    {
+        return _gpu_queries.size();
+    }
+
+    std::size_t gpuBatchResultCapacityForTesting() const
+    {
+        return _gpu_indices.size();
+    }
+#endif
+
 private:
     Scalar pointCoord(int idx, int dim) const
     {

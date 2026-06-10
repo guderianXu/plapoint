@@ -41,10 +41,10 @@ public:
                 normals_cpu(i, 2)
             };
 
+        const auto all_neighbors = _tree->batchNearestKSearch(points_cpu, k);
         for (int i = 0; i < n; ++i)
         {
-            plamatrix::Vec3<Scalar> pt = pointVec(points_cpu, i);
-            auto neighbors = _tree->nearestKSearch(pt, k);
+            const auto& neighbors = all_neighbors[static_cast<std::size_t>(i)];
             Scalar sx = 0, sy = 0, sz = 0;
             for (int nb : neighbors)
             {

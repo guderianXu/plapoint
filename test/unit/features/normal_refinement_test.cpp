@@ -154,4 +154,51 @@ TEST(NormalRefinementTest, GpuSmoothAndOrientUpdatesNormals)
         EXPECT_GT(nz, Scalar(0));
     }
 }
+
+TEST(NormalRefinementTest, GpuSmoothUsesBatchKnnWorkspace)
+{
+    if (!hasCudaDeviceForNormalRefinement())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU normal refinement test";
+    }
+
+    using Scalar = float;
+    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+
+    Matrix pts(6, 3);
+    for (int i = 0; i < 6; ++i)
+    {
+        pts.setValue(i, 0, Scalar(i));
+        pts.setValue(i, 1, Scalar(i % 2));
+        pts.setValue(i, 2, Scalar(0));
+    }
+    CpuCloud cpu_cloud(std::move(pts));
+
+    Matrix normals(6, 3);
+    for (int i = 0; i < 6; ++i)
+    {
+        normals.setValue(i, 0, Scalar(i % 3) * Scalar(0.1));
+        normals.setValue(i, 1, Scalar((i + 1) % 3) * Scalar(0.1));
+        normals.setValue(i, 2, Scalar(1));
+    }
+    cpu_cloud.setNormals(std::move(normals));
+    auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
+
+    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::GPU>>();
+    tree->setInputCloud(gpu_cloud);
+    tree->build();
+
+    ASSERT_EQ(tree->gpuBatchQueryScalarCapacityForTesting(), 0u);
+    ASSERT_EQ(tree->gpuBatchResultCapacityForTesting(), 0u);
+
+    plapoint::NormalRefinement<Scalar, plamatrix::Device::GPU> nr;
+    nr.setInputCloud(gpu_cloud);
+    nr.setSearchMethod(tree);
+    nr.smooth(4);
+
+    EXPECT_GE(tree->gpuBatchQueryScalarCapacityForTesting(), 18u);
+    EXPECT_GE(tree->gpuBatchResultCapacityForTesting(), 24u);
+}
 #endif
