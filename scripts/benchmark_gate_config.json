@@ -1,0 +1,6 @@
+{
+  "regression_threshold": 0.2,
+  "improvement_threshold": 0.2,
+  "min_ms": 0.001,
+  "ignore_benchmarks": []
+}

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import importlib
+import math
 import sys
 import tempfile
 import unittest
@@ -97,6 +99,55 @@ class BenchmarkBaselineCompareTest(unittest.TestCase):
         self.assertEqual(by_name["old"].status, "missing")
         self.assertEqual(by_name["new"].status, "added")
 
+    def test_gate_config_ignores_noisy_benchmarks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            baseline = root / "baseline.json"
+            current = root / "current.json"
+            config_path = root / "gate.json"
+            write_json(
+                baseline,
+                [
+                    {"benchmark": "gpu_noisy", "status": "measured", "best_ms": 10.0},
+                    {"benchmark": "gpu_real", "status": "measured", "best_ms": 10.0},
+                ],
+            )
+            write_json(
+                current,
+                [
+                    {"benchmark": "gpu_noisy", "status": "measured", "best_ms": 20.0},
+                    {"benchmark": "gpu_real", "status": "measured", "best_ms": 13.0},
+                ],
+            )
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "regression_threshold": 0.20,
+                        "improvement_threshold": 0.20,
+                        "min_ms": 0.001,
+                        "ignore_benchmarks": ["gpu_noisy"],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            config = compare_benchmark.load_gate_config(config_path)
+            result = compare_benchmark.compare_files(
+                baseline,
+                current,
+                regression_threshold=config.regression_threshold,
+                improvement_threshold=config.improvement_threshold,
+                min_ms=config.min_ms,
+                ignored_benchmarks=config.ignore_benchmarks,
+            )
+
+        by_name = {row.name: row for row in result.rows}
+        self.assertEqual(by_name["gpu_noisy"].status, "ignored")
+        self.assertEqual(by_name["gpu_real"].status, "regressed")
+        self.assertEqual(result.ignored_count, 1)
+        self.assertEqual(result.regression_count, 1)
+
 
 class RealReconstructionRegressionTest(unittest.TestCase):
     def test_compares_matching_ply_trees(self) -> None:
@@ -178,6 +229,89 @@ class RealReconstructionRegressionTest(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(result.compared_files, 1)
+
+    def test_evaluates_quality_metrics_from_error_and_intensity(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cloud = root / "cloud_gray.ply"
+            write_ply(
+                cloud,
+                [(1.0, 2.0, 3.0, 0.01, 10), (math.nan, 2.0, 3.0, 0.03, 40)],
+            )
+
+            metrics = real_regression.evaluate_quality_metrics(root, ["cloud_gray.ply"])
+            failures = real_regression.check_quality_thresholds(
+                metrics,
+                max_error=0.02,
+                max_mean_error=0.015,
+                min_finite_ratio=0.9,
+            )
+
+        metric = metrics["cloud_gray.ply"]
+        self.assertEqual(metric["point_count"], 2)
+        self.assertAlmostEqual(metric["finite_coordinate_ratio"], 0.5)
+        self.assertAlmostEqual(metric["error_mean"], 0.02)
+        self.assertAlmostEqual(metric["error_max"], 0.03)
+        self.assertEqual(metric["intensity_min"], 10.0)
+        self.assertEqual(metric["intensity_max"], 40.0)
+        self.assertEqual(len(failures), 3)
+        self.assertTrue(any("max error" in failure for failure in failures))
+        self.assertTrue(any("mean error" in failure for failure in failures))
+        self.assertTrue(any("finite coordinate ratio" in failure for failure in failures))
+
+
+class RealReconstructionPipelineTest(unittest.TestCase):
+    def test_builds_pipeline_command_from_placeholders(self) -> None:
+        pipeline = importlib.import_module("run_real_reconstruction_pipeline")
+
+        command = pipeline.build_pipeline_command(
+            "python3 make.py --img {img_dir} --tsai {tsai_dir} --out {output_dir} --root {plapoint_root}",
+            image_dir=Path("/data/img"),
+            camera_dir=Path("/data/tsai"),
+            output_dir=Path("/tmp/out"),
+            root=Path("/repo/plapoint"),
+        )
+
+        self.assertEqual(
+            command,
+            [
+                "python3",
+                "make.py",
+                "--img",
+                "/data/img",
+                "--tsai",
+                "/data/tsai",
+                "--out",
+                "/tmp/out",
+                "--root",
+                "/repo/plapoint",
+            ],
+        )
+        self.assertEqual(
+            pipeline.default_output_dir(Path("/repo/plapoint")),
+            Path("/repo/plapoint/build/real_reconstruction_pipeline"),
+        )
+
+
+class CudaHotspotReportTest(unittest.TestCase):
+    def test_selects_gpu_hotspots_and_cpu_ratio(self) -> None:
+        hotspots = importlib.import_module("report_cuda_hotspots")
+
+        rows = [
+            {"benchmark": "cpu_knn", "status": "measured", "best_ms": 10.0},
+            {"benchmark": "gpu_knn", "status": "measured", "best_ms": 2.0},
+            {"benchmark": "gpu_icp", "status": "measured", "best_ms": 5.0},
+            {"benchmark": "cpu_voxel_grid", "status": "measured", "best_ms": 3.0},
+        ]
+
+        selected = hotspots.select_hotspots(rows, limit=2)
+        markdown = hotspots.markdown_report(selected)
+
+        self.assertEqual([row.name for row in selected], ["gpu_icp", "gpu_knn"])
+        self.assertIsNone(selected[0].cpu_to_gpu_ratio)
+        self.assertAlmostEqual(selected[1].cpu_to_gpu_ratio, 5.0)
+        self.assertIn("gpu_icp", markdown)
+        self.assertIn("gpu_knn", markdown)
 
 
 class CpuOnlyValidationTest(unittest.TestCase):

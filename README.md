@@ -133,12 +133,28 @@ Compare two baseline JSON files with:
 ./scripts/compare_benchmark_baseline.py \
   build-bench/benchmark_baseline_old/plapoint_benchmark_baseline.json \
   build-bench/benchmark_baseline/plapoint_benchmark_baseline.json \
+  --config scripts/benchmark_gate_config.json \
   --json-output build-bench/benchmark_baseline/comparison.json \
   --markdown-output build-bench/benchmark_baseline/comparison.md
 ```
 
 The comparison script reports regressions, improvements, added rows, and missing
-rows. Add `--fail-on-regression` when using it as a CI gate.
+rows. `scripts/benchmark_gate_config.json` stores the default regression and
+improvement thresholds plus any known noisy benchmark names that should be
+reported as `ignored`. Add `--fail-on-regression` when using it as a CI gate.
+
+Generate a CUDA hotspot report from a benchmark JSON file with:
+
+```bash
+./scripts/report_cuda_hotspots.py \
+  build-bench/benchmark_baseline/plapoint_benchmark_baseline.json \
+  --markdown-output build-bench/benchmark_baseline/cuda_hotspots.md \
+  --json-output build-bench/benchmark_baseline/cuda_hotspots.json
+```
+
+The report lists the slowest `gpu_*` rows and, when a matching `cpu_*` row
+exists, the CPU/GPU timing ratio. Use this as the first pass for choosing which
+CUDA row to profile in Nsight or optimize next.
 
 ## Validation Helpers
 
@@ -152,19 +168,41 @@ The script configures `PLAPOINT_WITH_CUDA=OFF`, enables tests and benchmarks, an
 auto-detects a sibling PlaMatrix install prefix when available.
 
 The real reconstruction regression helper validates the source image/camera set
-and compares generated PLY files against `testData/real_reconstruction`:
+and compares generated PLY files against `testData/real_reconstruction`.
+It also evaluates basic real-output quality metrics from PLY fields, including
+finite coordinate ratio, `error` mean/max, and grayscale intensity range:
 
 ```bash
 ./scripts/run_real_reconstruction_regression.py \
   --generated-root /path/to/generated/testData_dense \
   --actual-layout plascan-legacy \
-  --json-output build/real_reconstruction_regression/comparison.json
+  --json-output build/real_reconstruction_regression/comparison.json \
+  --quality-json-output build/real_reconstruction_regression/quality.json \
+  --max-error 0.01 \
+  --max-mean-error 0.005 \
+  --min-finite-ratio 1.0
 ```
 
 Without `--generated-root` or `--pipeline-command`, the script compares the
 checked-in reference tree to itself as a fast smoke test. Use `--pipeline-command`
 with `{img_dir}`, `{tsai_dir}`, `{output_dir}`, and `{plapoint_root}` placeholders
 to regenerate outputs before comparison.
+
+For external PlaScan-style reconstruction commands, the pipeline wrapper keeps
+the generation step and PlaPoint regression check in one command:
+
+```bash
+./scripts/run_real_reconstruction_pipeline.py \
+  --command-template "python3 /path/to/reconstruct.py --img {img_dir} --tsai {tsai_dir} --out {output_dir}" \
+  --output-dir build/real_reconstruction_pipeline \
+  --actual-layout plascan-legacy \
+  --json-output build/real_reconstruction_pipeline/comparison.json \
+  --quality-json-output build/real_reconstruction_pipeline/quality.json
+```
+
+The wrapper validates the default source inputs at `../../testData/img` and
+`../../testData/tsai`, expands the placeholders, runs the external command, and
+then invokes the same PLY comparison and quality gates.
 
 ## API Overview
 

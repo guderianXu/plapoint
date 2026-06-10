@@ -118,6 +118,143 @@ def parse_ascii_ply_stats(path: Path) -> PlyStats:
     return PlyStats(vertex_count, mean, bbox_min, bbox_max, intensity_mean)
 
 
+def parse_ascii_ply_quality_metrics(path: Path) -> dict[str, object]:
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        if handle.readline().strip() != "ply":
+            raise ValueError(f"{path}: invalid PLY magic")
+
+        vertex_count: int | None = None
+        properties: list[str] = []
+        in_vertex = False
+        while True:
+            line = handle.readline()
+            if not line:
+                raise ValueError(f"{path}: missing end_header")
+            stripped = line.strip()
+            if stripped == "end_header":
+                break
+            parts = stripped.split()
+            if parts[:2] == ["format", "ascii"]:
+                continue
+            if parts[:2] == ["element", "vertex"] and len(parts) == 3:
+                vertex_count = int(parts[2])
+                in_vertex = True
+                continue
+            if parts[:1] == ["element"]:
+                in_vertex = False
+                continue
+            if in_vertex and len(parts) >= 3 and parts[0] == "property":
+                properties.append(parts[-1])
+
+        if vertex_count is None:
+            raise ValueError(f"{path}: missing vertex element")
+        for required in ("x", "y", "z"):
+            if required not in properties:
+                raise ValueError(f"{path}: missing property {required}")
+
+        x_index = properties.index("x")
+        y_index = properties.index("y")
+        z_index = properties.index("z")
+        error_index = properties.index("error") if "error" in properties else None
+        intensity_index = properties.index("intensity") if "intensity" in properties else None
+
+        finite_point_count = 0
+        error_count = 0
+        error_sum = 0.0
+        error_max: float | None = None
+        intensity_count = 0
+        intensity_sum = 0.0
+        intensity_min: float | None = None
+        intensity_max: float | None = None
+
+        for row_index in range(vertex_count):
+            line = handle.readline()
+            if not line:
+                raise ValueError(f"{path}: truncated at vertex row {row_index}")
+            values = line.split()
+            if len(values) < len(properties):
+                raise ValueError(f"{path}: malformed vertex row {row_index}")
+
+            coords = [float(values[x_index]), float(values[y_index]), float(values[z_index])]
+            if all(math.isfinite(value) for value in coords):
+                finite_point_count += 1
+
+            if error_index is not None:
+                error = float(values[error_index])
+                error_count += 1
+                error_sum += error
+                error_max = error if error_max is None else max(error_max, error)
+
+            if intensity_index is not None:
+                intensity = float(values[intensity_index])
+                intensity_count += 1
+                intensity_sum += intensity
+                intensity_min = intensity if intensity_min is None else min(intensity_min, intensity)
+                intensity_max = intensity if intensity_max is None else max(intensity_max, intensity)
+
+    finite_ratio = 1.0 if vertex_count == 0 else finite_point_count / vertex_count
+    return {
+        "point_count": vertex_count,
+        "finite_coordinate_ratio": finite_ratio,
+        "error_mean": error_sum / error_count if error_count else None,
+        "error_max": error_max,
+        "intensity_min": intensity_min,
+        "intensity_max": intensity_max,
+        "intensity_mean": intensity_sum / intensity_count if intensity_count else None,
+    }
+
+
+def evaluate_quality_metrics(
+    actual_root: Path,
+    relative_paths: list[str] | None = None,
+    *,
+    actual_layout: str = "reference",
+) -> dict[str, dict[str, object]]:
+    if relative_paths is None:
+        relative_paths = default_reference_paths(actual_root)
+
+    metrics: dict[str, dict[str, object]] = {}
+    for relative_path in relative_paths:
+        path = actual_ply_path(actual_root, relative_path, actual_layout)
+        if path.exists():
+            metrics[relative_path] = parse_ascii_ply_quality_metrics(path)
+    return metrics
+
+
+def check_quality_thresholds(
+    metrics: dict[str, dict[str, object]],
+    *,
+    max_error: float | None = None,
+    max_mean_error: float | None = None,
+    min_finite_ratio: float = 1.0,
+) -> list[str]:
+    failures: list[str] = []
+    for relative_path, metric in sorted(metrics.items()):
+        finite_ratio = float(metric["finite_coordinate_ratio"])
+        if finite_ratio < min_finite_ratio:
+            failures.append(
+                f"{relative_path}: finite coordinate ratio {finite_ratio:.6f} "
+                f"is below {min_finite_ratio:.6f}"
+            )
+
+        error_max = metric.get("error_max")
+        if max_error is not None:
+            if error_max is None:
+                failures.append(f"{relative_path}: missing error property for max error threshold")
+            elif float(error_max) > max_error:
+                failures.append(f"{relative_path}: max error {float(error_max):.6f} exceeds {max_error:.6f}")
+
+        error_mean = metric.get("error_mean")
+        if max_mean_error is not None:
+            if error_mean is None:
+                failures.append(f"{relative_path}: missing error property for mean error threshold")
+            elif float(error_mean) > max_mean_error:
+                failures.append(
+                    f"{relative_path}: mean error {float(error_mean):.6f} exceeds {max_mean_error:.6f}"
+                )
+    return failures
+
+
 def max_tuple_delta(left: tuple[float, float, float], right: tuple[float, float, float]) -> float:
     return max(abs(a - b) for a, b in zip(left, right))
 
@@ -221,14 +358,39 @@ def run_pipeline_command(command_template: str, *, image_dir: Path, camera_dir: 
     return subprocess.run(shlex.split(command), check=False).returncode
 
 
-def write_report(path: Path, result: TreeComparison, source_failures: list[str]) -> None:
+def write_quality_report(
+    path: Path,
+    metrics: dict[str, dict[str, object]],
+    quality_failures: list[str],
+) -> None:
     payload = {
-        "ok": result.ok and not source_failures,
+        "ok": not quality_failures,
+        "quality_failures": quality_failures,
+        "metrics": metrics,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def write_report(
+    path: Path,
+    result: TreeComparison,
+    source_failures: list[str],
+    quality_metrics: dict[str, dict[str, object]] | None = None,
+    quality_failures: list[str] | None = None,
+) -> None:
+    if quality_failures is None:
+        quality_failures = []
+    payload = {
+        "ok": result.ok and not source_failures and not quality_failures,
         "compared_files": result.compared_files,
         "source_failures": source_failures,
         "comparison_failures": result.failures,
+        "quality_failures": quality_failures,
         "stats": result.stats,
     }
+    if quality_metrics is not None:
+        payload["quality_metrics"] = quality_metrics
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -251,6 +413,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bbox-tolerance", type=float, default=0.0)
     parser.add_argument("--intensity-mean-tolerance", type=float, default=0.0)
     parser.add_argument("--json-output", type=Path)
+    parser.add_argument("--quality-json-output", type=Path)
+    parser.add_argument("--max-error", type=float)
+    parser.add_argument("--max-mean-error", type=float)
+    parser.add_argument("--min-finite-ratio", type=float, default=1.0)
     parser.add_argument("--require-generated", action="store_true")
     return parser
 
@@ -303,14 +469,25 @@ def main(argv: list[str]) -> int:
         intensity_mean_tolerance=args.intensity_mean_tolerance,
         actual_layout=args.actual_layout,
     )
+    quality_metrics = evaluate_quality_metrics(actual_root, relative_paths, actual_layout=args.actual_layout)
+    quality_failures = check_quality_thresholds(
+        quality_metrics,
+        max_error=args.max_error,
+        max_mean_error=args.max_mean_error,
+        min_finite_ratio=args.min_finite_ratio,
+    )
 
     report_path = resolve_path(args.json_output, root) if args.json_output else output_dir / "comparison.json"
-    write_report(report_path, comparison, source_failures)
+    write_report(report_path, comparison, source_failures, quality_metrics, quality_failures)
+    if args.quality_json_output is not None:
+        write_quality_report(resolve_path(args.quality_json_output, root), quality_metrics, quality_failures)
     print(f"Compared {comparison.compared_files} PLY files")
     print(f"Wrote report: {report_path}")
     for failure in comparison.failures:
         print(failure, file=sys.stderr)
-    return 0 if comparison.ok else 1
+    for failure in quality_failures:
+        print(failure, file=sys.stderr)
+    return 0 if comparison.ok and not quality_failures else 1
 
 
 if __name__ == "__main__":
