@@ -75,7 +75,7 @@ public:
 protected:
     void applyFilter(PointCloudType& output) override
     {
-        const auto inliers = computeInlierIndices();
+        const auto inliers = computeDiagnosticInlierIndices();
         this->copyPointsAndAttributesForIndices(inliers, output);
     }
 

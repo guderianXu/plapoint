@@ -8,6 +8,7 @@ if(PLAPOINT_WITH_CUDA)
     target_sources(plapoint PRIVATE
         knn_gpu.cu
         batch_knn_gpu.cu
+        filter_compaction_gpu.cu
         filter_indices_gpu.cu
         voxel_grid_gpu.cu
         voxel_cluster_gpu.cu

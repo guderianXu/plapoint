@@ -402,7 +402,7 @@ TEST(SORTest, RejectsInvalidParameters)
 }
 
 #ifdef PLAPOINT_WITH_CUDA
-TEST(SORTest, GpuInputUsesBatchKnnWorkspace)
+TEST(SORTest, GpuInputUsesCudaMaskWithoutKdTreeWorkspace)
 {
     if (!hasCudaDeviceForSOR())
     {
@@ -443,8 +443,9 @@ TEST(SORTest, GpuInputUsesBatchKnnWorkspace)
     GpuCloud output;
     sor.filter(output);
 
-    EXPECT_GE(tree->gpuBatchQueryScalarCapacityForTesting(), 36u);
-    EXPECT_GE(tree->gpuBatchResultCapacityForTesting(), 60u);
+    EXPECT_EQ(output.toCpu().size(), 11u);
+    EXPECT_EQ(tree->gpuBatchQueryScalarCapacityForTesting(), 0u);
+    EXPECT_EQ(tree->gpuBatchResultCapacityForTesting(), 0u);
 }
 
 TEST(SORTest, GpuMatchesCpuAndCopiesNormals)

@@ -7,6 +7,9 @@
 #include <vector>
 
 #include <plapoint/core/point_cloud.h>
+#ifdef PLAPOINT_WITH_CUDA
+#include <plapoint/gpu/filter_compaction.h>
+#endif
 
 namespace plapoint
 {
@@ -192,6 +195,16 @@ protected:
     /// Build an output cloud from selected source point indices and copy point-wise attributes.
     void copyPointsAndAttributesForIndices(const std::vector<int>& indices, PointCloudType& output) const
     {
+        if constexpr (Dev == plamatrix::Device::GPU)
+        {
+#ifdef PLAPOINT_WITH_CUDA
+            output = gpu::gatherPointCloudByIndices(*_input, indices);
+            return;
+#else
+            throw std::runtime_error("PlaPoint was built without CUDA support");
+#endif
+        }
+
         const auto& cpu_points = _input->pointsCpu();
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(
             static_cast<plamatrix::Index>(indices.size()), 3);

@@ -14,6 +14,7 @@
 
 #ifdef PLAPOINT_WITH_CUDA
 #include <plapoint/gpu/cuda_check.h>
+#include <plapoint/gpu/filter_compaction.h>
 #include <plapoint/gpu/filter_indices.h>
 
 namespace
@@ -290,5 +291,76 @@ TEST(FilterIndicesGpuTest, SorBoundaryCases)
         non_finite_gpu->points().data(), static_cast<int>(non_finite_gpu->size()), 1, Scalar(1));
     expectVectorEq<std::uint8_t>(all_outlier_mask, {0, 0});
     expectVectorEq(plapoint::gpu::removedIndicesFromKeepMask(all_outlier_mask), {0, 1});
+}
+
+TEST(FilterIndicesGpuTest, GatherPointCloudByIndicesCopiesDeviceAttributes)
+{
+    if (!hasCudaDeviceForFilterIndices())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU filter compaction test";
+    }
+
+    using Scalar = float;
+    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(4, 3);
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(4, 3);
+    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(4, 3);
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(4, 1);
+    for (int i = 0; i < 4; ++i)
+    {
+        points.setValue(i, 0, Scalar(10 + i));
+        points.setValue(i, 1, Scalar(20 + i));
+        points.setValue(i, 2, Scalar(30 + i));
+        normals.setValue(i, 0, Scalar(1 + i));
+        normals.setValue(i, 1, Scalar(2 + i));
+        normals.setValue(i, 2, Scalar(3 + i));
+        colors.setValue(i, 0, static_cast<std::uint8_t>(40 + i));
+        colors.setValue(i, 1, static_cast<std::uint8_t>(50 + i));
+        colors.setValue(i, 2, static_cast<std::uint8_t>(60 + i));
+        intensities.setValue(i, 0, static_cast<std::uint16_t>(700 + i));
+    }
+    CpuCloud cpu_cloud(std::move(points));
+    cpu_cloud.setNormals(std::move(normals));
+    cpu_cloud.setColors(std::move(colors));
+    cpu_cloud.setIntensities(std::move(intensities));
+    const auto gpu_cloud = cpu_cloud.toGpu();
+
+    const GpuCloud gathered_gpu = plapoint::gpu::gatherPointCloudByIndices(gpu_cloud, {3, 1});
+    const auto gathered = gathered_gpu.toCpu();
+
+    ASSERT_EQ(gathered.size(), 2u);
+    ASSERT_TRUE(gathered.hasNormals());
+    ASSERT_TRUE(gathered.hasColors());
+    ASSERT_TRUE(gathered.hasIntensities());
+    EXPECT_FLOAT_EQ(gathered.points().getValue(0, 0), 13.0f);
+    EXPECT_FLOAT_EQ(gathered.points().getValue(0, 2), 33.0f);
+    EXPECT_FLOAT_EQ(gathered.points().getValue(1, 0), 11.0f);
+    EXPECT_FLOAT_EQ(gathered.normals()->getValue(0, 1), 5.0f);
+    EXPECT_EQ(gathered.colors()->getValue(0, 2), 63);
+    EXPECT_EQ(gathered.colors()->getValue(1, 0), 41);
+    EXPECT_EQ(gathered.intensities()->getValue(0, 0), 703);
+    EXPECT_EQ(gathered.intensities()->getValue(1, 0), 701);
+}
+
+TEST(FilterIndicesGpuTest, GatherPointCloudByIndicesRejectsInvalidIndex)
+{
+    if (!hasCudaDeviceForFilterIndices())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU filter compaction test";
+    }
+
+    using Scalar = float;
+    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto cloud = CpuCloud(2).toGpu();
+
+    EXPECT_THROW(
+        (void)plapoint::gpu::gatherPointCloudByIndices(cloud, {0, -1}),
+        std::out_of_range);
+    EXPECT_THROW(
+        (void)plapoint::gpu::gatherPointCloudByIndices(cloud, {0, 2}),
+        std::out_of_range);
 }
 #endif // PLAPOINT_WITH_CUDA
