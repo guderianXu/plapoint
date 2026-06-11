@@ -4,6 +4,7 @@
 #include <plapoint/mesh/height_grid.h>
 #include <plamatrix/plamatrix.h>
 
+#include <limits>
 #include <cstdint>
 
 namespace
@@ -60,6 +61,74 @@ TEST(HeightGridTest, BuildHeightGridUsesBilinearPointSplat)
     EXPECT_NEAR(grid.at(2, 0), 2.0f, 1.0e-6f);
     EXPECT_NEAR(grid.at(0, 2), 3.0f, 1.0e-6f);
     EXPECT_NEAR(grid.at(2, 2), 4.0f, 1.0e-6f);
+    EXPECT_FALSE(grid.isValid(1, 1));
+}
+
+TEST(HeightGridTest, BuildHeightGridPreservesAveragedColorsAndCanEmitPointCloud)
+{
+    auto cloud = makeColoredPlaneCloud();
+    plapoint::mesh::HeightGridOptions<float> options;
+    options.width = 3;
+    options.height = 3;
+    options.padding = 0.0f;
+
+    const auto grid = plapoint::mesh::buildHeightGrid(cloud, options);
+    const auto dense = plapoint::mesh::heightGridToPointCloud(grid);
+
+    ASSERT_TRUE(grid.hasColors());
+    ASSERT_EQ(dense.size(), 4u);
+    ASSERT_TRUE(dense.hasColors());
+    EXPECT_EQ(dense.colors()->getValue(0, 0), 10);
+    EXPECT_EQ(dense.colors()->getValue(0, 1), 20);
+    EXPECT_EQ(dense.colors()->getValue(0, 2), 30);
+    EXPECT_EQ(dense.colors()->getValue(3, 0), 100);
+}
+
+TEST(HeightGridTest, BuildHeightGridSupportsNearestSplatAndMinAggregation)
+{
+    FloatMatrix points(2, 3);
+    points.setValue(0, 0, 0.0f); points.setValue(0, 1, 0.0f); points.setValue(0, 2, 10.0f);
+    points.setValue(1, 0, 0.0f); points.setValue(1, 1, 0.0f); points.setValue(1, 2, 2.0f);
+    Cloud cloud(std::move(points));
+
+    plapoint::mesh::HeightGridOptions<float> options;
+    options.width = 2;
+    options.height = 2;
+    options.padding = 0.0f;
+    options.useBilinearSplat = false;
+    options.elevationAggregation = plapoint::mesh::ElevationAggregation::Min;
+
+    const auto grid = plapoint::mesh::buildHeightGrid(cloud, options);
+
+    ASSERT_TRUE(grid.isValid(0, 0));
+    EXPECT_FLOAT_EQ(grid.at(0, 0), 2.0f);
+}
+
+TEST(HeightGridTest, BuildHeightGridUsesExplicitBoundsAndSkipsInvalidInput)
+{
+    FloatMatrix points(3, 3);
+    points.setValue(0, 0, 0.0f); points.setValue(0, 1, 0.0f); points.setValue(0, 2, 10.0f);
+    points.setValue(1, 0, 10.0f); points.setValue(1, 1, 10.0f); points.setValue(1, 2, 20.0f);
+    points.setValue(2, 0, std::numeric_limits<float>::quiet_NaN());
+    points.setValue(2, 1, 0.0f);
+    points.setValue(2, 2, 30.0f);
+    Cloud cloud(std::move(points));
+
+    plapoint::mesh::HeightGridOptions<float> options;
+    options.width = 2;
+    options.height = 2;
+    options.useExplicitBounds = true;
+    options.minX = 0.0f;
+    options.maxX = 1.0f;
+    options.minY = 0.0f;
+    options.maxY = 1.0f;
+    options.skipNonFinite = true;
+    options.useBilinearSplat = false;
+
+    const auto grid = plapoint::mesh::buildHeightGrid(cloud, options);
+
+    ASSERT_TRUE(grid.isValid(0, 0));
+    EXPECT_FLOAT_EQ(grid.at(0, 0), 10.0f);
     EXPECT_FALSE(grid.isValid(1, 1));
 }
 

@@ -213,6 +213,41 @@ TEST(PlyIOTest, ReadsAsciiIntensityAsGrayscaleColors)
     std::remove(path.c_str());
 }
 
+TEST(PlyIOTest, ReadsAsciiFloatIntensityAsNormalizedGrayscaleColors)
+{
+    using Scalar = float;
+
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
+    {
+        std::ofstream f(path);
+        f << "ply\n"
+          << "format ascii 1.0\n"
+          << "element vertex 2\n"
+          << "property float x\n"
+          << "property float y\n"
+          << "property float z\n"
+          << "property float intensity\n"
+          << "end_header\n";
+        f << "1.0 2.0 3.0 0.5\n"
+          << "4.0 5.0 6.0 1.0\n";
+    }
+
+    auto cloud = plapoint::io::readPly<Scalar>(path);
+
+    ASSERT_EQ(cloud->size(), 2u);
+    ASSERT_TRUE(cloud->hasIntensities());
+    EXPECT_EQ(cloud->intensities()->getValue(0, 0), 32768);
+    EXPECT_EQ(cloud->intensities()->getValue(1, 0), 65535);
+    ASSERT_TRUE(cloud->hasColors());
+    EXPECT_EQ(cloud->colors()->getValue(0, 0), 128);
+    EXPECT_EQ(cloud->colors()->getValue(0, 1), 128);
+    EXPECT_EQ(cloud->colors()->getValue(0, 2), 128);
+    EXPECT_EQ(cloud->colors()->getValue(1, 0), 255);
+    EXPECT_EQ(cloud->colors()->getValue(1, 1), 255);
+    EXPECT_EQ(cloud->colors()->getValue(1, 2), 255);
+}
+
 TEST(PlyIOTest, ReadsAsciiRgbColorsUsingHeaderOrder)
 {
     using Scalar = float;
@@ -512,6 +547,66 @@ TEST(PlyIOTest, RoundtripBinaryPreservesColorsAndIntensities)
     ASSERT_TRUE(loaded->hasIntensities());
     EXPECT_EQ(loaded->intensities()->getValue(0, 0), 17);
     EXPECT_EQ(loaded->intensities()->getValue(1, 0), 4096);
+}
+
+TEST(PlyIOTest, RoundtripAsciiPreservesExtraScalarFields)
+{
+    using Scalar = float;
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(2, 3);
+    points.setValue(0, 0, 1.0f);
+    points.setValue(0, 1, 2.0f);
+    points.setValue(0, 2, 3.0f);
+    points.setValue(1, 0, 4.0f);
+    points.setValue(1, 1, 5.0f);
+    points.setValue(1, 2, 6.0f);
+    plapoint::PointCloud<Scalar, plamatrix::Device::CPU> cloud(std::move(points));
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> scalar_fields(2, 2);
+    scalar_fields.setValue(0, 0, 0.25f);
+    scalar_fields.setValue(1, 0, 0.5f);
+    scalar_fields.setValue(0, 1, 10.0f);
+    scalar_fields.setValue(1, 1, 20.0f);
+    cloud.setScalarFields({"error", "confidence"}, std::move(scalar_fields));
+
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
+    plapoint::io::writePly(path, cloud, plapoint::io::PlyFormat::ASCII);
+
+    auto loaded = plapoint::io::readPly<Scalar>(path);
+
+    ASSERT_TRUE(loaded->hasScalarFields());
+    ASSERT_EQ(loaded->scalarFieldNames().size(), 2u);
+    EXPECT_EQ(loaded->scalarFieldNames().at(0), "error");
+    EXPECT_EQ(loaded->scalarFieldNames().at(1), "confidence");
+    EXPECT_FLOAT_EQ(loaded->scalarFields()->getValue(1, 0), 0.5f);
+    EXPECT_FLOAT_EQ(loaded->scalarFields()->getValue(0, 1), 10.0f);
+
+    std::remove(path.c_str());
+}
+
+TEST(PlyIOTest, RoundtripBinaryPreservesExtraScalarFields)
+{
+    using Scalar = float;
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(1, 3);
+    points.setValue(0, 0, 1.0f);
+    points.setValue(0, 1, 2.0f);
+    points.setValue(0, 2, 3.0f);
+    plapoint::PointCloud<Scalar, plamatrix::Device::CPU> cloud(std::move(points));
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> scalar_fields(1, 1);
+    scalar_fields.setValue(0, 0, 0.125f);
+    cloud.setScalarFields({"error"}, std::move(scalar_fields));
+
+    const plapoint::test::TempFile temp_file(".ply");
+    const auto path = temp_file.string();
+    plapoint::io::writePly(path, cloud, plapoint::io::PlyFormat::BinaryLE);
+
+    auto loaded = plapoint::io::readPly<Scalar>(path);
+
+    ASSERT_TRUE(loaded->hasScalarField("error"));
+    EXPECT_FLOAT_EQ(loaded->scalarFields()->getValue(0, loaded->scalarFieldIndex("error")), 0.125f);
+
+    std::remove(path.c_str());
 }
 
 TEST(PlyIOTest, ReadsAsciiVertexPropertiesUsingHeaderOrder)

@@ -64,6 +64,18 @@ TEST(PointViewTest, AccessTextureCoords)
     EXPECT_FLOAT_EQ(pt.v(), 0.75f);
 }
 
+TEST(PointViewTest, AccessNamedScalarFields)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(2);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> fields(2, 1);
+    fields.setValue(0, 0, 0.25f);
+    fields.setValue(1, 0, 0.75f);
+    cloud.setScalarFields({"error"}, std::move(fields));
+
+    EXPECT_FLOAT_EQ(cloud[1].scalar("error"), 0.75f);
+    EXPECT_THROW((void)cloud[0].scalar("missing"), std::runtime_error);
+}
+
 TEST(PointViewTest, RejectsFaceIndexedTextureCoords)
 {
     plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
@@ -134,4 +146,5 @@ TEST(PointViewTest, RejectsMissingOptionalAttributes)
     EXPECT_THROW((void)pt.intensity(), std::runtime_error);
     EXPECT_THROW((void)pt.nx(), std::runtime_error);
     EXPECT_THROW((void)pt.u(), std::runtime_error);
+    EXPECT_THROW((void)pt.scalar("error"), std::runtime_error);
 }

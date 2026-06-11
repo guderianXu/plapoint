@@ -55,6 +55,7 @@ struct PlyScalarProperty
     std::string type;
     std::string name;
     PlyVertexPropertyRole role = PlyVertexPropertyRole::Ignore;
+    int extraScalarIndex = -1;
 };
 
 struct PlyElement
@@ -237,11 +238,21 @@ inline bool isPlyUInt16Type(const std::string& type)
     return type == "ushort" || type == "uint16" || type == "unsigned_short";
 }
 
+inline bool isPlyFloatingScalarType(const std::string& type)
+{
+    return type == "float" || type == "float32" ||
+           type == "double" || type == "float64";
+}
+
 inline std::uint8_t plyColorByteForProperty(double value, const std::string& type)
 {
     if (!std::isfinite(value))
     {
         throw std::runtime_error("PLY color property value must be finite");
+    }
+    if (isPlyFloatingScalarType(type) && value >= 0.0 && value <= 1.0)
+    {
+        return plyColorByte(value * 255.0);
     }
     if (isPlyUInt16Type(type))
     {
@@ -265,6 +276,20 @@ inline std::uint16_t plyIntensityWord(double value)
         return std::numeric_limits<std::uint16_t>::max();
     }
     return static_cast<std::uint16_t>(std::lround(value));
+}
+
+inline std::uint16_t plyIntensityWordForProperty(double value, const std::string& type)
+{
+    if (!std::isfinite(value))
+    {
+        throw std::runtime_error("PLY intensity property value must be finite");
+    }
+    if (isPlyFloatingScalarType(type) && value >= 0.0 && value <= 1.0)
+    {
+        return static_cast<std::uint16_t>(
+            std::lround(value * static_cast<double>(std::numeric_limits<std::uint16_t>::max())));
+    }
+    return plyIntensityWord(value);
 }
 
 inline bool isFaceVertexIndicesProperty(const std::string& name)
@@ -388,6 +413,7 @@ readPlyImpl(const std::string& path,
     bool has_x = false, has_y = false, has_z = false;
     bool has_nx = false, has_ny = false, has_nz = false;
     bool has_red = false, has_green = false, has_blue = false, has_intensity = false;
+    std::vector<std::string> extra_scalar_names;
     std::array<double, 3> pointOffset = {0.0, 0.0, 0.0};
     bool hasPointOffset = false;
     bool saw_end_header = false;
@@ -476,6 +502,17 @@ readPlyImpl(const std::string& path,
                 if (role == PlyVertexPropertyRole::Green) has_green = true;
                 if (role == PlyVertexPropertyRole::Blue) has_blue = true;
                 if (role == PlyVertexPropertyRole::Intensity) has_intensity = true;
+                if (role == PlyVertexPropertyRole::Ignore)
+                {
+                    if (std::find(extra_scalar_names.begin(), extra_scalar_names.end(), name) !=
+                        extra_scalar_names.end())
+                    {
+                        throwPlyParseError(path, "duplicate extra vertex scalar property: " + name);
+                    }
+                    currentElement->properties.back().extraScalarIndex =
+                        static_cast<int>(extra_scalar_names.size());
+                    extra_scalar_names.push_back(name);
+                }
             }
         }
     }
@@ -500,6 +537,8 @@ readPlyImpl(const std::string& path,
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> nrm(n_verts, 3);
     plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(n_verts, 3);
     plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(n_verts, 1);
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> extra_scalars(
+        n_verts, static_cast<plamatrix::Index>(extra_scalar_names.size()));
     std::vector<int> face_indices;
     bool have_normals = has_nx && has_ny && has_nz;
     bool have_colors = has_intensity || (has_red && has_green && has_blue);
@@ -590,10 +629,14 @@ readPlyImpl(const std::string& path,
                         rgb[2] = plyColorByteForProperty(val, prop.type);
                         break;
                     case PlyVertexPropertyRole::Intensity:
-                        intensity = plyIntensityWord(val);
+                        intensity = plyIntensityWordForProperty(val, prop.type);
                         intensity_color = plyColorByteForProperty(val, prop.type);
                         break;
                     case PlyVertexPropertyRole::Ignore:
+                        if (prop.extraScalarIndex >= 0)
+                        {
+                            extra_scalars(vertexIndex, prop.extraScalarIndex) = static_cast<Scalar>(val);
+                        }
                         break;
                     }
                 }
@@ -681,10 +724,14 @@ readPlyImpl(const std::string& path,
                         rgb[2] = plyColorByteForProperty(val, prop.type);
                         break;
                     case PlyVertexPropertyRole::Intensity:
-                        intensity = plyIntensityWord(val);
+                        intensity = plyIntensityWordForProperty(val, prop.type);
                         intensity_color = plyColorByteForProperty(val, prop.type);
                         break;
                     case PlyVertexPropertyRole::Ignore:
+                        if (prop.extraScalarIndex >= 0)
+                        {
+                            extra_scalars(vertexIndex, prop.extraScalarIndex) = static_cast<Scalar>(val);
+                        }
                         break;
                     }
                 }
@@ -723,6 +770,7 @@ readPlyImpl(const std::string& path,
     if (have_normals) cloud->setNormals(std::move(nrm));
     if (have_colors) cloud->setColors(std::move(colors));
     if (has_intensity) cloud->setIntensities(std::move(intensities));
+    if (!extra_scalar_names.empty()) cloud->setScalarFields(std::move(extra_scalar_names), std::move(extra_scalars));
     if (!face_indices.empty())
     {
         const auto face_count = static_cast<plamatrix::Index>(face_indices.size() / 3);
@@ -772,6 +820,7 @@ void writePly(const std::string& path,
     bool with_colors = cloud.hasColors();
     bool with_intensities = cloud.hasIntensities();
     bool with_faces = cloud.hasFaces();
+    bool with_scalar_fields = cloud.hasScalarFields();
     const char* scalar_type = detail::plyFloatingPointTypeName<Scalar>();
 
     f << "ply\n";
@@ -794,6 +843,13 @@ void writePly(const std::string& path,
         f << "property " << scalar_type << " nx\n"
           << "property " << scalar_type << " ny\n"
           << "property " << scalar_type << " nz\n";
+    if (with_scalar_fields)
+    {
+        for (const auto& name : cloud.scalarFieldNames())
+        {
+            f << "property " << scalar_type << " " << name << "\n";
+        }
+    }
     if (with_faces)
         f << "element face " << cloud.faces()->rows() << "\n"
           << "property list uchar int vertex_indices\n";
@@ -825,6 +881,14 @@ void writePly(const std::string& path,
                 f << " " << n->getValue(static_cast<plamatrix::Index>(i), 0)
                   << " " << n->getValue(static_cast<plamatrix::Index>(i), 1)
                   << " " << n->getValue(static_cast<plamatrix::Index>(i), 2);
+            }
+            if (with_scalar_fields)
+            {
+                auto* fields = cloud.scalarFields();
+                for (plamatrix::Index col = 0; col < fields->cols(); ++col)
+                {
+                    f << " " << fields->getValue(static_cast<plamatrix::Index>(i), col);
+                }
             }
             f << "\n";
         }
@@ -881,6 +945,14 @@ void writePly(const std::string& path,
                 write_scalar(n->getValue(static_cast<plamatrix::Index>(i), 0));
                 write_scalar(n->getValue(static_cast<plamatrix::Index>(i), 1));
                 write_scalar(n->getValue(static_cast<plamatrix::Index>(i), 2));
+            }
+            if (with_scalar_fields)
+            {
+                auto* fields = cloud.scalarFields();
+                for (plamatrix::Index col = 0; col < fields->cols(); ++col)
+                {
+                    write_scalar(fields->getValue(static_cast<plamatrix::Index>(i), col));
+                }
             }
         }
         if (with_faces)

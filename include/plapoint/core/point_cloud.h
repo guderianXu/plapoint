@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -8,6 +9,7 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include <plamatrix/dense/dense_matrix.h>
 
@@ -44,6 +46,17 @@ public:
 
         Scalar u() const { requireTextureCoords(); return _cloud.textureCoords()->getValue(static_cast<plamatrix::Index>(_idx), 0); }
         Scalar v() const { requireTextureCoords(); return _cloud.textureCoords()->getValue(static_cast<plamatrix::Index>(_idx), 1); }
+
+        Scalar scalar(const std::string& name) const
+        {
+            const int field_index = _cloud.scalarFieldIndex(name);
+            if (field_index < 0 || !_cloud.scalarFields())
+            {
+                throw std::runtime_error("PointView: cloud has no scalar field named " + name);
+            }
+            return _cloud.scalarFields()->getValue(
+                static_cast<plamatrix::Index>(_idx), field_index);
+        }
 
     private:
         friend class PointCloud;
@@ -159,6 +172,11 @@ public:
         if (_normals) result._normals = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(_normals->toGpu());
         if (_colors) result._colors = std::make_unique<plamatrix::DenseMatrix<uint8_t, plamatrix::Device::GPU>>(_colors->toGpu());
         if (_intensities) result._intensities = std::make_unique<plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::GPU>>(_intensities->toGpu());
+        if (_scalarFields)
+        {
+            result._scalarFields = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(_scalarFields->toGpu());
+            result._scalarFieldNames = _scalarFieldNames;
+        }
         if (_textureCoords) result._textureCoords = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(_textureCoords->toGpu());
         if (_faces) result._faces = std::make_unique<plamatrix::DenseMatrix<int, plamatrix::Device::GPU>>(_faces->toGpu());
         if (_faceTextureIndices) result._faceTextureIndices = std::make_unique<plamatrix::DenseMatrix<int, plamatrix::Device::GPU>>(_faceTextureIndices->toGpu());
@@ -177,6 +195,11 @@ public:
         if (_normals) result._normals = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(_normals->toCpu());
         if (_colors) result._colors = std::make_unique<plamatrix::DenseMatrix<uint8_t, plamatrix::Device::CPU>>(_colors->toCpu());
         if (_intensities) result._intensities = std::make_unique<plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU>>(_intensities->toCpu());
+        if (_scalarFields)
+        {
+            result._scalarFields = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(_scalarFields->toCpu());
+            result._scalarFieldNames = _scalarFieldNames;
+        }
         if (_textureCoords) result._textureCoords = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(_textureCoords->toCpu());
         if (_faces) result._faces = std::make_unique<plamatrix::DenseMatrix<int, plamatrix::Device::CPU>>(_faces->toCpu());
         if (_faceTextureIndices) result._faceTextureIndices = std::make_unique<plamatrix::DenseMatrix<int, plamatrix::Device::CPU>>(_faceTextureIndices->toCpu());
@@ -259,6 +282,49 @@ public:
     const plamatrix::DenseMatrix<std::uint16_t, Dev>* intensities() const { return _intensities.get(); }
 
     plamatrix::DenseMatrix<std::uint16_t, Dev>* intensities() { return _intensities.get(); }
+
+    /// Set optional named scalar fields by copy (NxK matrix, one name per column).
+    void setScalarFields(const std::vector<std::string>& names, const MatrixType& values)
+    {
+        validateScalarFields(names, values);
+        _scalarFields = std::make_unique<MatrixType>(values.rows(), values.cols());
+        for (plamatrix::Index r = 0; r < values.rows(); ++r)
+        {
+            for (int c = 0; c < values.cols(); ++c)
+            {
+                _scalarFields->setValue(r, c, pointGet(values, r, c));
+            }
+        }
+        _scalarFieldNames = names;
+    }
+
+    /// Set optional named scalar fields by move (NxK matrix, one name per column).
+    void setScalarFields(std::vector<std::string> names, MatrixType&& values)
+    {
+        validateScalarFields(names, values);
+        _scalarFieldNames = std::move(names);
+        _scalarFields = std::make_unique<MatrixType>(std::move(values));
+    }
+
+    bool hasScalarFields() const { return _scalarFields != nullptr && !_scalarFieldNames.empty(); }
+
+    bool hasScalarField(const std::string& name) const { return scalarFieldIndex(name) >= 0; }
+
+    int scalarFieldIndex(const std::string& name) const
+    {
+        const auto it = std::find(_scalarFieldNames.begin(), _scalarFieldNames.end(), name);
+        if (it == _scalarFieldNames.end())
+        {
+            return -1;
+        }
+        return static_cast<int>(std::distance(_scalarFieldNames.begin(), it));
+    }
+
+    const std::vector<std::string>& scalarFieldNames() const { return _scalarFieldNames; }
+
+    const MatrixType* scalarFields() const { return _scalarFields.get(); }
+
+    MatrixType* scalarFields() { return _scalarFields.get(); }
 
     /// Set optional texture coordinates by copy (Tx2 UV table).
     void setTextureCoords(const MatrixType& t)
@@ -400,6 +466,46 @@ private:
         }
     }
 
+    static bool isReservedScalarFieldName(const std::string& name)
+    {
+        return name == "x" || name == "y" || name == "z" ||
+               name == "nx" || name == "ny" || name == "nz" ||
+               name == "red" || name == "green" || name == "blue" ||
+               name == "intensity";
+    }
+
+    void validateScalarFields(const std::vector<std::string>& names, const MatrixType& values) const
+    {
+        if (values.rows() != _points.rows())
+        {
+            throw std::runtime_error("Scalar fields must match point count");
+        }
+        if (values.cols() != static_cast<plamatrix::Index>(names.size()))
+        {
+            throw std::runtime_error("Scalar field names must match scalar field columns");
+        }
+        for (std::size_t i = 0; i < names.size(); ++i)
+        {
+            if (names[i].empty())
+            {
+                throw std::runtime_error("Scalar field names must be non-empty");
+            }
+            if (names[i].find_first_of(" \t\r\n") != std::string::npos)
+            {
+                throw std::runtime_error("Scalar field names must not contain whitespace: " + names[i]);
+            }
+            if (isReservedScalarFieldName(names[i]))
+            {
+                throw std::runtime_error("Scalar field name conflicts with a built-in point property: " + names[i]);
+            }
+            if (std::find(names.begin(), names.begin() + static_cast<std::ptrdiff_t>(i), names[i]) !=
+                names.begin() + static_cast<std::ptrdiff_t>(i))
+            {
+                throw std::runtime_error("Scalar field names must be unique: " + names[i]);
+            }
+        }
+    }
+
     void validateFaceTextureIndices(const plamatrix::DenseMatrix<int, Dev>& ft) const
     {
         if (ft.cols() != 3)
@@ -440,6 +546,8 @@ private:
             throw std::runtime_error("Colors must match point count and be Nx3");
         if (_intensities && (_intensities->rows() != _points.rows() || _intensities->cols() != 1))
             throw std::runtime_error("Intensities must match point count and be Nx1");
+        if (_scalarFields)
+            validateScalarFields(_scalarFieldNames, *_scalarFields);
         if (_textureCoords && _textureCoords->cols() != 2)
             throw std::runtime_error("Texture coords must be Tx2");
         if (_faces)
@@ -483,6 +591,8 @@ private:
     std::unique_ptr<MatrixType> _normals;
     std::unique_ptr<plamatrix::DenseMatrix<uint8_t, Dev>> _colors;
     std::unique_ptr<plamatrix::DenseMatrix<std::uint16_t, Dev>> _intensities;
+    std::unique_ptr<MatrixType> _scalarFields;
+    std::vector<std::string> _scalarFieldNames;
     std::unique_ptr<MatrixType> _textureCoords;
     std::unique_ptr<plamatrix::DenseMatrix<int, Dev>> _faces;
     std::unique_ptr<plamatrix::DenseMatrix<int, Dev>> _faceTextureIndices;

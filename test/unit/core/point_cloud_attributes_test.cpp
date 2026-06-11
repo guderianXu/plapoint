@@ -97,6 +97,42 @@ TEST(PointCloudAttributesTest, SetIntensitiesRejectsWrongSize)
     EXPECT_THROW(cloud.setIntensities(wrong_cols), std::runtime_error);
 }
 
+TEST(PointCloudAttributesTest, SetNamedScalarFields)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> fields(3, 2);
+    fields.setValue(0, 0, 0.1f);
+    fields.setValue(1, 0, 0.2f);
+    fields.setValue(2, 0, 0.3f);
+    fields.setValue(0, 1, 10.0f);
+    fields.setValue(1, 1, 20.0f);
+    fields.setValue(2, 1, 30.0f);
+
+    cloud.setScalarFields({"error", "confidence"}, std::move(fields));
+
+    ASSERT_TRUE(cloud.hasScalarFields());
+    ASSERT_NE(cloud.scalarFields(), nullptr);
+    EXPECT_TRUE(cloud.hasScalarField("error"));
+    EXPECT_EQ(cloud.scalarFieldIndex("confidence"), 1);
+    EXPECT_EQ(cloud.scalarFieldNames().at(0), "error");
+    EXPECT_FLOAT_EQ(cloud.scalarFields()->getValue(1, 0), 0.2f);
+    EXPECT_FLOAT_EQ(cloud[2].scalar("confidence"), 30.0f);
+}
+
+TEST(PointCloudAttributesTest, SetNamedScalarFieldsRejectsBadShapeAndNames)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> wrongRows(2, 1);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> wrongCols(3, 2);
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> ok(3, 1);
+
+    EXPECT_THROW(cloud.setScalarFields({"error"}, wrongRows), std::runtime_error);
+    EXPECT_THROW(cloud.setScalarFields({"error"}, wrongCols), std::runtime_error);
+    EXPECT_THROW(cloud.setScalarFields({""}, ok), std::runtime_error);
+    EXPECT_THROW(cloud.setScalarFields({"error", "error"}, wrongCols), std::runtime_error);
+    EXPECT_THROW(cloud.setScalarFields({"x"}, ok), std::runtime_error);
+}
+
 TEST(PointCloudAttributesTest, NoTextureCoordsByDefault)
 {
     plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
@@ -403,6 +439,12 @@ TEST(PointCloudAttributesTest, CpuGpuRoundtripPreservesOptionalAttributes)
     cloud.setMaterialLibraryFile("materials.mtl");
     cloud.setTextureImageFile("diffuse.png");
 
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> scalar_fields(3, 1);
+    scalar_fields.setValue(0, 0, 0.1f);
+    scalar_fields.setValue(1, 0, 0.2f);
+    scalar_fields.setValue(2, 0, 0.3f);
+    cloud.setScalarFields({"error"}, std::move(scalar_fields));
+
     auto roundtrip = cloud.toGpu().toCpu();
 
     ASSERT_TRUE(roundtrip.hasNormals());
@@ -425,6 +467,10 @@ TEST(PointCloudAttributesTest, CpuGpuRoundtripPreservesOptionalAttributes)
 
     EXPECT_EQ(roundtrip.materialLibraryFile(), "materials.mtl");
     EXPECT_EQ(roundtrip.textureImageFile(), "diffuse.png");
+
+    ASSERT_TRUE(roundtrip.hasScalarFields());
+    EXPECT_EQ(roundtrip.scalarFieldNames().at(0), "error");
+    EXPECT_FLOAT_EQ(roundtrip.scalarFields()->getValue(2, 0), 0.3f);
 }
 
 TEST(PointCloudAttributesTest, ToGpuRejectsMutableInvalidFaceTextureIndices)

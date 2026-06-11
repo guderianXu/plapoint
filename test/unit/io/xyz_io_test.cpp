@@ -67,6 +67,48 @@ TEST(XyzIOTest, RoundtripPreservesDoubleLargeCoordinateDeltas)
     std::remove(path.c_str());
 }
 
+TEST(XyzIOTest, RoundtripPreservesOptionalRgbColumns)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+
+    Matrix pts(2, 3);
+    pts.setValue(0, 0, 1.0f);
+    pts.setValue(0, 1, 2.0f);
+    pts.setValue(0, 2, 3.0f);
+    pts.setValue(1, 0, 4.0f);
+    pts.setValue(1, 1, 5.0f);
+    pts.setValue(1, 2, 6.0f);
+    Cloud cloud(std::move(pts));
+
+    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(2, 3);
+    colors.setValue(0, 0, 10);
+    colors.setValue(0, 1, 20);
+    colors.setValue(0, 2, 30);
+    colors.setValue(1, 0, 40);
+    colors.setValue(1, 1, 50);
+    colors.setValue(1, 2, 60);
+    cloud.setColors(std::move(colors));
+
+    const plapoint::test::TempFile temp_file(".xyz");
+    const auto path = temp_file.string();
+    plapoint::io::writeXyz(path, cloud);
+
+    auto loaded = plapoint::io::readXyz<Scalar>(path);
+
+    ASSERT_EQ(loaded->size(), 2u);
+    ASSERT_TRUE(loaded->hasColors());
+    EXPECT_EQ(loaded->colors()->getValue(0, 0), 10);
+    EXPECT_EQ(loaded->colors()->getValue(0, 1), 20);
+    EXPECT_EQ(loaded->colors()->getValue(0, 2), 30);
+    EXPECT_EQ(loaded->colors()->getValue(1, 0), 40);
+    EXPECT_EQ(loaded->colors()->getValue(1, 1), 50);
+    EXPECT_EQ(loaded->colors()->getValue(1, 2), 60);
+
+    std::remove(path.c_str());
+}
+
 TEST(XyzIOTest, EmptyFileProducesEmptyCloud)
 {
     const plapoint::test::TempFile temp_file(".xyz");

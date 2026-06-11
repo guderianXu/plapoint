@@ -15,6 +15,13 @@
 namespace plapoint::mesh
 {
 
+enum class ElevationAggregation
+{
+    Mean,
+    Min,
+    Max
+};
+
 template <typename Scalar>
 struct HeightGridOptions
 {
@@ -22,9 +29,19 @@ struct HeightGridOptions
     int height = 0;
     int resolution = 128;
     Scalar padding = Scalar(0);
+    bool useExplicitBounds = false;
+    Scalar minX = Scalar(0);
+    Scalar maxX = Scalar(0);
+    Scalar minY = Scalar(0);
+    Scalar maxY = Scalar(0);
+    bool useBilinearSplat = true;
+    ElevationAggregation elevationAggregation = ElevationAggregation::Mean;
+    bool skipNonFinite = false;
     Scalar maxHeightJump = Scalar(0);
     Scalar minAbsNormalZ = Scalar(0.08);
     int maxFillPassForFaces = 8;
+    int holeFillSearchRadius = 1;
+    int holeFillMinNeighbors = 1;
 };
 
 template <typename Scalar>
@@ -39,6 +56,7 @@ struct HeightGrid
     std::vector<Scalar> heights;
     std::vector<Scalar> weights;
     std::vector<std::uint8_t> valid;
+    std::vector<std::uint8_t> colors;
     std::vector<std::uint16_t> fillPass;
 
     Scalar& at(int ix, int iy)
@@ -65,6 +83,16 @@ struct HeightGrid
     {
         return fillPass[static_cast<std::size_t>(iy * width + ix)];
     }
+
+    bool hasColors() const
+    {
+        return colors.size() == static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3;
+    }
+
+    std::uint8_t colorAt(int ix, int iy, int channel) const
+    {
+        return colors[static_cast<std::size_t>((iy * width + ix) * 3 + channel)];
+    }
 };
 
 namespace detail
@@ -81,6 +109,18 @@ Scalar gridHeightJumpFallback(const HeightGrid<Scalar>& grid)
 {
     const Scalar step = std::sqrt(grid.stepX * grid.stepX + grid.stepY * grid.stepY);
     return std::max(Scalar(1.0e-6), step * Scalar(1.5));
+}
+
+inline std::uint8_t colorByteFromWeightedSum(long double weighted_sum, long double weight)
+{
+    if (weight <= 0.0L)
+    {
+        return 0;
+    }
+    const long double value = weighted_sum / weight;
+    if (value <= 0.0L) return 0;
+    if (value >= 255.0L) return 255;
+    return static_cast<std::uint8_t>(std::llround(value));
 }
 
 template <typename Scalar>
@@ -219,10 +259,11 @@ HeightGrid<Scalar> buildHeightGrid(
         throw std::invalid_argument("buildHeightGrid: padding must be finite and non-negative");
     }
 
-    Scalar min_x = cloud.points().getValue(0, 0);
-    Scalar max_x = min_x;
-    Scalar min_y = cloud.points().getValue(0, 1);
-    Scalar max_y = min_y;
+    Scalar min_x = Scalar(0);
+    Scalar max_x = Scalar(0);
+    Scalar min_y = Scalar(0);
+    Scalar max_y = Scalar(0);
+    bool have_bounds = false;
     for (std::size_t i = 0; i < cloud.size(); ++i)
     {
         const auto row = static_cast<plamatrix::Index>(i);
@@ -231,20 +272,54 @@ HeightGrid<Scalar> buildHeightGrid(
         const Scalar z = cloud.points().getValue(row, 2);
         if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
         {
+            if (options.skipNonFinite)
+            {
+                continue;
+            }
             throw std::invalid_argument("buildHeightGrid: points must be finite");
         }
-        min_x = std::min(min_x, x);
-        max_x = std::max(max_x, x);
-        min_y = std::min(min_y, y);
-        max_y = std::max(max_y, y);
+        if (!have_bounds)
+        {
+            min_x = max_x = x;
+            min_y = max_y = y;
+            have_bounds = true;
+        }
+        else
+        {
+            min_x = std::min(min_x, x);
+            max_x = std::max(max_x, x);
+            min_y = std::min(min_y, y);
+            max_y = std::max(max_y, y);
+        }
+    }
+    if (!have_bounds)
+    {
+        return grid;
+    }
+
+    if (options.useExplicitBounds)
+    {
+        if (!std::isfinite(options.minX) || !std::isfinite(options.maxX) ||
+            !std::isfinite(options.minY) || !std::isfinite(options.maxY) ||
+            options.maxX <= options.minX || options.maxY <= options.minY)
+        {
+            throw std::invalid_argument("buildHeightGrid: explicit bounds must be finite and non-empty");
+        }
+        min_x = options.minX;
+        max_x = options.maxX;
+        min_y = options.minY;
+        max_y = options.maxY;
     }
 
     Scalar span_x = std::max(max_x - min_x, Scalar(1.0e-6));
     Scalar span_y = std::max(max_y - min_y, Scalar(1.0e-6));
-    min_x -= span_x * options.padding;
-    max_x += span_x * options.padding;
-    min_y -= span_y * options.padding;
-    max_y += span_y * options.padding;
+    if (!options.useExplicitBounds)
+    {
+        min_x -= span_x * options.padding;
+        max_x += span_x * options.padding;
+        min_y -= span_y * options.padding;
+        max_y += span_y * options.padding;
+    }
     span_x = std::max(max_x - min_x, Scalar(1.0e-6));
     span_y = std::max(max_y - min_y, Scalar(1.0e-6));
 
@@ -266,6 +341,54 @@ HeightGrid<Scalar> buildHeightGrid(
     grid.weights.assign(cell_count, Scalar(0));
     grid.valid.assign(cell_count, 0);
     grid.fillPass.assign(cell_count, 0);
+    const bool source_has_colors = cloud.hasColors();
+    std::vector<long double> color_sums;
+    std::vector<long double> color_weights;
+    if (source_has_colors)
+    {
+        color_sums.assign(cell_count * 3, 0.0L);
+        color_weights.assign(cell_count, 0.0L);
+        grid.colors.assign(cell_count * 3, 0);
+    }
+
+    auto accumulate_cell = [&](std::size_t cell, Scalar z, Scalar weight, std::size_t source_index) {
+        if (weight <= Scalar(0))
+        {
+            return;
+        }
+        if (options.elevationAggregation == ElevationAggregation::Min)
+        {
+            if (grid.weights[cell] <= Scalar(0) || z < grid.heights[cell])
+            {
+                grid.heights[cell] = z;
+            }
+        }
+        else if (options.elevationAggregation == ElevationAggregation::Max)
+        {
+            if (grid.weights[cell] <= Scalar(0) || z > grid.heights[cell])
+            {
+                grid.heights[cell] = z;
+            }
+        }
+        else
+        {
+            grid.heights[cell] += z * weight;
+        }
+        grid.weights[cell] += weight;
+
+        if (source_has_colors)
+        {
+            const auto* source_colors = cloud.colors();
+            const long double color_weight = static_cast<long double>(weight);
+            color_weights[cell] += color_weight;
+            for (int channel = 0; channel < 3; ++channel)
+            {
+                color_sums[cell * 3 + static_cast<std::size_t>(channel)] +=
+                    static_cast<long double>(source_colors->getValue(
+                        static_cast<plamatrix::Index>(source_index), channel)) * color_weight;
+            }
+        }
+    };
 
     for (std::size_t i = 0; i < cloud.size(); ++i)
     {
@@ -273,8 +396,31 @@ HeightGrid<Scalar> buildHeightGrid(
         const Scalar x = cloud.points().getValue(row, 0);
         const Scalar y = cloud.points().getValue(row, 1);
         const Scalar z = cloud.points().getValue(row, 2);
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+        {
+            if (options.skipNonFinite)
+            {
+                continue;
+            }
+            throw std::invalid_argument("buildHeightGrid: points must be finite");
+        }
         const Scalar gx = (x - grid.minX) / grid.stepX;
         const Scalar gy = (y - grid.minY) / grid.stepY;
+        if (gx < Scalar(0) || gx > Scalar(grid.width - 1) ||
+            gy < Scalar(0) || gy > Scalar(grid.height - 1))
+        {
+            continue;
+        }
+
+        if (!options.useBilinearSplat)
+        {
+            const int ix = std::clamp(static_cast<int>(std::round(gx)), 0, grid.width - 1);
+            const int iy = std::clamp(static_cast<int>(std::round(gy)), 0, grid.height - 1);
+            const std::size_t cell = static_cast<std::size_t>(iy * grid.width + ix);
+            accumulate_cell(cell, z, Scalar(1), i);
+            continue;
+        }
+
         const int ix = std::clamp(static_cast<int>(std::floor(gx)), 0, grid.width - 2);
         const int iy = std::clamp(static_cast<int>(std::floor(gy)), 0, grid.height - 2);
         const Scalar tx = detail::clamp01(gx - Scalar(ix));
@@ -287,8 +433,7 @@ HeightGrid<Scalar> buildHeightGrid(
                 const Scalar wy = dy ? ty : Scalar(1) - ty;
                 const Scalar w = wx * wy;
                 const std::size_t cell = static_cast<std::size_t>((iy + dy) * grid.width + (ix + dx));
-                grid.heights[cell] += z * w;
-                grid.weights[cell] += w;
+                accumulate_cell(cell, z, w, i);
             }
         }
     }
@@ -297,24 +442,43 @@ HeightGrid<Scalar> buildHeightGrid(
     {
         if (grid.weights[cell] > Scalar(1.0e-9))
         {
-            grid.heights[cell] /= grid.weights[cell];
+            if (options.elevationAggregation == ElevationAggregation::Mean)
+            {
+                grid.heights[cell] /= grid.weights[cell];
+            }
             grid.valid[cell] = 1;
+            if (source_has_colors && color_weights[cell] > 0.0L)
+            {
+                grid.colors[cell * 3] =
+                    detail::colorByteFromWeightedSum(color_sums[cell * 3], color_weights[cell]);
+                grid.colors[cell * 3 + 1] =
+                    detail::colorByteFromWeightedSum(color_sums[cell * 3 + 1], color_weights[cell]);
+                grid.colors[cell * 3 + 2] =
+                    detail::colorByteFromWeightedSum(color_sums[cell * 3 + 2], color_weights[cell]);
+            }
         }
     }
     return grid;
 }
 
 template <typename Scalar>
-void fillHoles(HeightGrid<Scalar>& grid, int max_passes = 8)
+void fillHoles(HeightGrid<Scalar>& grid,
+               int max_passes = 8,
+               int min_neighbors = 1,
+               int search_radius = 1)
 {
     if (max_passes <= 0 || grid.width <= 0 || grid.height <= 0)
     {
         return;
     }
 
+    min_neighbors = std::max(1, min_neighbors);
+    search_radius = std::max(1, search_radius);
     std::vector<Scalar> next_heights = grid.heights;
     std::vector<std::uint8_t> next_valid = grid.valid;
+    std::vector<std::uint8_t> next_colors = grid.colors;
     std::vector<std::uint16_t> next_fill_pass = grid.fillPass;
+    const bool with_colors = grid.hasColors();
     for (int pass = 0; pass < max_passes; ++pass)
     {
         bool changed = false;
@@ -332,11 +496,19 @@ void fillHoles(HeightGrid<Scalar>& grid, int max_passes = 8)
                 }
 
                 Scalar sum = Scalar(0);
+                long double weighted_b = 0.0L;
+                long double weighted_g = 0.0L;
+                long double weighted_r = 0.0L;
+                long double color_weight = 0.0L;
                 int count = 0;
-                for (int dy = -1; dy <= 1; ++dy)
+                for (int dy = -search_radius; dy <= search_radius; ++dy)
                 {
-                    for (int dx = -1; dx <= 1; ++dx)
+                    for (int dx = -search_radius; dx <= search_radius; ++dx)
                     {
+                        if (dx == 0 && dy == 0)
+                        {
+                            continue;
+                        }
                         const int nx = x + dx;
                         const int ny = y + dy;
                         if (nx < 0 || nx >= grid.width || ny < 0 || ny >= grid.height)
@@ -345,15 +517,52 @@ void fillHoles(HeightGrid<Scalar>& grid, int max_passes = 8)
                         }
                         if (grid.isValid(nx, ny))
                         {
-                            sum += grid.at(nx, ny);
+                            const Scalar distance = std::sqrt(Scalar(dx * dx + dy * dy));
+                            const Scalar weight = Scalar(1) / std::max(Scalar(1.0e-6), distance);
+                            sum += grid.at(nx, ny) * weight;
+                            if (with_colors)
+                            {
+                                weighted_r += static_cast<long double>(grid.colorAt(nx, ny, 0)) * weight;
+                                weighted_g += static_cast<long double>(grid.colorAt(nx, ny, 1)) * weight;
+                                weighted_b += static_cast<long double>(grid.colorAt(nx, ny, 2)) * weight;
+                                color_weight += weight;
+                            }
                             ++count;
                         }
                     }
                 }
-                if (count > 0)
+                if (count >= min_neighbors)
                 {
-                    next_heights[cell] = sum / Scalar(count);
+                    Scalar weight_sum = Scalar(0);
+                    for (int dy = -search_radius; dy <= search_radius; ++dy)
+                    {
+                        for (int dx = -search_radius; dx <= search_radius; ++dx)
+                        {
+                            if (dx == 0 && dy == 0)
+                            {
+                                continue;
+                            }
+                            const int nx = x + dx;
+                            const int ny = y + dy;
+                            if (nx < 0 || nx >= grid.width || ny < 0 || ny >= grid.height)
+                            {
+                                continue;
+                            }
+                            if (grid.isValid(nx, ny))
+                            {
+                                const Scalar distance = std::sqrt(Scalar(dx * dx + dy * dy));
+                                weight_sum += Scalar(1) / std::max(Scalar(1.0e-6), distance);
+                            }
+                        }
+                    }
+                    next_heights[cell] = sum / std::max(Scalar(1.0e-6), weight_sum);
                     next_valid[cell] = 1;
+                    if (with_colors && color_weight > 0.0L)
+                    {
+                        next_colors[cell * 3] = detail::colorByteFromWeightedSum(weighted_r, color_weight);
+                        next_colors[cell * 3 + 1] = detail::colorByteFromWeightedSum(weighted_g, color_weight);
+                        next_colors[cell * 3 + 2] = detail::colorByteFromWeightedSum(weighted_b, color_weight);
+                    }
                     next_fill_pass[cell] = static_cast<std::uint16_t>(pass + 1);
                     changed = true;
                 }
@@ -362,15 +571,68 @@ void fillHoles(HeightGrid<Scalar>& grid, int max_passes = 8)
 
         grid.heights.swap(next_heights);
         grid.valid.swap(next_valid);
+        if (with_colors)
+        {
+            grid.colors.swap(next_colors);
+        }
         grid.fillPass.swap(next_fill_pass);
         next_heights = grid.heights;
         next_valid = grid.valid;
+        next_colors = grid.colors;
         next_fill_pass = grid.fillPass;
         if (!changed)
         {
             break;
         }
     }
+}
+
+template <typename Scalar>
+PointCloud<Scalar, plamatrix::Device::CPU> heightGridToPointCloud(
+    const HeightGrid<Scalar>& grid)
+{
+    std::vector<std::pair<int, int>> cells;
+    cells.reserve(static_cast<std::size_t>(grid.width) * static_cast<std::size_t>(grid.height));
+    for (int y = 0; y < grid.height; ++y)
+    {
+        for (int x = 0; x < grid.width; ++x)
+        {
+            if (grid.isValid(x, y))
+            {
+                cells.emplace_back(x, y);
+            }
+        }
+    }
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(
+        static_cast<plamatrix::Index>(cells.size()), 3);
+    std::unique_ptr<plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>> colors;
+    if (grid.hasColors())
+    {
+        colors = std::make_unique<plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>>(
+            static_cast<plamatrix::Index>(cells.size()), 3);
+    }
+
+    for (std::size_t i = 0; i < cells.size(); ++i)
+    {
+        const auto [x, y] = cells[i];
+        points.setValue(static_cast<plamatrix::Index>(i), 0, grid.minX + Scalar(x) * grid.stepX);
+        points.setValue(static_cast<plamatrix::Index>(i), 1, grid.minY + Scalar(y) * grid.stepY);
+        points.setValue(static_cast<plamatrix::Index>(i), 2, grid.at(x, y));
+        if (colors)
+        {
+            colors->setValue(static_cast<plamatrix::Index>(i), 0, grid.colorAt(x, y, 0));
+            colors->setValue(static_cast<plamatrix::Index>(i), 1, grid.colorAt(x, y, 1));
+            colors->setValue(static_cast<plamatrix::Index>(i), 2, grid.colorAt(x, y, 2));
+        }
+    }
+
+    PointCloud<Scalar, plamatrix::Device::CPU> cloud(std::move(points));
+    if (colors)
+    {
+        cloud.setColors(std::move(*colors));
+    }
+    return cloud;
 }
 
 template <typename Scalar>
@@ -406,7 +668,7 @@ PointCloud<Scalar, plamatrix::Device::CPU> heightGridToMesh(
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(
         static_cast<plamatrix::Index>(vertex_cells.size()), 3);
     std::unique_ptr<plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>> colors;
-    if (source_cloud.hasColors())
+    if (grid.hasColors() || source_cloud.hasColors())
     {
         colors = std::make_unique<plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>>(
             static_cast<plamatrix::Index>(vertex_cells.size()), 3);
@@ -427,12 +689,18 @@ PointCloud<Scalar, plamatrix::Device::CPU> heightGridToMesh(
         points.setValue(static_cast<plamatrix::Index>(i), 0, px);
         points.setValue(static_cast<plamatrix::Index>(i), 1, py);
         points.setValue(static_cast<plamatrix::Index>(i), 2, pz);
-        const int nearest = (colors || intensities)
+        const int nearest = ((colors && !grid.hasColors()) || intensities)
             ? detail::nearestSourcePointIndex(source_cloud, px, py, pz)
             : -1;
         if (colors)
         {
-            if (nearest >= 0)
+            if (grid.hasColors())
+            {
+                colors->setValue(static_cast<plamatrix::Index>(i), 0, grid.colorAt(x, y, 0));
+                colors->setValue(static_cast<plamatrix::Index>(i), 1, grid.colorAt(x, y, 1));
+                colors->setValue(static_cast<plamatrix::Index>(i), 2, grid.colorAt(x, y, 2));
+            }
+            else if (nearest >= 0)
             {
                 colors->setValue(static_cast<plamatrix::Index>(i), 0, source_cloud.colors()->getValue(nearest, 0));
                 colors->setValue(static_cast<plamatrix::Index>(i), 1, source_cloud.colors()->getValue(nearest, 1));
