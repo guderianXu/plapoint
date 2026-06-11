@@ -1,6 +1,7 @@
 #pragma once
 
 #include <plapoint/core/point_cloud.h>
+#include <plapoint/filters/preprocessing.h>
 #include <plapoint/gpu/cuda_check.h>
 #include <plapoint/search/kdtree.h>
 #include <plamatrix/dense/dense_matrix.h>
@@ -44,7 +45,11 @@ public:
         // Batch KNN (uses GPU brute-force when Dev == GPU)
         auto all_neighbors = _tree->batchNearestKSearch(points_cpu, _k);
 
-        // Compute normals per point
+        // Compute normals per point. The neighbor search can run on CUDA for GPU trees;
+        // the small per-point covariance/SVD stage is CPU-parallelized.
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
         for (int i = 0; i < n; ++i)
         {
             const auto& neighbors = all_neighbors[static_cast<std::size_t>(i)];
@@ -86,5 +91,67 @@ private:
     std::shared_ptr<search::KdTree<Scalar, Dev>> _tree;
     int _k = 10;
 };
+
+/// Estimate normals for a CPU-owned cloud using the requested device where available.
+/// The GPU path accelerates batched KNN and returns CPU normals for PlaScan-facing APIs.
+template <typename Scalar>
+plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> estimateNormals(
+    const PointCloud<Scalar, plamatrix::Device::CPU>& input,
+    int k,
+    ProcessingDevice device,
+    ProcessingReport* report = nullptr)
+{
+    std::string fallback_reason;
+    if (detail::shouldTryGpu(device))
+    {
+#ifdef PLAPOINT_WITH_CUDA
+        if (detail::gpuIsAvailable())
+        {
+            try
+            {
+                auto gpu_cloud_value = input.toGpu();
+                auto gpu_cloud = std::make_shared<const PointCloud<Scalar, plamatrix::Device::GPU>>(
+                    std::move(gpu_cloud_value));
+                auto tree = std::make_shared<search::KdTree<Scalar, plamatrix::Device::GPU>>();
+                tree->setInputCloud(gpu_cloud);
+                tree->build();
+
+                NormalEstimation<Scalar, plamatrix::Device::GPU> estimator;
+                estimator.setInputCloud(gpu_cloud);
+                estimator.setSearchMethod(tree);
+                estimator.setKSearch(k);
+                auto gpu_normals = estimator.compute();
+                detail::setReport(report, device, ProcessingDevice::GPU, false);
+                return gpu_normals.toCpu();
+            }
+            catch (const std::exception& ex)
+            {
+                fallback_reason = ex.what();
+            }
+        }
+        else
+        {
+            fallback_reason = "CUDA device is not available";
+        }
+#else
+        fallback_reason = "PlaPoint was built without CUDA support";
+#endif
+    }
+
+    auto cloud = detail::nonOwningCloudPtr(input);
+    auto tree = std::make_shared<search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    tree->setInputCloud(cloud);
+    tree->build();
+
+    NormalEstimation<Scalar, plamatrix::Device::CPU> estimator;
+    estimator.setInputCloud(cloud);
+    estimator.setSearchMethod(tree);
+    estimator.setKSearch(k);
+    auto normals = estimator.compute();
+    detail::setReport(report, device, ProcessingDevice::CPU,
+                      detail::shouldTryGpu(device) && !fallback_reason.empty(),
+                      fallback_reason);
+    return normals;
+}
 
 } // namespace plapoint

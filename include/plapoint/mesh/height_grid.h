@@ -721,9 +721,15 @@ PointCloud<Scalar, plamatrix::Device::CPU> heightGridToMesh(
 
     const Scalar max_height_jump = detail::estimateHeightJump(grid, options.maxHeightJump);
     const int max_fill_pass = std::max(0, options.maxFillPassForFaces);
-    std::vector<std::array<int, 3>> faces;
+    std::vector<std::vector<std::array<int, 3>>> faces_by_row(
+        static_cast<std::size_t>(std::max(0, grid.height - 1)));
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
     for (int y = 0; y < grid.height - 1; ++y)
     {
+        auto& row_faces = faces_by_row[static_cast<std::size_t>(y)];
+        row_faces.reserve(static_cast<std::size_t>(std::max(0, grid.width - 1)) * 2);
         for (int x = 0; x < grid.width - 1; ++x)
         {
             const int i00 = grid_to_vertex[static_cast<std::size_t>(y * grid.width + x)];
@@ -742,12 +748,12 @@ PointCloud<Scalar, plamatrix::Device::CPU> heightGridToMesh(
                 if (detail::triangleReliable(grid, x, y, x + 1, y, x + 1, y + 1,
                                              max_height_jump, options.minAbsNormalZ, max_fill_pass))
                 {
-                    faces.push_back({i00, i10, i11});
+                    row_faces.push_back({i00, i10, i11});
                 }
                 if (detail::triangleReliable(grid, x, y, x + 1, y + 1, x, y + 1,
                                              max_height_jump, options.minAbsNormalZ, max_fill_pass))
                 {
-                    faces.push_back({i00, i11, i01});
+                    row_faces.push_back({i00, i11, i01});
                 }
             }
             else
@@ -755,15 +761,27 @@ PointCloud<Scalar, plamatrix::Device::CPU> heightGridToMesh(
                 if (detail::triangleReliable(grid, x, y, x + 1, y, x, y + 1,
                                              max_height_jump, options.minAbsNormalZ, max_fill_pass))
                 {
-                    faces.push_back({i00, i10, i01});
+                    row_faces.push_back({i00, i10, i01});
                 }
                 if (detail::triangleReliable(grid, x + 1, y, x + 1, y + 1, x, y + 1,
                                              max_height_jump, options.minAbsNormalZ, max_fill_pass))
                 {
-                    faces.push_back({i10, i11, i01});
+                    row_faces.push_back({i10, i11, i01});
                 }
             }
         }
+    }
+
+    std::size_t face_count = 0;
+    for (const auto& row_faces : faces_by_row)
+    {
+        face_count += row_faces.size();
+    }
+    std::vector<std::array<int, 3>> faces;
+    faces.reserve(face_count);
+    for (auto& row_faces : faces_by_row)
+    {
+        faces.insert(faces.end(), row_faces.begin(), row_faces.end());
     }
 
     plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_matrix(
