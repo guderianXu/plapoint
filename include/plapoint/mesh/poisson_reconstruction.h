@@ -58,9 +58,14 @@ public:
 
         int n = static_cast<int>(_cloud->size());
 
-        // Compute bounding box
-        Scalar min_x = 1e10, max_x = -1e10, min_y = 1e10, max_y = -1e10, min_z = 1e10, max_z = -1e10;
-        for (int i = 0; i < n; ++i)
+        // Compute bounding box from input values, avoiding fixed sentinels that reject large coordinates.
+        Scalar min_x = _cloud->points()(0, 0);
+        Scalar max_x = min_x;
+        Scalar min_y = _cloud->points()(0, 1);
+        Scalar max_y = min_y;
+        Scalar min_z = _cloud->points()(0, 2);
+        Scalar max_z = min_z;
+        for (int i = 1; i < n; ++i)
         {
             Scalar x = _cloud->points()(i, 0), y = _cloud->points()(i, 1), z = _cloud->points()(i, 2);
             min_x = std::min(min_x, x); max_x = std::max(max_x, x);
@@ -118,9 +123,11 @@ public:
         mc.setResolution(res, res, res);
         mc.setIsoLevel(Scalar(0));
 
-        return mc.extract([&](Scalar x, Scalar y, Scalar z) -> Scalar {
+        auto [vertices, faces] = mc.extract([&](Scalar x, Scalar y, Scalar z) -> Scalar {
             return evaluateSolution(nodes, root, x, y, z);
         });
+        orientFacesWithInputNormals(vertices, faces);
+        return {std::move(vertices), std::move(faces)};
     }
 
 private:
@@ -156,6 +163,7 @@ private:
         const auto* normals = _cloud->normals();
         for (std::size_t i = 0; i < _cloud->size(); ++i)
         {
+            long double normal_components[3] = {0, 0, 0};
             for (int c = 0; c < 3; ++c)
             {
                 const auto row = static_cast<plamatrix::Index>(i);
@@ -167,6 +175,16 @@ private:
                 {
                     throw std::invalid_argument("Poisson: normals must be finite");
                 }
+                const Scalar component = normals->getValue(row, c);
+                normal_components[c] = static_cast<long double>(component);
+            }
+            const long double normal_norm = std::hypot(
+                std::hypot(normal_components[0], normal_components[1]),
+                normal_components[2]);
+            if (!std::isfinite(normal_norm) || normal_norm <= 0 ||
+                normal_norm > static_cast<long double>(std::numeric_limits<Scalar>::max()))
+            {
+                throw std::invalid_argument("Poisson: normals must have finite non-zero length");
             }
         }
     }
@@ -454,6 +472,94 @@ private:
         Scalar cx = node.ox + half, cy = node.oy + half, cz = node.oz + half;
         int oct = (x >= cx ? 1 : 0) | (y >= cy ? 2 : 0) | (z >= cz ? 4 : 0);
         return evaluateSolution(nodes, node.children[static_cast<std::size_t>(oct)], x, y, z);
+    }
+
+    void orientFacesWithInputNormals(const Matrix& vertices, Matrix& faces) const
+    {
+        if (!_cloud || !_cloud->hasNormals()) return;
+        const auto* normals = _cloud->normals();
+        constexpr double kDegenerateArea = 1e-20;
+        constexpr double kOrientationEpsilon = 1e-12;
+
+        for (plamatrix::Index f = 0; f < faces.rows(); ++f)
+        {
+            int idx[3] = {0, 0, 0};
+            bool valid_face = true;
+            for (int c = 0; c < 3; ++c)
+            {
+                const double raw = static_cast<double>(faces.getValue(f, c));
+                const double rounded = std::round(raw);
+                if (!std::isfinite(raw) || std::abs(raw - rounded) > 1e-4)
+                {
+                    valid_face = false;
+                    break;
+                }
+                idx[c] = static_cast<int>(rounded);
+                if (idx[c] < 0 || idx[c] >= vertices.rows())
+                {
+                    valid_face = false;
+                    break;
+                }
+            }
+            if (!valid_face) continue;
+
+            const double ax = static_cast<double>(vertices.getValue(idx[0], 0));
+            const double ay = static_cast<double>(vertices.getValue(idx[0], 1));
+            const double az = static_cast<double>(vertices.getValue(idx[0], 2));
+            const double bx = static_cast<double>(vertices.getValue(idx[1], 0));
+            const double by = static_cast<double>(vertices.getValue(idx[1], 1));
+            const double bz = static_cast<double>(vertices.getValue(idx[1], 2));
+            const double cx = static_cast<double>(vertices.getValue(idx[2], 0));
+            const double cy = static_cast<double>(vertices.getValue(idx[2], 1));
+            const double cz = static_cast<double>(vertices.getValue(idx[2], 2));
+
+            const double ux = bx - ax;
+            const double uy = by - ay;
+            const double uz = bz - az;
+            const double vx = cx - ax;
+            const double vy = cy - ay;
+            const double vz = cz - az;
+            const double face_nx = uy * vz - uz * vy;
+            const double face_ny = uz * vx - ux * vz;
+            const double face_nz = ux * vy - uy * vx;
+            const double area2 = face_nx * face_nx + face_ny * face_ny + face_nz * face_nz;
+            if (area2 <= kDegenerateArea) continue;
+
+            const double center_x = (ax + bx + cx) / 3.0;
+            const double center_y = (ay + by + cy) / 3.0;
+            const double center_z = (az + bz + cz) / 3.0;
+
+            std::size_t nearest = 0;
+            double best_d2 = std::numeric_limits<double>::infinity();
+            for (std::size_t i = 0; i < _cloud->size(); ++i)
+            {
+                const auto row = static_cast<plamatrix::Index>(i);
+                const double px = static_cast<double>(_cloud->points().getValue(row, 0));
+                const double py = static_cast<double>(_cloud->points().getValue(row, 1));
+                const double pz = static_cast<double>(_cloud->points().getValue(row, 2));
+                const double dx = center_x - px;
+                const double dy = center_y - py;
+                const double dz = center_z - pz;
+                const double d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 < best_d2)
+                {
+                    best_d2 = d2;
+                    nearest = i;
+                }
+            }
+
+            const auto normal_row = static_cast<plamatrix::Index>(nearest);
+            const double nx = static_cast<double>(normals->getValue(normal_row, 0));
+            const double ny = static_cast<double>(normals->getValue(normal_row, 1));
+            const double nz = static_cast<double>(normals->getValue(normal_row, 2));
+            const double dot = face_nx * nx + face_ny * ny + face_nz * nz;
+            if (dot < -kOrientationEpsilon)
+            {
+                const Scalar tmp = faces.getValue(f, 1);
+                faces.setValue(f, 1, faces.getValue(f, 2));
+                faces.setValue(f, 2, tmp);
+            }
+        }
     }
 
     std::shared_ptr<const PointCloudType> _cloud;

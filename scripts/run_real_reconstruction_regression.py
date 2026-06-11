@@ -42,6 +42,15 @@ def default_reference_paths(reference_root: Path) -> list[str]:
     return sorted(path.relative_to(reference_root).as_posix() for path in reference_root.rglob("*.ply"))
 
 
+def validate_reference_paths(reference_root: Path) -> tuple[list[str], list[str]]:
+    if not reference_root.is_dir():
+        return [], [f"missing reference directory: {reference_root}"]
+    relative_paths = default_reference_paths(reference_root)
+    if not relative_paths:
+        return [], [f"reference directory contains no PLY files: {reference_root}"]
+    return relative_paths, []
+
+
 def resolve_path(path: Path, root: Path) -> Path:
     if path.is_absolute():
         return path
@@ -458,7 +467,12 @@ def main(argv: list[str]) -> int:
     else:
         actual_root = reference_root
 
-    relative_paths = default_reference_paths(reference_root)
+    relative_paths, reference_failures = validate_reference_paths(reference_root)
+    if reference_failures:
+        for failure in reference_failures:
+            print(failure, file=sys.stderr)
+        return 2
+
     comparison = compare_reference_tree(
         reference_root,
         actual_root,

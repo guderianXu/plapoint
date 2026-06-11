@@ -36,6 +36,8 @@ public:
         uint8_t g() const { requireColors(); return _cloud.colors()->getValue(static_cast<plamatrix::Index>(_idx), 1); }
         uint8_t b() const { requireColors(); return _cloud.colors()->getValue(static_cast<plamatrix::Index>(_idx), 2); }
 
+        std::uint16_t intensity() const { requireIntensities(); return _cloud.intensities()->getValue(static_cast<plamatrix::Index>(_idx), 0); }
+
         Scalar nx() const { requireNormals(); return _cloud.normals()->getValue(static_cast<plamatrix::Index>(_idx), 0); }
         Scalar ny() const { requireNormals(); return _cloud.normals()->getValue(static_cast<plamatrix::Index>(_idx), 1); }
         Scalar nz() const { requireNormals(); return _cloud.normals()->getValue(static_cast<plamatrix::Index>(_idx), 2); }
@@ -52,6 +54,14 @@ public:
             if (!_cloud.hasColors())
             {
                 throw std::runtime_error("PointView: cloud has no colors");
+            }
+        }
+
+        void requireIntensities() const
+        {
+            if (!_cloud.hasIntensities())
+            {
+                throw std::runtime_error("PointView: cloud has no intensities");
             }
         }
 
@@ -148,6 +158,7 @@ public:
         PointCloud<Scalar, plamatrix::Device::GPU> result(_points.toGpu());
         if (_normals) result._normals = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(_normals->toGpu());
         if (_colors) result._colors = std::make_unique<plamatrix::DenseMatrix<uint8_t, plamatrix::Device::GPU>>(_colors->toGpu());
+        if (_intensities) result._intensities = std::make_unique<plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::GPU>>(_intensities->toGpu());
         if (_textureCoords) result._textureCoords = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(_textureCoords->toGpu());
         if (_faces) result._faces = std::make_unique<plamatrix::DenseMatrix<int, plamatrix::Device::GPU>>(_faces->toGpu());
         if (_faceTextureIndices) result._faceTextureIndices = std::make_unique<plamatrix::DenseMatrix<int, plamatrix::Device::GPU>>(_faceTextureIndices->toGpu());
@@ -165,6 +176,7 @@ public:
         PointCloud<Scalar, plamatrix::Device::CPU> result(_points.toCpu());
         if (_normals) result._normals = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(_normals->toCpu());
         if (_colors) result._colors = std::make_unique<plamatrix::DenseMatrix<uint8_t, plamatrix::Device::CPU>>(_colors->toCpu());
+        if (_intensities) result._intensities = std::make_unique<plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU>>(_intensities->toCpu());
         if (_textureCoords) result._textureCoords = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(_textureCoords->toCpu());
         if (_faces) result._faces = std::make_unique<plamatrix::DenseMatrix<int, plamatrix::Device::CPU>>(_faces->toCpu());
         if (_faceTextureIndices) result._faceTextureIndices = std::make_unique<plamatrix::DenseMatrix<int, plamatrix::Device::CPU>>(_faceTextureIndices->toCpu());
@@ -223,6 +235,30 @@ public:
     const plamatrix::DenseMatrix<uint8_t, Dev>* colors() const { return _colors.get(); }
 
     plamatrix::DenseMatrix<uint8_t, Dev>* colors() { return _colors.get(); }
+
+    /// Set optional intensity values by copy (Nx1 uint16 matrix)
+    void setIntensities(const plamatrix::DenseMatrix<std::uint16_t, Dev>& values)
+    {
+        if (values.rows() != _points.rows() || values.cols() != 1)
+            throw std::runtime_error("Intensities must match point count and be Nx1");
+        _intensities = std::make_unique<plamatrix::DenseMatrix<std::uint16_t, Dev>>(values.rows(), values.cols());
+        for (plamatrix::Index r = 0; r < values.rows(); ++r)
+            _intensities->setValue(r, 0, pointGet(values, r, 0));
+    }
+
+    /// Set optional intensity values by move
+    void setIntensities(plamatrix::DenseMatrix<std::uint16_t, Dev>&& values)
+    {
+        if (values.rows() != _points.rows() || values.cols() != 1)
+            throw std::runtime_error("Intensities must match point count and be Nx1");
+        _intensities = std::make_unique<plamatrix::DenseMatrix<std::uint16_t, Dev>>(std::move(values));
+    }
+
+    bool hasIntensities() const { return _intensities != nullptr; }
+
+    const plamatrix::DenseMatrix<std::uint16_t, Dev>* intensities() const { return _intensities.get(); }
+
+    plamatrix::DenseMatrix<std::uint16_t, Dev>* intensities() { return _intensities.get(); }
 
     /// Set optional texture coordinates by copy (Tx2 UV table).
     void setTextureCoords(const MatrixType& t)
@@ -402,6 +438,8 @@ private:
             throw std::runtime_error("Normals must match point count and be Nx3");
         if (_colors && (_colors->rows() != _points.rows() || _colors->cols() != 3))
             throw std::runtime_error("Colors must match point count and be Nx3");
+        if (_intensities && (_intensities->rows() != _points.rows() || _intensities->cols() != 1))
+            throw std::runtime_error("Intensities must match point count and be Nx1");
         if (_textureCoords && _textureCoords->cols() != 2)
             throw std::runtime_error("Texture coords must be Tx2");
         if (_faces)
@@ -444,6 +482,7 @@ private:
     MatrixType _points;
     std::unique_ptr<MatrixType> _normals;
     std::unique_ptr<plamatrix::DenseMatrix<uint8_t, Dev>> _colors;
+    std::unique_ptr<plamatrix::DenseMatrix<std::uint16_t, Dev>> _intensities;
     std::unique_ptr<MatrixType> _textureCoords;
     std::unique_ptr<plamatrix::DenseMatrix<int, Dev>> _faces;
     std::unique_ptr<plamatrix::DenseMatrix<int, Dev>> _faceTextureIndices;

@@ -76,6 +76,13 @@ public:
     void setInputCloud(const std::shared_ptr<const PointCloudType>& cloud)
     {
         _cloud = cloud;
+        _nodes.clear();
+        _host_points.reset();
+#ifdef PLAPOINT_WITH_CUDA
+        _gpu_queries.reset();
+        _gpu_indices.reset();
+        _gpu_dists.reset();
+#endif
     }
 
     void build()
@@ -109,6 +116,7 @@ public:
 
     std::vector<int> nearestKSearch(const plamatrix::Vec3<Scalar>& query, int k) const
     {
+        validateQuery(query);
         std::vector<int> result;
         if (_nodes.empty() || k <= 0) return result;
 
@@ -120,6 +128,7 @@ public:
 
     std::vector<int> radiusSearch(const plamatrix::Vec3<Scalar>& query, Scalar radius) const
     {
+        validateQuery(query);
         std::vector<int> result;
         if (!std::isfinite(radius) || radius < Scalar(0))
         {
@@ -143,6 +152,7 @@ public:
         {
             throw std::invalid_argument("KdTree: queries must be an Mx3 matrix");
         }
+        validateQueries(queries);
         int M = checkedInt(static_cast<std::size_t>(queries.rows()), "KdTree: query count");
         std::vector<std::vector<int>> results(static_cast<std::size_t>(M));
         if (M <= 0 || k <= 0)
@@ -322,6 +332,28 @@ private:
     {
         const double distance = finiteDistance(a, b);
         return std::isfinite(distance) && distance <= static_cast<double>(radius);
+    }
+
+    static void validateQuery(const plamatrix::Vec3<Scalar>& query)
+    {
+        if (!std::isfinite(query.x) || !std::isfinite(query.y) || !std::isfinite(query.z))
+        {
+            throw std::invalid_argument("KdTree: query coordinates must be finite");
+        }
+    }
+
+    static void validateQueries(const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& queries)
+    {
+        for (plamatrix::Index r = 0; r < queries.rows(); ++r)
+        {
+            for (plamatrix::Index c = 0; c < queries.cols(); ++c)
+            {
+                if (!std::isfinite(queries(r, c)))
+                {
+                    throw std::invalid_argument("KdTree: query coordinates must be finite");
+                }
+            }
+        }
     }
 
     int buildRecursive(std::vector<int>& indices, int start, int end, int depth)

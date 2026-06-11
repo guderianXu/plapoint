@@ -37,3 +37,27 @@ TEST(MeshGenerationQualityTest, PoissonSphereProducesUsableMeshForInspection)
     EXPECT_LT(metrics.max_radius_error, 2.50);
     EXPECT_LT(metrics.max_abs_coordinate, 3.5);
 }
+
+TEST(MeshGenerationQualityTest, PoissonSphereProducesConsistentFaceOrientation)
+{
+    using Scalar = float;
+
+    const auto mesh = plapoint::test::mesh_quality::generatePoissonSphere<Scalar>(
+        Scalar(2), 12, 24, 5, 30);
+    const auto metrics = plapoint::test::mesh_quality::measureSphereMesh(
+        mesh.vertices, mesh.faces, Scalar(2));
+
+    EXPECT_GT(metrics.dominant_orientation_ratio, 0.95);
+}
+
+TEST(MeshGenerationQualityTest, PoissonSphereFacesPointOutwardWithOutwardNormals)
+{
+    using Scalar = float;
+
+    const auto mesh = plapoint::test::mesh_quality::generatePoissonSphere<Scalar>(
+        Scalar(2), 12, 24, 5, 30);
+    const auto metrics = plapoint::test::mesh_quality::measureSphereMesh(
+        mesh.vertices, mesh.faces, Scalar(2));
+
+    EXPECT_GT(metrics.outward_orientation_ratio, 0.95);
+}

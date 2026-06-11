@@ -56,6 +56,47 @@ TEST(PointCloudAttributesTest, SetColorsRejectsWrongSize)
     EXPECT_THROW(cloud.setColors(colors), std::runtime_error);
 }
 
+TEST(PointCloudAttributesTest, NoIntensitiesByDefault)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
+    EXPECT_FALSE(cloud.hasIntensities());
+    EXPECT_EQ(cloud.intensities(), nullptr);
+}
+
+TEST(PointCloudAttributesTest, SetIntensitiesCopy)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(10, 1);
+    intensities.fill(1024);
+
+    cloud.setIntensities(intensities);
+
+    ASSERT_TRUE(cloud.hasIntensities());
+    EXPECT_EQ(cloud.intensities()->getValue(0, 0), 1024);
+}
+
+TEST(PointCloudAttributesTest, SetIntensitiesMove)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(10, 1);
+    intensities.setValue(0, 0, 65535);
+
+    cloud.setIntensities(std::move(intensities));
+
+    ASSERT_TRUE(cloud.hasIntensities());
+    EXPECT_EQ(cloud.intensities()->getValue(0, 0), 65535);
+}
+
+TEST(PointCloudAttributesTest, SetIntensitiesRejectsWrongSize)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> wrong_rows(5, 1);
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> wrong_cols(10, 2);
+
+    EXPECT_THROW(cloud.setIntensities(wrong_rows), std::runtime_error);
+    EXPECT_THROW(cloud.setIntensities(wrong_cols), std::runtime_error);
+}
+
 TEST(PointCloudAttributesTest, NoTextureCoordsByDefault)
 {
     plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(10);
@@ -332,6 +373,12 @@ TEST(PointCloudAttributesTest, CpuGpuRoundtripPreservesOptionalAttributes)
     colors.setValue(2, 2, 90);
     cloud.setColors(std::move(colors));
 
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(3, 1);
+    intensities.setValue(0, 0, 17);
+    intensities.setValue(1, 0, 1024);
+    intensities.setValue(2, 0, 65535);
+    cloud.setIntensities(std::move(intensities));
+
     plamatrix::DenseMatrix<float, plamatrix::Device::CPU> texture_coords(3, 2);
     texture_coords.setValue(0, 0, 0.1f);
     texture_coords.setValue(0, 1, 0.2f);
@@ -363,6 +410,9 @@ TEST(PointCloudAttributesTest, CpuGpuRoundtripPreservesOptionalAttributes)
 
     ASSERT_TRUE(roundtrip.hasColors());
     EXPECT_EQ(roundtrip.colors()->getValue(2, 1), 80);
+
+    ASSERT_TRUE(roundtrip.hasIntensities());
+    EXPECT_EQ(roundtrip.intensities()->getValue(2, 0), 65535);
 
     ASSERT_TRUE(roundtrip.hasTextureCoords());
     EXPECT_FLOAT_EQ(roundtrip.textureCoords()->getValue(2, 1), 0.6f);

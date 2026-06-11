@@ -3,6 +3,8 @@
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/dense/dense_matrix.h>
 #include <fstream>
+#include <iomanip>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -56,6 +58,7 @@ void writeXyz(const std::string& path,
 {
     std::ofstream f(path);
     if (!f) throw std::runtime_error("Cannot write XYZ file: " + path);
+    f << std::setprecision(std::numeric_limits<Scalar>::max_digits10);
 
     for (std::size_t i = 0; i < cloud.size(); ++i)
     {

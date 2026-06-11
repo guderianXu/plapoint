@@ -37,6 +37,34 @@ TEST_F(KdTreeTest, BuildAndSize)
     // tree built without exception
 }
 
+TEST_F(KdTreeTest, SetInputCloudInvalidatesBuiltTree)
+{
+    KdTree tree;
+    tree.setInputCloud(cloud);
+    tree.build();
+
+    auto replacement_points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
+    replacement_points.setValue(0, 0, Scalar(100));
+    replacement_points.setValue(0, 1, Scalar(100));
+    replacement_points.setValue(0, 2, Scalar(100));
+    replacement_points.setValue(1, 0, Scalar(101));
+    replacement_points.setValue(1, 1, Scalar(100));
+    replacement_points.setValue(1, 2, Scalar(100));
+    auto replacement_cloud = std::make_shared<Cloud>(std::move(replacement_points));
+
+    tree.setInputCloud(replacement_cloud);
+
+    plamatrix::Vec3<Scalar> old_query{0, 0, 0};
+    EXPECT_TRUE(tree.nearestKSearch(old_query, 1).empty());
+    EXPECT_TRUE(tree.radiusSearch(old_query, Scalar(1)).empty());
+
+    tree.build();
+    plamatrix::Vec3<Scalar> new_query{100, 100, 100};
+    const auto rebuilt_results = tree.nearestKSearch(new_query, 1);
+    ASSERT_EQ(rebuilt_results.size(), 1u);
+    EXPECT_EQ(rebuilt_results[0], 0);
+}
+
 TEST_F(KdTreeTest, ThrowsIfNoInput)
 {
     KdTree tree;
@@ -171,6 +199,39 @@ TEST_F(KdTreeTest, RadiusSearchRejectsNegativeRadius)
     EXPECT_THROW(tree.radiusSearch(query, Scalar(-1)), std::invalid_argument);
 }
 
+TEST_F(KdTreeTest, NearestKSearchRejectsNonFiniteQuery)
+{
+    KdTree tree;
+    tree.setInputCloud(cloud);
+    tree.build();
+
+    plamatrix::Vec3<Scalar> query{std::numeric_limits<Scalar>::quiet_NaN(), 0, 0};
+    EXPECT_THROW(tree.nearestKSearch(query, 1), std::invalid_argument);
+}
+
+TEST_F(KdTreeTest, RadiusSearchRejectsNonFiniteQuery)
+{
+    KdTree tree;
+    tree.setInputCloud(cloud);
+    tree.build();
+
+    plamatrix::Vec3<Scalar> query{0, std::numeric_limits<Scalar>::infinity(), 0};
+    EXPECT_THROW(tree.radiusSearch(query, Scalar(1)), std::invalid_argument);
+}
+
+TEST_F(KdTreeTest, BatchNearestKSearchRejectsNonFiniteQueries)
+{
+    KdTree tree;
+    tree.setInputCloud(cloud);
+    tree.build();
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(2, 3);
+    queries.fill(0);
+    queries.setValue(1, 2, std::numeric_limits<Scalar>::quiet_NaN());
+
+    EXPECT_THROW(tree.batchNearestKSearch(queries, 1), std::invalid_argument);
+}
+
 TEST_F(KdTreeTest, RadiusSearchUsesFiniteDistanceForExtremeCoordinates)
 {
     constexpr Scalar max_value = std::numeric_limits<Scalar>::max();
@@ -229,6 +290,7 @@ TEST_F(KdTreeTest, BatchNearestKSearchWithoutInputReturnsEmptyRows)
 {
     KdTree tree;
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(2, 3);
+    queries.fill(0);
 
     auto results = tree.batchNearestKSearch(queries, 2);
     ASSERT_EQ(results.size(), 2u);

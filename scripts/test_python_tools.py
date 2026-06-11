@@ -98,6 +98,7 @@ class BenchmarkBaselineCompareTest(unittest.TestCase):
         by_name = {row.name: row for row in result.rows}
         self.assertEqual(by_name["old"].status, "missing")
         self.assertEqual(by_name["new"].status, "added")
+        self.assertEqual(result.exit_code(fail_on_regression=False, fail_on_missing=True), 1)
 
     def test_gate_config_ignores_noisy_benchmarks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -258,6 +259,34 @@ class RealReconstructionRegressionTest(unittest.TestCase):
         self.assertTrue(any("max error" in failure for failure in failures))
         self.assertTrue(any("mean error" in failure for failure in failures))
         self.assertTrue(any("finite coordinate ratio" in failure for failure in failures))
+
+    def test_main_rejects_missing_reference_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            img_dir = root / "img"
+            tsai_dir = root / "tsai"
+            img_dir.mkdir()
+            tsai_dir.mkdir()
+            for index in range(1, 6):
+                (img_dir / f"{index}.png").write_bytes(b"")
+                (tsai_dir / f"{index}.tsai").write_text("# camera\n", encoding="utf-8")
+
+            exit_code = real_regression.main(
+                [
+                    "--source-img-dir",
+                    str(img_dir),
+                    "--source-tsai-dir",
+                    str(tsai_dir),
+                    "--reference-root",
+                    str(root / "missing-reference"),
+                    "--output-dir",
+                    str(root / "out"),
+                    "--json-output",
+                    str(root / "comparison.json"),
+                ]
+            )
+
+        self.assertEqual(exit_code, 2)
 
 
 class RealReconstructionPipelineTest(unittest.TestCase):

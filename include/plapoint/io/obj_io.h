@@ -1,8 +1,14 @@
 #pragma once
 
 #include <algorithm>
+#include <cerrno>
+#include <cmath>
 #include <cstdio>
+#include <cstdint>
+#include <cstdlib>
 #include <fstream>
+#include <iomanip>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -115,6 +121,41 @@ inline std::string objLineContext(const std::string& path, std::size_t lineNumbe
     return "OBJ parse error in " + path + " line " + std::to_string(lineNumber) + ": ";
 }
 
+template <typename Scalar>
+inline Scalar parseObjVertexColorAttribute(
+    const std::string& token,
+    const std::string& context)
+{
+    errno = 0;
+    char* end = nullptr;
+    const long double value = std::strtold(token.c_str(), &end);
+    if (end == token.c_str() || *end != '\0' || errno == ERANGE ||
+        !std::isfinite(value) ||
+        value < static_cast<long double>(std::numeric_limits<Scalar>::lowest()) ||
+        value > static_cast<long double>(std::numeric_limits<Scalar>::max()))
+    {
+        throw std::invalid_argument(context + "vertex color attribute must be a finite number");
+    }
+    return static_cast<Scalar>(value);
+}
+
+template <typename Scalar>
+inline std::uint8_t objColorByte(Scalar value, bool normalized)
+{
+    double color = static_cast<double>(value);
+    if (!std::isfinite(color))
+    {
+        throw std::invalid_argument("OBJ vertex color must be finite");
+    }
+    if (normalized)
+    {
+        color *= 255.0;
+    }
+    color = std::round(color);
+    color = std::clamp(color, 0.0, 255.0);
+    return static_cast<std::uint8_t>(color);
+}
+
 } // namespace detail
 
 template <typename Scalar>
@@ -128,6 +169,8 @@ readObj(const std::string& path)
     }
 
     std::vector<Scalar> vx, vy, vz;
+    std::vector<std::uint8_t> vr, vg, vb;
+    std::vector<bool> has_vertex_color;
     std::vector<Scalar> nx, ny, nz;
     std::vector<Scalar> tx, ty;
     std::vector<std::vector<int>> face_verts;
@@ -163,6 +206,39 @@ readObj(const std::string& path)
             vx.push_back(x);
             vy.push_back(y);
             vz.push_back(z);
+
+            std::vector<Scalar> extra_values;
+            std::string extra_token;
+            while (iss >> extra_token)
+            {
+                if (!extra_token.empty() && extra_token[0] == '#')
+                {
+                    break;
+                }
+                extra_values.push_back(
+                    detail::parseObjVertexColorAttribute<Scalar>(extra_token, context));
+            }
+            if (extra_values.size() >= 3)
+            {
+                const Scalar r = extra_values[extra_values.size() - 3];
+                const Scalar g = extra_values[extra_values.size() - 2];
+                const Scalar b = extra_values[extra_values.size() - 1];
+                const bool normalized =
+                    r >= Scalar(0) && r <= Scalar(1) &&
+                    g >= Scalar(0) && g <= Scalar(1) &&
+                    b >= Scalar(0) && b <= Scalar(1);
+                vr.push_back(detail::objColorByte(r, normalized));
+                vg.push_back(detail::objColorByte(g, normalized));
+                vb.push_back(detail::objColorByte(b, normalized));
+                has_vertex_color.push_back(true);
+            }
+            else
+            {
+                vr.push_back(0);
+                vg.push_back(0);
+                vb.push_back(0);
+                has_vertex_color.push_back(false);
+            }
         }
         else if (token == "vn")
         {
@@ -219,9 +295,12 @@ readObj(const std::string& path)
             {
                 throw std::invalid_argument(context + "face must contain at least 3 vertices");
             }
-            face_verts.push_back(fv);
-            face_tex.push_back(ft);
-            face_normals.push_back(fn);
+            for (std::size_t c = 1; c + 1 < fv.size(); ++c)
+            {
+                face_verts.push_back({fv[0], fv[c], fv[c + 1]});
+                face_tex.push_back({ft[0], ft[c], ft[c + 1]});
+                face_normals.push_back({fn[0], fn[c], fn[c + 1]});
+            }
         }
         else if (token == "mtllib")
         {
@@ -243,6 +322,24 @@ readObj(const std::string& path)
     }
     auto cloud = std::make_shared<PointCloud<Scalar, plamatrix::Device::CPU>>(
         std::move(pts));
+
+    const bool can_assign_colors = n > 0 &&
+        has_vertex_color.size() == n &&
+        std::all_of(has_vertex_color.begin(), has_vertex_color.end(), [](bool has_color) {
+            return has_color;
+        });
+    if (can_assign_colors)
+    {
+        plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(
+            static_cast<plamatrix::Index>(n), 3);
+        for (size_t i = 0; i < n; ++i)
+        {
+            colors(static_cast<plamatrix::Index>(i), 0) = vr[i];
+            colors(static_cast<plamatrix::Index>(i), 1) = vg[i];
+            colors(static_cast<plamatrix::Index>(i), 2) = vb[i];
+        }
+        cloud->setColors(std::move(colors));
+    }
 
     std::vector<int> vertex_normal_indices(n, -1);
     std::vector<bool> vertex_referenced_by_face(n, false);
@@ -390,6 +487,7 @@ void writeObj(const std::string& path,
     {
         throw std::runtime_error("Cannot write OBJ file: " + path);
     }
+    f << std::setprecision(std::numeric_limits<Scalar>::max_digits10);
 
     const auto& mtlLib = cloud.materialLibraryFile();
     if (!mtlLib.empty())
@@ -401,7 +499,14 @@ void writeObj(const std::string& path,
     {
         f << "v " << cloud.points()(static_cast<plamatrix::Index>(i), 0)
           << " " << cloud.points()(static_cast<plamatrix::Index>(i), 1)
-          << " " << cloud.points()(static_cast<plamatrix::Index>(i), 2) << "\n";
+          << " " << cloud.points()(static_cast<plamatrix::Index>(i), 2);
+        if (cloud.hasColors())
+        {
+            f << " " << static_cast<int>(cloud.colors()->getValue(static_cast<plamatrix::Index>(i), 0))
+              << " " << static_cast<int>(cloud.colors()->getValue(static_cast<plamatrix::Index>(i), 1))
+              << " " << static_cast<int>(cloud.colors()->getValue(static_cast<plamatrix::Index>(i), 2));
+        }
+        f << "\n";
     }
 
     if (cloud.hasNormals())

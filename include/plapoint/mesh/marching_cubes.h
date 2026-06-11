@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <tuple>
 #include <vector>
@@ -89,10 +90,10 @@ inline const std::vector<int>& triTable(int cubeIndex)
         {11, 0, 8, 11, 2, 0, 9, 5, 4}, // 41
         {5, 0, 1, 5, 4, 0, 3, 11, 2}, // 42
         {11, 2, 1, 11, 1, 5, 11, 5, 8, 11, 8, 4}, // 43
-        {}, // 44
+        {10, 3, 11, 10, 1, 3, 9, 5, 4}, // 44
         {0, 8, 11, 0, 11, 10, 10, 11, 1, 4, 9, 5}, // 45
-        {}, // 46
-        {}, // 47
+        {5, 4, 0, 5, 0, 11, 5, 11, 10, 11, 0, 3}, // 46
+        {5, 4, 8, 5, 8, 10, 10, 8, 11}, // 47
         {9, 7, 8, 5, 7, 9}, // 48
         {9, 3, 0, 9, 5, 3, 5, 7, 3}, // 49
         {0, 7, 8, 0, 1, 7, 1, 5, 7}, // 50
@@ -102,9 +103,9 @@ inline const std::vector<int>& triTable(int cubeIndex)
         {8, 0, 2, 8, 2, 5, 8, 5, 7, 10, 2, 5}, // 54
         {2, 10, 5, 2, 5, 3, 3, 5, 7}, // 55
         {7, 9, 5, 7, 8, 9, 3, 11, 2}, // 56
-        {}, // 57
+        {9, 5, 7, 9, 7, 2, 9, 2, 0, 2, 7, 11}, // 57
         {2, 3, 11, 0, 1, 8, 1, 7, 8, 1, 5, 7}, // 58
-        {}, // 59
+        {11, 2, 1, 11, 1, 7, 7, 1, 5}, // 59
         {9, 7, 8, 9, 5, 7, 10, 1, 3, 10, 11, 3}, // 60
         {5, 7, 0, 5, 0, 9, 7, 11, 0, 1, 0, 10, 11, 10, 0}, // 61
         {11, 10, 0, 11, 0, 3, 10, 5, 0, 8, 0, 7, 5, 7, 0}, // 62
@@ -241,9 +242,9 @@ inline const std::vector<int>& triTable(int cubeIndex)
         {11, 10, 0, 11, 0, 3, 10, 5, 0, 8, 0, 7, 5, 7, 0}, // 193
         {5, 7, 0, 5, 0, 9, 7, 11, 0, 1, 0, 10, 11, 10, 0}, // 194
         {9, 7, 8, 9, 5, 7, 10, 1, 3, 10, 11, 3}, // 195
-        {}, // 196
+        {11, 1, 2, 11, 7, 1, 7, 5, 1}, // 196
         {2, 3, 11, 0, 1, 8, 1, 7, 8, 1, 5, 7}, // 197
-        {}, // 198
+        {9, 7, 5, 9, 2, 7, 9, 0, 2, 2, 11, 7}, // 198
         {7, 9, 5, 7, 8, 9, 3, 11, 2}, // 199
         {2, 10, 5, 2, 5, 3, 3, 5, 7}, // 200
         {8, 0, 2, 8, 2, 5, 8, 5, 7, 10, 2, 5}, // 201
@@ -253,10 +254,10 @@ inline const std::vector<int>& triTable(int cubeIndex)
         {0, 7, 8, 0, 1, 7, 1, 5, 7}, // 205
         {9, 3, 0, 9, 5, 3, 5, 7, 3}, // 206
         {9, 7, 8, 5, 7, 9}, // 207
-        {}, // 208
-        {}, // 209
+        {5, 8, 4, 5, 10, 8, 10, 11, 8}, // 208
+        {5, 0, 4, 5, 11, 0, 5, 10, 11, 11, 3, 0}, // 209
         {0, 8, 11, 0, 11, 10, 10, 11, 1, 4, 9, 5}, // 210
-        {}, // 211
+        {10, 3, 11, 10, 1, 3, 9, 5, 4}, // 211
         {11, 2, 1, 11, 1, 5, 11, 5, 8, 11, 8, 4}, // 212
         {5, 0, 1, 5, 4, 0, 3, 11, 2}, // 213
         {11, 0, 8, 11, 2, 0, 9, 5, 4}, // 214
@@ -310,8 +311,9 @@ inline const std::vector<int>& triTable(int cubeIndex)
 template <typename Scalar>
 Scalar interp(Scalar iso, Scalar v0, Scalar v1, Scalar p0, Scalar p1)
 {
-    if (std::abs(v1 - v0) < Scalar(1e-12)) return p0;
-    return p0 + (p1 - p0) * (iso - v0) / (v1 - v0);
+    const Scalar denom = v1 - v0;
+    if (denom == Scalar(0)) return (p0 + p1) * Scalar(0.5);
+    return p0 + (p1 - p0) * (iso - v0) / denom;
 }
 
 } // namespace detail
@@ -328,6 +330,15 @@ public:
     /// Set the axis-aligned extraction bounds.
     void setBounds(const Vec3& min_corner, const Vec3& max_corner)
     {
+        if (!std::isfinite(min_corner.x) || !std::isfinite(min_corner.y) || !std::isfinite(min_corner.z) ||
+            !std::isfinite(max_corner.x) || !std::isfinite(max_corner.y) || !std::isfinite(max_corner.z))
+        {
+            throw std::invalid_argument("MarchingCubes bounds must be finite");
+        }
+        if (!(min_corner.x < max_corner.x && min_corner.y < max_corner.y && min_corner.z < max_corner.z))
+        {
+            throw std::invalid_argument("MarchingCubes min bounds must be less than max bounds");
+        }
         _min = min_corner; _max = max_corner;
     }
 
@@ -342,7 +353,14 @@ public:
     }
 
     /// Set the scalar isovalue to extract.
-    void setIsoLevel(Scalar iso) { _iso = iso; }
+    void setIsoLevel(Scalar iso)
+    {
+        if (!std::isfinite(iso))
+        {
+            throw std::invalid_argument("MarchingCubes iso level must be finite");
+        }
+        _iso = iso;
+    }
 
     /// Extract vertices and triangular faces from a non-empty scalar function.
     std::tuple<Matrix, Matrix> extract(const ScalarFunction& fn) const
@@ -356,8 +374,9 @@ public:
         Scalar dy = (_max.y - _min.y) / Scalar(_ny);
         Scalar dz = (_max.z - _min.z) / Scalar(_nz);
 
+        const std::size_t sample_count = checkedSampleCount(_nx, _ny, _nz);
         int vx_r = _nx + 1, vy_r = _ny + 1, vz_r = _nz + 1;
-        std::vector<Scalar> field(static_cast<std::size_t>(vz_r * vy_r * vx_r));
+        std::vector<Scalar> field(sample_count);
         for (int iz = 0; iz < vz_r; ++iz)
             for (int iy = 0; iy < vy_r; ++iy)
                 for (int ix = 0; ix < vx_r; ++ix)
@@ -365,7 +384,12 @@ public:
                     Scalar x = _min.x + Scalar(ix) * dx;
                     Scalar y = _min.y + Scalar(iy) * dy;
                     Scalar z = _min.z + Scalar(iz) * dz;
-                    field[static_cast<std::size_t>(iz*vy_r*vx_r + iy*vx_r + ix)] = fn(x, y, z);
+                    const Scalar value = fn(x, y, z);
+                    if (!std::isfinite(value))
+                    {
+                        throw std::invalid_argument("MarchingCubes scalar samples must be finite");
+                    }
+                    field[static_cast<std::size_t>(iz*vy_r*vx_r + iy*vx_r + ix)] = value;
                 }
 
         std::vector<Scalar> vx, vy, vz;
@@ -465,6 +489,30 @@ public:
     }
 
 private:
+    static constexpr std::size_t kMaxScalarSamples = 100000000;
+
+    static std::size_t checkedMultiply(std::size_t lhs, std::size_t rhs)
+    {
+        if (rhs != 0 && lhs > std::numeric_limits<std::size_t>::max() / rhs)
+        {
+            throw std::invalid_argument("MarchingCubes resolution sample count overflows");
+        }
+        return lhs * rhs;
+    }
+
+    static std::size_t checkedSampleCount(int nx, int ny, int nz)
+    {
+        const std::size_t vx = static_cast<std::size_t>(nx) + 1u;
+        const std::size_t vy = static_cast<std::size_t>(ny) + 1u;
+        const std::size_t vz = static_cast<std::size_t>(nz) + 1u;
+        const std::size_t count = checkedMultiply(checkedMultiply(vx, vy), vz);
+        if (count > kMaxScalarSamples)
+        {
+            throw std::invalid_argument("MarchingCubes resolution sample count is too large");
+        }
+        return count;
+    }
+
     Vec3 _min{-1,-1,-1}, _max{1,1,1};
     int _nx = 10, _ny = 10, _nz = 10;
     Scalar _iso = 0;

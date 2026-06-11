@@ -46,7 +46,11 @@ int parseIntegerOption(const std::string& option, const std::string& value, int 
     {
         throw std::invalid_argument("Invalid value for " + option + ": " + value);
     }
-    return std::max(minimum, parsed);
+    if (parsed < minimum)
+    {
+        throw std::invalid_argument("Invalid value for " + option + ": " + value);
+    }
+    return parsed;
 }
 
 Options parseOptions(int argc, char** argv)
@@ -55,20 +59,36 @@ Options parseOptions(int argc, char** argv)
     for (int i = 1; i < argc; ++i)
     {
         const std::string arg = argv[i];
-        if (arg == "--points" && i + 1 < argc)
+        if (arg == "--points")
         {
+            if (i + 1 >= argc)
+            {
+                throw std::invalid_argument("Missing value for --points");
+            }
             options.points = parseIntegerOption(arg, argv[++i], 1);
         }
-        else if (arg == "--iterations" && i + 1 < argc)
+        else if (arg == "--iterations")
         {
+            if (i + 1 >= argc)
+            {
+                throw std::invalid_argument("Missing value for --iterations");
+            }
             options.iterations = parseIntegerOption(arg, argv[++i], 1);
         }
-        else if (arg == "--icp-points" && i + 1 < argc)
+        else if (arg == "--icp-points")
         {
+            if (i + 1 >= argc)
+            {
+                throw std::invalid_argument("Missing value for --icp-points");
+            }
             options.icp_points = parseIntegerOption(arg, argv[++i], 3);
         }
-        else if (arg == "--icp-max-iterations" && i + 1 < argc)
+        else if (arg == "--icp-max-iterations")
         {
+            if (i + 1 >= argc)
+            {
+                throw std::invalid_argument("Missing value for --icp-max-iterations");
+            }
             options.icp_max_iterations = parseIntegerOption(arg, argv[++i], 1);
         }
         else if (arg == "--skip-cpu-icp")
@@ -91,6 +111,10 @@ Options parseOptions(int argc, char** argv)
                 << "                           [--skip-cpu-icp] [--skip-icp-identity]\n"
                 << "                           [--self-test-benchmark-gpu-sync]\n";
             std::exit(0);
+        }
+        else
+        {
+            throw std::invalid_argument("Unknown option: " + arg);
         }
     }
     return options;

@@ -46,7 +46,7 @@ protected:
         {
             kept_indices.push_back(static_cast<int>(i));
         }
-        this->copyNormalsForIndices(kept_indices, output);
+        this->copyAttributesForIndices(kept_indices, output);
     }
 
 private:

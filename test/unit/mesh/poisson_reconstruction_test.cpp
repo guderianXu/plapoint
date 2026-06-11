@@ -4,6 +4,27 @@
 #include <plamatrix/plamatrix.h>
 #include <cmath>
 #include <limits>
+#include <string>
+
+namespace
+{
+
+template <typename Fn>
+void expectInvalidArgumentContaining(Fn&& fn, const std::string& expected_message)
+{
+    try
+    {
+        fn();
+        FAIL() << "Expected invalid_argument containing: " << expected_message;
+    }
+    catch (const std::invalid_argument& e)
+    {
+        EXPECT_NE(std::string(e.what()).find(expected_message), std::string::npos)
+            << "Actual exception: " << e.what();
+    }
+}
+
+} // namespace
 
 TEST(PoissonReconstructionTest, SphereReconstructsMesh)
 {
@@ -37,6 +58,57 @@ TEST(PoissonReconstructionTest, SphereReconstructsMesh)
 
     EXPECT_GT(verts.rows(), 0);
     EXPECT_GT(faces.rows(), 0);
+}
+
+TEST(PoissonReconstructionTest, LargeCoordinatesDoNotUseSentinelBounds)
+{
+    using Scalar = double;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+
+    constexpr int n_pts = 100;
+    constexpr Scalar center = 1.0e12;
+    constexpr Scalar radius = 2.0;
+
+    Matrix pts(n_pts, 3);
+    Matrix nrm(n_pts, 3);
+    for (int i = 0; i < n_pts; ++i)
+    {
+        Scalar theta = Scalar(i) * Scalar(2 * 3.14159265358979323846) / Scalar(n_pts);
+        Scalar phi = Scalar(i) * Scalar(3.14159265358979323846) / Scalar(n_pts);
+        Scalar nx = std::sin(phi) * std::cos(theta);
+        Scalar ny = std::sin(phi) * std::sin(theta);
+        Scalar nz = std::cos(phi);
+        pts.setValue(i, 0, center + radius * nx);
+        pts.setValue(i, 1, center + radius * ny);
+        pts.setValue(i, 2, center + radius * nz);
+        nrm.setValue(i, 0, nx);
+        nrm.setValue(i, 1, ny);
+        nrm.setValue(i, 2, nz);
+    }
+
+    auto cloud = std::make_shared<Cloud>(std::move(pts));
+    cloud->setNormals(std::move(nrm));
+
+    plapoint::mesh::PoissonReconstruction<Scalar> pr;
+    pr.setInputCloud(cloud);
+    pr.setDepth(4);
+    pr.setSolverIterations(30);
+
+    auto [verts, faces] = pr.reconstruct();
+
+    ASSERT_GT(verts.rows(), 0);
+    ASSERT_GT(faces.rows(), 0);
+    for (plamatrix::Index r = 0; r < verts.rows(); ++r)
+    {
+        for (int c = 0; c < 3; ++c)
+        {
+            const Scalar value = verts.getValue(r, c);
+            EXPECT_TRUE(std::isfinite(value));
+            EXPECT_GT(value, center - Scalar(10));
+            EXPECT_LT(value, center + Scalar(10));
+        }
+    }
 }
 
 TEST(PoissonReconstructionTest, RejectsInvalidDepthAndSolverIterations)
@@ -149,4 +221,53 @@ TEST(PoissonReconstructionTest, RejectsNonFinitePointsAndNormals)
 
     pr.setInputCloud(cloud_with_bad_normals);
     EXPECT_THROW((void)pr.reconstruct(), std::invalid_argument);
+}
+
+TEST(PoissonReconstructionTest, RejectsZeroLengthNormals)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
+    points.fill(0);
+    points.setValue(1, 0, 1);
+    auto cloud = std::make_shared<Cloud>(std::move(points));
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(2, 3);
+    normals.fill(0);
+    normals.setValue(0, 2, 1);
+    cloud->setNormals(std::move(normals));
+
+    plapoint::mesh::PoissonReconstruction<Scalar> pr;
+    pr.setInputCloud(cloud);
+
+    EXPECT_THROW((void)pr.reconstruct(), std::invalid_argument);
+}
+
+TEST(PoissonReconstructionTest, RejectsNormalsWhoseLengthIsNotFinite)
+{
+    using Scalar = double;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
+    points.fill(0);
+    points.setValue(1, 0, 1);
+    auto cloud = std::make_shared<Cloud>(std::move(points));
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(2, 3);
+    normals.fill(0);
+    normals.setValue(0, 0, std::numeric_limits<Scalar>::max());
+    normals.setValue(0, 1, std::numeric_limits<Scalar>::max());
+    normals.setValue(0, 2, std::numeric_limits<Scalar>::max());
+    normals.setValue(1, 2, 1);
+    cloud->setNormals(std::move(normals));
+
+    plapoint::mesh::PoissonReconstruction<Scalar> pr;
+    pr.setInputCloud(cloud);
+    pr.setDepth(1);
+    pr.setSolverIterations(1);
+
+    expectInvalidArgumentContaining(
+        [&]() { (void)pr.reconstruct(); },
+        "normals");
 }

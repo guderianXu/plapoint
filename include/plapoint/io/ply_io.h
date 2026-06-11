@@ -2,14 +2,19 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <plamatrix/dense/dense_matrix.h>
@@ -113,10 +118,24 @@ inline double readBinaryScalar(std::istream& stream,
     throw std::runtime_error("Unsupported PLY vertex property type: " + type);
 }
 
+inline bool isPlyIntegerScalarType(const std::string& type)
+{
+    return type == "char" || type == "int8" ||
+           type == "uchar" || type == "uint8" || type == "unsigned_char" ||
+           type == "short" || type == "int16" ||
+           type == "ushort" || type == "uint16" || type == "unsigned_short" ||
+           type == "int" || type == "int32" ||
+           type == "uint" || type == "uint32" || type == "unsigned_int";
+}
+
 inline std::size_t readBinaryListCount(std::istream& stream,
                                        const std::string& type,
                                        bool swapBytes)
 {
+    if (!isPlyIntegerScalarType(type))
+    {
+        throw std::runtime_error("PLY list count type must be an integer type");
+    }
     const double count = readBinaryScalar(stream, type, swapBytes);
     if (count < 0.0)
     {
@@ -125,17 +144,47 @@ inline std::size_t readBinaryListCount(std::istream& stream,
     return static_cast<std::size_t>(count);
 }
 
-inline void skipAsciiList(std::istream& stream)
+inline int parseAsciiListCountToken(const std::string& token, const std::string& type)
 {
-    int count = 0;
-    if (!(stream >> count))
+    if (!isPlyIntegerScalarType(type))
     {
-        throw std::runtime_error("PLY ASCII list property is missing an item count");
+        throw std::runtime_error("PLY list count type must be an integer type");
+    }
+    if (token.empty())
+    {
+        throw std::runtime_error("PLY ASCII list count is missing");
+    }
+    char* end = nullptr;
+    errno = 0;
+    const long long count = std::strtoll(token.c_str(), &end, 10);
+    if (errno == ERANGE || end == token.c_str() || *end != '\0')
+    {
+        throw std::runtime_error("PLY ASCII list count must be an integer token");
     }
     if (count < 0)
     {
         throw std::runtime_error("PLY list property has a negative item count");
     }
+    if (count > static_cast<long long>(std::numeric_limits<int>::max()))
+    {
+        throw std::out_of_range("PLY ASCII list count exceeds int range");
+    }
+    return static_cast<int>(count);
+}
+
+inline int readAsciiListCount(std::istream& stream, const std::string& type)
+{
+    std::string token;
+    if (!(stream >> token))
+    {
+        throw std::runtime_error("PLY ASCII list property is missing an item count");
+    }
+    return parseAsciiListCountToken(token, type);
+}
+
+inline void skipAsciiList(std::istream& stream, const PlyScalarProperty& prop)
+{
+    const int count = readAsciiListCount(stream, prop.countType);
     for (int i = 0; i < count; ++i)
     {
         std::string ignored;
@@ -181,6 +230,123 @@ inline std::uint8_t plyColorByte(double value)
     if (value <= 0.0) return 0;
     if (value >= 255.0) return 255;
     return static_cast<std::uint8_t>(std::lround(value));
+}
+
+inline bool isPlyUInt16Type(const std::string& type)
+{
+    return type == "ushort" || type == "uint16" || type == "unsigned_short";
+}
+
+inline std::uint8_t plyColorByteForProperty(double value, const std::string& type)
+{
+    if (!std::isfinite(value))
+    {
+        throw std::runtime_error("PLY color property value must be finite");
+    }
+    if (isPlyUInt16Type(type))
+    {
+        if (value <= 0.0) return 0;
+        if (value >= static_cast<double>(std::numeric_limits<std::uint16_t>::max())) return 255;
+        return static_cast<std::uint8_t>(
+            (static_cast<unsigned int>(std::lround(value)) + 128u) / 257u);
+    }
+    return plyColorByte(value);
+}
+
+inline std::uint16_t plyIntensityWord(double value)
+{
+    if (!std::isfinite(value))
+    {
+        throw std::runtime_error("PLY intensity property value must be finite");
+    }
+    if (value <= 0.0) return 0;
+    if (value >= static_cast<double>(std::numeric_limits<std::uint16_t>::max()))
+    {
+        return std::numeric_limits<std::uint16_t>::max();
+    }
+    return static_cast<std::uint16_t>(std::lround(value));
+}
+
+inline bool isFaceVertexIndicesProperty(const std::string& name)
+{
+    return name == "vertex_indices" || name == "vertex_index";
+}
+
+inline int plyFaceIndex(double value)
+{
+    if (!std::isfinite(value))
+    {
+        throw std::runtime_error("PLY face index must be finite");
+    }
+    const double rounded = std::round(value);
+    if (std::abs(value - rounded) > 1e-6)
+    {
+        throw std::runtime_error("PLY face index must be an integer");
+    }
+    if (rounded < static_cast<double>(std::numeric_limits<int>::min()) ||
+        rounded > static_cast<double>(std::numeric_limits<int>::max()))
+    {
+        throw std::out_of_range("PLY face index out of int range");
+    }
+    return static_cast<int>(rounded);
+}
+
+inline std::vector<int> readAsciiFaceIndexList(std::istream& stream,
+                                               const PlyScalarProperty& prop)
+{
+    const int count = readAsciiListCount(stream, prop.countType);
+    std::vector<int> indices;
+    indices.reserve(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i)
+    {
+        double value = 0.0;
+        if (!(stream >> value))
+        {
+            throw std::runtime_error("PLY ASCII face list property is missing items");
+        }
+        indices.push_back(plyFaceIndex(value));
+    }
+    return indices;
+}
+
+inline std::vector<int> readBinaryFaceIndexList(std::istream& stream,
+                                               const PlyScalarProperty& prop,
+                                               bool swapBytes)
+{
+    const std::size_t count = readBinaryListCount(stream, prop.countType, swapBytes);
+    std::vector<int> indices;
+    indices.reserve(count);
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        indices.push_back(plyFaceIndex(readBinaryScalar(stream, prop.type, swapBytes)));
+    }
+    return indices;
+}
+
+inline void appendTriangulatedFace(const std::vector<int>& polygon, std::vector<int>& triangles)
+{
+    if (polygon.empty())
+    {
+        return;
+    }
+    if (polygon.size() < 3)
+    {
+        throw std::runtime_error("PLY face must contain at least 3 vertices");
+    }
+    for (std::size_t i = 1; i + 1 < polygon.size(); ++i)
+    {
+        triangles.push_back(polygon[0]);
+        triangles.push_back(polygon[i]);
+        triangles.push_back(polygon[i + 1]);
+    }
+}
+
+template <typename Scalar>
+constexpr const char* plyFloatingPointTypeName()
+{
+    static_assert(std::is_floating_point<Scalar>::value,
+                  "PLY writer requires a floating-point point scalar type");
+    return std::is_same<Scalar, double>::value ? "double" : "float";
 }
 
 [[noreturn]] inline void throwPlyParseError(const std::string& path, const std::string& message)
@@ -333,6 +499,8 @@ readPlyImpl(const std::string& path,
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(n_verts, 3);
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> nrm(n_verts, 3);
     plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(n_verts, 3);
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(n_verts, 1);
+    std::vector<int> face_indices;
     bool have_normals = has_nx && has_ny && has_nz;
     bool have_colors = has_intensity || (has_red && has_green && has_blue);
 
@@ -348,18 +516,43 @@ readPlyImpl(const std::string& path,
                     throwPlyParseError(path, "truncated ASCII element rows");
                 }
                 if (!line.empty() && line.back() == '\r') line.pop_back();
-                if (element.name != "vertex")
+                if (element.name != "vertex" && element.name != "face")
                 {
                     continue;
                 }
                 std::istringstream iss(line);
+                if (element.name == "face")
+                {
+                    for (const auto& prop : element.properties)
+                    {
+                        if (prop.isList)
+                        {
+                            if (isFaceVertexIndicesProperty(prop.name))
+                            {
+                                appendTriangulatedFace(readAsciiFaceIndexList(iss, prop), face_indices);
+                            }
+                            else
+                            {
+                                skipAsciiList(iss, prop);
+                            }
+                            continue;
+                        }
+                        double ignored = 0.0;
+                        if (!(iss >> ignored))
+                        {
+                            throwPlyParseError(path, "truncated ASCII face row");
+                        }
+                    }
+                    continue;
+                }
                 std::array<std::uint8_t, 3> rgb = {0, 0, 0};
-                std::uint8_t intensity = 0;
+                std::uint16_t intensity = 0;
+                std::uint8_t intensity_color = 0;
                 for (const auto& prop : element.properties)
                 {
                     if (prop.isList)
                     {
-                        skipAsciiList(iss);
+                        skipAsciiList(iss, prop);
                         continue;
                     }
                     double val = 0.0;
@@ -388,16 +581,17 @@ readPlyImpl(const std::string& path,
                         nrm(vertexIndex, 2) = static_cast<Scalar>(val);
                         break;
                     case PlyVertexPropertyRole::Red:
-                        rgb[0] = plyColorByte(val);
+                        rgb[0] = plyColorByteForProperty(val, prop.type);
                         break;
                     case PlyVertexPropertyRole::Green:
-                        rgb[1] = plyColorByte(val);
+                        rgb[1] = plyColorByteForProperty(val, prop.type);
                         break;
                     case PlyVertexPropertyRole::Blue:
-                        rgb[2] = plyColorByte(val);
+                        rgb[2] = plyColorByteForProperty(val, prop.type);
                         break;
                     case PlyVertexPropertyRole::Intensity:
-                        intensity = plyColorByte(val);
+                        intensity = plyIntensityWord(val);
+                        intensity_color = plyColorByteForProperty(val, prop.type);
                         break;
                     case PlyVertexPropertyRole::Ignore:
                         break;
@@ -413,10 +607,14 @@ readPlyImpl(const std::string& path,
                     }
                     else
                     {
-                        colors(vertexIndex, 0) = intensity;
-                        colors(vertexIndex, 1) = intensity;
-                        colors(vertexIndex, 2) = intensity;
+                        colors(vertexIndex, 0) = intensity_color;
+                        colors(vertexIndex, 1) = intensity_color;
+                        colors(vertexIndex, 2) = intensity_color;
                     }
+                }
+                if (has_intensity)
+                {
+                    intensities(vertexIndex, 0) = intensity;
                 }
                 ++vertexIndex;
             }
@@ -431,12 +629,21 @@ readPlyImpl(const std::string& path,
             for (int i = 0; i < element.count; ++i)
             {
                 std::array<std::uint8_t, 3> rgb = {0, 0, 0};
-                std::uint8_t intensity = 0;
+                std::uint16_t intensity = 0;
+                std::uint8_t intensity_color = 0;
+                std::vector<int> face_polygon;
                 for (const auto& prop : element.properties)
                 {
                     if (prop.isList)
                     {
-                        skipBinaryList(f, prop, swap_bytes);
+                        if (element.name == "face" && isFaceVertexIndicesProperty(prop.name))
+                        {
+                            face_polygon = readBinaryFaceIndexList(f, prop, swap_bytes);
+                        }
+                        else
+                        {
+                            skipBinaryList(f, prop, swap_bytes);
+                        }
                         continue;
                     }
                     const double val = readBinaryScalar(f, prop.type, swap_bytes);
@@ -465,20 +672,25 @@ readPlyImpl(const std::string& path,
                         nrm(vertexIndex, 2) = static_cast<Scalar>(val);
                         break;
                     case PlyVertexPropertyRole::Red:
-                        rgb[0] = plyColorByte(val);
+                        rgb[0] = plyColorByteForProperty(val, prop.type);
                         break;
                     case PlyVertexPropertyRole::Green:
-                        rgb[1] = plyColorByte(val);
+                        rgb[1] = plyColorByteForProperty(val, prop.type);
                         break;
                     case PlyVertexPropertyRole::Blue:
-                        rgb[2] = plyColorByte(val);
+                        rgb[2] = plyColorByteForProperty(val, prop.type);
                         break;
                     case PlyVertexPropertyRole::Intensity:
-                        intensity = plyColorByte(val);
+                        intensity = plyIntensityWord(val);
+                        intensity_color = plyColorByteForProperty(val, prop.type);
                         break;
                     case PlyVertexPropertyRole::Ignore:
                         break;
                     }
+                }
+                if (element.name == "face")
+                {
+                    appendTriangulatedFace(face_polygon, face_indices);
                 }
                 if (element.name == "vertex")
                 {
@@ -492,10 +704,14 @@ readPlyImpl(const std::string& path,
                         }
                         else
                         {
-                            colors(vertexIndex, 0) = intensity;
-                            colors(vertexIndex, 1) = intensity;
-                            colors(vertexIndex, 2) = intensity;
+                            colors(vertexIndex, 0) = intensity_color;
+                            colors(vertexIndex, 1) = intensity_color;
+                            colors(vertexIndex, 2) = intensity_color;
                         }
+                    }
+                    if (has_intensity)
+                    {
+                        intensities(vertexIndex, 0) = intensity;
                     }
                     ++vertexIndex;
                 }
@@ -506,6 +722,19 @@ readPlyImpl(const std::string& path,
     auto cloud = std::make_shared<PointCloud<Scalar, plamatrix::Device::CPU>>(std::move(pts));
     if (have_normals) cloud->setNormals(std::move(nrm));
     if (have_colors) cloud->setColors(std::move(colors));
+    if (has_intensity) cloud->setIntensities(std::move(intensities));
+    if (!face_indices.empty())
+    {
+        const auto face_count = static_cast<plamatrix::Index>(face_indices.size() / 3);
+        plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(face_count, 3);
+        for (plamatrix::Index i = 0; i < face_count; ++i)
+        {
+            faces(i, 0) = face_indices[static_cast<std::size_t>(i * 3)];
+            faces(i, 1) = face_indices[static_cast<std::size_t>(i * 3 + 1)];
+            faces(i, 2) = face_indices[static_cast<std::size_t>(i * 3 + 2)];
+        }
+        cloud->setFaces(std::move(faces));
+    }
     return cloud;
 }
 
@@ -541,6 +770,9 @@ void writePly(const std::string& path,
 
     bool with_normals = cloud.hasNormals();
     bool with_colors = cloud.hasColors();
+    bool with_intensities = cloud.hasIntensities();
+    bool with_faces = cloud.hasFaces();
+    const char* scalar_type = detail::plyFloatingPointTypeName<Scalar>();
 
     f << "ply\n";
     if (fmt == PlyFormat::ASCII)
@@ -551,15 +783,25 @@ void writePly(const std::string& path,
         f << "format binary_big_endian 1.0\n";
 
     f << "element vertex " << cloud.size() << "\n";
-    f << "property float x\nproperty float y\nproperty float z\n";
+    f << "property " << scalar_type << " x\n"
+      << "property " << scalar_type << " y\n"
+      << "property " << scalar_type << " z\n";
     if (with_colors)
         f << "property uchar red\nproperty uchar green\nproperty uchar blue\n";
+    if (with_intensities)
+        f << "property ushort intensity\n";
     if (with_normals)
-        f << "property float nx\nproperty float ny\nproperty float nz\n";
+        f << "property " << scalar_type << " nx\n"
+          << "property " << scalar_type << " ny\n"
+          << "property " << scalar_type << " nz\n";
+    if (with_faces)
+        f << "element face " << cloud.faces()->rows() << "\n"
+          << "property list uchar int vertex_indices\n";
     f << "end_header\n";
 
     if (fmt == PlyFormat::ASCII)
     {
+        f << std::setprecision(std::numeric_limits<Scalar>::max_digits10);
         for (std::size_t i = 0; i < cloud.size(); ++i)
         {
             f << cloud.points().getValue(static_cast<plamatrix::Index>(i), 0) << " "
@@ -572,6 +814,11 @@ void writePly(const std::string& path,
                   << " " << static_cast<int>(c->getValue(static_cast<plamatrix::Index>(i), 1))
                   << " " << static_cast<int>(c->getValue(static_cast<plamatrix::Index>(i), 2));
             }
+            if (with_intensities)
+            {
+                auto* intensities = cloud.intensities();
+                f << " " << intensities->getValue(static_cast<plamatrix::Index>(i), 0);
+            }
             if (with_normals)
             {
                 auto* n = cloud.normals();
@@ -581,19 +828,38 @@ void writePly(const std::string& path,
             }
             f << "\n";
         }
+        if (with_faces)
+        {
+            auto* faces = cloud.faces();
+            for (plamatrix::Index i = 0; i < faces->rows(); ++i)
+            {
+                f << "3 "
+                  << faces->getValue(i, 0) << " "
+                  << faces->getValue(i, 1) << " "
+                  << faces->getValue(i, 2) << "\n";
+            }
+        }
     }
     else
     {
         bool swap_bytes = (fmt == PlyFormat::BinaryBE) == detail::isLittleEndian();
+        auto write_scalar = [&](Scalar value) {
+            if (swap_bytes) detail::swapEndian(value);
+            f.write(reinterpret_cast<const char*>(&value), sizeof(Scalar));
+        };
+        auto write_int32 = [&](std::int32_t value) {
+            if (swap_bytes) detail::swapEndian(value);
+            f.write(reinterpret_cast<const char*>(&value), sizeof(value));
+        };
+        auto write_uint16 = [&](std::uint16_t value) {
+            if (swap_bytes) detail::swapEndian(value);
+            f.write(reinterpret_cast<const char*>(&value), sizeof(value));
+        };
         for (std::size_t i = 0; i < cloud.size(); ++i)
         {
-            float vx = static_cast<float>(cloud.points().getValue(static_cast<plamatrix::Index>(i), 0));
-            float vy = static_cast<float>(cloud.points().getValue(static_cast<plamatrix::Index>(i), 1));
-            float vz = static_cast<float>(cloud.points().getValue(static_cast<plamatrix::Index>(i), 2));
-            if (swap_bytes) { detail::swapEndian(vx); detail::swapEndian(vy); detail::swapEndian(vz); }
-            f.write(reinterpret_cast<const char*>(&vx), 4);
-            f.write(reinterpret_cast<const char*>(&vy), 4);
-            f.write(reinterpret_cast<const char*>(&vz), 4);
+            write_scalar(cloud.points().getValue(static_cast<plamatrix::Index>(i), 0));
+            write_scalar(cloud.points().getValue(static_cast<plamatrix::Index>(i), 1));
+            write_scalar(cloud.points().getValue(static_cast<plamatrix::Index>(i), 2));
             if (with_colors)
             {
                 auto* c = cloud.colors();
@@ -604,16 +870,29 @@ void writePly(const std::string& path,
                 };
                 f.write(reinterpret_cast<const char*>(color), sizeof(color));
             }
+            if (with_intensities)
+            {
+                auto* intensities = cloud.intensities();
+                write_uint16(intensities->getValue(static_cast<plamatrix::Index>(i), 0));
+            }
             if (with_normals)
             {
                 auto* n = cloud.normals();
-                float nx = static_cast<float>(n->getValue(static_cast<plamatrix::Index>(i), 0));
-                float ny = static_cast<float>(n->getValue(static_cast<plamatrix::Index>(i), 1));
-                float nz = static_cast<float>(n->getValue(static_cast<plamatrix::Index>(i), 2));
-                if (swap_bytes) { detail::swapEndian(nx); detail::swapEndian(ny); detail::swapEndian(nz); }
-                f.write(reinterpret_cast<const char*>(&nx), 4);
-                f.write(reinterpret_cast<const char*>(&ny), 4);
-                f.write(reinterpret_cast<const char*>(&nz), 4);
+                write_scalar(n->getValue(static_cast<plamatrix::Index>(i), 0));
+                write_scalar(n->getValue(static_cast<plamatrix::Index>(i), 1));
+                write_scalar(n->getValue(static_cast<plamatrix::Index>(i), 2));
+            }
+        }
+        if (with_faces)
+        {
+            auto* faces = cloud.faces();
+            for (plamatrix::Index i = 0; i < faces->rows(); ++i)
+            {
+                const std::uint8_t count = 3;
+                f.write(reinterpret_cast<const char*>(&count), sizeof(count));
+                write_int32(static_cast<std::int32_t>(faces->getValue(i, 0)));
+                write_int32(static_cast<std::int32_t>(faces->getValue(i, 1)));
+                write_int32(static_cast<std::int32_t>(faces->getValue(i, 2)));
             }
         }
     }

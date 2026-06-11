@@ -1,12 +1,11 @@
 #include <cmath>
+#include <climits>
 #include <stdexcept>
 #include <string>
 
 #include <cuda_runtime.h>
 #include <thrust/device_vector.h>
 #include <thrust/execution_policy.h>
-#include <thrust/functional.h>
-#include <thrust/iterator/constant_iterator.h>
 #include <thrust/iterator/discard_iterator.h>
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/reduce.h>
@@ -65,31 +64,54 @@ struct ComputeVoxelKey
         const Scalar y = points[point_count + idx];
         const Scalar z = points[2 * point_count + idx];
         return {
-            static_cast<int>(floor(static_cast<double>(x / leaf_x))),
-            static_cast<int>(floor(static_cast<double>(y / leaf_y))),
-            static_cast<int>(floor(static_cast<double>(z / leaf_z)))
+            static_cast<int>(floor(static_cast<double>(x) / static_cast<double>(leaf_x))),
+            static_cast<int>(floor(static_cast<double>(y) / static_cast<double>(leaf_y))),
+            static_cast<int>(floor(static_cast<double>(z) / static_cast<double>(leaf_z)))
         };
     }
 };
 
+struct MeanAccum
+{
+    double mean;
+    int count;
+
+    __host__ __device__ MeanAccum() : mean(0.0), count(0) {}
+    __host__ __device__ MeanAccum(double mean_, int count_) : mean(mean_), count(count_) {}
+};
+
+struct MeanAccumPlus
+{
+    __host__ __device__ MeanAccum operator()(const MeanAccum& lhs, const MeanAccum& rhs) const
+    {
+        if (lhs.count == 0) return rhs;
+        if (rhs.count == 0) return lhs;
+
+        const int total_count = lhs.count + rhs.count;
+        const double total = static_cast<double>(total_count);
+        const double lhs_weight = static_cast<double>(lhs.count) / total;
+        const double rhs_weight = static_cast<double>(rhs.count) / total;
+        return MeanAccum(lhs.mean * lhs_weight + rhs.mean * rhs_weight, total_count);
+    }
+};
+
 template <typename Scalar, int Dim>
-struct GatherCoordinate
+struct GatherCoordinateMean
 {
     const Scalar* points;
     int point_count;
 
-    __host__ __device__ Scalar operator()(int idx) const
+    __host__ __device__ MeanAccum operator()(int idx) const
     {
-        return points[static_cast<int>(Dim) * point_count + idx];
+        return MeanAccum(static_cast<double>(points[static_cast<int>(Dim) * point_count + idx]), 1);
     }
 };
 
 template <typename Scalar>
 __global__ void writeCentroidsColumnMajor(
-    const Scalar* sum_x,
-    const Scalar* sum_y,
-    const Scalar* sum_z,
-    const int* counts,
+    const MeanAccum* mean_x,
+    const MeanAccum* mean_y,
+    const MeanAccum* mean_z,
     int voxel_count,
     Scalar* out_points)
 {
@@ -99,10 +121,85 @@ __global__ void writeCentroidsColumnMajor(
         return;
     }
 
-    const Scalar inv_count = Scalar(1) / static_cast<Scalar>(counts[idx]);
-    out_points[idx] = sum_x[idx] * inv_count;
-    out_points[voxel_count + idx] = sum_y[idx] * inv_count;
-    out_points[2 * voxel_count + idx] = sum_z[idx] * inv_count;
+    out_points[idx] = static_cast<Scalar>(mean_x[idx].mean);
+    out_points[voxel_count + idx] = static_cast<Scalar>(mean_y[idx].mean);
+    out_points[2 * voxel_count + idx] = static_cast<Scalar>(mean_z[idx].mean);
+}
+
+template <typename Scalar>
+__device__ int voxelCoordinateValidationError(Scalar coordinate, Scalar leaf)
+{
+    const double value = static_cast<double>(coordinate);
+    if (!isfinite(value))
+    {
+        return 1;
+    }
+    const double scaled = floor(value / static_cast<double>(leaf));
+    if (!isfinite(scaled) ||
+        scaled < static_cast<double>(INT_MIN) ||
+        scaled > static_cast<double>(INT_MAX))
+    {
+        return 2;
+    }
+    return 0;
+}
+
+template <typename Scalar>
+__global__ void validateVoxelGridInputKernel(
+    const Scalar* points,
+    int point_count,
+    Scalar leaf_x,
+    Scalar leaf_y,
+    Scalar leaf_z,
+    int* error_code)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= point_count)
+    {
+        return;
+    }
+
+    int error = voxelCoordinateValidationError(points[idx], leaf_x);
+    if (error == 0) error = voxelCoordinateValidationError(points[point_count + idx], leaf_y);
+    if (error == 0) error = voxelCoordinateValidationError(points[2 * point_count + idx], leaf_z);
+    if (error != 0)
+    {
+        atomicCAS(error_code, 0, error);
+    }
+}
+
+template <typename Scalar>
+void validateVoxelGridInputColumnMajorImpl(const Scalar* d_points, int N,
+                                           Scalar leaf_x, Scalar leaf_y, Scalar leaf_z,
+                                           cudaStream_t stream)
+{
+    if (N <= 0)
+    {
+        return;
+    }
+
+    DeviceBuffer<int> d_error(1);
+    int host_error = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(d_error.get(), &host_error, sizeof(host_error),
+                                        cudaMemcpyHostToDevice, stream));
+
+    constexpr int block_size = 256;
+    const int grid_size = (N + block_size - 1) / block_size;
+    validateVoxelGridInputKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
+        d_points, N, leaf_x, leaf_y, leaf_z, d_error.get());
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&host_error, d_error.get(), sizeof(host_error),
+                                        cudaMemcpyDeviceToHost, stream));
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+
+    if (host_error == 1)
+    {
+        throw std::invalid_argument("VoxelGrid GPU: points must be finite");
+    }
+    if (host_error == 2)
+    {
+        throw std::out_of_range("VoxelGrid GPU: voxel index is outside int range");
+    }
 }
 
 template <typename Scalar>
@@ -124,6 +221,7 @@ int voxelGridDownsampleColumnMajorImpl(const Scalar* d_points, int N,
     {
         throw std::invalid_argument("VoxelGrid GPU: leaf size must be positive");
     }
+    validateVoxelGridInputColumnMajorImpl(d_points, N, leaf_x, leaf_y, leaf_z, stream);
 
     auto policy = thrust::cuda::par.on(stream);
     thrust::device_vector<int> indices(static_cast<std::size_t>(N));
@@ -134,56 +232,47 @@ int voxelGridDownsampleColumnMajorImpl(const Scalar* d_points, int N,
     thrust::sort_by_key(policy, keys.begin(), keys.end(), indices.begin(), VoxelKeyLess{});
 
     thrust::device_vector<VoxelKey> unique_keys(static_cast<std::size_t>(N));
-    thrust::device_vector<Scalar> sum_x(static_cast<std::size_t>(N));
-    thrust::device_vector<Scalar> sum_y(static_cast<std::size_t>(N));
-    thrust::device_vector<Scalar> sum_z(static_cast<std::size_t>(N));
-    thrust::device_vector<int> counts(static_cast<std::size_t>(N));
+    thrust::device_vector<MeanAccum> mean_x(static_cast<std::size_t>(N));
+    thrust::device_vector<MeanAccum> mean_y(static_cast<std::size_t>(N));
+    thrust::device_vector<MeanAccum> mean_z(static_cast<std::size_t>(N));
 
     auto x_values = thrust::make_transform_iterator(
-        indices.begin(), GatherCoordinate<Scalar, 0>{d_points, N});
+        indices.begin(), GatherCoordinateMean<Scalar, 0>{d_points, N});
     auto y_values = thrust::make_transform_iterator(
-        indices.begin(), GatherCoordinate<Scalar, 1>{d_points, N});
+        indices.begin(), GatherCoordinateMean<Scalar, 1>{d_points, N});
     auto z_values = thrust::make_transform_iterator(
-        indices.begin(), GatherCoordinate<Scalar, 2>{d_points, N});
+        indices.begin(), GatherCoordinateMean<Scalar, 2>{d_points, N});
 
     auto reduced_x = thrust::reduce_by_key(policy,
                                            keys.begin(), keys.end(),
                                            x_values,
                                            unique_keys.begin(),
-                                           sum_x.begin(),
+                                           mean_x.begin(),
                                            VoxelKeyEqual{},
-                                           thrust::plus<Scalar>{});
+                                           MeanAccumPlus{});
     const int voxel_count = static_cast<int>(reduced_x.first - unique_keys.begin());
 
     thrust::reduce_by_key(policy,
                           keys.begin(), keys.end(),
                           y_values,
                           thrust::make_discard_iterator(),
-                          sum_y.begin(),
+                          mean_y.begin(),
                           VoxelKeyEqual{},
-                          thrust::plus<Scalar>{});
+                          MeanAccumPlus{});
     thrust::reduce_by_key(policy,
                           keys.begin(), keys.end(),
                           z_values,
                           thrust::make_discard_iterator(),
-                          sum_z.begin(),
+                          mean_z.begin(),
                           VoxelKeyEqual{},
-                          thrust::plus<Scalar>{});
-    thrust::reduce_by_key(policy,
-                          keys.begin(), keys.end(),
-                          thrust::make_constant_iterator(1),
-                          thrust::make_discard_iterator(),
-                          counts.begin(),
-                          VoxelKeyEqual{},
-                          thrust::plus<int>{});
+                          MeanAccumPlus{});
 
     constexpr int block_size = 256;
     const int grid_size = (voxel_count + block_size - 1) / block_size;
     writeCentroidsColumnMajor<Scalar><<<grid_size, block_size, 0, stream>>>(
-        thrust::raw_pointer_cast(sum_x.data()),
-        thrust::raw_pointer_cast(sum_y.data()),
-        thrust::raw_pointer_cast(sum_z.data()),
-        thrust::raw_pointer_cast(counts.data()),
+        thrust::raw_pointer_cast(mean_x.data()),
+        thrust::raw_pointer_cast(mean_y.data()),
+        thrust::raw_pointer_cast(mean_z.data()),
         voxel_count,
         d_out_points);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());

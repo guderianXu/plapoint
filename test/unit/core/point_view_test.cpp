@@ -28,6 +28,17 @@ TEST(PointViewTest, AccessColors)
     EXPECT_EQ(pt.b(), 30);
 }
 
+TEST(PointViewTest, AccessIntensity)
+{
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(3, 1);
+    intensities.setValue(0, 0, 42);
+    cloud.setIntensities(std::move(intensities));
+
+    auto pt = cloud[0];
+    EXPECT_EQ(pt.intensity(), 42);
+}
+
 TEST(PointViewTest, AccessNormals)
 {
     plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
@@ -120,6 +131,7 @@ TEST(PointViewTest, RejectsMissingOptionalAttributes)
     auto pt = cloud[0];
 
     EXPECT_THROW((void)pt.r(), std::runtime_error);
+    EXPECT_THROW((void)pt.intensity(), std::runtime_error);
     EXPECT_THROW((void)pt.nx(), std::runtime_error);
     EXPECT_THROW((void)pt.u(), std::runtime_error);
 }

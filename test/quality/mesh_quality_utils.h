@@ -45,6 +45,7 @@ struct SphereMeshMetrics
     double mean_radius_error = 0.0;
     double max_abs_coordinate = 0.0;
     double dominant_orientation_ratio = 0.0;
+    double outward_orientation_ratio = 0.0;
 };
 
 namespace detail
@@ -287,6 +288,8 @@ SphereMeshMetrics measureSphereMesh(
         metrics.dominant_orientation_ratio =
             static_cast<double>(std::max(outward_count, inward_count)) /
             static_cast<double>(oriented_count);
+        metrics.outward_orientation_ratio =
+            static_cast<double>(outward_count) / static_cast<double>(oriented_count);
     }
 
     return metrics;

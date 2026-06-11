@@ -35,6 +35,38 @@ TEST(XyzIOTest, Roundtrip)
     std::remove(path.c_str());
 }
 
+TEST(XyzIOTest, RoundtripPreservesDoubleLargeCoordinateDeltas)
+{
+    using Scalar = double;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+
+    Matrix pts(2, 3);
+    pts.setValue(0, 0, 100000000.01);
+    pts.setValue(0, 1, -100000000.02);
+    pts.setValue(0, 2, 123456789.125);
+    pts.setValue(1, 0, 100000000.02);
+    pts.setValue(1, 1, -100000000.03);
+    pts.setValue(1, 2, 123456789.25);
+    Cloud cloud(std::move(pts));
+
+    const plapoint::test::TempFile temp_file(".xyz");
+    const auto path = temp_file.string();
+    plapoint::io::writeXyz(path, cloud);
+
+    auto loaded = plapoint::io::readXyz<Scalar>(path);
+
+    ASSERT_EQ(loaded->size(), 2u);
+    EXPECT_DOUBLE_EQ(loaded->points().getValue(0, 0), 100000000.01);
+    EXPECT_DOUBLE_EQ(loaded->points().getValue(0, 1), -100000000.02);
+    EXPECT_DOUBLE_EQ(loaded->points().getValue(0, 2), 123456789.125);
+    EXPECT_DOUBLE_EQ(loaded->points().getValue(1, 0), 100000000.02);
+    EXPECT_DOUBLE_EQ(loaded->points().getValue(1, 1), -100000000.03);
+    EXPECT_DOUBLE_EQ(loaded->points().getValue(1, 2), 123456789.25);
+
+    std::remove(path.c_str());
+}
+
 TEST(XyzIOTest, EmptyFileProducesEmptyCloud)
 {
     const plapoint::test::TempFile temp_file(".xyz");

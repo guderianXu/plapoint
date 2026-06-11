@@ -3,7 +3,9 @@
 #include <plapoint/search/kdtree.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
+#include <cstdint>
 #include <limits>
+#include <vector>
 
 #ifdef PLAPOINT_WITH_CUDA
 #include <plapoint/gpu/cuda_check.h>
@@ -43,6 +45,76 @@ TEST(SORTest, RemovesSingleOutlier)
     Cloud output;
     sor.filter(output);
     EXPECT_EQ(output.size(), 10u);
+}
+
+TEST(SORTest, ReportsRemovedIndicesWithFilteredOutput)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(5, 3);
+    for (int i = 0; i < 4; ++i)
+    {
+        mat.setValue(i, 0, Scalar(i) * Scalar(0.01));
+        mat.setValue(i, 1, 0);
+        mat.setValue(i, 2, 0);
+    }
+    mat.setValue(4, 0, 100);
+    mat.setValue(4, 1, 0);
+    mat.setValue(4, 2, 0);
+    auto cloud = std::make_shared<Cloud>(std::move(mat));
+
+    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    tree->setInputCloud(cloud);
+    tree->build();
+
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::CPU> sor;
+    sor.setInputCloud(cloud);
+    sor.setSearchMethod(tree);
+    sor.setMeanK(2);
+    sor.setStddevMulThresh(Scalar(0.5));
+
+    Cloud output;
+    std::vector<int> removed_indices;
+    sor.filter(output, removed_indices);
+
+    ASSERT_EQ(output.size(), 4u);
+    ASSERT_EQ(removed_indices.size(), 1u);
+    EXPECT_EQ(removed_indices[0], 4);
+}
+
+TEST(SORTest, RemovedIndexOnlyOverloadIncludesNonFiniteInputPoints)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(5, 3);
+    for (int i = 0; i < 4; ++i)
+    {
+        mat.setValue(i, 0, Scalar(i) * Scalar(0.01));
+        mat.setValue(i, 1, 0);
+        mat.setValue(i, 2, 0);
+    }
+    mat.setValue(4, 0, std::numeric_limits<Scalar>::quiet_NaN());
+    mat.setValue(4, 1, 0);
+    mat.setValue(4, 2, 0);
+    auto cloud = std::make_shared<Cloud>(std::move(mat));
+
+    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    tree->setInputCloud(cloud);
+    tree->build();
+
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::CPU> sor;
+    sor.setInputCloud(cloud);
+    sor.setSearchMethod(tree);
+    sor.setMeanK(2);
+    sor.setStddevMulThresh(Scalar(10));
+
+    std::vector<int> removed_indices;
+    sor.filter(removed_indices);
+
+    ASSERT_EQ(removed_indices.size(), 1u);
+    EXPECT_EQ(removed_indices[0], 4);
 }
 
 TEST(SORTest, ThrowsIfNoSearchMethod)
@@ -182,6 +254,139 @@ TEST(SORTest, CopiesNormalsForInliers)
     EXPECT_FLOAT_EQ(output.normals()->getValue(0, 0), 1.0f);
     EXPECT_FLOAT_EQ(output.normals()->getValue(3, 0), 4.0f);
     EXPECT_FLOAT_EQ(output.normals()->getValue(3, 2), 13.0f);
+}
+
+TEST(SORTest, CopiesColorsAndIntensitiesForInliers)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(5, 3);
+    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(5, 3);
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(5, 1);
+    for (int i = 0; i < 4; ++i)
+    {
+        mat.setValue(i, 0, Scalar(i) * Scalar(0.01));
+        mat.setValue(i, 1, 0);
+        mat.setValue(i, 2, 0);
+    }
+    mat.setValue(4, 0, 100);
+    mat.setValue(4, 1, 0);
+    mat.setValue(4, 2, 0);
+    for (int i = 0; i < 5; ++i)
+    {
+        colors.setValue(i, 0, static_cast<std::uint8_t>(70 + i));
+        colors.setValue(i, 1, static_cast<std::uint8_t>(80 + i));
+        colors.setValue(i, 2, static_cast<std::uint8_t>(90 + i));
+        intensities.setValue(i, 0, static_cast<std::uint16_t>(3000 + i));
+    }
+    auto cloud = std::make_shared<Cloud>(std::move(mat));
+    cloud->setColors(std::move(colors));
+    cloud->setIntensities(std::move(intensities));
+
+    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    tree->setInputCloud(cloud);
+    tree->build();
+
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::CPU> sor;
+    sor.setInputCloud(cloud);
+    sor.setSearchMethod(tree);
+    sor.setMeanK(2);
+    sor.setStddevMulThresh(Scalar(0.5));
+
+    Cloud output;
+    sor.filter(output);
+
+    ASSERT_EQ(output.size(), 4u);
+    ASSERT_TRUE(output.hasColors());
+    ASSERT_TRUE(output.hasIntensities());
+    EXPECT_EQ(output.colors()->getValue(0, 0), 70);
+    EXPECT_EQ(output.colors()->getValue(3, 0), 73);
+    EXPECT_EQ(output.colors()->getValue(3, 2), 93);
+    EXPECT_EQ(output.intensities()->getValue(0, 0), 3000);
+    EXPECT_EQ(output.intensities()->getValue(3, 0), 3003);
+}
+
+TEST(SORTest, RemovesNonFiniteInputPointsAndPreservesAttributes)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(5, 3);
+    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(5, 3);
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(5, 1);
+    for (int i = 0; i < 4; ++i)
+    {
+        mat.setValue(i, 0, Scalar(i) * Scalar(0.01));
+        mat.setValue(i, 1, 0);
+        mat.setValue(i, 2, 0);
+    }
+    mat.setValue(4, 0, std::numeric_limits<Scalar>::quiet_NaN());
+    mat.setValue(4, 1, 0);
+    mat.setValue(4, 2, 0);
+    for (int i = 0; i < 5; ++i)
+    {
+        colors.setValue(i, 0, static_cast<std::uint8_t>(10 + i));
+        colors.setValue(i, 1, static_cast<std::uint8_t>(20 + i));
+        colors.setValue(i, 2, static_cast<std::uint8_t>(30 + i));
+        intensities.setValue(i, 0, static_cast<std::uint16_t>(100 + i));
+    }
+    auto cloud = std::make_shared<Cloud>(std::move(mat));
+    cloud->setColors(std::move(colors));
+    cloud->setIntensities(std::move(intensities));
+
+    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    tree->setInputCloud(cloud);
+    tree->build();
+
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::CPU> sor;
+    sor.setInputCloud(cloud);
+    sor.setSearchMethod(tree);
+    sor.setMeanK(2);
+    sor.setStddevMulThresh(Scalar(10));
+
+    Cloud output;
+    ASSERT_NO_THROW(sor.filter(output));
+
+    ASSERT_EQ(output.size(), 4u);
+    ASSERT_TRUE(output.hasColors());
+    ASSERT_TRUE(output.hasIntensities());
+    EXPECT_FLOAT_EQ(output.points().getValue(3, 0), 0.03f);
+    EXPECT_EQ(output.colors()->getValue(3, 0), 13);
+    EXPECT_EQ(output.colors()->getValue(3, 2), 33);
+    EXPECT_EQ(output.intensities()->getValue(3, 0), 103);
+}
+
+TEST(SORTest, KeepsFiniteExtremeDistancePointsWhenDistancesWouldSquareOverflow)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
+    mat.setValue(0, 0, 0);
+    mat.setValue(0, 1, 0);
+    mat.setValue(0, 2, 0);
+    mat.setValue(1, 0, std::numeric_limits<Scalar>::max());
+    mat.setValue(1, 1, 0);
+    mat.setValue(1, 2, 0);
+    auto cloud = std::make_shared<Cloud>(std::move(mat));
+
+    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    tree->setInputCloud(cloud);
+    tree->build();
+
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::CPU> sor;
+    sor.setInputCloud(cloud);
+    sor.setSearchMethod(tree);
+    sor.setMeanK(1);
+    sor.setStddevMulThresh(Scalar(0));
+
+    Cloud output;
+    ASSERT_NO_THROW(sor.filter(output));
+
+    ASSERT_EQ(output.size(), 2u);
+    EXPECT_FLOAT_EQ(output.points().getValue(0, 0), 0.0f);
+    EXPECT_FLOAT_EQ(output.points().getValue(1, 0), std::numeric_limits<Scalar>::max());
 }
 
 TEST(SORTest, RejectsInvalidParameters)

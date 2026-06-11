@@ -60,8 +60,10 @@ class ComparisonResult:
     def ignored_count(self) -> int:
         return sum(1 for row in self.rows if row.status == "ignored")
 
-    def exit_code(self, *, fail_on_regression: bool) -> int:
+    def exit_code(self, *, fail_on_regression: bool, fail_on_missing: bool = False) -> int:
         if fail_on_regression and self.regression_count:
+            return 1
+        if fail_on_missing and self.missing_count:
             return 1
         return 0
 
@@ -256,6 +258,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json-output", type=Path)
     parser.add_argument("--markdown-output", type=Path)
     parser.add_argument("--fail-on-regression", action="store_true")
+    parser.add_argument("--fail-on-missing", action="store_true")
     return parser
 
 
@@ -304,7 +307,10 @@ def main(argv: list[str]) -> int:
         args.markdown_output.parent.mkdir(parents=True, exist_ok=True)
         args.markdown_output.write_text(report, encoding="utf-8")
 
-    return result.exit_code(fail_on_regression=args.fail_on_regression)
+    return result.exit_code(
+        fail_on_regression=args.fail_on_regression,
+        fail_on_missing=args.fail_on_missing,
+    )
 
 
 if __name__ == "__main__":

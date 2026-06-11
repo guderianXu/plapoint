@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -10,6 +11,9 @@
 
 #include <plapoint/core/point_cloud.h>
 #include <plapoint/filters/filter.h>
+#ifdef PLAPOINT_WITH_CUDA
+#include <plapoint/gpu/filter_indices.h>
+#endif
 #include <plapoint/search/kdtree.h>
 
 namespace plapoint
@@ -21,6 +25,7 @@ class RadiusOutlierRemoval : public Filter<Scalar, Dev>
 {
 public:
     using PointCloudType = PointCloud<Scalar, Dev>;
+    using Filter<Scalar, Dev>::filter;
 
     /// Set the finite, non-negative neighbor search radius.
     void setRadius(Scalar r)
@@ -42,8 +47,61 @@ public:
         _min_pts = n;
     }
 
+    void filter(std::vector<int>& removed_indices) override
+    {
+        PointCloudType output;
+        filter(output, removed_indices);
+    }
+
+    void filter(PointCloudType& output, std::vector<int>& removed_indices) override
+    {
+        if (!this->_input)
+        {
+            throw std::runtime_error("Filter: input cloud not set");
+        }
+        const auto inliers = computeDiagnosticInlierIndices();
+        this->copyPointsAndAttributesForIndices(inliers, output);
+        removed_indices = this->removedIndicesFromKept(inliers);
+    }
+
 protected:
     void applyFilter(PointCloudType& output) override
+    {
+        const auto inliers = computeInlierIndices();
+        this->copyPointsAndAttributesForIndices(inliers, output);
+    }
+
+private:
+    std::vector<int> computeDiagnosticInlierIndices() const
+    {
+        if constexpr (Dev == plamatrix::Device::GPU)
+        {
+#ifdef PLAPOINT_WITH_CUDA
+            const auto point_count = checkedGpuPointCount();
+            const auto keep_mask = gpu::radiusOutlierRemovalKeepMaskDeviceColumnMajor(
+                this->_input->points().data(), point_count, _radius, _min_pts);
+            return gpu::keptIndicesFromKeepMask(keep_mask);
+#else
+            throw std::runtime_error("PlaPoint was built without CUDA support");
+#endif
+        }
+        else
+        {
+            return computeInlierIndices();
+        }
+    }
+
+    int checkedGpuPointCount() const
+    {
+        const auto n = this->_input->size();
+        if (n > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        {
+            throw std::overflow_error("RadiusOutlierRemoval: point count exceeds GPU int range");
+        }
+        return static_cast<int>(n);
+    }
+
+    std::vector<int> computeInlierIndices() const
     {
         auto tree = std::make_shared<search::KdTree<Scalar, Dev>>();
         tree->setInputCloud(this->_input);
@@ -63,25 +121,18 @@ protected:
         for (std::size_t i = 0; i < n; ++i)
         {
             plamatrix::Vec3<Scalar> pt = make_point(static_cast<int>(i));
+            if (!std::isfinite(pt.x) || !std::isfinite(pt.y) || !std::isfinite(pt.z))
+            {
+                continue;
+            }
             auto neighbors = tree->radiusSearch(pt, _radius);
             if (static_cast<int>(neighbors.size()) >= _min_pts)
                 inliers.push_back(static_cast<int>(i));
         }
 
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(
-            static_cast<plamatrix::Index>(inliers.size()), 3);
-        for (std::size_t i = 0; i < inliers.size(); ++i)
-        {
-            int src = inliers[i];
-            pts(static_cast<plamatrix::Index>(i), 0) = cpu_points(src, 0);
-            pts(static_cast<plamatrix::Index>(i), 1) = cpu_points(src, 1);
-            pts(static_cast<plamatrix::Index>(i), 2) = cpu_points(src, 2);
-        }
-        output = this->makeOutputCloud(std::move(pts));
-        this->copyNormalsForIndices(inliers, output);
+        return inliers;
     }
 
-private:
     Scalar _radius = 0.1;
     int _min_pts = 2;
 };

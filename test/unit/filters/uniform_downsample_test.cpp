@@ -3,6 +3,7 @@
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 
 #ifdef PLAPOINT_WITH_CUDA
@@ -118,6 +119,47 @@ TEST(UniformDownsampleTest, CopiesNormalsForCpuOutput)
     EXPECT_FLOAT_EQ(output.normals()->getValue(0, 2), 3.0f);
     EXPECT_FLOAT_EQ(output.normals()->getValue(1, 0), 3.0f);
     EXPECT_FLOAT_EQ(output.normals()->getValue(1, 2), 5.0f);
+}
+
+TEST(UniformDownsampleTest, CopiesColorsAndIntensitiesForKeptPoints)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+
+    Matrix pts(5, 3);
+    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(5, 3);
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(5, 1);
+    for (int i = 0; i < 5; ++i)
+    {
+        pts.setValue(i, 0, Scalar(i));
+        pts.setValue(i, 1, 0);
+        pts.setValue(i, 2, 0);
+        colors.setValue(i, 0, static_cast<std::uint8_t>(10 + i));
+        colors.setValue(i, 1, static_cast<std::uint8_t>(20 + i));
+        colors.setValue(i, 2, static_cast<std::uint8_t>(30 + i));
+        intensities.setValue(i, 0, static_cast<std::uint16_t>(1000 + i));
+    }
+    auto cloud = std::make_shared<Cloud>(std::move(pts));
+    cloud->setColors(std::move(colors));
+    cloud->setIntensities(std::move(intensities));
+
+    plapoint::UniformDownsample<Scalar, plamatrix::Device::CPU> ud;
+    ud.setInputCloud(cloud);
+    ud.setStep(2);
+
+    Cloud output;
+    ud.filter(output);
+
+    ASSERT_EQ(output.size(), 3u);
+    ASSERT_TRUE(output.hasColors());
+    ASSERT_TRUE(output.hasIntensities());
+    EXPECT_EQ(output.colors()->getValue(0, 0), 10);
+    EXPECT_EQ(output.colors()->getValue(1, 0), 12);
+    EXPECT_EQ(output.colors()->getValue(2, 2), 34);
+    EXPECT_EQ(output.intensities()->getValue(0, 0), 1000);
+    EXPECT_EQ(output.intensities()->getValue(1, 0), 1002);
+    EXPECT_EQ(output.intensities()->getValue(2, 0), 1004);
 }
 
 TEST(UniformDownsampleTest, PreservesKeptNonFiniteCoordinates)

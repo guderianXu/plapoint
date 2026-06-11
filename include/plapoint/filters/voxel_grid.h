@@ -9,7 +9,9 @@
 #include <plamatrix/dense/dense_matrix.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <type_traits>
 #include <unordered_map>
@@ -51,26 +53,79 @@ protected:
 
         const auto& cpu_points = this->_input->pointsCpu();
 
-        struct Accum { Scalar sum_x = 0, sum_y = 0, sum_z = 0; int count = 0; };
+        struct Accum
+        {
+            long double mean_x = 0, mean_y = 0, mean_z = 0;
+            long double mean_nx = 0, mean_ny = 0, mean_nz = 0;
+            long double mean_r = 0, mean_g = 0, mean_b = 0;
+            long double mean_intensity = 0;
+            int count = 0;
+        };
         std::unordered_map<VoxelKey, Accum, VoxelKeyHash> voxels;
         voxels.reserve(this->_input->size());
+        const bool have_normals = this->_input->hasNormals();
+        const bool have_colors = this->_input->hasColors();
+        const bool have_intensities = this->_input->hasIntensities();
+        const auto* input_normals = this->_input->normals();
+        const auto* input_colors = this->_input->colors();
+        const auto* input_intensities = this->_input->intensities();
 
         for (std::size_t i = 0; i < this->_input->size(); ++i)
         {
+            const auto row = static_cast<plamatrix::Index>(i);
+            const Scalar x = cpu_points(row, 0);
+            const Scalar y = cpu_points(row, 1);
+            const Scalar z = cpu_points(row, 2);
             VoxelKey key{
-                static_cast<int>(std::floor(cpu_points(static_cast<plamatrix::Index>(i), 0) / _leaf_x)),
-                static_cast<int>(std::floor(cpu_points(static_cast<plamatrix::Index>(i), 1) / _leaf_y)),
-                static_cast<int>(std::floor(cpu_points(static_cast<plamatrix::Index>(i), 2) / _leaf_z))
+                checkedVoxelIndex(x, _leaf_x),
+                checkedVoxelIndex(y, _leaf_y),
+                checkedVoxelIndex(z, _leaf_z)
             };
             auto& acc = voxels[key];
-            acc.sum_x += cpu_points(static_cast<plamatrix::Index>(i), 0);
-            acc.sum_y += cpu_points(static_cast<plamatrix::Index>(i), 1);
-            acc.sum_z += cpu_points(static_cast<plamatrix::Index>(i), 2);
             acc.count += 1;
+            updateMean(acc.mean_x, static_cast<long double>(x), acc.count);
+            updateMean(acc.mean_y, static_cast<long double>(y), acc.count);
+            updateMean(acc.mean_z, static_cast<long double>(z), acc.count);
+            if (have_normals)
+            {
+                updateMean(acc.mean_nx, static_cast<long double>(input_normals->getValue(row, 0)), acc.count);
+                updateMean(acc.mean_ny, static_cast<long double>(input_normals->getValue(row, 1)), acc.count);
+                updateMean(acc.mean_nz, static_cast<long double>(input_normals->getValue(row, 2)), acc.count);
+            }
+            if (have_colors)
+            {
+                updateMean(acc.mean_r, static_cast<long double>(input_colors->getValue(row, 0)), acc.count);
+                updateMean(acc.mean_g, static_cast<long double>(input_colors->getValue(row, 1)), acc.count);
+                updateMean(acc.mean_b, static_cast<long double>(input_colors->getValue(row, 2)), acc.count);
+            }
+            if (have_intensities)
+            {
+                updateMean(acc.mean_intensity,
+                           static_cast<long double>(input_intensities->getValue(row, 0)),
+                           acc.count);
+            }
         }
 
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(
             static_cast<plamatrix::Index>(voxels.size()), 3);
+        std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>> normals;
+        std::unique_ptr<plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>> colors;
+        std::unique_ptr<plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU>> intensities;
+        if (have_normals)
+        {
+            normals = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(
+                static_cast<plamatrix::Index>(voxels.size()), 3);
+        }
+        if (have_colors)
+        {
+            colors = std::make_unique<plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>>(
+                static_cast<plamatrix::Index>(voxels.size()), 3);
+        }
+        if (have_intensities)
+        {
+            intensities = std::make_unique<plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU>>(
+                static_cast<plamatrix::Index>(voxels.size()), 1);
+        }
         std::vector<VoxelKey> ordered_keys;
         ordered_keys.reserve(voxels.size());
         for (const auto& kv : voxels)
@@ -83,12 +138,29 @@ protected:
         for (const auto& key : ordered_keys)
         {
             const auto& acc = voxels.at(key);
-            pts(out_idx, 0) = acc.sum_x / static_cast<Scalar>(acc.count);
-            pts(out_idx, 1) = acc.sum_y / static_cast<Scalar>(acc.count);
-            pts(out_idx, 2) = acc.sum_z / static_cast<Scalar>(acc.count);
+            pts(out_idx, 0) = checkedCentroid(acc.mean_x);
+            pts(out_idx, 1) = checkedCentroid(acc.mean_y);
+            pts(out_idx, 2) = checkedCentroid(acc.mean_z);
+            if (normals)
+            {
+                (*normals)(out_idx, 0) = checkedCentroid(acc.mean_nx);
+                (*normals)(out_idx, 1) = checkedCentroid(acc.mean_ny);
+                (*normals)(out_idx, 2) = checkedCentroid(acc.mean_nz);
+            }
+            if (colors)
+            {
+                (*colors)(out_idx, 0) = roundedAttribute<std::uint8_t>(acc.mean_r);
+                (*colors)(out_idx, 1) = roundedAttribute<std::uint8_t>(acc.mean_g);
+                (*colors)(out_idx, 2) = roundedAttribute<std::uint8_t>(acc.mean_b);
+            }
+            if (intensities)
+            {
+                (*intensities)(out_idx, 0) = roundedAttribute<std::uint16_t>(acc.mean_intensity);
+            }
             ++out_idx;
         }
         output = this->makeOutputCloud(std::move(pts));
+        setOutputAttributes(output, normals.get(), colors.get(), intensities.get());
     }
 
 private:
@@ -97,6 +169,18 @@ private:
     std::enable_if_t<D == plamatrix::Device::GPU, void>
     applyFilterGpu(PointCloudType& output)
     {
+        if (this->_input->hasNormals() || this->_input->hasColors() || this->_input->hasIntensities())
+        {
+            auto cpu_input = std::make_shared<PointCloud<Scalar, plamatrix::Device::CPU>>(this->_input->toCpu());
+            VoxelGrid<Scalar, plamatrix::Device::CPU> cpu_filter;
+            cpu_filter.setInputCloud(cpu_input);
+            cpu_filter.setLeafSize(_leaf_x, _leaf_y, _leaf_z);
+            PointCloud<Scalar, plamatrix::Device::CPU> cpu_output;
+            cpu_filter.filter(cpu_output);
+            output = cpu_output.toGpu();
+            return;
+        }
+
         const std::size_t n = this->_input->size();
         if (n > static_cast<std::size_t>(std::numeric_limits<int>::max()))
         {
@@ -154,6 +238,93 @@ private:
             return seed;
         }
     };
+
+    static int checkedVoxelIndex(Scalar coordinate, Scalar leaf)
+    {
+        if (!std::isfinite(coordinate))
+        {
+            throw std::invalid_argument("VoxelGrid: points must be finite");
+        }
+        const double scaled = std::floor(static_cast<double>(coordinate) / static_cast<double>(leaf));
+        if (!std::isfinite(scaled) ||
+            scaled < static_cast<double>(std::numeric_limits<int>::min()) ||
+            scaled > static_cast<double>(std::numeric_limits<int>::max()))
+        {
+            throw std::out_of_range("VoxelGrid: voxel index is outside int range");
+        }
+        return static_cast<int>(scaled);
+    }
+
+    static Scalar checkedCentroid(long double centroid)
+    {
+        if (!std::isfinite(centroid) ||
+            centroid < -static_cast<long double>(std::numeric_limits<Scalar>::max()) ||
+            centroid > static_cast<long double>(std::numeric_limits<Scalar>::max()))
+        {
+            throw std::out_of_range("VoxelGrid: centroid is outside scalar range");
+        }
+        return static_cast<Scalar>(centroid);
+    }
+
+    static void updateMean(long double& mean, long double value, int count)
+    {
+        const long double weight = 1.0L / static_cast<long double>(count);
+        mean += (value - mean) * weight;
+    }
+
+    template <typename Attribute>
+    static Attribute roundedAttribute(long double value)
+    {
+        if (!std::isfinite(value))
+        {
+            throw std::out_of_range("VoxelGrid: attribute mean is not finite");
+        }
+        const long double rounded = std::round(value);
+        const long double lo = static_cast<long double>(std::numeric_limits<Attribute>::min());
+        const long double hi = static_cast<long double>(std::numeric_limits<Attribute>::max());
+        return static_cast<Attribute>(std::clamp(rounded, lo, hi));
+    }
+
+    void setOutputAttributes(
+        PointCloudType& output,
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>* normals,
+        plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>* colors,
+        plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU>* intensities) const
+    {
+        if (normals)
+        {
+            if constexpr (Dev == plamatrix::Device::CPU)
+            {
+                output.setNormals(std::move(*normals));
+            }
+            else
+            {
+                output.setNormals(normals->toGpu());
+            }
+        }
+        if (colors)
+        {
+            if constexpr (Dev == plamatrix::Device::CPU)
+            {
+                output.setColors(std::move(*colors));
+            }
+            else
+            {
+                output.setColors(colors->toGpu());
+            }
+        }
+        if (intensities)
+        {
+            if constexpr (Dev == plamatrix::Device::CPU)
+            {
+                output.setIntensities(std::move(*intensities));
+            }
+            else
+            {
+                output.setIntensities(intensities->toGpu());
+            }
+        }
+    }
 
     Scalar _leaf_x = 1;
     Scalar _leaf_y = 1;
