@@ -145,6 +145,39 @@ TEST(ObjIoTest, WriteAndReadBackWithFaces)
     std::remove(path.c_str());
 }
 
+TEST(ObjIoTest, WriteObjReferencesMaterialWhenTextureIsPresent)
+{
+    using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    Cloud cloud(3);
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
+    faces.setValue(0, 0, 0);
+    faces.setValue(0, 1, 1);
+    faces.setValue(0, 2, 2);
+    cloud.setFaces(std::move(faces));
+    cloud.setMaterialLibraryFile("mesh.mtl");
+    cloud.setTextureImageFile("texture.png");
+
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
+    plapoint::io::writeObj<float>(path, cloud);
+
+    std::ifstream in(path);
+    ASSERT_TRUE(in);
+    bool saw_mtllib = false;
+    bool saw_usemtl = false;
+    std::string line;
+    while (std::getline(in, line))
+    {
+        saw_mtllib = saw_mtllib || line == "mtllib mesh.mtl";
+        saw_usemtl = saw_usemtl || line == "usemtl material0";
+    }
+
+    EXPECT_TRUE(saw_mtllib);
+    EXPECT_TRUE(saw_usemtl);
+
+    std::remove(path.c_str());
+}
+
 TEST(ObjIoTest, WriteAndReadBackWithNormals)
 {
     using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;

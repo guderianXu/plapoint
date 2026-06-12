@@ -2,3 +2,4 @@ build/
 build-*/
 .cache/
 mesh_quality_report/
+__pycache__/

@@ -532,6 +532,10 @@ void writeObj(const std::string& path,
     {
         bool use_tex = cloud.hasFaceTextureIndices();
         bool use_nrm = cloud.hasNormals();
+        if (!cloud.materialLibraryFile().empty() && !cloud.textureImageFile().empty())
+        {
+            f << "usemtl material0\n";
+        }
         for (plamatrix::Index fi = 0; fi < cloud.faces()->rows(); ++fi)
         {
             f << "f";
