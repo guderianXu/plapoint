@@ -434,16 +434,16 @@ private:
             nearestKSearchRecursive(query, k, node.right, heap);
             return;
         }
-        int near = diff <= 0 ? node.left : node.right;
-        int far  = diff <= 0 ? node.right : node.left;
+        int near_child = diff <= 0 ? node.left : node.right;
+        int far_child  = diff <= 0 ? node.right : node.left;
 
-        nearestKSearchRecursive(query, k, near, heap);
+        nearestKSearchRecursive(query, k, near_child, heap);
 
         const double max_dist = heap.empty() ? std::numeric_limits<double>::infinity() : heap.front().first;
         const double split_dist = std::abs(diff);
         if (!std::isfinite(split_dist) || split_dist <= max_dist || static_cast<int>(heap.size()) < k)
         {
-            nearestKSearchRecursive(query, k, far, heap);
+            nearestKSearchRecursive(query, k, far_child, heap);
         }
     }
 
@@ -469,15 +469,15 @@ private:
             return;
         }
 
-        const int near = diff <= 0 ? node.left : node.right;
-        const int far = diff <= 0 ? node.right : node.left;
+        const int near_child = diff <= 0 ? node.left : node.right;
+        const int far_child = diff <= 0 ? node.right : node.left;
 
-        radiusSearchRecursive(query, radius, near, result);
+        radiusSearchRecursive(query, radius, near_child, result);
 
         const double split_distance = std::abs(diff);
         if (!std::isfinite(split_distance) || split_distance <= static_cast<double>(radius))
         {
-            radiusSearchRecursive(query, radius, far, result);
+            radiusSearchRecursive(query, radius, far_child, result);
         }
     }
 
