@@ -394,12 +394,14 @@ readPlyImpl(const std::string& path,
     {
         throwPlyParseError(path, "missing magic header");
     }
+    if (!line.empty() && line.back() == '\r') line.pop_back();
     if (line != "ply") throw std::runtime_error("Not a PLY file: " + path);
 
     if (!std::getline(f, line))
     {
         throwPlyParseError(path, "missing format line");
     }
+    if (!line.empty() && line.back() == '\r') line.pop_back();
     PlyFormat fmt = PlyFormat::ASCII;
     if (line.find("format ascii") != std::string::npos) fmt = PlyFormat::ASCII;
     else if (line.find("binary_little_endian") != std::string::npos) fmt = PlyFormat::BinaryLE;
