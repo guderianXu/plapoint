@@ -32,6 +32,17 @@ namespace gpu
 namespace
 {
 
+__host__ __device__ __forceinline__ constexpr double icpPositiveInfinity()
+{
+    return std::numeric_limits<double>::infinity();
+}
+
+template <typename Scalar>
+__device__ __forceinline__ void markSharedTransformMaybeUnused(Scalar* transform)
+{
+    (void)transform;
+}
+
 struct RawIcpStats
 {
     int active_count;
@@ -420,7 +431,7 @@ __device__ __forceinline__ double rawIcpStepTransformResidualSqSum(
 {
     if (raw.active_count <= 0 || !step_transform)
     {
-        return INFINITY;
+        return icpPositiveInfinity();
     }
 
     double transformed_source_sq_sum = 0.0;
@@ -1803,12 +1814,12 @@ __global__ void computeTargetTileBoundsKernel(
     __shared__ double max_y[kIcpStatsBlockSize];
     __shared__ double max_z[kIcpStatsBlockSize];
 
-    min_x[local_idx] = target_valid ? tx : INFINITY;
-    min_y[local_idx] = target_valid ? ty : INFINITY;
-    min_z[local_idx] = target_valid ? tz : INFINITY;
-    max_x[local_idx] = target_valid ? tx : -INFINITY;
-    max_y[local_idx] = target_valid ? ty : -INFINITY;
-    max_z[local_idx] = target_valid ? tz : -INFINITY;
+    min_x[local_idx] = target_valid ? tx : icpPositiveInfinity();
+    min_y[local_idx] = target_valid ? ty : icpPositiveInfinity();
+    min_z[local_idx] = target_valid ? tz : icpPositiveInfinity();
+    max_x[local_idx] = target_valid ? tx : -icpPositiveInfinity();
+    max_y[local_idx] = target_valid ? ty : -icpPositiveInfinity();
+    max_z[local_idx] = target_valid ? tz : -icpPositiveInfinity();
     __syncthreads();
 
     for (int stride = kIcpStatsBlockSize / 2; stride > 0; stride >>= 1)
@@ -1868,6 +1879,10 @@ __global__ void collectCorrespondenceStatsKernel(
     double sy = 0.0;
     double sz = 0.0;
     __shared__ Scalar block_transform[kIcpTransform3x4ValueCount];
+    if constexpr (!TransformSource)
+    {
+        markSharedTransformMaybeUnused(block_transform);
+    }
     if constexpr (TransformSource)
     {
         __shared__ int shared_source_transform_valid;
@@ -1939,7 +1954,7 @@ __global__ void collectCorrespondenceStatsKernel(
     }
 
     int best_idx = -1;
-    double best_dist_sq = INFINITY;
+    double best_dist_sq = icpPositiveInfinity();
     double best_tx = 0.0;
     double best_ty = 0.0;
     double best_tz = 0.0;
@@ -1954,10 +1969,10 @@ __global__ void collectCorrespondenceStatsKernel(
     const int scan_target_count = __syncthreads_count(source_valid) > 0 ? target_count : 0;
     for (int tile_start = 0; tile_start < scan_target_count; tile_start += kIcpStatsBlockSize)
     {
-        const int tile_idx = tile_start / kIcpStatsBlockSize;
         bool tile_relevant = true;
         if constexpr (UseTargetTileBounds)
         {
+            const int tile_idx = tile_start / kIcpStatsBlockSize;
             tile_relevant = false;
             if (source_valid && !stop_target_scan)
             {
@@ -2144,6 +2159,10 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
     double sy = 0.0;
     double sz = 0.0;
     __shared__ Scalar block_transform[kIcpTransform3x4ValueCount];
+    if constexpr (!TransformSource)
+    {
+        markSharedTransformMaybeUnused(block_transform);
+    }
     if constexpr (TransformSource)
     {
         __shared__ int shared_source_transform_valid;
@@ -2216,7 +2235,7 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
 
     int best_sorted_offset = -1;
     int best_idx = -1;
-    double best_dist_sq = INFINITY;
+    double best_dist_sq = icpPositiveInfinity();
     double best_tx = 0.0;
     double best_ty = 0.0;
     double best_tz = 0.0;
@@ -2265,6 +2284,11 @@ __global__ void collectCorrespondenceStatsSpatialGridKernel(
             {
                 max_z = source_key.z;
             }
+        }
+        else
+        {
+            (void)min_z;
+            (void)max_z;
         }
 
         constexpr bool can_stop_after_exact_match = !WriteCorrespondenceIndices;
@@ -2511,7 +2535,7 @@ __global__ void collectExactPointwiseCorrespondenceStatsKernel(
 
         if (raw_sx != raw_tx || raw_sy != raw_ty || raw_sz != raw_tz)
         {
-            local.residual_sq_sum = INFINITY;
+            local.residual_sq_sum = icpPositiveInfinity();
         }
         else
         {
@@ -2699,7 +2723,7 @@ __global__ void collectTransformedExactPointwiseIdentityAlignmentStatsKernel(
         }
         else if (!target_points || source_count != target_count)
         {
-            local.residual_sq_sum = INFINITY;
+            local.residual_sq_sum = icpPositiveInfinity();
         }
         else
         {
@@ -2709,7 +2733,7 @@ __global__ void collectTransformedExactPointwiseIdentityAlignmentStatsKernel(
             const bool target_valid = loadFiniteColumnMajorPoint(target_points, target_count, source_idx, tx, ty, tz);
             if (!target_valid)
             {
-                local.residual_sq_sum = INFINITY;
+                local.residual_sq_sum = icpPositiveInfinity();
             }
             else
             {
@@ -2718,7 +2742,7 @@ __global__ void collectTransformedExactPointwiseIdentityAlignmentStatsKernel(
 #endif
                 if (sx != tx || sy != ty || sz != tz)
                 {
-                    local.residual_sq_sum = INFINITY;
+                    local.residual_sq_sum = icpPositiveInfinity();
                 }
                 else
                 {
@@ -2876,7 +2900,7 @@ __global__ void collectTransformedExactPointwiseResidualStatsKernel(
                      sz,
                      local))
         {
-            local.residual_sq_sum = INFINITY;
+            local.residual_sq_sum = icpPositiveInfinity();
         }
     }
 
@@ -2930,7 +2954,7 @@ __global__ void collectExactPointwiseResidualStatsKernel(
 
         if (raw_sx != raw_tx || raw_sy != raw_ty || raw_sz != raw_tz)
         {
-            local.residual_sq_sum = INFINITY;
+            local.residual_sq_sum = icpPositiveInfinity();
         }
         else
         {
@@ -3075,7 +3099,7 @@ __global__ void collectResidualStatsKernel(
         }
     }
 
-    double best_dist_sq = INFINITY;
+    double best_dist_sq = icpPositiveInfinity();
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
     bool stop_target_scan = false;
@@ -3087,10 +3111,10 @@ __global__ void collectResidualStatsKernel(
     const int scan_target_count = __syncthreads_count(source_valid) > 0 ? target_count : 0;
     for (int tile_start = 0; tile_start < scan_target_count; tile_start += kIcpStatsBlockSize)
     {
-        const int tile_idx = tile_start / kIcpStatsBlockSize;
         bool tile_relevant = true;
         if constexpr (UseTargetTileBounds)
         {
+            const int tile_idx = tile_start / kIcpStatsBlockSize;
             tile_relevant = false;
             if (source_valid && !stop_target_scan)
             {
@@ -3251,7 +3275,7 @@ __global__ void collectResidualStatsSpatialGridKernel(
         }
     }
 
-    double best_dist_sq = INFINITY;
+    double best_dist_sq = icpPositiveInfinity();
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
     int seeded_sorted_offset = -1;
@@ -3296,6 +3320,11 @@ __global__ void collectResidualStatsSpatialGridKernel(
             {
                 max_z = source_key.z;
             }
+        }
+        else
+        {
+            (void)min_z;
+            (void)max_z;
         }
 
         bool stop_cell_scan = seeded_same_index_best && best_dist_sq <= 0.0;
@@ -3538,7 +3567,7 @@ __global__ void transformAndCollectResidualStatsKernel(
         }
     }
 
-    double best_dist_sq = INFINITY;
+    double best_dist_sq = icpPositiveInfinity();
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
     bool stop_target_scan = false;
@@ -3550,10 +3579,10 @@ __global__ void transformAndCollectResidualStatsKernel(
     const int scan_target_count = __syncthreads_count(source_valid) > 0 ? target_count : 0;
     for (int tile_start = 0; tile_start < scan_target_count; tile_start += kIcpStatsBlockSize)
     {
-        const int tile_idx = tile_start / kIcpStatsBlockSize;
         bool tile_relevant = true;
         if constexpr (UseTargetTileBounds)
         {
+            const int tile_idx = tile_start / kIcpStatsBlockSize;
             tile_relevant = false;
             if (source_valid && !stop_target_scan)
             {
@@ -3863,7 +3892,7 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
         }
     }
 
-    double best_dist_sq = INFINITY;
+    double best_dist_sq = icpPositiveInfinity();
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
     int seeded_sorted_offset = -1;
@@ -3908,6 +3937,11 @@ __global__ void transformAndCollectResidualStatsSpatialGridKernel(
             {
                 max_z = source_key.z;
             }
+        }
+        else
+        {
+            (void)min_z;
+            (void)max_z;
         }
 
         bool stop_cell_scan = seeded_same_index_best && best_dist_sq <= 0.0;
@@ -5249,6 +5283,10 @@ __global__ void computeSmallTargetIcpAlignmentStepKernel(
     double sy = 0.0;
     double sz = 0.0;
     __shared__ Scalar block_transform[kIcpTransform3x4ValueCount];
+    if constexpr (!TransformSource)
+    {
+        markSharedTransformMaybeUnused(block_transform);
+    }
     __shared__ int shared_source_transform_valid;
     if (local_idx == 0)
     {
@@ -5329,7 +5367,7 @@ __global__ void computeSmallTargetIcpAlignmentStepKernel(
     __syncthreads();
 
     int best_idx = -1;
-    double best_dist_sq = INFINITY;
+    double best_dist_sq = icpPositiveInfinity();
     double best_tx = 0.0;
     double best_ty = 0.0;
     double best_tz = 0.0;
@@ -5458,6 +5496,10 @@ __global__ void computeSmallTargetTerminalIcpAlignmentAndResidualKernel(
     __shared__ Scalar block_transform[kIcpTransform3x4ValueCount];
     __shared__ Scalar block_accumulated_transform[kIcpTransform3x4ValueCount];
     __shared__ int shared_step_valid;
+    if constexpr (!TransformSource)
+    {
+        markSharedTransformMaybeUnused(block_transform);
+    }
     if constexpr (TransformSource)
     {
         loadColumnMajorTransform3x4Block(source_transform, block_transform, local_idx);
@@ -5518,7 +5560,7 @@ __global__ void computeSmallTargetTerminalIcpAlignmentAndResidualKernel(
     __syncthreads();
 
     int best_idx = -1;
-    double best_dist_sq = INFINITY;
+    double best_dist_sq = icpPositiveInfinity();
     double best_tx = 0.0;
     double best_ty = 0.0;
     double best_tz = 0.0;
@@ -5660,7 +5702,7 @@ __global__ void computeSmallTargetTerminalIcpAlignmentAndResidualKernel(
         }
     }
 
-    double residual_best_dist_sq = INFINITY;
+    double residual_best_dist_sq = icpPositiveInfinity();
     if (residual_source_valid)
     {
         for (int target_idx = 0; target_idx < target_count; ++target_idx)
@@ -5735,6 +5777,10 @@ __global__ void computeSmallTargetIcpResidualStatsKernel(
     double sy = 0.0;
     double sz = 0.0;
     __shared__ Scalar block_transform[kIcpTransform3x4ValueCount];
+    if constexpr (!TransformSource)
+    {
+        markSharedTransformMaybeUnused(block_transform);
+    }
     if constexpr (TransformSource)
     {
         loadColumnMajorTransform3x4Block(source_transform, block_transform, local_idx);
@@ -5830,7 +5876,7 @@ __global__ void computeSmallTargetIcpResidualStatsKernel(
 #endif
     __syncthreads();
 
-    double best_dist_sq = INFINITY;
+    double best_dist_sq = icpPositiveInfinity();
     const double max_dist = static_cast<double>(max_correspondence_distance);
     const double max_dist_sq = max_dist * max_dist;
     if (source_valid)
@@ -5944,7 +5990,7 @@ __global__ void computeSmallTargetIcpStatsAndStepKernel(
     __syncthreads();
 
     int best_idx = -1;
-    double best_dist_sq = INFINITY;
+    double best_dist_sq = icpPositiveInfinity();
     double best_tx = 0.0;
     double best_ty = 0.0;
     double best_tz = 0.0;
@@ -6505,7 +6551,7 @@ __device__ __forceinline__ void writeAlignmentStepRawResultFromRawStats(
     const double step_residual_sq_sum =
         step_result.valid != 0
             ? rawIcpStepTransformResidualSqSum(raw, step_transform)
-            : INFINITY;
+            : icpPositiveInfinity();
     const bool step_maps_correspondences_exactly =
         step_result.valid != 0 &&
         step_residual_sq_sum == 0.0;

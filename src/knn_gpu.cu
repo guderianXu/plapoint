@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 namespace plapoint {
 namespace gpu {
@@ -107,7 +108,7 @@ __global__ void bruteForceKnnKernel(
     int    local_idx[K];
     for (int j = 0; j < K; ++j)
     {
-        local_key[j] = HUGE_VAL;
+        local_key[j] = std::numeric_limits<double>::infinity();
         local_idx[j] = -1;
     }
 
@@ -148,7 +149,7 @@ __global__ void bruteForceKnnKernel(
         int    final_idx[K];
         for (int j = 0; j < K; ++j)
         {
-            final_key[j] = HUGE_VAL;
+            final_key[j] = std::numeric_limits<double>::infinity();
             final_idx[j] = -1;
         }
 
