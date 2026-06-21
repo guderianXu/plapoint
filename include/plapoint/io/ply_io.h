@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <new>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -43,6 +44,76 @@ void swapEndian(T& val)
 } // namespace detail
 
 enum class PlyFormat { ASCII, BinaryLE, BinaryBE };
+
+enum class PlyVertexScalarType
+{
+    Invalid,
+    Int8,
+    UInt8,
+    Int16,
+    UInt16,
+    Int32,
+    UInt32,
+    Float32,
+    Float64
+};
+
+struct PlyVertexStreamProperty
+{
+    std::string name;
+    PlyVertexScalarType type = PlyVertexScalarType::Invalid;
+    int offset = 0;
+    int size = 0;
+};
+
+struct PlyVertexStreamHeader
+{
+    bool valid = false;
+    bool binaryLittleEndian = false;
+    std::uint64_t vertexCount = 0;
+    std::streamoff dataStartOffset = 0;
+    int vertexStride = 0;
+    int xProperty = -1;
+    int yProperty = -1;
+    int zProperty = -1;
+    int redProperty = -1;
+    int greenProperty = -1;
+    int blueProperty = -1;
+    int nxProperty = -1;
+    int nyProperty = -1;
+    int nzProperty = -1;
+    std::vector<PlyVertexStreamProperty> properties;
+
+    bool hasColors() const
+    {
+        return redProperty >= 0 && greenProperty >= 0 && blueProperty >= 0;
+    }
+
+    bool hasNormals() const
+    {
+        return nxProperty >= 0 && nyProperty >= 0 && nzProperty >= 0;
+    }
+};
+
+struct PlyVertexChunk
+{
+    std::uint64_t startVertex = 0;
+    std::uint64_t vertexCount = 0;
+};
+
+struct PlyVertexPoint
+{
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    bool hasNormal = false;
+    float nx = 0.0f;
+    float ny = 0.0f;
+    float nz = 1.0f;
+    std::uint8_t r = 200;
+    std::uint8_t g = 200;
+    std::uint8_t b = 200;
+};
 
 namespace detail {
 
@@ -262,6 +333,118 @@ inline std::uint8_t plyColorByteForProperty(double value, const std::string& typ
             (static_cast<unsigned int>(std::lround(value)) + 128u) / 257u);
     }
     return plyColorByte(value);
+}
+
+inline PlyVertexScalarType plyVertexScalarTypeFromName(const std::string& name)
+{
+    if (name == "char" || name == "int8")
+    {
+        return PlyVertexScalarType::Int8;
+    }
+    if (name == "uchar" || name == "uint8" || name == "unsigned_char")
+    {
+        return PlyVertexScalarType::UInt8;
+    }
+    if (name == "short" || name == "int16")
+    {
+        return PlyVertexScalarType::Int16;
+    }
+    if (name == "ushort" || name == "uint16" || name == "unsigned_short")
+    {
+        return PlyVertexScalarType::UInt16;
+    }
+    if (name == "int" || name == "int32")
+    {
+        return PlyVertexScalarType::Int32;
+    }
+    if (name == "uint" || name == "uint32" || name == "unsigned_int")
+    {
+        return PlyVertexScalarType::UInt32;
+    }
+    if (name == "float" || name == "float32")
+    {
+        return PlyVertexScalarType::Float32;
+    }
+    if (name == "double" || name == "float64")
+    {
+        return PlyVertexScalarType::Float64;
+    }
+    return PlyVertexScalarType::Invalid;
+}
+
+inline int plyVertexScalarTypeSize(PlyVertexScalarType type)
+{
+    switch (type)
+    {
+    case PlyVertexScalarType::Int8:
+    case PlyVertexScalarType::UInt8:
+        return 1;
+    case PlyVertexScalarType::Int16:
+    case PlyVertexScalarType::UInt16:
+        return 2;
+    case PlyVertexScalarType::Int32:
+    case PlyVertexScalarType::UInt32:
+    case PlyVertexScalarType::Float32:
+        return 4;
+    case PlyVertexScalarType::Float64:
+        return 8;
+    default:
+        return 0;
+    }
+}
+
+template <typename T>
+T readPlyVertexUnalignedValue(const char* record, int offset)
+{
+    T value{};
+    std::memcpy(&value, record + offset, sizeof(T));
+    return value;
+}
+
+inline double readPlyVertexScalarAsDouble(const char* record,
+                                          const PlyVertexStreamProperty& property)
+{
+    switch (property.type)
+    {
+    case PlyVertexScalarType::Int8:
+        return readPlyVertexUnalignedValue<std::int8_t>(record, property.offset);
+    case PlyVertexScalarType::UInt8:
+        return readPlyVertexUnalignedValue<std::uint8_t>(record, property.offset);
+    case PlyVertexScalarType::Int16:
+        return readPlyVertexUnalignedValue<std::int16_t>(record, property.offset);
+    case PlyVertexScalarType::UInt16:
+        return readPlyVertexUnalignedValue<std::uint16_t>(record, property.offset);
+    case PlyVertexScalarType::Int32:
+        return readPlyVertexUnalignedValue<std::int32_t>(record, property.offset);
+    case PlyVertexScalarType::UInt32:
+        return readPlyVertexUnalignedValue<std::uint32_t>(record, property.offset);
+    case PlyVertexScalarType::Float32:
+        return readPlyVertexUnalignedValue<float>(record, property.offset);
+    case PlyVertexScalarType::Float64:
+        return readPlyVertexUnalignedValue<double>(record, property.offset);
+    default:
+        return 0.0;
+    }
+}
+
+inline std::uint8_t readPlyVertexColorAsByte(const char* record,
+                                             const PlyVertexStreamProperty& property)
+{
+    if (property.type == PlyVertexScalarType::UInt8)
+    {
+        return readPlyVertexUnalignedValue<std::uint8_t>(record, property.offset);
+    }
+
+    const double raw = readPlyVertexScalarAsDouble(record, property);
+    if (property.type == PlyVertexScalarType::Float32 || property.type == PlyVertexScalarType::Float64)
+    {
+        return plyColorByteForProperty(raw, "float");
+    }
+    if (property.type == PlyVertexScalarType::UInt16)
+    {
+        return plyColorByteForProperty(raw, "ushort");
+    }
+    return plyColorByte(raw);
 }
 
 inline std::uint16_t plyIntensityWord(double value)
@@ -806,6 +989,364 @@ readPlyLocal(const std::string& path,
              bool* hasPointOffsetOut = nullptr)
 {
     return detail::readPlyImpl<Scalar>(path, false, pointOffsetOut, hasPointOffsetOut);
+}
+
+inline bool parseBinaryPlyVertexStreamHeader(const std::string& path,
+                                             PlyVertexStreamHeader* header,
+                                             std::string* errorMsg = nullptr)
+{
+    if (!header)
+    {
+        if (errorMsg)
+        {
+            *errorMsg = "PLY vertex stream header output is null";
+        }
+        return false;
+    }
+
+    *header = PlyVertexStreamHeader{};
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+    {
+        if (errorMsg)
+        {
+            *errorMsg = "Cannot open PLY file: " + path;
+        }
+        return false;
+    }
+
+    std::string line;
+    if (!std::getline(file, line))
+    {
+        if (errorMsg)
+        {
+            *errorMsg = "Not a PLY file: missing magic header";
+        }
+        return false;
+    }
+    if (!line.empty() && line.back() == '\r')
+    {
+        line.pop_back();
+    }
+    if (line != "ply")
+    {
+        if (errorMsg)
+        {
+            *errorMsg = "Not a PLY file: " + path;
+        }
+        return false;
+    }
+
+    bool inVertexElement = false;
+    bool sawEndHeader = false;
+    while (std::getline(file, line))
+    {
+        if (!line.empty() && line.back() == '\r')
+        {
+            line.pop_back();
+        }
+        if (line == "end_header")
+        {
+            header->dataStartOffset = file.tellg();
+            sawEndHeader = true;
+            break;
+        }
+
+        std::istringstream iss(line);
+        std::string first;
+        iss >> first;
+        if (first == "format")
+        {
+            std::string format;
+            iss >> format;
+            header->binaryLittleEndian = format == "binary_little_endian";
+        }
+        else if (first == "element")
+        {
+            std::string elementName;
+            iss >> elementName;
+            inVertexElement = elementName == "vertex";
+            if (inVertexElement)
+            {
+                iss >> header->vertexCount;
+            }
+        }
+        else if (inVertexElement && first == "property")
+        {
+            std::string typeName;
+            std::string propertyName;
+            iss >> typeName;
+            if (typeName == "list")
+            {
+                if (errorMsg)
+                {
+                    *errorMsg = "PLY vertex stream does not support list properties in the vertex element";
+                }
+                return false;
+            }
+            iss >> propertyName;
+
+            PlyVertexStreamProperty property;
+            property.name = propertyName;
+            property.type = detail::plyVertexScalarTypeFromName(typeName);
+            property.size = detail::plyVertexScalarTypeSize(property.type);
+            property.offset = header->vertexStride;
+            if (property.size <= 0)
+            {
+                if (errorMsg)
+                {
+                    *errorMsg = "Unsupported PLY vertex property type: " + typeName;
+                }
+                return false;
+            }
+
+            const int index = static_cast<int>(header->properties.size());
+            if (propertyName == "x") header->xProperty = index;
+            else if (propertyName == "y") header->yProperty = index;
+            else if (propertyName == "z") header->zProperty = index;
+            else if (propertyName == "red" || propertyName == "r") header->redProperty = index;
+            else if (propertyName == "green" || propertyName == "g") header->greenProperty = index;
+            else if (propertyName == "blue" || propertyName == "b") header->blueProperty = index;
+            else if (propertyName == "nx") header->nxProperty = index;
+            else if (propertyName == "ny") header->nyProperty = index;
+            else if (propertyName == "nz") header->nzProperty = index;
+
+            header->properties.push_back(property);
+            header->vertexStride += property.size;
+        }
+    }
+
+    header->valid = header->binaryLittleEndian
+        && sawEndHeader
+        && header->dataStartOffset > 0
+        && header->vertexCount > 0
+        && header->vertexStride > 0
+        && header->xProperty >= 0
+        && header->yProperty >= 0
+        && header->zProperty >= 0;
+    if (!header->valid && errorMsg)
+    {
+        if (!header->binaryLittleEndian)
+        {
+            *errorMsg = "Only binary_little_endian PLY files support vertex streaming";
+        }
+        else if (!sawEndHeader || header->dataStartOffset <= 0)
+        {
+            *errorMsg = "PLY header is missing end_header";
+        }
+        else if (header->vertexCount == 0)
+        {
+            *errorMsg = "PLY header is missing a positive vertex count";
+        }
+        else if (header->vertexStride <= 0)
+        {
+            *errorMsg = "PLY vertex element has no scalar properties";
+        }
+        else
+        {
+            *errorMsg = "PLY vertex element must declare x, y, and z properties";
+        }
+    }
+    return header->valid;
+}
+
+inline std::vector<PlyVertexChunk> makePlyVertexChunks(const PlyVertexStreamHeader& header,
+                                                       int chunkBytes)
+{
+    if (!header.valid || header.vertexStride <= 0 || header.vertexCount == 0)
+    {
+        return {};
+    }
+
+    const int safeChunkBytes = std::max(chunkBytes, header.vertexStride);
+    const std::uint64_t chunkVertices = std::max<std::uint64_t>(
+        1, static_cast<std::uint64_t>(safeChunkBytes) / static_cast<std::uint64_t>(header.vertexStride));
+    std::vector<PlyVertexChunk> chunks;
+    chunks.reserve(static_cast<std::size_t>((header.vertexCount + chunkVertices - 1) / chunkVertices));
+    for (std::uint64_t start = 0; start < header.vertexCount; start += chunkVertices)
+    {
+        PlyVertexChunk chunk;
+        chunk.startVertex = start;
+        chunk.vertexCount = std::min(chunkVertices, header.vertexCount - start);
+        chunks.push_back(chunk);
+    }
+    return chunks;
+}
+
+inline bool readPlyVertexChunk(std::ifstream& file,
+                               const PlyVertexStreamHeader& header,
+                               const PlyVertexChunk& chunk,
+                               std::vector<char>* buffer,
+                               std::string* errorMsg = nullptr)
+{
+    if (!buffer)
+    {
+        if (errorMsg)
+        {
+            *errorMsg = "PLY vertex chunk output buffer is null";
+        }
+        return false;
+    }
+    if (!header.valid || header.vertexStride <= 0)
+    {
+        if (errorMsg)
+        {
+            *errorMsg = "PLY vertex stream header is invalid";
+        }
+        return false;
+    }
+    if (chunk.startVertex > header.vertexCount ||
+        chunk.vertexCount > header.vertexCount - chunk.startVertex)
+    {
+        if (errorMsg)
+        {
+            *errorMsg = "PLY vertex chunk is outside the vertex range";
+        }
+        return false;
+    }
+
+    const std::uint64_t stride = static_cast<std::uint64_t>(header.vertexStride);
+    const std::uint64_t bytes = chunk.vertexCount * stride;
+    if (bytes == 0)
+    {
+        buffer->clear();
+        return true;
+    }
+    if (bytes > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max()))
+    {
+        if (errorMsg)
+        {
+            *errorMsg = "PLY vertex chunk is too large to read at once";
+        }
+        return false;
+    }
+
+    try
+    {
+        buffer->resize(static_cast<std::size_t>(bytes));
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (errorMsg)
+        {
+            *errorMsg = "Failed to allocate PLY vertex chunk buffer";
+        }
+        return false;
+    }
+
+    const std::uint64_t offsetBytes = chunk.startVertex * stride;
+    const std::streamoff offset = header.dataStartOffset + static_cast<std::streamoff>(offsetBytes);
+    file.clear();
+    file.seekg(offset, std::ios::beg);
+    if (!file)
+    {
+        if (errorMsg)
+        {
+            *errorMsg = "Failed to seek to PLY vertex chunk";
+        }
+        return false;
+    }
+
+    if (!file.read(buffer->data(), static_cast<std::streamsize>(buffer->size())))
+    {
+        if (errorMsg)
+        {
+            *errorMsg = "Failed to read PLY vertex chunk";
+        }
+        return false;
+    }
+    return true;
+}
+
+inline PlyVertexPoint readPlyVertexPoint(const char* record,
+                                         const PlyVertexStreamHeader& header)
+{
+    if (!record || !header.valid)
+    {
+        throw std::invalid_argument("PLY vertex record or stream header is invalid");
+    }
+
+    PlyVertexPoint point;
+    point.x = static_cast<float>(
+        detail::readPlyVertexScalarAsDouble(record, header.properties[header.xProperty]));
+    point.y = static_cast<float>(
+        detail::readPlyVertexScalarAsDouble(record, header.properties[header.yProperty]));
+    point.z = static_cast<float>(
+        detail::readPlyVertexScalarAsDouble(record, header.properties[header.zProperty]));
+    if (header.hasColors())
+    {
+        point.r = detail::readPlyVertexColorAsByte(record, header.properties[header.redProperty]);
+        point.g = detail::readPlyVertexColorAsByte(record, header.properties[header.greenProperty]);
+        point.b = detail::readPlyVertexColorAsByte(record, header.properties[header.blueProperty]);
+    }
+    if (header.hasNormals())
+    {
+        point.hasNormal = true;
+        point.nx = static_cast<float>(
+            detail::readPlyVertexScalarAsDouble(record, header.properties[header.nxProperty]));
+        point.ny = static_cast<float>(
+            detail::readPlyVertexScalarAsDouble(record, header.properties[header.nyProperty]));
+        point.nz = static_cast<float>(
+            detail::readPlyVertexScalarAsDouble(record, header.properties[header.nzProperty]));
+    }
+    return point;
+}
+
+inline PlyVertexPoint readPlyVertexPoint(const std::vector<char>& record,
+                                         const PlyVertexStreamHeader& header)
+{
+    return readPlyVertexPoint(record.data(), header);
+}
+
+inline std::vector<PlyVertexPoint> sampleBinaryPlyVertices(const std::string& path,
+                                                           const PlyVertexStreamHeader& header,
+                                                           int maxPoints,
+                                                           std::string* errorMsg = nullptr)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+    {
+        if (errorMsg)
+        {
+            *errorMsg = "Cannot open PLY file: " + path;
+        }
+        return {};
+    }
+    if (!header.valid || header.vertexStride <= 0)
+    {
+        if (errorMsg)
+        {
+            *errorMsg = "PLY vertex stream header is invalid";
+        }
+        return {};
+    }
+
+    const std::uint64_t cap = static_cast<std::uint64_t>(std::max(1, maxPoints));
+    const std::uint64_t sampleStride = std::max<std::uint64_t>(1, (header.vertexCount + cap - 1) / cap);
+    const std::uint64_t sampleCount = std::min<std::uint64_t>(
+        cap, (header.vertexCount + sampleStride - 1) / sampleStride);
+
+    std::vector<PlyVertexPoint> points;
+    points.reserve(static_cast<std::size_t>(sampleCount));
+    std::vector<char> record(static_cast<std::size_t>(header.vertexStride));
+
+    for (std::uint64_t i = 0; i < header.vertexCount && points.size() < sampleCount; i += sampleStride)
+    {
+        const std::streamoff offset = header.dataStartOffset
+            + static_cast<std::streamoff>(i * static_cast<std::uint64_t>(header.vertexStride));
+        file.seekg(offset, std::ios::beg);
+        if (!file.read(record.data(), header.vertexStride))
+        {
+            break;
+        }
+        points.push_back(readPlyVertexPoint(record, header));
+    }
+
+    if (points.empty() && errorMsg)
+    {
+        *errorMsg = "No vertices were read from the PLY vertex stream";
+    }
+    return points;
 }
 
 template <typename Scalar>
