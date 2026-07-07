@@ -25,9 +25,9 @@ def cmake_configure_command(
     command = [
         "cmake",
         "-S",
-        str(source_dir),
+        cmake_path(source_dir),
         "-B",
-        str(build_dir),
+        cmake_path(build_dir),
         "-DPLAPOINT_WITH_CUDA=OFF",
         "-DPLAPOINT_BUILD_TESTS=ON",
         "-DPLAPOINT_BUILD_BENCHMARKS=ON",
@@ -35,8 +35,8 @@ def cmake_configure_command(
     if generator:
         command.extend(["-G", generator])
     if prefix_paths:
-        command.append(f"-Dplamatrix_DIR={plamatrix_dir_for_prefix(prefix_paths[0])}")
-        joined = ";".join(str(path) for path in prefix_paths)
+        command.append(f"-Dplamatrix_DIR={cmake_path(plamatrix_dir_for_prefix(prefix_paths[0]))}")
+        joined = ";".join(cmake_path(path) for path in prefix_paths)
         command.append(f"-DCMAKE_PREFIX_PATH={joined}")
     command.extend(extra_cmake_args)
     return command
@@ -65,6 +65,10 @@ def plamatrix_dir_for_prefix(prefix: Path) -> Path:
     if (prefix / "plamatrixConfig.cmake").is_file():
         return prefix
     return prefix / "lib" / "cmake" / "plamatrix"
+
+
+def cmake_path(path: Path) -> str:
+    return path.as_posix()
 
 
 def default_cmake_prefix_paths(source_dir: Path) -> list[Path]:

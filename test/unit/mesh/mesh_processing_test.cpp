@@ -5,6 +5,8 @@
 #include <plamatrix/plamatrix.h>
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace
 {
@@ -82,6 +84,42 @@ TEST(MeshProcessingTest, RemoveSmallConnectedComponentsCompactsRemainingVertices
             EXPECT_LT(cleaned.faces()->getValue(r, c), 4);
         }
     }
+}
+
+TEST(MeshProcessingTest, RemoveSmallConnectedComponentsPreservesScalarFields)
+{
+    FloatMatrix points(7, 3);
+    points.setValue(0, 0, 0.0f); points.setValue(0, 1, 0.0f); points.setValue(0, 2, 0.0f);
+    points.setValue(1, 0, 1.0f); points.setValue(1, 1, 0.0f); points.setValue(1, 2, 0.0f);
+    points.setValue(2, 0, 0.0f); points.setValue(2, 1, 1.0f); points.setValue(2, 2, 0.0f);
+    points.setValue(3, 0, 1.0f); points.setValue(3, 1, 1.0f); points.setValue(3, 2, 0.0f);
+    points.setValue(4, 0, 10.0f); points.setValue(4, 1, 0.0f); points.setValue(4, 2, 0.0f);
+    points.setValue(5, 0, 11.0f); points.setValue(5, 1, 0.0f); points.setValue(5, 2, 0.0f);
+    points.setValue(6, 0, 10.0f); points.setValue(6, 1, 1.0f); points.setValue(6, 2, 0.0f);
+
+    IntMatrix faces(3, 3);
+    faces.setValue(0, 0, 0); faces.setValue(0, 1, 1); faces.setValue(0, 2, 2);
+    faces.setValue(1, 0, 1); faces.setValue(1, 1, 3); faces.setValue(1, 2, 2);
+    faces.setValue(2, 0, 4); faces.setValue(2, 1, 5); faces.setValue(2, 2, 6);
+
+    FloatMatrix scalar_fields(7, 1);
+    for (int i = 0; i < 7; ++i)
+    {
+        scalar_fields.setValue(i, 0, static_cast<float>(100 + i));
+    }
+
+    auto mesh = makeCloud(std::move(points), std::move(faces));
+    mesh.setScalarFields({"error"}, std::move(scalar_fields));
+
+    auto cleaned = plapoint::mesh::removeSmallConnectedComponents(mesh, 2);
+
+    ASSERT_EQ(cleaned.size(), 4u);
+    ASSERT_TRUE(cleaned.hasScalarField("error"));
+    EXPECT_EQ(cleaned.scalarFieldNames(), (std::vector<std::string>{"error"}));
+    EXPECT_FLOAT_EQ(cleaned.scalarFields()->getValue(0, 0), 100.0f);
+    EXPECT_FLOAT_EQ(cleaned.scalarFields()->getValue(1, 0), 101.0f);
+    EXPECT_FLOAT_EQ(cleaned.scalarFields()->getValue(2, 0), 102.0f);
+    EXPECT_FLOAT_EQ(cleaned.scalarFields()->getValue(3, 0), 103.0f);
 }
 
 TEST(MeshProcessingTest, ConnectedComponentsRequireSharedEdges)

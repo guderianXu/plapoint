@@ -28,6 +28,29 @@ Scalar rotationDeterminant(const plamatrix::DenseMatrix<Scalar, plamatrix::Devic
          + T.getValue(0, 2) * (T.getValue(1, 0) * T.getValue(2, 1) - T.getValue(1, 1) * T.getValue(2, 0));
 }
 
+template <typename Scalar>
+plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTetraPoints()
+{
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(4, 3);
+    points.setValue(0, 0, Scalar(0)); points.setValue(0, 1, Scalar(0)); points.setValue(0, 2, Scalar(0));
+    points.setValue(1, 0, Scalar(1)); points.setValue(1, 1, Scalar(0)); points.setValue(1, 2, Scalar(0));
+    points.setValue(2, 0, Scalar(0)); points.setValue(2, 1, Scalar(1)); points.setValue(2, 2, Scalar(0));
+    points.setValue(3, 0, Scalar(0)); points.setValue(3, 1, Scalar(0)); points.setValue(3, 2, Scalar(1));
+    return points;
+}
+
+template <typename Scalar>
+plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> identityGuess()
+{
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> guess(4, 4);
+    guess.fill(Scalar(0));
+    for (int i = 0; i < 4; ++i)
+    {
+        guess.setValue(i, i, Scalar(1));
+    }
+    return guess;
+}
+
 }
 
 TEST(ICPTest, IdentityAlignment)
@@ -194,8 +217,17 @@ TEST(ICPTest, RejectsInvalidIterationAndEpsilonParameters)
 {
     plapoint::IterativeClosestPoint<float, plamatrix::Device::CPU> icp;
     EXPECT_THROW(icp.setMaxIterations(-1), std::invalid_argument);
+    EXPECT_THROW(icp.setMaximumIterations(0), std::invalid_argument);
+    icp.setMaximumIterations(7);
+    EXPECT_EQ(icp.getMaximumIterations(), 7);
     EXPECT_THROW(icp.setTransformationEpsilon(0.0f), std::invalid_argument);
     EXPECT_THROW(icp.setTransformationEpsilon(std::numeric_limits<float>::quiet_NaN()), std::invalid_argument);
+    EXPECT_THROW(icp.setEuclideanFitnessEpsilon(-1.0f), std::invalid_argument);
+    EXPECT_THROW(icp.setEuclideanFitnessEpsilon(std::numeric_limits<float>::quiet_NaN()), std::invalid_argument);
+    EXPECT_NO_THROW(icp.setEuclideanFitnessEpsilon(0.0f));
+    EXPECT_THROW(icp.setTransformationRotationEpsilon(-1.0f), std::invalid_argument);
+    EXPECT_THROW(icp.setTransformationRotationEpsilon(std::numeric_limits<float>::quiet_NaN()), std::invalid_argument);
+    EXPECT_NO_THROW(icp.setTransformationRotationEpsilon(0.0f));
 }
 
 TEST(ICPTest, RejectsInvalidCorrespondenceDistance)
@@ -400,7 +432,7 @@ TEST(ICPTest, CollectCorrespondencesKeepsFloatDistancesThatOverflowScalarDiffere
     std::vector<int> corr(4, -1);
     std::vector<int> active_indices;
     plapoint::IterativeClosestPoint<Scalar, plamatrix::Device::CPU> icp;
-    icp.collectCorrespondences(src_mat, target->points(), tree, corr, active_indices);
+    icp.collectCorrespondences(src_mat, target->points(), tree, nullptr, corr, active_indices);
 
     EXPECT_EQ(active_indices.size(), 4u);
     for (int i = 0; i < 4; ++i)
@@ -873,4 +905,117 @@ TEST(ICPTest, AcceptsSmallScaleNonCollinearGeometry)
     Cloud output;
     EXPECT_NO_THROW(icp.align(output));
     EXPECT_TRUE(icp.hasConverged());
+}
+
+TEST(ICPTest, TrimmedOverlapKeepsLowestDistanceCorrespondences)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto source_points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(5, 3);
+    source_points.setValue(0, 0, 0.0f);   source_points.setValue(0, 1, 0.0f);   source_points.setValue(0, 2, 0.0f);
+    source_points.setValue(1, 0, 1.0f);   source_points.setValue(1, 1, 0.0f);   source_points.setValue(1, 2, 0.0f);
+    source_points.setValue(2, 0, 0.0f);   source_points.setValue(2, 1, 1.0f);   source_points.setValue(2, 2, 0.0f);
+    source_points.setValue(3, 0, 0.0f);   source_points.setValue(3, 1, 0.0f);   source_points.setValue(3, 2, 1.0f);
+    source_points.setValue(4, 0, 100.0f); source_points.setValue(4, 1, 100.0f); source_points.setValue(4, 2, 100.0f);
+
+    auto source = std::make_shared<Cloud>(std::move(source_points));
+    auto target = std::make_shared<Cloud>(makeTetraPoints<Scalar>());
+
+    plapoint::IterativeClosestPoint<Scalar, plamatrix::Device::CPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaximumIterations(1);
+    icp.setComputeFinalMetrics(false);
+    icp.setTrimmedOverlapRatio(0.6f);
+
+    Cloud output;
+    icp.align(output);
+
+    EXPECT_NEAR(icp.getFitnessScore(), 0.6f, 1.0e-6f);
+    EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-6f);
+}
+
+TEST(ICPTest, OneToOneCorrespondencesKeepClosestSourceForDuplicateTarget)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto source_points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(4, 3);
+    source_points.setValue(0, 0, 0.0f);  source_points.setValue(0, 1, 0.0f); source_points.setValue(0, 2, 0.0f);
+    source_points.setValue(1, 0, 0.1f);  source_points.setValue(1, 1, 0.0f); source_points.setValue(1, 2, 0.0f);
+    source_points.setValue(2, 0, 1.0f);  source_points.setValue(2, 1, 0.0f); source_points.setValue(2, 2, 0.0f);
+    source_points.setValue(3, 0, 0.0f);  source_points.setValue(3, 1, 1.0f); source_points.setValue(3, 2, 0.0f);
+    auto source = std::make_shared<Cloud>(std::move(source_points));
+    auto target = std::make_shared<Cloud>(makeTetraPoints<Scalar>());
+
+    plapoint::IterativeClosestPoint<Scalar, plamatrix::Device::CPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaximumIterations(1);
+    icp.setComputeFinalMetrics(false);
+    icp.setUseOneToOneCorrespondences(true);
+
+    Cloud output;
+    icp.align(output);
+
+    EXPECT_NEAR(icp.getFitnessScore(), 0.75f, 1.0e-6f);
+    EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-6f);
+}
+
+TEST(ICPTest, ReciprocalCorrespondencesDropOneWayMatches)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto source_points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(4, 3);
+    source_points.setValue(0, 0, 0.0f);  source_points.setValue(0, 1, 0.0f); source_points.setValue(0, 2, 0.0f);
+    source_points.setValue(1, 0, 0.1f);  source_points.setValue(1, 1, 0.0f); source_points.setValue(1, 2, 0.0f);
+    source_points.setValue(2, 0, 1.0f);  source_points.setValue(2, 1, 0.0f); source_points.setValue(2, 2, 0.0f);
+    source_points.setValue(3, 0, 0.0f);  source_points.setValue(3, 1, 1.0f); source_points.setValue(3, 2, 0.0f);
+    auto source = std::make_shared<Cloud>(std::move(source_points));
+    auto target = std::make_shared<Cloud>(makeTetraPoints<Scalar>());
+
+    plapoint::IterativeClosestPoint<Scalar, plamatrix::Device::CPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaximumIterations(1);
+    icp.setComputeFinalMetrics(false);
+    icp.setUseReciprocalCorrespondences(true);
+
+    Cloud output;
+    icp.align(output);
+
+    EXPECT_NEAR(icp.getFitnessScore(), 0.75f, 1.0e-6f);
+    EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-6f);
+}
+
+TEST(ICPTest, InitialGuessAllowsSmallCorrespondenceRadius)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto source_points = makeTetraPoints<Scalar>();
+    for (plamatrix::Index row = 0; row < source_points.rows(); ++row)
+    {
+        source_points.setValue(row, 0, source_points.getValue(row, 0) + 5.0f);
+    }
+    auto source = std::make_shared<Cloud>(std::move(source_points));
+    auto target = std::make_shared<Cloud>(makeTetraPoints<Scalar>());
+
+    auto guess = identityGuess<Scalar>();
+    guess.setValue(0, 3, -5.0f);
+
+    plapoint::IterativeClosestPoint<Scalar, plamatrix::Device::CPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaximumIterations(1);
+    icp.setMaxCorrespondenceDistance(0.25f);
+
+    Cloud output;
+    icp.align(output, guess);
+
+    EXPECT_TRUE(icp.hasConverged());
+    EXPECT_NEAR(icp.getFinalTransformation().getValue(0, 3), -5.0f, 1.0e-5f);
+    EXPECT_NEAR(output.points().getValue(1, 0), 1.0f, 1.0e-5f);
 }

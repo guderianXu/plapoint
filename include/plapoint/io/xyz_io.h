@@ -2,6 +2,7 @@
 
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/dense/dense_matrix.h>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -16,6 +17,12 @@
 namespace plapoint {
 namespace io {
 
+enum class XyzReadMode
+{
+    Strict,
+    Permissive
+};
+
 namespace detail {
 
 inline std::uint8_t xyzColorByte(double value)
@@ -29,12 +36,57 @@ inline std::uint8_t xyzColorByte(double value)
     return static_cast<std::uint8_t>(std::lround(value));
 }
 
+inline std::string trimAsciiWhitespace(const std::string& value)
+{
+    std::size_t begin = 0;
+    while (begin < value.size() &&
+           std::isspace(static_cast<unsigned char>(value[begin])) != 0)
+    {
+        ++begin;
+    }
+    std::size_t end = value.size();
+    while (end > begin &&
+           std::isspace(static_cast<unsigned char>(value[end - 1])) != 0)
+    {
+        --end;
+    }
+    return value.substr(begin, end - begin);
+}
+
+inline std::runtime_error xyzParseError(
+    const std::string& path,
+    int line_number,
+    const std::string& reason)
+{
+    std::ostringstream message;
+    message << "Invalid XYZ file: " << path << " line " << line_number << ": " << reason;
+    return std::runtime_error(message.str());
+}
+
+template <typename Number>
+inline bool parseFiniteNumberToken(const std::string& token, Number& value)
+{
+    std::istringstream token_stream(token);
+    Number parsed{};
+    if (!(token_stream >> parsed))
+    {
+        return false;
+    }
+    token_stream >> std::ws;
+    if (!token_stream.eof() || !std::isfinite(static_cast<double>(parsed)))
+    {
+        return false;
+    }
+    value = parsed;
+    return true;
+}
+
 } // namespace detail
 
 /// Read XYZ file (one point per line: x y z)
 template <typename Scalar>
 std::shared_ptr<PointCloud<Scalar, plamatrix::Device::CPU>>
-readXyz(const std::string& path)
+readXyz(const std::string& path, XyzReadMode mode = XyzReadMode::Strict)
 {
     std::ifstream f(path);
     if (!f) throw std::runtime_error("Cannot open XYZ file: " + path);
@@ -47,30 +99,63 @@ readXyz(const std::string& path)
     bool saw_color = false;
     bool saw_uncolored = false;
     std::string line;
+    int line_number = 0;
     while (std::getline(f, line))
     {
-        if (line.empty() || line[0] == '#') continue;
-        std::istringstream iss(line);
-        Scalar x, y, z;
-        if (iss >> x >> y >> z)
+        ++line_number;
+        const std::string trimmed = detail::trimAsciiWhitespace(line);
+        if (trimmed.empty() || trimmed[0] == '#') continue;
+        std::istringstream iss(trimmed);
+        std::vector<std::string> tokens;
+        std::string token;
+        while (iss >> token)
         {
-            buf.push_back(x);
-            buf.push_back(y);
-            buf.push_back(z);
-            double r = 0.0;
-            double g = 0.0;
-            double b = 0.0;
-            if (iss >> r >> g >> b)
+            tokens.push_back(token);
+        }
+
+        Scalar x, y, z;
+        const bool has_xyz = tokens.size() >= 3 &&
+            detail::parseFiniteNumberToken(tokens[0], x) &&
+            detail::parseFiniteNumberToken(tokens[1], y) &&
+            detail::parseFiniteNumberToken(tokens[2], z);
+        if (!has_xyz)
+        {
+            if (mode == XyzReadMode::Strict)
             {
-                color_buf.push_back(detail::xyzColorByte(r));
-                color_buf.push_back(detail::xyzColorByte(g));
-                color_buf.push_back(detail::xyzColorByte(b));
-                saw_color = true;
+                throw detail::xyzParseError(path, line_number, "expected finite x y z coordinates");
             }
-            else
+            continue;
+        }
+
+        if (mode == XyzReadMode::Strict && tokens.size() != 3 && tokens.size() != 6)
+        {
+            throw detail::xyzParseError(path, line_number, "expected either x y z or x y z r g b columns");
+        }
+
+        buf.push_back(x);
+        buf.push_back(y);
+        buf.push_back(z);
+        double r = 0.0;
+        double g = 0.0;
+        double b = 0.0;
+        const bool has_color = tokens.size() >= 6 &&
+            detail::parseFiniteNumberToken(tokens[3], r) &&
+            detail::parseFiniteNumberToken(tokens[4], g) &&
+            detail::parseFiniteNumberToken(tokens[5], b);
+        if (has_color)
+        {
+            color_buf.push_back(detail::xyzColorByte(r));
+            color_buf.push_back(detail::xyzColorByte(g));
+            color_buf.push_back(detail::xyzColorByte(b));
+            saw_color = true;
+        }
+        else
+        {
+            if (mode == XyzReadMode::Strict && tokens.size() == 6)
             {
-                saw_uncolored = true;
+                throw detail::xyzParseError(path, line_number, "expected finite r g b color values");
             }
+            saw_uncolored = true;
         }
     }
 

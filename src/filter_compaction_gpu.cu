@@ -134,6 +134,14 @@ PointCloud<Scalar, plamatrix::Device::GPU> gatherPointCloudByIndicesImpl(
         gatherColumnMajor(*input.intensities(), d_indices, output_count, intensities);
         output.setIntensities(std::move(intensities));
     }
+    if (input.hasScalarFields())
+    {
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> scalar_fields(
+            static_cast<plamatrix::Index>(indices.size()),
+            static_cast<plamatrix::Index>(input.scalarFieldNames().size()));
+        gatherColumnMajor(*input.scalarFields(), d_indices, output_count, scalar_fields);
+        output.setScalarFields(input.scalarFieldNames(), std::move(scalar_fields));
+    }
 
     PLAPOINT_CHECK_CUDA(cudaDeviceSynchronize());
     return output;

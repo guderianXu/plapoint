@@ -5,24 +5,30 @@ GPU-accelerated point cloud processing library built on [PlaMatrix](https://gith
 ## Features
 
 ### Core
-- **PointCloud\<Scalar, Dev\>** — Nx3 point cloud with optional normals, GPU/CPU transfer via `toGpu()`/`toCpu()`, and cached CPU point views via `pointsCpu()`
+- **PointCloud\<Scalar, Dev\>** — Nx3 point cloud with optional normals, colors, intensities, texture coordinates, mesh/material metadata, and named scalar fields. CPU/GPU transfer uses `toGpu()`/`toCpu()`, and `pointsCpu()` provides a cached CPU point view for GPU clouds.
 
 ### Spatial Indexing
-- **KdTree\<Scalar, Dev\>** — 3D kd-tree with KNN search (priority queue) and radius search
+- **KdTree\<Scalar, Dev\>** — 3D kd-tree with KNN search (priority queue) and radius search. Call `build()` after `setInputCloud()`; searches throw a clear exception if the tree has not been built.
 
 ### Filters
-- **VoxelGrid** — centroid-based voxel downsampling
+- **VoxelGrid** — centroid-based voxel downsampling with mean aggregation for normals, colors, intensities, and named scalar fields
 - **StatisticalOutlierRemoval** — KNN distance statistics outlier filtering
 - **RadiusOutlierRemoval** — radius-based neighbor count filtering
 - **UniformDownsample** — keep every Nth point
 - **Filter\<Scalar, Dev\>** — abstract base class for all filters
+
+Point-index preserving filters and GPU gather helpers keep point-aligned attributes
+(`normals`, `colors`, `intensities`, and named scalar fields) for the selected
+points. Mesh compaction uses the same rule for surviving vertices. VoxelGrid is
+the main aggregation filter: it averages per-voxel scalar fields instead of
+dropping them.
 
 ### Features
 - **NormalEstimation** — PCA-based surface normal estimation via covariance + SVD
 - **NormalRefinement** — normal smoothing (KNN averaging) and viewpoint-based orientation
 
 ### Registration
-- **IterativeClosestPoint** (ICP) — point-to-point ICP with SVD-based rigid transform
+- **IterativeClosestPoint** (ICP) — point-to-point ICP with SVD-based rigid transform, initial guess support, and PCL-style correspondence/convergence controls
 
 ### Mesh
 - **MarchingCubes** — isosurface extraction from implicit scalar fields
@@ -30,6 +36,7 @@ GPU-accelerated point cloud processing library built on [PlaMatrix](https://gith
 
 ### I/O
 - **PLY** — ASCII read/write with positions and optional normals
+- **XYZ** — strict-by-default text XYZ reader. Strict rows must be exactly `x y z` or `x y z r g b`; malformed rows throw with file path and line number. Pass `io::XyzReadMode::Permissive` to skip bad legacy rows and keep the older trailing-column tolerance.
 
 ## GPU Acceleration
 
@@ -39,7 +46,7 @@ was built with CUDA support:
 - **Brute-force KNN** (`src/knn_gpu.cu`) — batched K-nearest neighbor search with one CUDA block per query point, shared memory top-K reduction. `KdTree<Scalar, GPU>::batchNearestKSearch()` reads PlaMatrix column-major device buffers directly.
 - **Stream-aware device KNN** — `gpu::batchKnnDeviceAsync()` and `gpu::batchKnnDeviceColumnMajorAsync()` launch on a caller-provided `cudaStream_t`; existing non-async overloads preserve synchronous behavior.
 - **VoxelGrid CUDA downsampling** (`src/voxel_grid_gpu.cu`) — GPU path computes voxel keys, sorts them, reduces centroids, and preserves deterministic sorted voxel-key output.
-- **ICP GPU path** (`src/icp_gpu.cu`) — `IterativeClosestPoint<Scalar, GPU>` keeps source/target point buffers on GPU, reads the initial source buffer directly without a startup device-to-device copy, computes correspondences with a cached finite-radius target spatial grid or the shared-memory target-tiling fallback, uses precomputed finite-radius tile bounding-box skips and per-candidate axis pruning on the fallback path, accumulates centroid/covariance/residual stats with block-level reductions, derives degeneracy flags from covariance invariants, fuses stats reduction with device-side step-transform solving through a CUDA quaternion/Jacobi solver, applies point transforms through persistent GPU scratch buffers, initializes and asynchronously accumulates the final 4x4 transform on GPU, and writes terminal-iteration transforms directly into a plain non-input caller output cloud when possible. Reduced stats, step deltas, and metric checks still synchronize to CPU, while `getFinalTransformationDevice()` exposes the final transform without forcing callers through the CPU copy and the legacy CPU `getFinalTransformation()` materializes that copy lazily. The stats helper can skip per-source correspondence index output when callers only need aggregate ICP moments, persistent workspaces and GPU buffers avoid repeated reduction, target spatial-grid, target-tile bound, step-solver, transform-buffer, point-scratch, output-allocation, and final output-copy overhead across repeated `align()` calls on the same ICP object and plain same-shaped output cloud, and `alignGpu()` skips transformed final-stats scans on non-terminal iterations. `setComputeFinalMetrics(false)` is an opt-in throughput mode that skips the terminal post-transform fitness/RMSE scan when callers only need the transform or aligned output. Input-aliased, attributed, or metadata-bearing output clouds still use safe scratch/copy or replacement paths so stale normals, colors, mesh, material, or texture data cannot leak into aligned-point results.
+- **ICP GPU path** (`src/icp_gpu.cu`) — `IterativeClosestPoint<Scalar, GPU>` keeps source/target point buffers on GPU, reads the initial source buffer directly without a startup device-to-device copy, computes correspondences with a cached finite-radius target spatial grid or the shared-memory target-tiling fallback, uses precomputed finite-radius tile bounding-box skips and per-candidate axis pruning on the fallback path, accumulates centroid/covariance/residual stats with block-level reductions, derives degeneracy flags from covariance invariants, fuses stats reduction with device-side step-transform solving through a CUDA quaternion/Jacobi solver, applies point transforms through persistent GPU scratch buffers, initializes and asynchronously accumulates the final 4x4 transform on GPU, and writes terminal-iteration transforms directly into a plain non-input caller output cloud when possible. Reduced stats, step deltas, and metric checks still synchronize to CPU, while `getFinalTransformationDevice()` exposes the final transform without forcing callers through the CPU copy and the legacy CPU `getFinalTransformation()` materializes that copy lazily. The stats helper can skip per-source correspondence index output when callers only need aggregate ICP moments, persistent workspaces and GPU buffers avoid repeated reduction, target spatial-grid, target-tile bound, step-solver, transform-buffer, point-scratch, output-allocation, and final output-copy overhead across repeated `align()` calls on the same ICP object and plain same-shaped output cloud, and `alignGpu()` skips transformed final-stats scans on non-terminal iterations. `setComputeFinalMetrics(false)` is an opt-in throughput mode that skips the terminal post-transform fitness/RMSE scan when callers only need the transform or aligned output. Input-aliased, attributed, or metadata-bearing output clouds still use safe scratch/copy or replacement paths so stale normals, colors, intensities, named scalar fields, mesh, material, or texture data cannot leak into aligned-point results. PCL-style robust ICP options that need correspondence rejectors currently preserve GPU input/output types through a CPU-staged semantic fallback; the default CUDA fast path remains unchanged for the base ICP configuration.
 - **CPU-staged GPU fallbacks** — remaining filters and normal estimation/refinement preserve GPU input/output types but stage data through CPU for algorithms that do not yet have production CUDA kernels. GPU point staging is cached by `PointCloud::pointsCpu()` and invalidated when mutable `points()` is requested.
 - **VoxelGrid CPU hot path** — CPU path uses hash aggregation and sorted voxel keys to keep deterministic centroid order.
 - Explicit template instantiations in `src/plapoint.cpp` reduce downstream compile times
@@ -219,12 +226,16 @@ then invokes the same PLY comparison and quality gates.
 #include <plapoint/mesh/marching_cubes.h>
 #include <plapoint/mesh/poisson_reconstruction.h>
 #include <plapoint/io/ply_io.h>
+#include <plapoint/io/xyz_io.h>
 
 using namespace plapoint;
 
 // Create a point cloud on CPU
 PointCloud<float, plamatrix::Device::CPU> cloud(1000);
 cloud.points().fill(1.0f);
+plamatrix::DenseMatrix<float, plamatrix::Device::CPU> scalar_fields(1000, 1);
+scalar_fields.fill(0.0f);
+cloud.setScalarFields({"error"}, std::move(scalar_fields));
 
 // Transfer to GPU
 auto gpu_cloud = cloud.toGpu();
@@ -252,7 +263,18 @@ auto normals = ne.compute();
 IterativeClosestPoint<float, plamatrix::Device::CPU> icp;
 icp.setInputSource(source);
 icp.setInputTarget(target);
+icp.setMaximumIterations(50);
+icp.setMaxCorrespondenceDistance(0.05f);
+icp.setUseReciprocalCorrespondences(true);
+icp.setUseOneToOneCorrespondences(true);
+icp.setTrimmedOverlapRatio(0.8f);
+icp.setEuclideanFitnessEpsilon(1e-6f);
+icp.setTransformationRotationEpsilon(1e-6f);
 icp.align(aligned);
+
+plamatrix::DenseMatrix<float, plamatrix::Device::CPU> initial_guess(4, 4);
+// Fill initial_guess as a rigid 4x4 transform before passing it to align().
+icp.align(aligned, initial_guess);
 
 // Reconstruct surface
 PoissonReconstruction<float> pr;
@@ -261,8 +283,12 @@ pr.setDepth(6);
 auto [verts, faces] = pr.reconstruct();
 
 // PLY I/O
-auto cloud = io::readPly<float>("input.ply");
-io::writePly("output.ply", *cloud);
+auto ply_cloud = io::readPly<float>("input.ply");
+io::writePly("output.ply", *ply_cloud);
+
+// XYZ I/O: strict by default, permissive for legacy files with bad rows.
+auto xyz_cloud = io::readXyz<float>("input.xyz");
+auto legacy_xyz_cloud = io::readXyz<float>("legacy.xyz", io::XyzReadMode::Permissive);
 ```
 
 ## License

@@ -56,6 +56,12 @@ public:
         _max_iter = n;
     }
 
+    /// PCL-compatible alias for setMaxIterations().
+    void setMaximumIterations(int n) { setMaxIterations(n); }
+
+    /// Return the configured maximum number of ICP iterations.
+    int getMaximumIterations() const { return _max_iter; }
+
     /// Set convergence tolerance on the incremental transform. Throws if eps is not finite and positive.
     void setTransformationEpsilon(Scalar eps)
     {
@@ -64,6 +70,26 @@ public:
             throw std::invalid_argument("ICP: transformation epsilon must be positive");
         }
         _eps = eps;
+    }
+
+    /// Set an optional convergence tolerance on the incremental rotation angle in radians. Zero disables it.
+    void setTransformationRotationEpsilon(Scalar eps)
+    {
+        if (!std::isfinite(eps) || eps < Scalar(0))
+        {
+            throw std::invalid_argument("ICP: rotation epsilon must be finite and non-negative");
+        }
+        _rotation_eps = eps;
+    }
+
+    /// Set an optional convergence tolerance on RMSE change between iterations. Zero disables it.
+    void setEuclideanFitnessEpsilon(Scalar eps)
+    {
+        if (!std::isfinite(eps) || eps < Scalar(0))
+        {
+            throw std::invalid_argument("ICP: euclidean fitness epsilon must be finite and non-negative");
+        }
+        _euclidean_fitness_eps = eps;
     }
 
     /// Set the largest accepted source-target correspondence distance. Positive infinity disables the limit.
@@ -76,6 +102,8 @@ public:
         _max_corr_dist = distance;
     }
 
+    Scalar getMaxCorrespondenceDistance() const { return _max_corr_dist; }
+
     /// Set the minimum required inlier correspondence ratio for convergence. Throws unless score is in [0, 1].
     void setMinFitnessScore(Scalar score)
     {
@@ -85,6 +113,28 @@ public:
         }
         _min_fitness_score = score;
     }
+
+    /// Keep only reciprocal source-target nearest-neighbor correspondences.
+    void setUseReciprocalCorrespondences(bool enabled) { _use_reciprocal_correspondences = enabled; }
+
+    bool getUseReciprocalCorrespondences() const { return _use_reciprocal_correspondences; }
+
+    /// Keep only the closest source correspondence for each target index.
+    void setUseOneToOneCorrespondences(bool enabled) { _use_one_to_one_correspondences = enabled; }
+
+    bool getUseOneToOneCorrespondences() const { return _use_one_to_one_correspondences; }
+
+    /// Keep the lowest-distance correspondence fraction relative to the source size. One disables trimming.
+    void setTrimmedOverlapRatio(Scalar ratio)
+    {
+        if (!std::isfinite(ratio) || ratio <= Scalar(0) || ratio > Scalar(1))
+        {
+            throw std::invalid_argument("ICP: trimmed overlap ratio must be in (0, 1]");
+        }
+        _trimmed_overlap_ratio = ratio;
+    }
+
+    Scalar getTrimmedOverlapRatio() const { return _trimmed_overlap_ratio; }
 
     /// Enable or disable final post-transform fitness/RMSE recomputation. Enabled by default.
     /// Disable only for throughput paths that do not consume final metrics.
@@ -174,6 +224,14 @@ public:
         alignImpl(&output);
     }
 
+    /// Align with an initial source-to-target transform guess.
+    void align(
+        PointCloudType& output,
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& initial_guess)
+    {
+        alignImpl(&output, &initial_guess);
+    }
+
     /// Align the source cloud to the target cloud without materializing an aligned output cloud.
     /// The final transformation and metrics remain available through the getter methods.
     void align()
@@ -181,8 +239,16 @@ public:
         alignImpl(nullptr);
     }
 
+    /// Align with an initial source-to-target transform guess without materializing output.
+    void align(const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& initial_guess)
+    {
+        alignImpl(nullptr, &initial_guess);
+    }
+
 private:
-    void alignImpl(PointCloudType* output)
+    void alignImpl(
+        PointCloudType* output,
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>* initial_guess = nullptr)
     {
         if (!_source) throw std::runtime_error("ICP: source cloud not set");
         if (!_target) throw std::runtime_error("ICP: target cloud not set");
@@ -194,6 +260,11 @@ private:
 #ifndef PLAPOINT_WITH_CUDA
             throw std::runtime_error("PlaPoint was built without CUDA support");
 #else
+            if (initial_guess || gpuRequiresCpuStagedAlignment())
+            {
+                alignGpuViaCpu(output, initial_guess);
+                return;
+            }
             alignGpu(output);
             return;
 #endif
@@ -208,20 +279,31 @@ private:
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> src = copyCpuMatrix(_source->pointsCpu());
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> tgt = copyCpuMatrix(_target->pointsCpu());
         validateFinitePointMatrix(src, "ICP: source cloud contains non-finite point");
+        if (initial_guess)
+        {
+            validateTransformMatrix(*initial_guess, "ICP: initial guess must be a finite 4x4 matrix");
+        }
 
         // Accumulate transform as 4x4 identity
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> T_acc = identity4x4();
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> T_acc =
+            initial_guess ? copyCpuMatrix(*initial_guess) : identity4x4();
 
         // Copy src into cur (DenseMatrix is move-only)
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> cur(src.rows(), src.cols());
         for (plamatrix::Index r = 0; r < src.rows(); ++r)
             for (int c = 0; c < 3; ++c)
                 cur(r, c) = src(r, c);
+        if (initial_guess)
+        {
+            cur = plamatrix::transformPoints(*initial_guess, cur);
+            validateFinitePointMatrix(cur, "ICP: initial guess produced non-finite source point");
+        }
 
         _converged = false;
         _fitness_score = Scalar(0);
         _final_rmse = std::numeric_limits<Scalar>::infinity();
         _final_T_cpu_valid = false;
+        Scalar previous_rmse = std::numeric_limits<Scalar>::infinity();
 
         for (int iter = 0; iter < _max_iter; ++iter)
         {
@@ -229,7 +311,10 @@ private:
             std::vector<int> corr(static_cast<std::size_t>(n), -1);
             std::vector<int> active_indices;
             active_indices.reserve(static_cast<std::size_t>(n));
-            collectCorrespondences(cur, tgt, *tree, corr, active_indices);
+            std::shared_ptr<PointCloudType> reciprocal_source_cloud;
+            std::shared_ptr<search::KdTree<Scalar, Dev>> reciprocal_tree;
+            prepareReciprocalSearchTree(cur, reciprocal_source_cloud, reciprocal_tree);
+            collectCorrespondences(cur, tgt, *tree, reciprocal_tree.get(), corr, active_indices);
 
             if (active_indices.size() < 3)
             {
@@ -357,7 +442,10 @@ private:
                 std::vector<int> final_corr(static_cast<std::size_t>(n), -1);
                 std::vector<int> final_active_indices;
                 final_active_indices.reserve(static_cast<std::size_t>(n));
-                collectCorrespondences(cur, tgt, *tree, final_corr, final_active_indices);
+                std::shared_ptr<PointCloudType> final_reciprocal_source_cloud;
+                std::shared_ptr<search::KdTree<Scalar, Dev>> final_reciprocal_tree;
+                prepareReciprocalSearchTree(cur, final_reciprocal_source_cloud, final_reciprocal_tree);
+                collectCorrespondences(cur, tgt, *tree, final_reciprocal_tree.get(), final_corr, final_active_indices);
                 convergence_active_count = final_active_indices.size();
                 if (final_active_indices.empty())
                 {
@@ -375,7 +463,16 @@ private:
                          + std::abs(r01) + std::abs(r02) + std::abs(r10)
                          + std::abs(r12) + std::abs(r20) + std::abs(r21)
                          + std::abs(tx) + std::abs(ty) + std::abs(tz);
-            if (delta < _eps)
+            const Scalar rotation_delta = rotationAngleFromMatrix(r00, r11, r22);
+            const bool transform_converged = delta < _eps ||
+                (_rotation_eps > Scalar(0) && rotation_delta <= _rotation_eps);
+            const bool fitness_converged =
+                _euclidean_fitness_eps > Scalar(0) &&
+                std::isfinite(previous_rmse) &&
+                std::isfinite(_final_rmse) &&
+                std::abs(_final_rmse - previous_rmse) <= _euclidean_fitness_eps;
+            previous_rmse = _final_rmse;
+            if (transform_converged || fitness_converged)
             {
                 _converged = convergence_active_count >= 3 && _fitness_score >= _min_fitness_score;
                 break;
@@ -446,6 +543,70 @@ public:
 
 private:
 #ifdef PLAPOINT_WITH_CUDA
+    bool gpuRequiresCpuStagedAlignment() const
+    {
+        return _use_reciprocal_correspondences ||
+               _use_one_to_one_correspondences ||
+               _trimmed_overlap_ratio < Scalar(1) ||
+               _euclidean_fitness_eps > Scalar(0) ||
+               _rotation_eps > Scalar(0);
+    }
+
+    template <plamatrix::Device D = Dev>
+    std::enable_if_t<D == plamatrix::Device::GPU, void>
+    alignGpuViaCpu(
+        PointCloudType* output,
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>* initial_guess)
+    {
+        using CpuCloud = PointCloud<Scalar, plamatrix::Device::CPU>;
+        auto cpu_source = std::make_shared<CpuCloud>(_source->toCpu());
+        auto cpu_target = std::make_shared<CpuCloud>(_target->toCpu());
+
+        IterativeClosestPoint<Scalar, plamatrix::Device::CPU> cpu_icp;
+        cpu_icp.setInputSource(cpu_source);
+        cpu_icp.setInputTarget(cpu_target);
+        cpu_icp.setMaxIterations(_max_iter);
+        cpu_icp.setTransformationEpsilon(_eps);
+        cpu_icp.setTransformationRotationEpsilon(_rotation_eps);
+        cpu_icp.setEuclideanFitnessEpsilon(_euclidean_fitness_eps);
+        cpu_icp.setMaxCorrespondenceDistance(_max_corr_dist);
+        cpu_icp.setMinFitnessScore(_min_fitness_score);
+        cpu_icp.setUseReciprocalCorrespondences(_use_reciprocal_correspondences);
+        cpu_icp.setUseOneToOneCorrespondences(_use_one_to_one_correspondences);
+        cpu_icp.setTrimmedOverlapRatio(_trimmed_overlap_ratio);
+        cpu_icp.setComputeFinalMetrics(_compute_final_metrics);
+
+        CpuCloud cpu_output;
+        if (output)
+        {
+            if (initial_guess)
+            {
+                cpu_icp.align(cpu_output, *initial_guess);
+            }
+            else
+            {
+                cpu_icp.align(cpu_output);
+            }
+            *output = cpu_output.toGpu();
+        }
+        else if (initial_guess)
+        {
+            cpu_icp.align(*initial_guess);
+        }
+        else
+        {
+            cpu_icp.align();
+        }
+
+        _converged = cpu_icp.hasConverged();
+        _fitness_score = cpu_icp.getFitnessScore();
+        _final_rmse = cpu_icp.getFinalRmse();
+        _final_T = copyCpuMatrix(cpu_icp.getFinalTransformation());
+        _final_T_cpu_valid = true;
+        _gpu_T_acc = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(_final_T.toGpu());
+        _final_T_gpu_valid = true;
+    }
+
     template <plamatrix::Device D = Dev>
     std::enable_if_t<D == plamatrix::Device::GPU, void>
     alignGpu(PointCloudType* output)
@@ -4219,6 +4380,8 @@ private:
                output_points.cols() == 3 &&
                !output.hasNormals() &&
                !output.hasColors() &&
+               !output.hasIntensities() &&
+               !output.hasScalarFields() &&
                !output.hasTextureCoords() &&
                !output.hasFaces() &&
                !output.hasFaceTextureIndices() &&
@@ -5053,6 +5216,35 @@ private:
         }
     }
 
+    static void validateTransformMatrix(
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& transform,
+        const char* message)
+    {
+        if (transform.rows() != 4 || transform.cols() != 4)
+        {
+            throw std::invalid_argument(message);
+        }
+        for (plamatrix::Index r = 0; r < transform.rows(); ++r)
+        {
+            for (plamatrix::Index c = 0; c < transform.cols(); ++c)
+            {
+                if (!std::isfinite(transform(r, c)))
+                {
+                    throw std::invalid_argument(message);
+                }
+            }
+        }
+    }
+
+    static Scalar rotationAngleFromMatrix(Scalar r00, Scalar r11, Scalar r22)
+    {
+        const double cos_angle = std::clamp(
+            (static_cast<double>(r00) + static_cast<double>(r11) + static_cast<double>(r22) - 1.0) * 0.5,
+            -1.0,
+            1.0);
+        return static_cast<Scalar>(std::acos(cos_angle));
+    }
+
     static bool hasNonCollinearGeometry(
         const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& points,
         const std::vector<int>& active_indices)
@@ -5135,10 +5327,18 @@ private:
         return max_cross > kMinSineAngle;
     }
 
+    struct Correspondence
+    {
+        int source_index = -1;
+        int target_index = -1;
+        double distance = 0.0;
+    };
+
     void collectCorrespondences(
         const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& source_points,
         const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& target_points,
         const search::KdTree<Scalar, Dev>& tree,
+        const search::KdTree<Scalar, Dev>* reciprocal_tree,
         std::vector<int>& corr,
         std::vector<int>& active_indices) const
     {
@@ -5149,6 +5349,8 @@ private:
                 queries(i, c) = source_points(i, c);
 
         auto all_nn = tree.batchNearestKSearch(queries, 1);
+        std::vector<Correspondence> candidates;
+        candidates.reserve(static_cast<std::size_t>(n));
         for (int i = 0; i < n; ++i)
         {
             if (all_nn[static_cast<std::size_t>(i)].empty())
@@ -5166,10 +5368,114 @@ private:
             const double dz = static_cast<double>(source_points(i, 2)) - static_cast<double>(target_points(j, 2));
             if (withinMaxCorrespondenceDistance(dx, dy, dz))
             {
-                corr[static_cast<std::size_t>(i)] = j;
-                active_indices.push_back(i);
+                if (reciprocal_tree && !isReciprocalCorrespondence(source_points, target_points, *reciprocal_tree, i, j))
+                {
+                    continue;
+                }
+                candidates.push_back({i, j, std::hypot(dx, std::hypot(dy, dz))});
             }
         }
+
+        if (_use_one_to_one_correspondences)
+        {
+            applyOneToOneCorrespondenceRejection(candidates);
+        }
+        if (_trimmed_overlap_ratio < Scalar(1))
+        {
+            applyTrimmedOverlapRejection(candidates, n);
+        }
+
+        std::sort(candidates.begin(), candidates.end(), [](const Correspondence& a, const Correspondence& b) {
+            return a.source_index < b.source_index;
+        });
+        for (const auto& candidate : candidates)
+        {
+            corr[static_cast<std::size_t>(candidate.source_index)] = candidate.target_index;
+            active_indices.push_back(candidate.source_index);
+        }
+    }
+
+    void prepareReciprocalSearchTree(
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& source_points,
+        std::shared_ptr<PointCloudType>& source_cloud,
+        std::shared_ptr<search::KdTree<Scalar, Dev>>& source_tree) const
+    {
+        if (!_use_reciprocal_correspondences)
+        {
+            return;
+        }
+
+        auto source_points_copy = copyCpuMatrix(source_points);
+        if constexpr (Dev == plamatrix::Device::CPU)
+        {
+            source_cloud = std::make_shared<PointCloudType>(std::move(source_points_copy));
+        }
+        else
+        {
+            source_cloud = std::make_shared<PointCloudType>(source_points_copy.toGpu());
+        }
+        source_tree = std::make_shared<search::KdTree<Scalar, Dev>>();
+        source_tree->setInputCloud(source_cloud);
+        source_tree->build();
+    }
+
+    bool isReciprocalCorrespondence(
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& source_points,
+        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& target_points,
+        const search::KdTree<Scalar, Dev>& reciprocal_tree,
+        int source_index,
+        int target_index) const
+    {
+        (void)source_points;
+        plamatrix::Vec3<Scalar> target_query{
+            target_points(target_index, 0),
+            target_points(target_index, 1),
+            target_points(target_index, 2)
+        };
+        const auto nearest_source = reciprocal_tree.nearestKSearch(target_query, 1);
+        return !nearest_source.empty() && nearest_source.front() == source_index;
+    }
+
+    void applyOneToOneCorrespondenceRejection(std::vector<Correspondence>& candidates) const
+    {
+        std::sort(candidates.begin(), candidates.end(), [](const Correspondence& a, const Correspondence& b) {
+            if (a.target_index != b.target_index) return a.target_index < b.target_index;
+            if (a.distance != b.distance) return a.distance < b.distance;
+            return a.source_index < b.source_index;
+        });
+
+        std::vector<Correspondence> filtered;
+        filtered.reserve(candidates.size());
+        int last_target = -1;
+        for (const auto& candidate : candidates)
+        {
+            if (candidate.target_index == last_target)
+            {
+                continue;
+            }
+            filtered.push_back(candidate);
+            last_target = candidate.target_index;
+        }
+        candidates.swap(filtered);
+    }
+
+    void applyTrimmedOverlapRejection(std::vector<Correspondence>& candidates, int source_count) const
+    {
+        const double desired_product =
+            static_cast<double>(source_count) * static_cast<double>(_trimmed_overlap_ratio);
+        const double desired = std::ceil(desired_product - 1.0e-6);
+        const std::size_t keep_count = static_cast<std::size_t>(
+            std::max(3.0, std::min(desired, static_cast<double>(candidates.size()))));
+        if (candidates.size() <= keep_count)
+        {
+            return;
+        }
+
+        std::sort(candidates.begin(), candidates.end(), [](const Correspondence& a, const Correspondence& b) {
+            if (a.distance != b.distance) return a.distance < b.distance;
+            return a.source_index < b.source_index;
+        });
+        candidates.resize(keep_count);
     }
 
     void updateResidualMetrics(
@@ -5262,8 +5568,13 @@ private:
     std::shared_ptr<const PointCloudType> _target;
     int _max_iter = 50;
     Scalar _eps = Scalar(1e-6);
+    Scalar _rotation_eps = Scalar(0);
+    Scalar _euclidean_fitness_eps = Scalar(0);
     Scalar _max_corr_dist = std::numeric_limits<Scalar>::infinity();
     Scalar _min_fitness_score = Scalar(0);
+    bool _use_reciprocal_correspondences = false;
+    bool _use_one_to_one_correspondences = false;
+    Scalar _trimmed_overlap_ratio = Scalar(1);
     bool _compute_final_metrics = true;
     Scalar _fitness_score = Scalar(0);
     Scalar _final_rmse = std::numeric_limits<Scalar>::infinity();

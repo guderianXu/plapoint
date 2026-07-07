@@ -6003,6 +6003,81 @@ TEST(ICPGpuPathTest, AlignReplacesAttributedGpuOutputInsteadOfKeepingStaleMetada
     EXPECT_TRUE(output.materialLibraryFile().empty());
 }
 
+TEST(ICPGpuPathTest, AlignReplacesIntensityAndScalarFieldOutputInsteadOfKeepingStaleMetadata)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
+    auto target_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(2.0f);
+    icp.setMaxIterations(1);
+
+    GpuCloud output(source->size());
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::GPU> stale_intensities(source->size(), 1);
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> stale_scalar_fields(source->size(), 1);
+    output.setIntensities(std::move(stale_intensities));
+    output.setScalarFields({"error"}, std::move(stale_scalar_fields));
+    const auto* stale_output_points = static_cast<const GpuCloud&>(output).points().data();
+
+    icp.align(output);
+
+    EXPECT_EQ(output.size(), source->size());
+    EXPECT_NE(static_cast<const GpuCloud&>(output).points().data(), stale_output_points);
+    EXPECT_FALSE(output.hasIntensities());
+    EXPECT_FALSE(output.hasScalarFields());
+}
+
+TEST(ICPGpuPathTest, RobustTrimmedOverlapMatchesCpuMetrics)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+
+    auto source_points = plamatrix::DenseMatrix<float, plamatrix::Device::CPU>(5, 3);
+    source_points.setValue(0, 0, 0.0f);   source_points.setValue(0, 1, 0.0f);   source_points.setValue(0, 2, 0.0f);
+    source_points.setValue(1, 0, 1.0f);   source_points.setValue(1, 1, 0.0f);   source_points.setValue(1, 2, 0.0f);
+    source_points.setValue(2, 0, 0.0f);   source_points.setValue(2, 1, 1.0f);   source_points.setValue(2, 2, 0.0f);
+    source_points.setValue(3, 0, 0.0f);   source_points.setValue(3, 1, 0.0f);   source_points.setValue(3, 2, 1.0f);
+    source_points.setValue(4, 0, 100.0f); source_points.setValue(4, 1, 100.0f); source_points.setValue(4, 2, 100.0f);
+
+    auto target_points = makeNonCollinearPoints();
+    CpuCloud source_cpu(std::move(source_points));
+    CpuCloud target_cpu(std::move(target_points));
+    auto source = std::make_shared<GpuCloud>(source_cpu.toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu.toGpu());
+
+    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaximumIterations(1);
+    icp.setComputeFinalMetrics(false);
+    icp.setTrimmedOverlapRatio(0.6f);
+
+    GpuCloud output;
+    icp.align(output);
+
+    ASSERT_EQ(output.size(), source->size());
+    EXPECT_TRUE(icp.hasConverged());
+    EXPECT_NEAR(icp.getFitnessScore(), 0.6f, 1.0e-6f);
+    EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-6f);
+}
+
 TEST(ICPGpuPathTest, SetInputTargetKeepsPersistentGpuTargetSpatialGridCacheForSameTarget)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

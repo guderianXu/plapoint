@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <string>
+#include <vector>
 
 #ifdef PLAPOINT_WITH_CUDA
 #include <plapoint/gpu/cuda_check.h>
@@ -160,6 +162,41 @@ TEST(UniformDownsampleTest, CopiesColorsAndIntensitiesForKeptPoints)
     EXPECT_EQ(output.intensities()->getValue(0, 0), 1000);
     EXPECT_EQ(output.intensities()->getValue(1, 0), 1002);
     EXPECT_EQ(output.intensities()->getValue(2, 0), 1004);
+}
+
+TEST(UniformDownsampleTest, CopiesScalarFieldsForKeptPoints)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+
+    Matrix pts(5, 3);
+    Matrix scalar_fields(5, 2);
+    for (int i = 0; i < 5; ++i)
+    {
+        pts.setValue(i, 0, Scalar(i));
+        pts.setValue(i, 1, 0);
+        pts.setValue(i, 2, 0);
+        scalar_fields.setValue(i, 0, Scalar(0.1f * i));
+        scalar_fields.setValue(i, 1, Scalar(10 + i));
+    }
+    auto cloud = std::make_shared<Cloud>(std::move(pts));
+    cloud->setScalarFields({"error", "confidence"}, std::move(scalar_fields));
+
+    plapoint::UniformDownsample<Scalar, plamatrix::Device::CPU> ud;
+    ud.setInputCloud(cloud);
+    ud.setStep(2);
+
+    Cloud output;
+    ud.filter(output);
+
+    ASSERT_EQ(output.size(), 3u);
+    ASSERT_TRUE(output.hasScalarFields());
+    EXPECT_EQ(output.scalarFieldNames(), (std::vector<std::string>{"error", "confidence"}));
+    EXPECT_FLOAT_EQ(output.scalarFields()->getValue(0, 0), 0.0f);
+    EXPECT_FLOAT_EQ(output.scalarFields()->getValue(1, 0), 0.2f);
+    EXPECT_FLOAT_EQ(output.scalarFields()->getValue(2, 0), 0.4f);
+    EXPECT_FLOAT_EQ(output.scalarFields()->getValue(1, 1), 12.0f);
 }
 
 TEST(UniformDownsampleTest, PreservesKeptNonFiniteCoordinates)

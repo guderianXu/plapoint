@@ -59,6 +59,7 @@ protected:
             long double mean_nx = 0, mean_ny = 0, mean_nz = 0;
             long double mean_r = 0, mean_g = 0, mean_b = 0;
             long double mean_intensity = 0;
+            std::vector<long double> mean_scalar_fields;
             int count = 0;
         };
         std::unordered_map<VoxelKey, Accum, VoxelKeyHash> voxels;
@@ -66,9 +67,13 @@ protected:
         const bool have_normals = this->_input->hasNormals();
         const bool have_colors = this->_input->hasColors();
         const bool have_intensities = this->_input->hasIntensities();
+        const bool have_scalar_fields = this->_input->hasScalarFields();
         const auto* input_normals = this->_input->normals();
         const auto* input_colors = this->_input->colors();
         const auto* input_intensities = this->_input->intensities();
+        const auto* input_scalar_fields = this->_input->scalarFields();
+        const auto scalar_field_count = static_cast<plamatrix::Index>(
+            this->_input->scalarFieldNames().size());
 
         for (std::size_t i = 0; i < this->_input->size(); ++i)
         {
@@ -104,6 +109,20 @@ protected:
                            static_cast<long double>(input_intensities->getValue(row, 0)),
                            acc.count);
             }
+            if (have_scalar_fields)
+            {
+                if (acc.mean_scalar_fields.empty())
+                {
+                    acc.mean_scalar_fields.assign(static_cast<std::size_t>(scalar_field_count), 0.0L);
+                }
+                for (plamatrix::Index c = 0; c < scalar_field_count; ++c)
+                {
+                    updateMean(
+                        acc.mean_scalar_fields[static_cast<std::size_t>(c)],
+                        static_cast<long double>(input_scalar_fields->getValue(row, c)),
+                        acc.count);
+                }
+            }
         }
 
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(
@@ -111,6 +130,7 @@ protected:
         std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>> normals;
         std::unique_ptr<plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>> colors;
         std::unique_ptr<plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU>> intensities;
+        std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>> scalar_fields;
         if (have_normals)
         {
             normals = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(
@@ -125,6 +145,11 @@ protected:
         {
             intensities = std::make_unique<plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU>>(
                 static_cast<plamatrix::Index>(voxels.size()), 1);
+        }
+        if (have_scalar_fields)
+        {
+            scalar_fields = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(
+                static_cast<plamatrix::Index>(voxels.size()), scalar_field_count);
         }
         std::vector<VoxelKey> ordered_keys;
         ordered_keys.reserve(voxels.size());
@@ -157,10 +182,18 @@ protected:
             {
                 (*intensities)(out_idx, 0) = roundedAttribute<std::uint16_t>(acc.mean_intensity);
             }
+            if (scalar_fields)
+            {
+                for (plamatrix::Index c = 0; c < scalar_field_count; ++c)
+                {
+                    (*scalar_fields)(out_idx, c) =
+                        checkedCentroid(acc.mean_scalar_fields[static_cast<std::size_t>(c)]);
+                }
+            }
             ++out_idx;
         }
         output = this->makeOutputCloud(std::move(pts));
-        setOutputAttributes(output, normals.get(), colors.get(), intensities.get());
+        setOutputAttributes(output, normals.get(), colors.get(), intensities.get(), scalar_fields.get());
     }
 
 private:
@@ -169,7 +202,8 @@ private:
     std::enable_if_t<D == plamatrix::Device::GPU, void>
     applyFilterGpu(PointCloudType& output)
     {
-        if (this->_input->hasNormals() || this->_input->hasColors() || this->_input->hasIntensities())
+        if (this->_input->hasNormals() || this->_input->hasColors() ||
+            this->_input->hasIntensities() || this->_input->hasScalarFields())
         {
             auto cpu_input = std::make_shared<PointCloud<Scalar, plamatrix::Device::CPU>>(this->_input->toCpu());
             VoxelGrid<Scalar, plamatrix::Device::CPU> cpu_filter;
@@ -289,7 +323,8 @@ private:
         PointCloudType& output,
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>* normals,
         plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>* colors,
-        plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU>* intensities) const
+        plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU>* intensities,
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>* scalar_fields) const
     {
         if (normals)
         {
@@ -322,6 +357,17 @@ private:
             else
             {
                 output.setIntensities(intensities->toGpu());
+            }
+        }
+        if (scalar_fields)
+        {
+            if constexpr (Dev == plamatrix::Device::CPU)
+            {
+                output.setScalarFields(this->_input->scalarFieldNames(), std::move(*scalar_fields));
+            }
+            else
+            {
+                output.setScalarFields(this->_input->scalarFieldNames(), scalar_fields->toGpu());
             }
         }
     }

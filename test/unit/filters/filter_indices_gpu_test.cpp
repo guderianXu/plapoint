@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <string>
 #include <vector>
 
 #ifdef PLAPOINT_WITH_CUDA
@@ -308,6 +309,7 @@ TEST(FilterIndicesGpuTest, GatherPointCloudByIndicesCopiesDeviceAttributes)
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(4, 3);
     plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(4, 3);
     plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(4, 1);
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> scalar_fields(4, 2);
     for (int i = 0; i < 4; ++i)
     {
         points.setValue(i, 0, Scalar(10 + i));
@@ -320,11 +322,14 @@ TEST(FilterIndicesGpuTest, GatherPointCloudByIndicesCopiesDeviceAttributes)
         colors.setValue(i, 1, static_cast<std::uint8_t>(50 + i));
         colors.setValue(i, 2, static_cast<std::uint8_t>(60 + i));
         intensities.setValue(i, 0, static_cast<std::uint16_t>(700 + i));
+        scalar_fields.setValue(i, 0, Scalar(0.25f * i));
+        scalar_fields.setValue(i, 1, Scalar(100 + i));
     }
     CpuCloud cpu_cloud(std::move(points));
     cpu_cloud.setNormals(std::move(normals));
     cpu_cloud.setColors(std::move(colors));
     cpu_cloud.setIntensities(std::move(intensities));
+    cpu_cloud.setScalarFields({"error", "confidence"}, std::move(scalar_fields));
     const auto gpu_cloud = cpu_cloud.toGpu();
 
     const GpuCloud gathered_gpu = plapoint::gpu::gatherPointCloudByIndices(gpu_cloud, {3, 1});
@@ -334,6 +339,8 @@ TEST(FilterIndicesGpuTest, GatherPointCloudByIndicesCopiesDeviceAttributes)
     ASSERT_TRUE(gathered.hasNormals());
     ASSERT_TRUE(gathered.hasColors());
     ASSERT_TRUE(gathered.hasIntensities());
+    ASSERT_TRUE(gathered.hasScalarFields());
+    EXPECT_EQ(gathered.scalarFieldNames(), (std::vector<std::string>{"error", "confidence"}));
     EXPECT_FLOAT_EQ(gathered.points().getValue(0, 0), 13.0f);
     EXPECT_FLOAT_EQ(gathered.points().getValue(0, 2), 33.0f);
     EXPECT_FLOAT_EQ(gathered.points().getValue(1, 0), 11.0f);
@@ -342,6 +349,9 @@ TEST(FilterIndicesGpuTest, GatherPointCloudByIndicesCopiesDeviceAttributes)
     EXPECT_EQ(gathered.colors()->getValue(1, 0), 41);
     EXPECT_EQ(gathered.intensities()->getValue(0, 0), 703);
     EXPECT_EQ(gathered.intensities()->getValue(1, 0), 701);
+    EXPECT_FLOAT_EQ(gathered.scalarFields()->getValue(0, 0), 0.75f);
+    EXPECT_FLOAT_EQ(gathered.scalarFields()->getValue(1, 0), 0.25f);
+    EXPECT_FLOAT_EQ(gathered.scalarFields()->getValue(0, 1), 103.0f);
 }
 
 TEST(FilterIndicesGpuTest, GatherPointCloudByIndicesRejectsInvalidIndex)

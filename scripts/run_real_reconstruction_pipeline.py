@@ -26,6 +26,10 @@ def resolve_path(path: Path, root: Path) -> Path:
     return (root / path).resolve()
 
 
+def command_path(path: Path) -> str:
+    return path.as_posix()
+
+
 def build_pipeline_command(
     command_template: str,
     *,
@@ -35,10 +39,10 @@ def build_pipeline_command(
     root: Path,
 ) -> list[str]:
     command = command_template.format(
-        img_dir=str(image_dir),
-        tsai_dir=str(camera_dir),
-        output_dir=str(output_dir),
-        plapoint_root=str(root),
+        img_dir=command_path(image_dir),
+        tsai_dir=command_path(camera_dir),
+        output_dir=command_path(output_dir),
+        plapoint_root=command_path(root),
     )
     return shlex.split(command)
 

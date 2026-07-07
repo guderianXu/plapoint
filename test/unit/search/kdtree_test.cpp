@@ -55,14 +55,28 @@ TEST_F(KdTreeTest, SetInputCloudInvalidatesBuiltTree)
     tree.setInputCloud(replacement_cloud);
 
     plamatrix::Vec3<Scalar> old_query{0, 0, 0};
-    EXPECT_TRUE(tree.nearestKSearch(old_query, 1).empty());
-    EXPECT_TRUE(tree.radiusSearch(old_query, Scalar(1)).empty());
+    EXPECT_THROW(tree.nearestKSearch(old_query, 1), std::runtime_error);
+    EXPECT_THROW(tree.radiusSearch(old_query, Scalar(1)), std::runtime_error);
 
     tree.build();
     plamatrix::Vec3<Scalar> new_query{100, 100, 100};
     const auto rebuilt_results = tree.nearestKSearch(new_query, 1);
     ASSERT_EQ(rebuilt_results.size(), 1u);
     EXPECT_EQ(rebuilt_results[0], 0);
+}
+
+TEST_F(KdTreeTest, SearchBeforeBuildThrows)
+{
+    KdTree tree;
+    tree.setInputCloud(cloud);
+
+    plamatrix::Vec3<Scalar> query{0, 0, 0};
+    EXPECT_THROW(tree.nearestKSearch(query, 1), std::runtime_error);
+    EXPECT_THROW(tree.radiusSearch(query, Scalar(1)), std::runtime_error);
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(1, 3);
+    queries.fill(0);
+    EXPECT_THROW(tree.batchNearestKSearch(queries, 1), std::runtime_error);
 }
 
 TEST_F(KdTreeTest, ThrowsIfNoInput)
@@ -286,16 +300,13 @@ TEST_F(KdTreeTest, BatchNearestKSearchRejectsNon3ColumnQueries)
     EXPECT_THROW(tree.batchNearestKSearch(queries, 1), std::invalid_argument);
 }
 
-TEST_F(KdTreeTest, BatchNearestKSearchWithoutInputReturnsEmptyRows)
+TEST_F(KdTreeTest, BatchNearestKSearchWithoutBuildThrows)
 {
     KdTree tree;
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(2, 3);
     queries.fill(0);
 
-    auto results = tree.batchNearestKSearch(queries, 2);
-    ASSERT_EQ(results.size(), 2u);
-    EXPECT_TRUE(results[0].empty());
-    EXPECT_TRUE(results[1].empty());
+    EXPECT_THROW(tree.batchNearestKSearch(queries, 2), std::runtime_error);
 }
 
 TEST_F(KdTreeTest, BatchNearestKSearchClampsKToPointCount)

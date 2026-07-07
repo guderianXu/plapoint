@@ -184,12 +184,56 @@ protected:
         }
     }
 
+    /// Copy named scalar fields for selected indices from input to output cloud.
+    void copyScalarFieldsForIndices(const std::vector<int>& indices, PointCloudType& output) const
+    {
+        if (!_input || !_input->hasScalarFields()) return;
+        int n = static_cast<int>(indices.size());
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> scalar_fields(
+            n,
+            static_cast<plamatrix::Index>(_input->scalarFieldNames().size()));
+        if constexpr (Dev == plamatrix::Device::CPU)
+        {
+            auto* input_scalar_fields = _input->scalarFields();
+            for (int i = 0; i < n; ++i)
+            {
+                int src = indices[static_cast<std::size_t>(i)];
+                for (plamatrix::Index c = 0; c < scalar_fields.cols(); ++c)
+                {
+                    scalar_fields(i, c) = input_scalar_fields->getValue(src, c);
+                }
+            }
+        }
+        else
+        {
+            auto input_scalar_fields = _input->scalarFields()->toCpu();
+            for (int i = 0; i < n; ++i)
+            {
+                int src = indices[static_cast<std::size_t>(i)];
+                for (plamatrix::Index c = 0; c < scalar_fields.cols(); ++c)
+                {
+                    scalar_fields(i, c) = input_scalar_fields(src, c);
+                }
+            }
+        }
+
+        if constexpr (Dev == plamatrix::Device::CPU)
+        {
+            output.setScalarFields(_input->scalarFieldNames(), std::move(scalar_fields));
+        }
+        else
+        {
+            output.setScalarFields(_input->scalarFieldNames(), scalar_fields.toGpu());
+        }
+    }
+
     /// Copy all point-wise attributes for selected indices from input to output cloud.
     void copyAttributesForIndices(const std::vector<int>& indices, PointCloudType& output) const
     {
         copyNormalsForIndices(indices, output);
         copyColorsForIndices(indices, output);
         copyIntensitiesForIndices(indices, output);
+        copyScalarFieldsForIndices(indices, output);
     }
 
     /// Build an output cloud from selected source point indices and copy point-wise attributes.

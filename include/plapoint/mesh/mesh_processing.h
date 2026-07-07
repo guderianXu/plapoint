@@ -170,6 +170,25 @@ void copyPointwiseAttributes(
         dst.setIntensities(std::move(intensities));
     }
 
+    if (src.hasScalarFields())
+    {
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> scalar_fields(
+            static_cast<plamatrix::Index>(source_indices.size()),
+            static_cast<plamatrix::Index>(src.scalarFieldNames().size()));
+        for (std::size_t i = 0; i < source_indices.size(); ++i)
+        {
+            const int src_idx = source_indices[i];
+            for (plamatrix::Index c = 0; c < scalar_fields.cols(); ++c)
+            {
+                scalar_fields.setValue(
+                    static_cast<plamatrix::Index>(i),
+                    c,
+                    src.scalarFields()->getValue(src_idx, c));
+            }
+        }
+        dst.setScalarFields(src.scalarFieldNames(), std::move(scalar_fields));
+    }
+
     if (src.hasTextureCoords() &&
         src.textureCoords()->rows() == static_cast<plamatrix::Index>(src.size()))
     {

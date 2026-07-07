@@ -63,7 +63,7 @@ inline bool gpuIsAvailable()
 template <typename Scalar, plamatrix::Device Dev>
 bool hasPointAttributes(const PointCloud<Scalar, Dev>& input)
 {
-    return input.hasNormals() || input.hasColors() || input.hasIntensities();
+    return input.hasNormals() || input.hasColors() || input.hasIntensities() || input.hasScalarFields();
 }
 
 inline void setReport(ProcessingReport* report,

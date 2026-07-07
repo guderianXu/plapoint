@@ -126,7 +126,66 @@ TEST(XyzIOTest, EmptyFileProducesEmptyCloud)
     std::filesystem::remove(path);
 }
 
-TEST(XyzIOTest, IgnoresCommentsPartialInvalidAndExtraColumns)
+TEST(XyzIOTest, StrictReadRejectsMalformedRowsWithLineNumber)
+{
+    const plapoint::test::TempFile temp_file(".xyz");
+    const auto path = temp_file.string();
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "# comment\n";
+        f << "\n";
+        f << "1 2 3\n";
+        f << "1 2 3 extra columns are rejected\n";
+        f << "not a point\n";
+        f << "4 5\n";
+        f << "6.5 7.5 8.5\n";
+        f << "   # indented comment is ignored as an invalid numeric row\n";
+    }
+
+    try
+    {
+        (void)plapoint::io::readXyz<float>(path);
+        FAIL() << "Expected strict XYZ parsing to reject malformed rows";
+    }
+    catch (const std::runtime_error& ex)
+    {
+        const std::string message = ex.what();
+        EXPECT_NE(message.find(path), std::string::npos);
+        EXPECT_NE(message.find("line 4"), std::string::npos);
+    }
+
+    std::filesystem::remove(path);
+}
+
+TEST(XyzIOTest, StrictReadRejectsMalformedRgbColumnsWithLineNumber)
+{
+    const plapoint::test::TempFile temp_file(".xyz");
+    const auto path = temp_file.string();
+    std::filesystem::remove(path);
+    {
+        std::ofstream f(path);
+        ASSERT_TRUE(f);
+        f << "1 2 3 10 20 bad\n";
+    }
+
+    try
+    {
+        (void)plapoint::io::readXyz<float>(path);
+        FAIL() << "Expected strict XYZ parsing to reject malformed RGB columns";
+    }
+    catch (const std::runtime_error& ex)
+    {
+        const std::string message = ex.what();
+        EXPECT_NE(message.find(path), std::string::npos);
+        EXPECT_NE(message.find("line 1"), std::string::npos);
+    }
+
+    std::filesystem::remove(path);
+}
+
+TEST(XyzIOTest, PermissiveReadIgnoresMalformedRows)
 {
     const plapoint::test::TempFile temp_file(".xyz");
     const auto path = temp_file.string();
@@ -140,10 +199,10 @@ TEST(XyzIOTest, IgnoresCommentsPartialInvalidAndExtraColumns)
         f << "not a point\n";
         f << "4 5\n";
         f << "6.5 7.5 8.5\n";
-        f << "   # indented comment is ignored as an invalid numeric row\n";
+        f << "   # indented comment is ignored\n";
     }
 
-    auto loaded = plapoint::io::readXyz<float>(path);
+    auto loaded = plapoint::io::readXyz<float>(path, plapoint::io::XyzReadMode::Permissive);
 
     ASSERT_EQ(loaded->size(), 2u);
     EXPECT_FLOAT_EQ(loaded->points().getValue(0, 0), 1.0f);

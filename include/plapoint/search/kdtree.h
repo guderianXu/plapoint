@@ -78,6 +78,7 @@ public:
         _cloud = cloud;
         _nodes.clear();
         _host_points.reset();
+        _built = false;
 #ifdef PLAPOINT_WITH_CUDA
         _gpu_queries.reset();
         _gpu_indices.reset();
@@ -104,6 +105,7 @@ public:
         }
         _nodes.reserve(indices.size());
         buildRecursive(indices, 0, checkedInt(indices.size(), "KdTree: point count") - 1, 0);
+        _built = true;
     }
 
     struct DistComparator
@@ -116,6 +118,7 @@ public:
 
     std::vector<int> nearestKSearch(const plamatrix::Vec3<Scalar>& query, int k) const
     {
+        ensureBuilt();
         validateQuery(query);
         std::vector<int> result;
         if (_nodes.empty() || k <= 0) return result;
@@ -128,6 +131,7 @@ public:
 
     std::vector<int> radiusSearch(const plamatrix::Vec3<Scalar>& query, Scalar radius) const
     {
+        ensureBuilt();
         validateQuery(query);
         std::vector<int> result;
         if (!std::isfinite(radius) || radius < Scalar(0))
@@ -148,6 +152,7 @@ public:
     std::vector<std::vector<int>> batchNearestKSearch(
         const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& queries, int k) const
     {
+        ensureBuilt();
         if (queries.cols() != 3)
         {
             throw std::invalid_argument("KdTree: queries must be an Mx3 matrix");
@@ -266,6 +271,14 @@ public:
 #endif
 
 private:
+    void ensureBuilt() const
+    {
+        if (!_built)
+        {
+            throw std::runtime_error("KdTree: build() must be called before search");
+        }
+    }
+
     Scalar pointCoord(int idx, int dim) const
     {
         if constexpr (Dev == plamatrix::Device::CPU)
@@ -521,6 +534,7 @@ private:
     std::shared_ptr<const PointCloudType> _cloud;
     std::shared_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>> _host_points;
     std::vector<KdTreeNode<Scalar>> _nodes;
+    bool _built = false;
 #ifdef PLAPOINT_WITH_CUDA
     mutable gpu::DeviceBuffer<Scalar> _gpu_queries;
     mutable gpu::DeviceBuffer<int> _gpu_indices;

@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <string>
+#include <vector>
 
 #ifdef PLAPOINT_WITH_CUDA
 #include <plapoint/gpu/cuda_check.h>
@@ -292,6 +294,39 @@ TEST(VoxelGridTest, AveragesNormalsColorsAndIntensitiesPerVoxel)
     EXPECT_FLOAT_EQ(output.normals()->getValue(1, 2), 1.0f);
     EXPECT_EQ(output.colors()->getValue(1, 0), 100);
     EXPECT_EQ(output.intensities()->getValue(1, 0), 3000);
+}
+
+TEST(VoxelGridTest, AveragesScalarFieldsPerVoxel)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    auto pts = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(3, 3);
+    pts.setValue(0, 0, 0.0f); pts.setValue(0, 1, 0.0f); pts.setValue(0, 2, 0.0f);
+    pts.setValue(1, 0, 0.2f); pts.setValue(1, 1, 0.0f); pts.setValue(1, 2, 0.0f);
+    pts.setValue(2, 0, 2.0f); pts.setValue(2, 1, 0.0f); pts.setValue(2, 2, 0.0f);
+    auto scalar_fields = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(3, 2);
+    scalar_fields.setValue(0, 0, 1.0f);  scalar_fields.setValue(0, 1, 10.0f);
+    scalar_fields.setValue(1, 0, 3.0f);  scalar_fields.setValue(1, 1, 14.0f);
+    scalar_fields.setValue(2, 0, 20.0f); scalar_fields.setValue(2, 1, 100.0f);
+
+    auto cloud = std::make_shared<Cloud>(std::move(pts));
+    cloud->setScalarFields({"error", "confidence"}, std::move(scalar_fields));
+
+    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> vg;
+    vg.setInputCloud(cloud);
+    vg.setLeafSize(1.0f, 1.0f, 1.0f);
+
+    Cloud output;
+    vg.filter(output);
+
+    ASSERT_EQ(output.size(), 2u);
+    ASSERT_TRUE(output.hasScalarFields());
+    EXPECT_EQ(output.scalarFieldNames(), (std::vector<std::string>{"error", "confidence"}));
+    EXPECT_FLOAT_EQ(output.scalarFields()->getValue(0, 0), 2.0f);
+    EXPECT_FLOAT_EQ(output.scalarFields()->getValue(0, 1), 12.0f);
+    EXPECT_FLOAT_EQ(output.scalarFields()->getValue(1, 0), 20.0f);
+    EXPECT_FLOAT_EQ(output.scalarFields()->getValue(1, 1), 100.0f);
 }
 
 #ifdef PLAPOINT_WITH_CUDA
@@ -639,5 +674,40 @@ TEST(VoxelGridTest, GpuPreservesAveragedAttributesWhenInputHasPointAttributes)
     EXPECT_EQ(cpu_output.colors()->getValue(0, 0), 42);
     EXPECT_EQ(cpu_output.colors()->getValue(0, 2), 62);
     EXPECT_EQ(cpu_output.intensities()->getValue(0, 0), 2002);
+}
+
+TEST(VoxelGridTest, GpuPreservesAveragedScalarFieldsWhenInputHasOnlyScalarFields)
+{
+    if (!hasCudaDeviceForVoxelGrid())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU voxel grid test";
+    }
+
+    using Scalar = float;
+    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+
+    auto pts = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
+    pts.setValue(0, 0, 0.0f); pts.setValue(0, 1, 0.0f); pts.setValue(0, 2, 0.0f);
+    pts.setValue(1, 0, 0.2f); pts.setValue(1, 1, 0.0f); pts.setValue(1, 2, 0.0f);
+    auto scalar_fields = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 1);
+    scalar_fields.setValue(0, 0, 1.0f);
+    scalar_fields.setValue(1, 0, 3.0f);
+
+    CpuCloud cpu_cloud(std::move(pts));
+    cpu_cloud.setScalarFields({"error"}, std::move(scalar_fields));
+    auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
+
+    plapoint::VoxelGrid<Scalar, plamatrix::Device::GPU> vg;
+    vg.setInputCloud(gpu_cloud);
+    vg.setLeafSize(1.0f, 1.0f, 1.0f);
+
+    GpuCloud output;
+    vg.filter(output);
+    auto cpu_output = output.toCpu();
+
+    ASSERT_EQ(cpu_output.size(), 1u);
+    ASSERT_TRUE(cpu_output.hasScalarField("error"));
+    EXPECT_FLOAT_EQ(cpu_output.scalarFields()->getValue(0, 0), 2.0f);
 }
 #endif
