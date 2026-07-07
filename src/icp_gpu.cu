@@ -11888,6 +11888,16 @@ void IcpCorrespondenceStatsWorkspace::invalidateTargetTileBoundsCache()
 
 void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGrid(int target_count)
 {
+    reserveDoubleTargetSpatialGrid(target_count);
+}
+
+void IcpCorrespondenceStatsWorkspace::reserveFloatTargetSpatialGrid(int target_count)
+{
+    reserveTargetSpatialGrid(target_count, sizeof(float));
+}
+
+void IcpCorrespondenceStatsWorkspace::reserveDoubleTargetSpatialGrid(int target_count)
+{
     reserveTargetSpatialGrid(target_count, sizeof(double));
 }
 
@@ -11958,6 +11968,22 @@ void IcpCorrespondenceStatsWorkspace::invalidateTargetSpatialGridCache()
 }
 
 bool IcpCorrespondenceStatsWorkspace::targetSpatialGridCacheMatches(
+    const void* target_points,
+    int target_count,
+    double cell_size) const
+{
+    return targetSpatialGridCacheMatchesForDouble(target_points, target_count, cell_size);
+}
+
+bool IcpCorrespondenceStatsWorkspace::targetSpatialGridCacheMatchesForFloat(
+    const void* target_points,
+    int target_count,
+    double cell_size) const
+{
+    return targetSpatialGridCacheMatches(target_points, target_count, cell_size, sizeof(float));
+}
+
+bool IcpCorrespondenceStatsWorkspace::targetSpatialGridCacheMatchesForDouble(
     const void* target_points,
     int target_count,
     double cell_size) const

@@ -336,6 +336,11 @@ private:
             }
             const int active_n = static_cast<int>(active_indices.size());
             updateResidualMetrics(cur, tgt, corr, active_indices, n);
+            if (std::isfinite(_final_rmse) && _final_rmse <= _eps)
+            {
+                _converged = active_indices.size() >= 3 && _fitness_score >= _min_fitness_score;
+                break;
+            }
 
             // Compute centroids in double to avoid overflowing float-scale accumulators.
             double src_ct[3]{0.0, 0.0, 0.0};

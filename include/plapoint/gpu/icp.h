@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <type_traits>
 
 #include <cuda_runtime.h>
 
@@ -147,11 +148,27 @@ public:
     /// Reserve reusable target spatial grid storage for finite-radius candidate search.
     void reserveTargetSpatialGrid(int target_count);
 
+    /// Reserve reusable target spatial grid storage using float-sized sorted target coordinates.
+    void reserveFloatTargetSpatialGrid(int target_count);
+
+    /// Reserve reusable target spatial grid storage using double-sized sorted target coordinates.
+    void reserveDoubleTargetSpatialGrid(int target_count);
+
     /// Reserve reusable target spatial grid storage using Scalar-sized sorted target coordinates.
     template <typename Scalar>
     void reserveTargetSpatialGridForScalar(int target_count)
     {
-        reserveTargetSpatialGrid(target_count, sizeof(Scalar));
+        static_assert(
+            std::is_same_v<Scalar, float> || std::is_same_v<Scalar, double>,
+            "ICP GPU target spatial grid supports float and double scalar coordinates");
+        if constexpr (std::is_same_v<Scalar, float>)
+        {
+            reserveFloatTargetSpatialGrid(target_count);
+        }
+        else
+        {
+            reserveDoubleTargetSpatialGrid(target_count);
+        }
     }
 
     /// Clear cached target spatial-grid metadata. Call this if target device contents mutate in place.
@@ -160,11 +177,27 @@ public:
     /// Return true when the cached double-width target spatial grid matches the target identity and cell size.
     bool targetSpatialGridCacheMatches(const void* target_points, int target_count, double cell_size) const;
 
+    /// Return true when the cached float-width target spatial grid matches the target identity and cell size.
+    bool targetSpatialGridCacheMatchesForFloat(const void* target_points, int target_count, double cell_size) const;
+
+    /// Return true when the cached double-width target spatial grid matches the target identity and cell size.
+    bool targetSpatialGridCacheMatchesForDouble(const void* target_points, int target_count, double cell_size) const;
+
     /// Return true when the cached target spatial grid matches the target identity, cell size, and Scalar width.
     template <typename Scalar>
     bool targetSpatialGridCacheMatchesForScalar(const void* target_points, int target_count, double cell_size) const
     {
-        return targetSpatialGridCacheMatches(target_points, target_count, cell_size, sizeof(Scalar));
+        static_assert(
+            std::is_same_v<Scalar, float> || std::is_same_v<Scalar, double>,
+            "ICP GPU target spatial grid supports float and double scalar coordinates");
+        if constexpr (std::is_same_v<Scalar, float>)
+        {
+            return targetSpatialGridCacheMatchesForFloat(target_points, target_count, cell_size);
+        }
+        else
+        {
+            return targetSpatialGridCacheMatchesForDouble(target_points, target_count, cell_size);
+        }
     }
 
     /// Return true when the cached target tile bounds match the supplied target identity.

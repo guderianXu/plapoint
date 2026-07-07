@@ -932,6 +932,7 @@ TEST(ICPTest, TrimmedOverlapKeepsLowestDistanceCorrespondences)
     Cloud output;
     icp.align(output);
 
+    EXPECT_TRUE(icp.hasConverged());
     EXPECT_NEAR(icp.getFitnessScore(), 0.6f, 1.0e-6f);
     EXPECT_NEAR(icp.getFinalRmse(), 0.0f, 1.0e-6f);
 }

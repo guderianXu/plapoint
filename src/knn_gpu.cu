@@ -6,7 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
+#include <math_constants.h>
 
 namespace plapoint {
 namespace gpu {
@@ -35,6 +35,11 @@ __device__ void localTopKInsert(double* d, int* idx, double dist, int data_idx)
     }
     d[pos]   = dist;
     idx[pos] = data_idx;
+}
+
+__device__ __forceinline__ double knnInfinityDistance()
+{
+    return CUDART_INF;
 }
 
 template <typename Scalar>
@@ -108,7 +113,7 @@ __global__ void bruteForceKnnKernel(
     int    local_idx[K];
     for (int j = 0; j < K; ++j)
     {
-        local_key[j] = std::numeric_limits<double>::infinity();
+        local_key[j] = knnInfinityDistance();
         local_idx[j] = -1;
     }
 
@@ -149,7 +154,7 @@ __global__ void bruteForceKnnKernel(
         int    final_idx[K];
         for (int j = 0; j < K; ++j)
         {
-            final_key[j] = std::numeric_limits<double>::infinity();
+            final_key[j] = knnInfinityDistance();
             final_idx[j] = -1;
         }
 
