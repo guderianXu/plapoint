@@ -139,6 +139,32 @@ TEST(FilterIndicesGpuTest, RadiusMaskAndRemovedIndicesMatchCpuAndCopyAttributes)
     EXPECT_EQ(gpu_output_cpu.intensities()->getValue(2, 0), 102);
 }
 
+TEST(FilterIndicesGpuTest, RadiusKeepMaskCanStayInPlaMatrixGpuStorage)
+{
+    if (!hasCudaDeviceForFilterIndices())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU filter-index test";
+    }
+
+    using Scalar = float;
+    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+
+    auto cpu_cloud = makeRadiusCloudWithAttributes<Scalar>();
+    auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud->toGpu());
+
+    const auto keep_mask = plapoint::gpu::radiusOutlierRemovalKeepMaskDevice(
+        gpu_cloud->points(), Scalar(0.25), 2);
+    const auto keep_mask_cpu = keep_mask.toCpu();
+
+    ASSERT_EQ(keep_mask_cpu.rows(), 4);
+    ASSERT_EQ(keep_mask_cpu.cols(), 1);
+    EXPECT_EQ(keep_mask_cpu.getValue(0, 0), 1);
+    EXPECT_EQ(keep_mask_cpu.getValue(1, 0), 1);
+    EXPECT_EQ(keep_mask_cpu.getValue(2, 0), 1);
+    EXPECT_EQ(keep_mask_cpu.getValue(3, 0), 0);
+}
+
 TEST(FilterIndicesGpuTest, SorMaskAndRemovedIndicesMatchCpuAndCopyAttributes)
 {
     if (!hasCudaDeviceForFilterIndices())
@@ -190,6 +216,33 @@ TEST(FilterIndicesGpuTest, SorMaskAndRemovedIndicesMatchCpuAndCopyAttributes)
     EXPECT_EQ(gpu_output_cpu.colors()->getValue(3, 0), 43);
     EXPECT_EQ(gpu_output_cpu.colors()->getValue(3, 2), 63);
     EXPECT_EQ(gpu_output_cpu.intensities()->getValue(3, 0), 203);
+}
+
+TEST(FilterIndicesGpuTest, SorKeepMaskCanStayInPlaMatrixGpuStorage)
+{
+    if (!hasCudaDeviceForFilterIndices())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU filter-index test";
+    }
+
+    using Scalar = float;
+    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+
+    auto cpu_cloud = makeSorCloudWithAttributes<Scalar>();
+    auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud->toGpu());
+
+    const auto keep_mask = plapoint::gpu::statisticalOutlierRemovalKeepMaskDevice(
+        gpu_cloud->points(), 2, Scalar(0.5));
+    const auto keep_mask_cpu = keep_mask.toCpu();
+
+    ASSERT_EQ(keep_mask_cpu.rows(), 5);
+    ASSERT_EQ(keep_mask_cpu.cols(), 1);
+    EXPECT_EQ(keep_mask_cpu.getValue(0, 0), 1);
+    EXPECT_EQ(keep_mask_cpu.getValue(1, 0), 1);
+    EXPECT_EQ(keep_mask_cpu.getValue(2, 0), 1);
+    EXPECT_EQ(keep_mask_cpu.getValue(3, 0), 1);
+    EXPECT_EQ(keep_mask_cpu.getValue(4, 0), 0);
 }
 
 TEST(FilterIndicesGpuTest, RadiusBoundaryCases)

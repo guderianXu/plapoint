@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -77,9 +78,15 @@ private:
         if constexpr (Dev == plamatrix::Device::GPU)
         {
 #ifdef PLAPOINT_WITH_CUDA
-            const auto point_count = checkedGpuPointCount();
-            const auto keep_mask = gpu::radiusOutlierRemovalKeepMaskDeviceColumnMajor(
-                this->_input->points().data(), point_count, _radius, _min_pts);
+            checkedGpuPointCount();
+            const auto keep_mask_gpu = gpu::radiusOutlierRemovalKeepMaskDevice(
+                this->_input->points(), _radius, _min_pts);
+            const auto keep_mask_cpu = keep_mask_gpu.toCpu();
+            std::vector<std::uint8_t> keep_mask(static_cast<std::size_t>(keep_mask_cpu.rows()), 0);
+            for (plamatrix::Index i = 0; i < keep_mask_cpu.rows(); ++i)
+            {
+                keep_mask[static_cast<std::size_t>(i)] = keep_mask_cpu(i, 0);
+            }
             return gpu::keptIndicesFromKeepMask(keep_mask);
 #else
             throw std::runtime_error("PlaPoint was built without CUDA support");

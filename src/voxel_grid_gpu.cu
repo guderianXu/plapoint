@@ -1,5 +1,6 @@
 #include <cmath>
 #include <climits>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -296,6 +297,53 @@ int voxelGridDownsampleColumnMajor(const double* d_points, int N,
                                    cudaStream_t stream)
 {
     return voxelGridDownsampleColumnMajorImpl<double>(d_points, N, leaf_x, leaf_y, leaf_z, d_out_points, stream);
+}
+
+template <typename Scalar>
+int voxelGridDownsampleColumnMajorMatrixImpl(
+    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& points,
+    Scalar leaf_x, Scalar leaf_y, Scalar leaf_z,
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& out_points,
+    cudaStream_t stream)
+{
+    if (points.cols() != 3 || out_points.cols() != 3)
+    {
+        throw std::invalid_argument("VoxelGrid GPU PlaMatrix inputs must be Nx3");
+    }
+    if (points.rows() > std::numeric_limits<int>::max())
+    {
+        throw std::overflow_error("VoxelGrid GPU PlaMatrix point count exceeds int range");
+    }
+    if (out_points.rows() < points.rows())
+    {
+        throw std::invalid_argument("VoxelGrid GPU PlaMatrix output capacity must be at least input rows");
+    }
+    return voxelGridDownsampleColumnMajorImpl<Scalar>(
+        points.data(),
+        static_cast<int>(points.rows()),
+        leaf_x,
+        leaf_y,
+        leaf_z,
+        out_points.data(),
+        stream);
+}
+
+int voxelGridDownsampleColumnMajor(
+    const plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& points,
+    float leaf_x, float leaf_y, float leaf_z,
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& out_points,
+    cudaStream_t stream)
+{
+    return voxelGridDownsampleColumnMajorMatrixImpl<float>(points, leaf_x, leaf_y, leaf_z, out_points, stream);
+}
+
+int voxelGridDownsampleColumnMajor(
+    const plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& points,
+    double leaf_x, double leaf_y, double leaf_z,
+    plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& out_points,
+    cudaStream_t stream)
+{
+    return voxelGridDownsampleColumnMajorMatrixImpl<double>(points, leaf_x, leaf_y, leaf_z, out_points, stream);
 }
 
 } // namespace gpu

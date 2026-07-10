@@ -93,7 +93,9 @@ __global__ void bruteForceKnnKernel(
     const Scalar* __restrict__ queries,
     const Scalar* __restrict__ data,
     int M, int N, int outputK,
+    bool queries_column_major,
     bool data_column_major,
+    bool output_column_major,
     int* __restrict__ out_indices,
     Scalar* __restrict__ out_dists)
 {
@@ -118,9 +120,9 @@ __global__ void bruteForceKnnKernel(
     }
 
     const size_t query_offset = static_cast<size_t>(query_idx) * 3u;
-    Scalar qx = queries[query_offset];
-    Scalar qy = queries[query_offset + 1u];
-    Scalar qz = queries[query_offset + 2u];
+    Scalar qx = queries_column_major ? queries[query_idx] : queries[query_offset];
+    Scalar qy = queries_column_major ? queries[static_cast<size_t>(M) + query_idx] : queries[query_offset + 1u];
+    Scalar qz = queries_column_major ? queries[2u * static_cast<size_t>(M) + query_idx] : queries[query_offset + 2u];
 
     // Each thread processes strided data points, updating local top-K.
     const size_t n_size = static_cast<size_t>(N);
@@ -173,8 +175,9 @@ __global__ void bruteForceKnnKernel(
 
         for (int k = 0; k < outputK; ++k)
         {
-            const size_t output_offset =
-                static_cast<size_t>(query_idx) * static_cast<size_t>(outputK) + static_cast<size_t>(k);
+            const size_t output_offset = output_column_major
+                ? static_cast<size_t>(query_idx) + static_cast<size_t>(k) * static_cast<size_t>(M)
+                : static_cast<size_t>(query_idx) * static_cast<size_t>(outputK) + static_cast<size_t>(k);
             out_indices[output_offset] = final_idx[k];
             if (out_dists)
             {
@@ -199,7 +202,9 @@ cudaError_t launchBruteForceKnn(
     const Scalar* d_queries, const Scalar* d_data,
     int M, int N, int K,
     int* d_out_indices, Scalar* d_out_dists,
+    bool queries_column_major,
     bool data_column_major,
+    bool output_column_major,
     cudaStream_t stream)
 {
     constexpr int kDefaultBlockSize = 256;
@@ -221,23 +226,38 @@ cudaError_t launchBruteForceKnn(
     {
         case 1:
             bruteForceKnnKernel<Scalar, kDefaultBlockSize, 1>
-                <<<M, kDefaultBlockSize, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
+                <<<M, kDefaultBlockSize, smem, stream>>>(
+                    d_queries, d_data, M, N, K, queries_column_major, data_column_major,
+                    output_column_major,
+                    d_out_indices, d_out_dists);
             break;
         case 4:
             bruteForceKnnKernel<Scalar, kDefaultBlockSize, 4>
-                <<<M, kDefaultBlockSize, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
+                <<<M, kDefaultBlockSize, smem, stream>>>(
+                    d_queries, d_data, M, N, K, queries_column_major, data_column_major,
+                    output_column_major,
+                    d_out_indices, d_out_dists);
             break;
         case 8:
             bruteForceKnnKernel<Scalar, kDefaultBlockSize, 8>
-                <<<M, kDefaultBlockSize, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
+                <<<M, kDefaultBlockSize, smem, stream>>>(
+                    d_queries, d_data, M, N, K, queries_column_major, data_column_major,
+                    output_column_major,
+                    d_out_indices, d_out_dists);
             break;
         case 16:
             bruteForceKnnKernel<Scalar, kDefaultBlockSize, 16>
-                <<<M, kDefaultBlockSize, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
+                <<<M, kDefaultBlockSize, smem, stream>>>(
+                    d_queries, d_data, M, N, K, queries_column_major, data_column_major,
+                    output_column_major,
+                    d_out_indices, d_out_dists);
             break;
         default:
             bruteForceKnnKernel<Scalar, kLargeKBlockSize, 32>
-                <<<M, kLargeKBlockSize, smem, stream>>>(d_queries, d_data, M, N, K, data_column_major, d_out_indices, d_out_dists);
+                <<<M, kLargeKBlockSize, smem, stream>>>(
+                    d_queries, d_data, M, N, K, queries_column_major, data_column_major,
+                    output_column_major,
+                    d_out_indices, d_out_dists);
             break;
     }
 
@@ -245,10 +265,10 @@ cudaError_t launchBruteForceKnn(
 }
 
 template cudaError_t launchBruteForceKnn<float>(
-    const float*, const float*, int, int, int, int*, float*, bool, cudaStream_t);
+    const float*, const float*, int, int, int, int*, float*, bool, bool, bool, cudaStream_t);
 
 template cudaError_t launchBruteForceKnn<double>(
-    const double*, const double*, int, int, int, int*, double*, bool, cudaStream_t);
+    const double*, const double*, int, int, int, int*, double*, bool, bool, bool, cudaStream_t);
 
 } // namespace gpu
 } // namespace plapoint

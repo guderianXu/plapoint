@@ -227,15 +227,16 @@ private:
             return;
         }
 
-        gpu::DeviceBuffer<Scalar> d_centroids(n * 3u);
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> centroid_storage(
+            static_cast<plamatrix::Index>(n), 3);
         const int centroid_count = gpu::voxelGridDownsampleColumnMajor(
-            this->_input->points().data(), point_count, _leaf_x, _leaf_y, _leaf_z, d_centroids.get());
+            this->_input->points(), _leaf_x, _leaf_y, _leaf_z, centroid_storage);
 
         plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> points(
             static_cast<plamatrix::Index>(centroid_count), 3);
         if (centroid_count > 0)
         {
-            PLAPOINT_CHECK_CUDA(cudaMemcpy(points.data(), d_centroids.get(),
+            PLAPOINT_CHECK_CUDA(cudaMemcpy(points.data(), centroid_storage.data(),
                                            static_cast<std::size_t>(centroid_count) * 3u * sizeof(Scalar),
                                            cudaMemcpyDeviceToDevice));
         }

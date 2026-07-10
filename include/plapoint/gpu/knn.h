@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include <plamatrix/dense/dense_matrix.h>
+
 #ifdef PLAPOINT_WITH_CUDA
 #include <cuda_runtime.h>
 #endif
@@ -48,6 +50,21 @@ void batchKnn(const double* h_queries, int M,
               std::vector<int>& out_indices,
               std::vector<double>& out_dists);
 
+/// Batch KNN on GPU from PlaMatrix CPU matrices. Inputs must be Mx3 and Nx3, outputs MxK.
+void batchKnn(
+    const plamatrix::DenseMatrix<float, plamatrix::Device::CPU>& queries,
+    const plamatrix::DenseMatrix<float, plamatrix::Device::CPU>& data,
+    int K,
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU>& out_indices,
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU>& out_dists);
+
+void batchKnn(
+    const plamatrix::DenseMatrix<double, plamatrix::Device::CPU>& queries,
+    const plamatrix::DenseMatrix<double, plamatrix::Device::CPU>& data,
+    int K,
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU>& out_indices,
+    plamatrix::DenseMatrix<double, plamatrix::Device::CPU>& out_dists);
+
 /// Batch KNN on GPU with device pointers (no host roundtrip).
 /// Results are written to d_out_indices and d_out_dists (pre-allocated on device).
 /// Missing finite neighbors are represented as index -1 and max distance.
@@ -59,6 +76,21 @@ void batchKnnDevice(const float* d_queries, int M,
 void batchKnnDevice(const double* d_queries, int M,
                     const double* d_data, int N, int K,
                     int* d_out_indices, double* d_out_dists);
+
+/// Batch KNN on GPU from PlaMatrix GPU matrices. Inputs must be Mx3 and Nx3, outputs MxK.
+void batchKnnDevice(
+    const plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& queries,
+    const plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& data,
+    int K,
+    plamatrix::DenseMatrix<int, plamatrix::Device::GPU>& out_indices,
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& out_dists);
+
+void batchKnnDevice(
+    const plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& queries,
+    const plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& data,
+    int K,
+    plamatrix::DenseMatrix<int, plamatrix::Device::GPU>& out_indices,
+    plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& out_dists);
 
 #ifdef PLAPOINT_WITH_CUDA
 /// Async device-pointer batch KNN on the caller-provided CUDA stream.
@@ -72,6 +104,23 @@ void batchKnnDeviceAsync(const double* d_queries, int M,
                          const double* d_data, int N, int K,
                          int* d_out_indices, double* d_out_dists,
                          cudaStream_t stream);
+
+/// Async PlaMatrix GPU batch KNN on the caller-provided CUDA stream.
+void batchKnnDeviceAsync(
+    const plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& queries,
+    const plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& data,
+    int K,
+    plamatrix::DenseMatrix<int, plamatrix::Device::GPU>& out_indices,
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& out_dists,
+    cudaStream_t stream);
+
+void batchKnnDeviceAsync(
+    const plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& queries,
+    const plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& data,
+    int K,
+    plamatrix::DenseMatrix<int, plamatrix::Device::GPU>& out_indices,
+    plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& out_dists,
+    cudaStream_t stream);
 #endif
 
 /// Batch KNN on GPU with row-major queries and column-major Nx3 point data.

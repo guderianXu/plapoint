@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -97,8 +98,14 @@ private:
                 return computeInlierIndices();
             }
 
-            const auto keep_mask = gpu::statisticalOutlierRemovalKeepMaskDeviceColumnMajor(
-                this->_input->points().data(), point_count, _mean_k, _stddev_mul);
+            const auto keep_mask_gpu = gpu::statisticalOutlierRemovalKeepMaskDevice(
+                this->_input->points(), _mean_k, _stddev_mul);
+            const auto keep_mask_cpu = keep_mask_gpu.toCpu();
+            std::vector<std::uint8_t> keep_mask(static_cast<std::size_t>(point_count));
+            for (int i = 0; i < point_count; ++i)
+            {
+                keep_mask[static_cast<std::size_t>(i)] = keep_mask_cpu(i, 0);
+            }
             return gpu::keptIndicesFromKeepMask(keep_mask);
 #else
             throw std::runtime_error("PlaPoint was built without CUDA support");

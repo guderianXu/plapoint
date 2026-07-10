@@ -362,6 +362,31 @@ TEST(VoxelGridTest, GpuInputProducesGpuOutput)
     EXPECT_FLOAT_EQ(cpu_output.points().getValue(1, 0), 2.0f);
 }
 
+TEST(VoxelGridTest, GpuVoxelGridHelperWritesPlaMatrixOutput)
+{
+    if (!hasCudaDeviceForVoxelGrid())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU voxel grid test";
+    }
+
+    using Scalar = float;
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> input_cpu(3, 3);
+    input_cpu.setValue(0, 0, 0.0f); input_cpu.setValue(0, 1, 0.0f); input_cpu.setValue(0, 2, 0.0f);
+    input_cpu.setValue(1, 0, 0.2f); input_cpu.setValue(1, 1, 0.0f); input_cpu.setValue(1, 2, 0.0f);
+    input_cpu.setValue(2, 0, 2.0f); input_cpu.setValue(2, 1, 0.0f); input_cpu.setValue(2, 2, 0.0f);
+    auto input_gpu = input_cpu.toGpu();
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> output_gpu(3, 3);
+
+    const int centroid_count = plapoint::gpu::voxelGridDownsampleColumnMajor(
+        input_gpu, 1.0f, 1.0f, 1.0f, output_gpu);
+
+    const auto output_cpu = output_gpu.toCpu();
+    ASSERT_EQ(centroid_count, 2);
+    EXPECT_FLOAT_EQ(output_cpu.getValue(0, 0), 0.1f);
+    EXPECT_FLOAT_EQ(output_cpu.getValue(1, 0), 2.0f);
+}
+
 TEST(VoxelGridTest, GpuMatchesCpuForNegativeCoordinatesAndSortedOutput)
 {
     if (!hasCudaDeviceForVoxelGrid())

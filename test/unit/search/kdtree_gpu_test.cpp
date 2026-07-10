@@ -261,6 +261,68 @@ TEST(KdTreeGpuTest, BatchKnnDeviceColumnMajorAsyncUsesCallerStream)
     EXPECT_FLOAT_EQ(actual_dists[2], 0.0f);
 }
 
+TEST(KdTreeGpuTest, BatchKnnAcceptsPlaMatrixCpuMatrices)
+{
+    SKIP_IF_NO_GPU();
+
+    using Scalar = float;
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(2, 3);
+    queries.setValue(0, 0, 0.0f); queries.setValue(0, 1, 0.0f); queries.setValue(0, 2, 0.0f);
+    queries.setValue(1, 0, 3.0f); queries.setValue(1, 1, 0.0f); queries.setValue(1, 2, 0.0f);
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> data(4, 3);
+    for (int i = 0; i < 4; ++i)
+    {
+        data.setValue(i, 0, static_cast<Scalar>(i));
+        data.setValue(i, 1, Scalar(0));
+        data.setValue(i, 2, Scalar(0));
+    }
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> indices(2, 2);
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> dists(2, 2);
+
+    plapoint::gpu::batchKnn(queries, data, 2, indices, dists);
+
+    EXPECT_EQ(indices.getValue(0, 0), 0);
+    EXPECT_EQ(indices.getValue(1, 0), 3);
+    EXPECT_FLOAT_EQ(dists.getValue(0, 0), 0.0f);
+    EXPECT_FLOAT_EQ(dists.getValue(1, 0), 0.0f);
+}
+
+TEST(KdTreeGpuTest, BatchKnnDeviceAcceptsPlaMatrixGpuMatrices)
+{
+    SKIP_IF_NO_GPU();
+
+    using Scalar = float;
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries_cpu(2, 3);
+    queries_cpu.setValue(0, 0, 1.0f); queries_cpu.setValue(0, 1, 0.0f); queries_cpu.setValue(0, 2, 0.0f);
+    queries_cpu.setValue(1, 0, 2.0f); queries_cpu.setValue(1, 1, 0.0f); queries_cpu.setValue(1, 2, 0.0f);
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> data_cpu(4, 3);
+    for (int i = 0; i < 4; ++i)
+    {
+        data_cpu.setValue(i, 0, static_cast<Scalar>(i));
+        data_cpu.setValue(i, 1, Scalar(0));
+        data_cpu.setValue(i, 2, Scalar(0));
+    }
+
+    auto queries = queries_cpu.toGpu();
+    auto data = data_cpu.toGpu();
+    plamatrix::DenseMatrix<int, plamatrix::Device::GPU> indices(2, 2);
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> dists(2, 2);
+
+    plapoint::gpu::batchKnnDevice(queries, data, 2, indices, dists);
+
+    auto indices_cpu = indices.toCpu();
+    auto dists_cpu = dists.toCpu();
+    EXPECT_EQ(indices_cpu.getValue(0, 0), 1);
+    EXPECT_EQ(indices_cpu.getValue(1, 0), 2);
+    EXPECT_FLOAT_EQ(dists_cpu.getValue(0, 0), 0.0f);
+    EXPECT_FLOAT_EQ(dists_cpu.getValue(1, 0), 0.0f);
+}
+
 // ---- KdTree batchNearestKSearch with GPU-resident data ----
 TEST(KdTreeGpuTest, BatchKnnOnGpuCloud)
 {

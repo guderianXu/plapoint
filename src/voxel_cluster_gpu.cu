@@ -24,6 +24,7 @@
 
 #include <plapoint/gpu/cuda_check.h>
 #include <plapoint/gpu/voxel_cluster.h>
+#include <plamatrix/dense/dense_matrix.h>
 
 namespace plapoint
 {
@@ -377,14 +378,19 @@ plamatrix::DenseMatrix<int, plamatrix::Device::CPU> facesToMatrix(
     return matrix;
 }
 
-std::vector<int> copyPointRemapToCpu(const gpu::DeviceBuffer<int>& d_point_remap, std::size_t point_count)
+std::vector<int> copyPointRemapToCpu(
+    const plamatrix::DenseMatrix<int, plamatrix::Device::GPU>& point_remap_gpu,
+    std::size_t point_count)
 {
-    std::vector<int> point_remap(point_count);
-    if (point_count > 0)
+    if (point_remap_gpu.cols() != 1 || point_remap_gpu.rows() < static_cast<plamatrix::Index>(point_count))
     {
-        PLAPOINT_CHECK_CUDA(cudaMemcpy(point_remap.data(), d_point_remap.get(),
-                                       point_count * sizeof(int),
-                                       cudaMemcpyDeviceToHost));
+        throw std::invalid_argument("voxelClusterSimplify GPU: point remap matrix has invalid shape");
+    }
+    const auto point_remap_cpu = point_remap_gpu.toCpu();
+    std::vector<int> point_remap(point_count);
+    for (std::size_t row = 0; row < point_count; ++row)
+    {
+        point_remap[row] = point_remap_cpu(static_cast<plamatrix::Index>(row), 0);
     }
     return point_remap;
 }
@@ -564,24 +570,26 @@ plapoint::PointCloud<Scalar, plamatrix::Device::GPU> voxelClusterSimplifyGpuImpl
         return makeEmptyOutput(mesh);
     }
 
-    gpu::DeviceBuffer<Scalar> d_centroids(n * 3u);
-    gpu::DeviceBuffer<int> d_point_remap(n);
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> centroid_storage(
+        static_cast<plamatrix::Index>(n), 3);
+    plamatrix::DenseMatrix<int, plamatrix::Device::GPU> point_remap_gpu(
+        static_cast<plamatrix::Index>(n), 1);
     const int cluster_count = voxelClusterSimplifyColumnMajor(
         mesh.points().data(),
         static_cast<int>(n),
         cluster_size,
-        d_centroids.get(),
-        d_point_remap.get(),
+        centroid_storage.data(),
+        point_remap_gpu.data(),
         0);
 
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> points(
         static_cast<plamatrix::Index>(cluster_count), 3);
-    PLAPOINT_CHECK_CUDA(cudaMemcpy(points.data(), d_centroids.get(),
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(points.data(), centroid_storage.data(),
                                    static_cast<std::size_t>(cluster_count) * 3u * sizeof(Scalar),
                                    cudaMemcpyDeviceToDevice));
 
     plapoint::PointCloud<Scalar, plamatrix::Device::GPU> output(std::move(points));
-    const auto point_remap = copyPointRemapToCpu(d_point_remap, n);
+    const auto point_remap = copyPointRemapToCpu(point_remap_gpu, n);
     const auto cluster_counts = computeClusterCounts(point_remap, cluster_count);
     setAveragedColors(mesh, point_remap, cluster_counts, output);
     setAveragedIntensities(mesh, point_remap, cluster_counts, output);

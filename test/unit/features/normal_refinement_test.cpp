@@ -252,7 +252,7 @@ TEST(NormalRefinementTest, GpuSmoothAndOrientUpdatesNormals)
     }
 }
 
-TEST(NormalRefinementTest, GpuSmoothUsesBatchKnnWorkspace)
+TEST(NormalRefinementTest, GpuSmoothDoesNotRetainBatchKnnWorkspace)
 {
     if (!hasCudaDeviceForNormalRefinement())
     {
@@ -295,8 +295,8 @@ TEST(NormalRefinementTest, GpuSmoothUsesBatchKnnWorkspace)
     nr.setSearchMethod(tree);
     nr.smooth(4);
 
-    EXPECT_GE(tree->gpuBatchQueryScalarCapacityForTesting(), 18u);
-    EXPECT_GE(tree->gpuBatchResultCapacityForTesting(), 24u);
+    EXPECT_EQ(tree->gpuBatchQueryScalarCapacityForTesting(), 0u);
+    EXPECT_EQ(tree->gpuBatchResultCapacityForTesting(), 0u);
 }
 
 TEST(NormalRefinementTest, GpuSmoothMatchesCpuForKGreaterThanPointCount)
