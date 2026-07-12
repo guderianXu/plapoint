@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <plapoint/core/point_cloud.h>
+#include <plamatrix/ops/vector.h>
 
 namespace plapoint::mesh
 {
@@ -23,14 +24,6 @@ namespace detail
 
 template <typename Scalar>
 using CpuCloud = PointCloud<Scalar, plamatrix::Device::CPU>;
-
-template <typename Scalar>
-struct Vec3
-{
-    long double x = 0;
-    long double y = 0;
-    long double z = 0;
-};
 
 struct VoxelKey
 {
@@ -54,7 +47,7 @@ inline std::uint64_t edgeKey(int a, int b)
 }
 
 template <typename Scalar>
-Vec3<Scalar> pointAt(const CpuCloud<Scalar>& mesh, int idx)
+plamatrix::Vec3<long double> pointAt(const CpuCloud<Scalar>& mesh, int idx)
 {
     return {
         static_cast<long double>(mesh.points().getValue(idx, 0)),
@@ -64,30 +57,14 @@ Vec3<Scalar> pointAt(const CpuCloud<Scalar>& mesh, int idx)
 }
 
 template <typename Scalar>
-Vec3<Scalar> cross(const Vec3<Scalar>& a, const Vec3<Scalar>& b)
-{
-    return {
-        a.y * b.z - a.z * b.y,
-        a.z * b.x - a.x * b.z,
-        a.x * b.y - a.y * b.x
-    };
-}
-
-template <typename Scalar>
-long double norm(const Vec3<Scalar>& v)
-{
-    return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-}
-
-template <typename Scalar>
 long double triangleArea(const CpuCloud<Scalar>& mesh, int ia, int ib, int ic)
 {
     const auto a = pointAt(mesh, ia);
     const auto b = pointAt(mesh, ib);
     const auto c = pointAt(mesh, ic);
-    const Vec3<Scalar> ab{b.x - a.x, b.y - a.y, b.z - a.z};
-    const Vec3<Scalar> ac{c.x - a.x, c.y - a.y, c.z - a.z};
-    return norm(cross<Scalar>(ab, ac)) * 0.5L;
+    const plamatrix::Vec3<long double> ab{b.x - a.x, b.y - a.y, b.z - a.z};
+    const plamatrix::Vec3<long double> ac{c.x - a.x, c.y - a.y, c.z - a.z};
+    return plamatrix::norm(plamatrix::cross(ab, ac)) * 0.5L;
 }
 
 template <typename Scalar>
@@ -611,15 +588,15 @@ PointCloud<Scalar, plamatrix::Device::CPU> recomputeVertexNormals(
         static_cast<plamatrix::Index>(mesh.size()), 3);
     normals.fill(0);
 
-    std::vector<detail::Vec3<Scalar>> accum(mesh.size());
+    std::vector<plamatrix::Vec3<long double>> accum(mesh.size());
     for (const auto& face : faces)
     {
         const auto a = detail::pointAt(mesh, face[0]);
         const auto b = detail::pointAt(mesh, face[1]);
         const auto c = detail::pointAt(mesh, face[2]);
-        const detail::Vec3<Scalar> ab{b.x - a.x, b.y - a.y, b.z - a.z};
-        const detail::Vec3<Scalar> ac{c.x - a.x, c.y - a.y, c.z - a.z};
-        const auto n = detail::cross<Scalar>(ab, ac);
+        const plamatrix::Vec3<long double> ab{b.x - a.x, b.y - a.y, b.z - a.z};
+        const plamatrix::Vec3<long double> ac{c.x - a.x, c.y - a.y, c.z - a.z};
+        const auto n = plamatrix::cross(ab, ac);
         for (int vertex : face)
         {
             auto& dst = accum[static_cast<std::size_t>(vertex)];
@@ -631,7 +608,7 @@ PointCloud<Scalar, plamatrix::Device::CPU> recomputeVertexNormals(
 
     for (std::size_t i = 0; i < accum.size(); ++i)
     {
-        const long double length = detail::norm(accum[i]);
+        const long double length = plamatrix::norm(accum[i]);
         if (length <= std::numeric_limits<long double>::epsilon())
         {
             normals.setValue(static_cast<plamatrix::Index>(i), 0, Scalar(0));
