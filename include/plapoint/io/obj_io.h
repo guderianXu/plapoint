@@ -1,11 +1,14 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <charconv>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -13,6 +16,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <plamatrix/dense/dense_matrix.h>
@@ -33,30 +37,24 @@ struct ObjVertexIndices
     bool has_n = false;
 };
 
-inline int parseObjIndexComponent(const std::string& s)
+inline int parseObjIndexComponent(std::string_view s)
 {
     if (s.empty())
     {
         throw std::invalid_argument("empty OBJ index component");
     }
 
-    std::size_t parsed = 0;
     int value = 0;
-    try
+    const auto parsed = std::from_chars(s.data(), s.data() + s.size(), value);
+    if (parsed.ec == std::errc::result_out_of_range)
     {
-        value = std::stoi(s, &parsed);
+        throw std::out_of_range(
+            "OBJ index component out of range '" + std::string(s) + "'");
     }
-    catch (const std::invalid_argument&)
+    if (parsed.ec != std::errc() || parsed.ptr != s.data() + s.size())
     {
-        throw std::invalid_argument("invalid OBJ index component '" + s + "'");
-    }
-    catch (const std::out_of_range&)
-    {
-        throw std::out_of_range("OBJ index component out of range '" + s + "'");
-    }
-    if (parsed != s.size())
-    {
-        throw std::invalid_argument("invalid OBJ index component '" + s + "'");
+        throw std::invalid_argument(
+            "invalid OBJ index component '" + std::string(s) + "'");
     }
     if (value == 0)
     {
@@ -77,18 +75,18 @@ inline int resolveObjIndex(int idx, size_t count, const char* label)
     return resolved;
 }
 
-inline ObjVertexIndices parseFaceVertex(const std::string& s)
+inline ObjVertexIndices parseFaceVertex(std::string_view s)
 {
     ObjVertexIndices idx;
     size_t slash1 = s.find('/');
-    if (slash1 == std::string::npos)
+    if (slash1 == std::string_view::npos)
     {
         idx.v = parseObjIndexComponent(s);
         return idx;
     }
     idx.v = parseObjIndexComponent(s.substr(0, slash1));
     size_t slash2 = s.find('/', slash1 + 1);
-    if (slash2 == std::string::npos)
+    if (slash2 == std::string_view::npos)
     {
         if (slash1 + 1 < s.size())
         {
@@ -114,6 +112,36 @@ inline ObjVertexIndices parseFaceVertex(const std::string& s)
         idx.has_n = true;
     }
     return idx;
+}
+
+inline std::string_view nextObjToken(const char*& cursor, const char* end)
+{
+    while (cursor < end && (*cursor == ' ' || *cursor == '\t' || *cursor == '\r'))
+    {
+        ++cursor;
+    }
+    const char* begin = cursor;
+    while (cursor < end && *cursor != ' ' && *cursor != '\t' && *cursor != '\r')
+    {
+        ++cursor;
+    }
+    return std::string_view(begin, static_cast<std::size_t>(cursor - begin));
+}
+
+template <typename Scalar>
+inline Scalar parseObjScalar(std::string_view token,
+                             const std::string& context,
+                             const char* label)
+{
+    Scalar value = Scalar(0);
+    const auto parsed = std::from_chars(
+        token.data(), token.data() + token.size(), value, std::chars_format::general);
+    if (token.empty() || parsed.ec != std::errc() ||
+        parsed.ptr != token.data() + token.size() || !std::isfinite(value))
+    {
+        throw std::invalid_argument(context + label + " must be a finite number");
+    }
+    return value;
 }
 
 inline std::string objLineContext(const std::string& path, std::size_t lineNumber)
@@ -162,7 +190,7 @@ template <typename Scalar>
 std::shared_ptr<PointCloud<Scalar, plamatrix::Device::CPU>>
 readObj(const std::string& path)
 {
-    std::ifstream f(path);
+    std::ifstream f(path, std::ios::binary);
     if (!f)
     {
         throw std::runtime_error("Cannot open OBJ file: " + path);
@@ -173,24 +201,77 @@ readObj(const std::string& path)
     std::vector<bool> has_vertex_color;
     std::vector<Scalar> nx, ny, nz;
     std::vector<Scalar> tx, ty;
-    std::vector<std::vector<int>> face_verts;
-    std::vector<std::vector<int>> face_tex;
-    std::vector<std::vector<int>> face_normals;
+    std::vector<std::array<int, 3>> face_verts;
+    std::vector<std::array<int, 3>> face_tex;
+    std::vector<std::array<int, 3>> face_normals;
     std::string mtlLib;
 
-    std::string line;
+    f.seekg(0, std::ios::end);
+    const std::streamoff file_size = f.tellg();
+    if (file_size < 0)
+    {
+        throw std::runtime_error("Cannot determine OBJ file size: " + path);
+    }
+    f.seekg(0, std::ios::beg);
+    std::string file_data(static_cast<std::size_t>(file_size), '\0');
+    if (file_size > 0 && !f.read(file_data.data(), file_size))
+    {
+        throw std::runtime_error("Cannot read OBJ file: " + path);
+    }
+
+    std::size_t vertex_line_count = 0;
+    std::size_t normal_line_count = 0;
+    std::size_t texture_line_count = 0;
+    std::size_t face_line_count = 0;
+    const char* count_cursor = file_data.data();
+    const char* file_end = file_data.data() + file_data.size();
+    while (count_cursor < file_end)
+    {
+        const char* line_end = static_cast<const char*>(
+            std::memchr(count_cursor, '\n', static_cast<std::size_t>(file_end - count_cursor)));
+        if (!line_end)
+        {
+            line_end = file_end;
+        }
+        const char* token_cursor = count_cursor;
+        const std::string_view token = detail::nextObjToken(token_cursor, line_end);
+        if (token == "v") ++vertex_line_count;
+        else if (token == "vn") ++normal_line_count;
+        else if (token == "vt") ++texture_line_count;
+        else if (token == "f") ++face_line_count;
+        count_cursor = line_end < file_end ? line_end + 1 : file_end;
+    }
+    vx.reserve(vertex_line_count);
+    vy.reserve(vertex_line_count);
+    vz.reserve(vertex_line_count);
+    vr.reserve(vertex_line_count);
+    vg.reserve(vertex_line_count);
+    vb.reserve(vertex_line_count);
+    has_vertex_color.reserve(vertex_line_count);
+    nx.reserve(normal_line_count);
+    ny.reserve(normal_line_count);
+    nz.reserve(normal_line_count);
+    tx.reserve(texture_line_count);
+    ty.reserve(texture_line_count);
+    face_verts.reserve(face_line_count);
+    face_tex.reserve(face_line_count);
+    face_normals.reserve(face_line_count);
+
+    const char* line_cursor = file_data.data();
     std::size_t line_number = 0;
-    while (std::getline(f, line))
+    while (line_cursor < file_end)
     {
         ++line_number;
-        if (!line.empty() && line.back() == '\r')
+        const char* line_end = static_cast<const char*>(
+            std::memchr(line_cursor, '\n', static_cast<std::size_t>(file_end - line_cursor)));
+        if (!line_end)
         {
-            line.pop_back();
+            line_end = file_end;
         }
-
-        std::istringstream iss(line);
-        std::string token;
-        if (!(iss >> token) || token[0] == '#')
+        const char* token_cursor = line_cursor;
+        const std::string_view token = detail::nextObjToken(token_cursor, line_end);
+        line_cursor = line_end < file_end ? line_end + 1 : file_end;
+        if (token.empty() || token.front() == '#')
         {
             continue;
         }
@@ -198,31 +279,34 @@ readObj(const std::string& path)
 
         if (token == "v")
         {
-            Scalar x, y, z;
-            if (!(iss >> x >> y >> z))
-            {
-                throw std::invalid_argument(context + "vertex line must contain x, y, and z coordinates");
-            }
+            const Scalar x = detail::parseObjScalar<Scalar>(
+                detail::nextObjToken(token_cursor, line_end), context, "vertex x");
+            const Scalar y = detail::parseObjScalar<Scalar>(
+                detail::nextObjToken(token_cursor, line_end), context, "vertex y");
+            const Scalar z = detail::parseObjScalar<Scalar>(
+                detail::nextObjToken(token_cursor, line_end), context, "vertex z");
             vx.push_back(x);
             vy.push_back(y);
             vz.push_back(z);
 
-            std::vector<Scalar> extra_values;
-            std::string extra_token;
-            while (iss >> extra_token)
+            std::array<Scalar, 3> last_extra{{Scalar(0), Scalar(0), Scalar(0)}};
+            std::size_t extra_count = 0;
+            while (true)
             {
-                if (!extra_token.empty() && extra_token[0] == '#')
+                const std::string_view extra_token = detail::nextObjToken(token_cursor, line_end);
+                if (extra_token.empty() || extra_token.front() == '#')
                 {
                     break;
                 }
-                extra_values.push_back(
-                    detail::parseObjVertexColorAttribute<Scalar>(extra_token, context));
+                last_extra[extra_count % 3] = detail::parseObjScalar<Scalar>(
+                    extra_token, context, "vertex color attribute");
+                ++extra_count;
             }
-            if (extra_values.size() >= 3)
+            if (extra_count >= 3)
             {
-                const Scalar r = extra_values[extra_values.size() - 3];
-                const Scalar g = extra_values[extra_values.size() - 2];
-                const Scalar b = extra_values[extra_values.size() - 1];
+                const Scalar r = last_extra[(extra_count - 3) % 3];
+                const Scalar g = last_extra[(extra_count - 2) % 3];
+                const Scalar b = last_extra[(extra_count - 1) % 3];
                 const bool normalized =
                     r >= Scalar(0) && r <= Scalar(1) &&
                     g >= Scalar(0) && g <= Scalar(1) &&
@@ -242,74 +326,95 @@ readObj(const std::string& path)
         }
         else if (token == "vn")
         {
-            Scalar x, y, z;
-            if (!(iss >> x >> y >> z))
-            {
-                throw std::invalid_argument(context + "normal line must contain x, y, and z coordinates");
-            }
+            const Scalar x = detail::parseObjScalar<Scalar>(
+                detail::nextObjToken(token_cursor, line_end), context, "normal x");
+            const Scalar y = detail::parseObjScalar<Scalar>(
+                detail::nextObjToken(token_cursor, line_end), context, "normal y");
+            const Scalar z = detail::parseObjScalar<Scalar>(
+                detail::nextObjToken(token_cursor, line_end), context, "normal z");
             nx.push_back(x);
             ny.push_back(y);
             nz.push_back(z);
         }
         else if (token == "vt")
         {
-            Scalar u, v;
-            if (!(iss >> u >> v))
-            {
-                throw std::invalid_argument(context + "texture coordinate line must contain u and v");
-            }
+            const Scalar u = detail::parseObjScalar<Scalar>(
+                detail::nextObjToken(token_cursor, line_end), context, "texture u");
+            const Scalar v = detail::parseObjScalar<Scalar>(
+                detail::nextObjToken(token_cursor, line_end), context, "texture v");
             tx.push_back(u);
             ty.push_back(v);
         }
         else if (token == "f")
         {
-            std::vector<int> fv, ft, fn;
-            std::string s;
-            while (iss >> s)
+            std::array<int, 3> first{{-1, -1, -1}};
+            std::array<int, 3> previous{{-1, -1, -1}};
+            std::size_t corner_count = 0;
+            while (true)
             {
+                const std::string_view face_token = detail::nextObjToken(token_cursor, line_end);
+                if (face_token.empty() || face_token.front() == '#')
+                {
+                    break;
+                }
                 try
                 {
-                    auto idx = detail::parseFaceVertex(s);
-                    fv.push_back(detail::resolveObjIndex(idx.v, vx.size(), "OBJ face vertex"));
-                    ft.push_back(-1);
-                    fn.push_back(-1);
+                    const auto idx = detail::parseFaceVertex(face_token);
+                    std::array<int, 3> current{{
+                        detail::resolveObjIndex(idx.v, vx.size(), "OBJ face vertex"), -1, -1}};
                     if (idx.has_t)
                     {
-                        ft.back() = detail::resolveObjIndex(idx.t, tx.size(), "OBJ face texture");
+                        current[1] = detail::resolveObjIndex(
+                            idx.t, tx.size(), "OBJ face texture");
                     }
                     if (idx.has_n)
                     {
-                        fn.back() = detail::resolveObjIndex(idx.n, nx.size(), "OBJ face normal");
+                        current[2] = detail::resolveObjIndex(
+                            idx.n, nx.size(), "OBJ face normal");
                     }
+                    if (corner_count == 0)
+                    {
+                        first = current;
+                    }
+                    else if (corner_count >= 2)
+                    {
+                        face_verts.push_back({first[0], previous[0], current[0]});
+                        face_tex.push_back({first[1], previous[1], current[1]});
+                        face_normals.push_back({first[2], previous[2], current[2]});
+                    }
+                    previous = current;
+                    ++corner_count;
                 }
                 catch (const std::invalid_argument& e)
                 {
-                    throw std::invalid_argument(context + "invalid face index token '" + s + "': " + e.what());
+                    throw std::invalid_argument(
+                        context + "invalid face index token '" + std::string(face_token) +
+                        "': " + e.what());
                 }
                 catch (const std::out_of_range& e)
                 {
-                    throw std::out_of_range(context + "invalid face index token '" + s + "': " + e.what());
+                    throw std::out_of_range(
+                        context + "invalid face index token '" + std::string(face_token) +
+                        "': " + e.what());
                 }
             }
-            if (fv.size() < 3)
+            if (corner_count < 3)
             {
                 throw std::invalid_argument(context + "face must contain at least 3 vertices");
-            }
-            for (std::size_t c = 1; c + 1 < fv.size(); ++c)
-            {
-                face_verts.push_back({fv[0], fv[c], fv[c + 1]});
-                face_tex.push_back({ft[0], ft[c], ft[c + 1]});
-                face_normals.push_back({fn[0], fn[c], fn[c + 1]});
             }
         }
         else if (token == "mtllib")
         {
-            if (!(iss >> mtlLib))
+            const std::string_view material_token = detail::nextObjToken(token_cursor, line_end);
+            if (material_token.empty())
             {
                 throw std::invalid_argument(context + "mtllib line must contain a file name");
             }
+            mtlLib.assign(material_token.data(), material_token.size());
         }
     }
+
+    std::string().swap(file_data);
 
     size_t n = vx.size();
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(
@@ -345,7 +450,7 @@ readObj(const std::string& path)
     std::vector<bool> vertex_referenced_by_face(n, false);
     const bool has_face_normal_indices = std::any_of(
         face_normals.begin(), face_normals.end(),
-        [](const std::vector<int>& row) {
+        [](const std::array<int, 3>& row) {
             return std::any_of(row.begin(), row.end(), [](int idx) { return idx >= 0; });
         });
     bool face_normal_indices_consistent = !nx.empty() && has_face_normal_indices;
@@ -353,12 +458,7 @@ readObj(const std::string& path)
     {
         for (size_t fi = 0; fi < face_verts.size(); ++fi)
         {
-            if (face_normals[fi].size() != face_verts[fi].size())
-            {
-                face_normal_indices_consistent = false;
-                continue;
-            }
-            for (size_t c = 0; c < face_verts[fi].size(); ++c)
+            for (size_t c = 0; c < 3; ++c)
             {
                 const int vi = face_verts[fi][c];
                 if (vi >= 0 && static_cast<size_t>(vi) < n)
@@ -451,9 +551,8 @@ readObj(const std::string& path)
 
         const bool has_complete_face_texture_indices = !face_tex.empty() &&
             face_tex.size() == face_verts.size() &&
-            std::all_of(face_tex.begin(), face_tex.end(), [](const std::vector<int>& row) {
-                return row.size() >= 3 &&
-                    std::all_of(row.begin(), row.begin() + 3, [](int idx) { return idx >= 0; });
+            std::all_of(face_tex.begin(), face_tex.end(), [](const std::array<int, 3>& row) {
+                return std::all_of(row.begin(), row.end(), [](int idx) { return idx >= 0; });
             });
 
         if (has_complete_face_texture_indices)
