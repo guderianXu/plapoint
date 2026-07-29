@@ -336,4 +336,93 @@ TEST(RadiusOutlierRemovalTest, GpuMatchesCpuAndCopiesNormals)
                         cpu_output.normals()->getValue(static_cast<plamatrix::Index>(i), 2));
     }
 }
+
+
+TEST(RadiusOutlierRemovalTest, GpuIndexedPathMatchesCpuRemovedIndicesAndPreservesAllAttributes)
+{
+    if (!hasCudaDeviceForRadiusOutlierRemoval())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU radius outlier test";
+    }
+
+    using Scalar = float;
+    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    constexpr int count = 6;
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(count, 3);
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(count, 3);
+    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(count, 3);
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(count, 1);
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> fields(count, 2);
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> texture_coords(count, 2);
+    const Scalar x[count] = {0, 0, 1, 2, 10, std::numeric_limits<Scalar>::quiet_NaN()};
+    for (int i = 0; i < count; ++i)
+    {
+        points.setValue(i, 0, x[i]);
+        points.setValue(i, 1, 0);
+        points.setValue(i, 2, 0);
+        normals.setValue(i, 0, Scalar(10 + i));
+        normals.setValue(i, 1, Scalar(20 + i));
+        normals.setValue(i, 2, Scalar(30 + i));
+        colors.setValue(i, 0, static_cast<std::uint8_t>(40 + i));
+        colors.setValue(i, 1, static_cast<std::uint8_t>(50 + i));
+        colors.setValue(i, 2, static_cast<std::uint8_t>(60 + i));
+        intensities.setValue(i, 0, static_cast<std::uint16_t>(700 + i));
+        fields.setValue(i, 0, Scalar(100 + i));
+        fields.setValue(i, 1, Scalar(200 + i));
+        texture_coords.setValue(i, 0, Scalar(i) + Scalar(0.1));
+        texture_coords.setValue(i, 1, Scalar(i) + Scalar(0.2));
+    }
+    auto cpu_input = std::make_shared<CpuCloud>(std::move(points));
+    cpu_input->setNormals(std::move(normals));
+    cpu_input->setColors(std::move(colors));
+    cpu_input->setIntensities(std::move(intensities));
+    cpu_input->setScalarFields({"score", "frame"}, std::move(fields));
+    cpu_input->setTextureCoords(std::move(texture_coords));
+    auto gpu_input = std::make_shared<GpuCloud>(cpu_input->toGpu());
+
+    plapoint::RadiusOutlierRemoval<Scalar, plamatrix::Device::CPU> cpu_filter;
+    cpu_filter.setInputCloud(cpu_input);
+    cpu_filter.setRadius(Scalar(1));
+    cpu_filter.setMinNeighbors(2);
+    CpuCloud cpu_output;
+    std::vector<int> cpu_removed;
+    cpu_filter.filter(cpu_output, cpu_removed);
+
+    plapoint::RadiusOutlierRemoval<Scalar, plamatrix::Device::GPU> gpu_filter;
+    gpu_filter.setInputCloud(gpu_input);
+    gpu_filter.setRadius(Scalar(1));
+    gpu_filter.setMinNeighbors(2);
+    GpuCloud gpu_output;
+    std::vector<int> gpu_removed;
+    gpu_filter.filter(gpu_output, gpu_removed);
+    const auto output = gpu_output.toCpu();
+
+    EXPECT_EQ(gpu_removed, cpu_removed);
+    EXPECT_EQ(gpu_removed, (std::vector<int>{4, 5}));
+    EXPECT_EQ(gpu_filter.lastGpuBackend(), plapoint::gpu::GpuOutlierRemovalBackend::UniformGrid);
+    EXPECT_EQ(gpu_filter.gpuIndexBuildCount(), 1u);
+    ASSERT_EQ(output.size(), cpu_output.size());
+    ASSERT_TRUE(output.hasNormals());
+    ASSERT_TRUE(output.hasColors());
+    ASSERT_TRUE(output.hasIntensities());
+    ASSERT_TRUE(output.hasScalarFields());
+    ASSERT_TRUE(output.hasTextureCoords());
+    EXPECT_EQ(output.scalarFieldNames(), (std::vector<std::string>{"score", "frame"}));
+    for (int i = 0; i < 4; ++i)
+    {
+        EXPECT_FLOAT_EQ(output.points().getValue(i, 0), cpu_output.points().getValue(i, 0));
+        EXPECT_FLOAT_EQ(output.normals()->getValue(i, 2), Scalar(30 + i));
+        EXPECT_EQ(output.colors()->getValue(i, 1), 50 + i);
+        EXPECT_EQ(output.intensities()->getValue(i, 0), 700 + i);
+        EXPECT_FLOAT_EQ(output.scalarFields()->getValue(i, 0), Scalar(100 + i));
+        EXPECT_FLOAT_EQ(output.scalarFields()->getValue(i, 1), Scalar(200 + i));
+        EXPECT_FLOAT_EQ(output.textureCoords()->getValue(i, 0), Scalar(i) + Scalar(0.1));
+        EXPECT_FLOAT_EQ(output.textureCoords()->getValue(i, 1), Scalar(i) + Scalar(0.2));
+    }
+
+    GpuCloud repeated_output;
+    gpu_filter.filter(repeated_output);
+    EXPECT_EQ(gpu_filter.gpuIndexBuildCount(), 1u);
+}
 #endif

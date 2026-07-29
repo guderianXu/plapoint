@@ -314,4 +314,104 @@ TEST(NormalEstimationTest, GpuMatchesCpuForKGreaterThanPointCount)
         EXPECT_FLOAT_EQ(gpu_normals.getValue(i, 2), cpu_normals.getValue(i, 2));
     }
 }
+
+TEST(NormalEstimationTest, GpuUsesHostFallbackForKAboveIndexedLimit)
+{
+    if (!hasCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU normal estimation test";
+    }
+
+    using Scalar = float;
+    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(40, 3);
+    for (int index = 0; index < 40; ++index)
+    {
+        points.setValue(index, 0, Scalar(index % 8));
+        points.setValue(index, 1, Scalar(index / 8));
+        points.setValue(index, 2, Scalar(0));
+    }
+    auto cpu_cloud = std::make_shared<CpuCloud>(std::move(points));
+    auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud->toGpu());
+
+    auto cpu_tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    cpu_tree->setInputCloud(cpu_cloud);
+    cpu_tree->build();
+    auto gpu_tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::GPU>>();
+    gpu_tree->setInputCloud(gpu_cloud);
+    gpu_tree->build();
+
+    plapoint::NormalEstimation<Scalar, plamatrix::Device::CPU> cpu_estimator;
+    cpu_estimator.setInputCloud(cpu_cloud);
+    cpu_estimator.setSearchMethod(cpu_tree);
+    cpu_estimator.setKSearch(33);
+    plapoint::NormalEstimation<Scalar, plamatrix::Device::GPU> gpu_estimator;
+    gpu_estimator.setInputCloud(gpu_cloud);
+    gpu_estimator.setSearchMethod(gpu_tree);
+    gpu_estimator.setKSearch(33);
+
+    const auto cpu_normals = cpu_estimator.compute();
+    const auto gpu_normals = gpu_estimator.compute().toCpu();
+    ASSERT_EQ(gpu_normals.rows(), cpu_normals.rows());
+    for (plamatrix::Index row = 0; row < cpu_normals.rows(); ++row)
+    {
+        for (int column = 0; column < 3; ++column)
+        {
+            EXPECT_NEAR(
+                std::abs(gpu_normals(row, column)),
+                std::abs(cpu_normals(row, column)),
+                Scalar(1e-5));
+        }
+    }
+}
+
+TEST(NormalEstimationTest, ExplicitGpuRejectsKAboveIndexedLimit)
+{
+    if (!hasCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU normal estimation test";
+    }
+
+    using Scalar = float;
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(40, 3);
+    for (int index = 0; index < 40; ++index)
+    {
+        points.setValue(index, 0, Scalar(index % 8));
+        points.setValue(index, 1, Scalar(index / 8));
+        points.setValue(index, 2, Scalar(0));
+    }
+    plapoint::PointCloud<Scalar, plamatrix::Device::CPU> cloud(std::move(points));
+    EXPECT_THROW(
+        plapoint::estimateNormals(cloud, 33, plapoint::ProcessingDevice::GPU),
+        std::invalid_argument);
+}
+
+TEST(NormalEstimationTest, ExplicitGpuReportsUniformGridBackend)
+{
+    if (!hasCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU normal estimation test";
+    }
+
+    using Scalar = float;
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(40, 3);
+    for (int index = 0; index < 40; ++index)
+    {
+        points.setValue(index, 0, Scalar(index % 8));
+        points.setValue(index, 1, Scalar(index / 8));
+        points.setValue(index, 2, Scalar(0));
+    }
+    const plapoint::PointCloud<Scalar, plamatrix::Device::CPU> cloud(std::move(points));
+    plapoint::ProcessingReport report;
+
+    const auto normals = plapoint::estimateNormals(
+        cloud, 8, plapoint::ProcessingDevice::GPU, &report);
+
+    EXPECT_EQ(normals.rows(), 40);
+    EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::GPU);
+    EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::GpuUniformGrid);
+    EXPECT_FALSE(report.usedFallback);
+}
 #endif

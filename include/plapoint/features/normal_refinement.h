@@ -3,6 +3,11 @@
 #include <plapoint/core/point_cloud.h>
 #include <plapoint/search/kdtree.h>
 #include <plamatrix/ops/point_cloud.h>
+#ifdef PLAPOINT_WITH_CUDA
+#include <cuda_runtime.h>
+#include <plapoint/gpu/cuda_check.h>
+#include <plapoint/gpu/normal_refinement.h>
+#endif
 #include <cmath>
 #include <memory>
 #include <stdexcept>
@@ -28,6 +33,29 @@ public:
         if (!_tree)  throw std::runtime_error("NormalRefinement: search method not set");
         if (!_cloud->hasNormals()) throw std::runtime_error("NormalRefinement: cloud has no normals");
         if (k <= 0) throw std::invalid_argument("NormalRefinement: k must be positive");
+
+#ifdef PLAPOINT_WITH_CUDA
+        if constexpr (Dev == plamatrix::Device::GPU)
+        {
+            if (k <= 32)
+            {
+                if (!_tree->isBuilt())
+                {
+                    throw std::runtime_error("NormalRefinement: search method is not built");
+                }
+                gpu::GpuSpatialIndex<Scalar> index;
+                index.buildAdaptive(*_cloud);
+                gpu::NormalRefinementGpuWorkspace<Scalar> workspace;
+                plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> refined_normals;
+                gpu::smoothNormalsAsync(
+                    *_cloud, index, k, refined_normals, workspace, nullptr);
+                PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(nullptr));
+                workspace.resetStream();
+                _cloud->setNormals(std::move(refined_normals));
+                return;
+            }
+        }
+#endif
 
         int n = static_cast<int>(_cloud->size());
         const auto& points_cpu = _cloud->pointsCpu();
@@ -67,6 +95,14 @@ public:
     void orientConsistently(const plamatrix::Vec3<Scalar>& viewpoint)
     {
         if (!_cloud || !_cloud->hasNormals()) return;
+#ifdef PLAPOINT_WITH_CUDA
+        if constexpr (Dev == plamatrix::Device::GPU)
+        {
+            gpu::orientNormalsTowardViewpointAsync(*_cloud, viewpoint, nullptr);
+            PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(nullptr));
+            return;
+        }
+#endif
         int n = static_cast<int>(_cloud->size());
         const auto& points_cpu = _cloud->pointsCpu();
         auto normals_cpu = toCpuCopy(*_cloud->normals());

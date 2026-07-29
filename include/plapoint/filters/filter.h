@@ -227,6 +227,49 @@ protected:
         }
     }
 
+    /// Copy texture coordinates only when they are aligned one-to-one with points.
+    void copyPointTextureCoordsForIndices(
+        const std::vector<int>& indices,
+        PointCloudType& output) const
+    {
+        if (!_input || !_input->hasPointAlignedTextureCoords())
+        {
+            return;
+        }
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> texture_coords(
+            static_cast<plamatrix::Index>(indices.size()), 2);
+        if constexpr (Dev == plamatrix::Device::CPU)
+        {
+            const auto* source = _input->textureCoords();
+            for (std::size_t i = 0; i < indices.size(); ++i)
+            {
+                const int src = indices[i];
+                texture_coords(static_cast<plamatrix::Index>(i), 0) = (*source)(src, 0);
+                texture_coords(static_cast<plamatrix::Index>(i), 1) = (*source)(src, 1);
+            }
+        }
+        else
+        {
+            const auto source = _input->textureCoords()->toCpu();
+            for (std::size_t i = 0; i < indices.size(); ++i)
+            {
+                const int src = indices[i];
+                texture_coords(static_cast<plamatrix::Index>(i), 0) = source(src, 0);
+                texture_coords(static_cast<plamatrix::Index>(i), 1) = source(src, 1);
+            }
+        }
+        if constexpr (Dev == plamatrix::Device::CPU)
+        {
+            output.setTextureCoords(std::move(texture_coords));
+        }
+        else
+        {
+            output.setTextureCoords(texture_coords.toGpu());
+        }
+        output.setMaterialLibraryFile(_input->materialLibraryFile());
+        output.setTextureImageFile(_input->textureImageFile());
+    }
+
     /// Copy all point-wise attributes for selected indices from input to output cloud.
     void copyAttributesForIndices(const std::vector<int>& indices, PointCloudType& output) const
     {
@@ -234,6 +277,7 @@ protected:
         copyColorsForIndices(indices, output);
         copyIntensitiesForIndices(indices, output);
         copyScalarFieldsForIndices(indices, output);
+        copyPointTextureCoordsForIndices(indices, output);
     }
 
     /// Build an output cloud from selected source point indices and copy point-wise attributes.

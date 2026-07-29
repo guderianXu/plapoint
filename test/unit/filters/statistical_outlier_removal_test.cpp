@@ -402,7 +402,7 @@ TEST(SORTest, RejectsInvalidParameters)
 }
 
 #ifdef PLAPOINT_WITH_CUDA
-TEST(SORTest, GpuInputUsesCudaMaskWithoutKdTreeWorkspace)
+TEST(SORTest, GpuIndexedPathDoesNotRequireHostBackedKdTree)
 {
     if (!hasCudaDeviceForSOR())
     {
@@ -427,16 +427,8 @@ TEST(SORTest, GpuInputUsesCudaMaskWithoutKdTreeWorkspace)
     CpuCloud cpu_cloud(std::move(mat));
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
 
-    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::GPU>>();
-    tree->setInputCloud(gpu_cloud);
-    tree->build();
-
-    ASSERT_EQ(tree->gpuBatchQueryScalarCapacityForTesting(), 0u);
-    ASSERT_EQ(tree->gpuBatchResultCapacityForTesting(), 0u);
-
     plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::GPU> sor;
     sor.setInputCloud(gpu_cloud);
-    sor.setSearchMethod(tree);
     sor.setMeanK(4);
     sor.setStddevMulThresh(Scalar(1));
 
@@ -444,8 +436,7 @@ TEST(SORTest, GpuInputUsesCudaMaskWithoutKdTreeWorkspace)
     sor.filter(output);
 
     EXPECT_EQ(output.toCpu().size(), 11u);
-    EXPECT_EQ(tree->gpuBatchQueryScalarCapacityForTesting(), 0u);
-    EXPECT_EQ(tree->gpuBatchResultCapacityForTesting(), 0u);
+    EXPECT_EQ(sor.lastGpuBackend(), plapoint::gpu::GpuOutlierRemovalBackend::UniformGrid);
 }
 
 TEST(SORTest, GpuMatchesCpuAndCopiesNormals)
@@ -518,5 +509,192 @@ TEST(SORTest, GpuMatchesCpuAndCopiesNormals)
         EXPECT_FLOAT_EQ(gpu_output_cpu.normals()->getValue(static_cast<plamatrix::Index>(i), 2),
                         cpu_output.normals()->getValue(static_cast<plamatrix::Index>(i), 2));
     }
+}
+
+TEST(SORTest, GpuIndexedPathPreservesAllAttributesAndReportsRemovedIndices)
+{
+    if (!hasCudaDeviceForSOR())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU SOR test";
+    }
+
+    using Scalar = float;
+    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    constexpr int count = 7;
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(count, 3);
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(count, 3);
+    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(count, 3);
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(count, 1);
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> fields(count, 2);
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> texture_coords(count, 2);
+    for (int i = 0; i < count; ++i)
+    {
+        const Scalar x = i < 5 ? Scalar(i) * Scalar(0.01)
+            : (i == 5 ? Scalar(100) : std::numeric_limits<Scalar>::quiet_NaN());
+        points.setValue(i, 0, x);
+        points.setValue(i, 1, 0);
+        points.setValue(i, 2, 0);
+        normals.setValue(i, 0, Scalar(10 + i));
+        normals.setValue(i, 1, Scalar(20 + i));
+        normals.setValue(i, 2, Scalar(30 + i));
+        colors.setValue(i, 0, static_cast<std::uint8_t>(40 + i));
+        colors.setValue(i, 1, static_cast<std::uint8_t>(50 + i));
+        colors.setValue(i, 2, static_cast<std::uint8_t>(60 + i));
+        intensities.setValue(i, 0, static_cast<std::uint16_t>(700 + i));
+        fields.setValue(i, 0, Scalar(100 + i));
+        fields.setValue(i, 1, Scalar(200 + i));
+        texture_coords.setValue(i, 0, Scalar(i) + Scalar(0.1));
+        texture_coords.setValue(i, 1, Scalar(i) + Scalar(0.2));
+    }
+    auto cpu_input = std::make_shared<CpuCloud>(std::move(points));
+    cpu_input->setNormals(std::move(normals));
+    cpu_input->setColors(std::move(colors));
+    cpu_input->setIntensities(std::move(intensities));
+    cpu_input->setScalarFields({"score", "frame"}, std::move(fields));
+    cpu_input->setTextureCoords(std::move(texture_coords));
+    auto gpu_input = std::make_shared<GpuCloud>(cpu_input->toGpu());
+    auto cpu_tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    auto gpu_tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::GPU>>();
+    cpu_tree->setInputCloud(cpu_input);
+    gpu_tree->setInputCloud(gpu_input);
+    cpu_tree->build();
+    gpu_tree->build();
+
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::CPU> cpu_filter;
+    cpu_filter.setInputCloud(cpu_input);
+    cpu_filter.setSearchMethod(cpu_tree);
+    cpu_filter.setMeanK(2);
+    cpu_filter.setStddevMulThresh(Scalar(0.5));
+    CpuCloud cpu_output;
+    std::vector<int> cpu_removed;
+    cpu_filter.filter(cpu_output, cpu_removed);
+
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::GPU> gpu_filter;
+    gpu_filter.setInputCloud(gpu_input);
+    gpu_filter.setSearchMethod(gpu_tree);
+    gpu_filter.setMeanK(2);
+    gpu_filter.setStddevMulThresh(Scalar(0.5));
+    GpuCloud gpu_output;
+    std::vector<int> gpu_removed;
+    gpu_filter.filter(gpu_output, gpu_removed);
+    const auto output = gpu_output.toCpu();
+
+    EXPECT_EQ(gpu_removed, cpu_removed);
+    EXPECT_EQ(gpu_removed, (std::vector<int>{5, 6}));
+    EXPECT_EQ(gpu_filter.lastGpuBackend(), plapoint::gpu::GpuOutlierRemovalBackend::UniformGrid);
+    EXPECT_EQ(gpu_filter.gpuIndexBuildCount(), 1u);
+    ASSERT_EQ(output.size(), cpu_output.size());
+    ASSERT_TRUE(output.hasNormals());
+    ASSERT_TRUE(output.hasColors());
+    ASSERT_TRUE(output.hasIntensities());
+    ASSERT_TRUE(output.hasScalarFields());
+    ASSERT_TRUE(output.hasTextureCoords());
+    EXPECT_EQ(output.scalarFieldNames(), (std::vector<std::string>{"score", "frame"}));
+    for (int i = 0; i < 5; ++i)
+    {
+        EXPECT_FLOAT_EQ(output.points().getValue(i, 0), cpu_output.points().getValue(i, 0));
+        EXPECT_FLOAT_EQ(output.normals()->getValue(i, 2), Scalar(30 + i));
+        EXPECT_EQ(output.colors()->getValue(i, 1), 50 + i);
+        EXPECT_EQ(output.intensities()->getValue(i, 0), 700 + i);
+        EXPECT_FLOAT_EQ(output.scalarFields()->getValue(i, 0), Scalar(100 + i));
+        EXPECT_FLOAT_EQ(output.scalarFields()->getValue(i, 1), Scalar(200 + i));
+        EXPECT_FLOAT_EQ(output.textureCoords()->getValue(i, 0), Scalar(i) + Scalar(0.1));
+        EXPECT_FLOAT_EQ(output.textureCoords()->getValue(i, 1), Scalar(i) + Scalar(0.2));
+    }
+}
+
+TEST(SORTest, GpuMeanKBoundaryReportsIndexedAndCompatibilityBackends)
+{
+    if (!hasCudaDeviceForSOR())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU SOR test";
+    }
+
+    using Scalar = float;
+    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(33, 3);
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(33, 3);
+    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(33, 3);
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(33, 1);
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> fields(33, 1);
+    for (int i = 0; i < 33; ++i)
+    {
+        points.setValue(i, 0, Scalar(i));
+        points.setValue(i, 1, Scalar(i % 3));
+        points.setValue(i, 2, 0);
+        normals.setValue(i, 0, Scalar(i + 1));
+        normals.setValue(i, 1, Scalar(0));
+        normals.setValue(i, 2, Scalar(100 + i));
+        colors.setValue(i, 0, static_cast<std::uint8_t>(i));
+        colors.setValue(i, 1, static_cast<std::uint8_t>(i + 1));
+        colors.setValue(i, 2, static_cast<std::uint8_t>(i + 2));
+        intensities.setValue(i, 0, static_cast<std::uint16_t>(1000 + i));
+        fields.setValue(i, 0, Scalar(2000 + i));
+    }
+    auto cpu_input = std::make_shared<CpuCloud>(std::move(points));
+    cpu_input->setNormals(std::move(normals));
+    cpu_input->setColors(std::move(colors));
+    cpu_input->setIntensities(std::move(intensities));
+    cpu_input->setScalarFields({"source"}, std::move(fields));
+    auto gpu_input = std::make_shared<GpuCloud>(cpu_input->toGpu());
+    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::GPU>>();
+    tree->setInputCloud(gpu_input);
+    tree->build();
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::GPU> filter;
+    filter.setInputCloud(gpu_input);
+    filter.setSearchMethod(tree);
+    filter.setStddevMulThresh(Scalar(1));
+
+    filter.setMeanK(31);
+    GpuCloud indexed_output;
+    filter.filter(indexed_output);
+    EXPECT_EQ(filter.lastGpuBackend(), plapoint::gpu::GpuOutlierRemovalBackend::UniformGrid);
+    EXPECT_TRUE(filter.lastGpuFallbackReason().empty());
+
+    filter.setMeanK(32);
+    GpuCloud fallback_output;
+    std::vector<int> fallback_removed;
+    filter.filter(fallback_output, fallback_removed);
+    EXPECT_EQ(filter.lastGpuBackend(), plapoint::gpu::GpuOutlierRemovalBackend::CpuCompatibility);
+    EXPECT_EQ(filter.lastGpuFallbackReason(), "mean_k + 1 exceeds indexed KNN limit 32");
+
+    auto cpu_tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    cpu_tree->setInputCloud(cpu_input);
+    cpu_tree->build();
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::CPU> cpu_filter;
+    cpu_filter.setInputCloud(cpu_input);
+    cpu_filter.setSearchMethod(cpu_tree);
+    cpu_filter.setMeanK(32);
+    cpu_filter.setStddevMulThresh(Scalar(1));
+    CpuCloud cpu_output;
+    std::vector<int> cpu_removed;
+    cpu_filter.filter(cpu_output, cpu_removed);
+
+    const auto fallback_cpu = fallback_output.toCpu();
+    EXPECT_EQ(fallback_removed, cpu_removed);
+    ASSERT_EQ(fallback_cpu.size(), cpu_output.size());
+    ASSERT_TRUE(fallback_cpu.hasNormals());
+    ASSERT_TRUE(fallback_cpu.hasColors());
+    ASSERT_TRUE(fallback_cpu.hasIntensities());
+    ASSERT_TRUE(fallback_cpu.hasScalarFields());
+    for (plamatrix::Index row = 0; row < fallback_cpu.points().rows(); ++row)
+    {
+        EXPECT_FLOAT_EQ(fallback_cpu.points().getValue(row, 0), cpu_output.points().getValue(row, 0));
+        EXPECT_FLOAT_EQ(fallback_cpu.normals()->getValue(row, 2), cpu_output.normals()->getValue(row, 2));
+        EXPECT_EQ(fallback_cpu.colors()->getValue(row, 1), cpu_output.colors()->getValue(row, 1));
+        EXPECT_EQ(fallback_cpu.intensities()->getValue(row, 0), cpu_output.intensities()->getValue(row, 0));
+        EXPECT_FLOAT_EQ(
+            fallback_cpu.scalarFields()->getValue(row, 0),
+            cpu_output.scalarFields()->getValue(row, 0));
+    }
+
+    filter.setMeanK(31);
+    GpuCloud indexed_again_output;
+    filter.filter(indexed_again_output);
+    EXPECT_EQ(filter.lastGpuBackend(), plapoint::gpu::GpuOutlierRemovalBackend::UniformGrid);
+    EXPECT_TRUE(filter.lastGpuFallbackReason().empty());
+    EXPECT_EQ(indexed_again_output.size(), indexed_output.size());
 }
 #endif

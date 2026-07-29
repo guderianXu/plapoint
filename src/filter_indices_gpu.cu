@@ -1,12 +1,10 @@
 #include <plapoint/gpu/filter_indices.h>
 
 #include <plapoint/gpu/cuda_check.h>
-#include <plapoint/gpu/knn.h>
 
 #include <cuda_runtime.h>
 
 #include <algorithm>
-#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +14,8 @@
 #include <vector>
 
 #include <plamatrix/dense/dense_matrix.h>
+#include <plamatrix/ops/indexing.h>
+#include <plamatrix/ops/reduction.h>
 
 namespace plapoint {
 namespace gpu {
@@ -45,65 +45,42 @@ __device__ bool finitePoint(const Scalar* points, int point_count, int idx)
         && isfinite(static_cast<double>(z));
 }
 
-template <typename Scalar>
-__device__ double finiteDistance(const Scalar* points, int point_count, int lhs, int rhs)
-{
-    const double dx = static_cast<double>(points[lhs]) - static_cast<double>(points[rhs]);
-    const double dy = static_cast<double>(points[point_count + lhs])
-        - static_cast<double>(points[point_count + rhs]);
-    const double dz = static_cast<double>(points[2 * point_count + lhs])
-        - static_cast<double>(points[2 * point_count + rhs]);
-    const double distance = norm3d(dx, dy, dz);
-    return isfinite(distance) ? distance : DBL_MAX;
-}
-
-template <typename Scalar>
-__global__ void radiusOutlierKeepMaskKernel(
-    const Scalar* points,
+__global__ void saturatedCountsToKeepMaskKernel(
+    const plamatrix::Index* counts,
     int point_count,
-    Scalar radius,
     int min_neighbors,
     std::uint8_t* keep_mask)
 {
     const int idx = static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x)
         + static_cast<int>(threadIdx.x);
-    if (idx >= point_count)
+    if (idx < point_count)
     {
-        return;
+        keep_mask[idx] = counts[idx] >= min_neighbors ? 1 : 0;
     }
+}
 
-    if (!finitePoint(points, point_count, idx))
+__global__ void invertKeepMaskKernel(
+    const std::uint8_t* keep_mask,
+    int point_count,
+    std::uint8_t* remove_mask)
+{
+    const int idx = static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x)
+        + static_cast<int>(threadIdx.x);
+    if (idx < point_count)
     {
-        keep_mask[idx] = 0;
-        return;
+        remove_mask[idx] = keep_mask[idx] == 0 ? 1 : 0;
     }
-
-    const double radius_value = static_cast<double>(radius);
-    int neighbor_count = 0;
-    for (int other = 0; other < point_count; ++other)
-    {
-        const double distance = finiteDistance(points, point_count, idx, other);
-        if (distance <= radius_value)
-        {
-            ++neighbor_count;
-            if (neighbor_count >= min_neighbors)
-            {
-                break;
-            }
-        }
-    }
-
-    keep_mask[idx] = neighbor_count >= min_neighbors ? 1 : 0;
 }
 
 template <typename Scalar>
 __global__ void sorMeanDistanceKernel(
     const Scalar* points,
     int point_count,
-    const int* knn_indices,
+    const plamatrix::Index* knn_indices,
     int k_use,
     double* mean_distances,
-    std::uint8_t* finite_mask)
+    double* finite_weights,
+    double* invalid_distances)
 {
     const int idx = static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x)
         + static_cast<int>(threadIdx.x);
@@ -114,40 +91,74 @@ __global__ void sorMeanDistanceKernel(
 
     if (!finitePoint(points, point_count, idx))
     {
-        finite_mask[idx] = 0;
-        mean_distances[idx] = DBL_MAX;
+        finite_weights[idx] = 0.0;
+        invalid_distances[idx] = 0.0;
+        mean_distances[idx] = 0.0;
         return;
     }
 
-    double sum = 0.0;
+    double mean_distance = 0.0;
     int count = 0;
+    bool invalid_distance = false;
     for (int k = 0; k < k_use; ++k)
     {
-        const int neighbor =
+        const auto neighbor =
             knn_indices[idx + static_cast<std::size_t>(k) * static_cast<std::size_t>(point_count)];
         if (neighbor < 0 || neighbor >= point_count || neighbor == idx)
         {
             continue;
         }
 
-        const double distance = finiteDistance(points, point_count, idx, neighbor);
-        if (isfinite(distance))
+        const double dx = static_cast<double>(points[idx])
+            - static_cast<double>(points[neighbor]);
+        const double dy = static_cast<double>(points[point_count + idx])
+            - static_cast<double>(points[point_count + neighbor]);
+        const double dz = static_cast<double>(points[2 * point_count + idx])
+            - static_cast<double>(points[2 * point_count + neighbor]);
+        const double distance = norm3d(dx, dy, dz);
+        if (!isfinite(distance))
         {
-            sum += distance;
+            invalid_distance = true;
+            break;
+        }
+        else
+        {
             ++count;
+            mean_distance += (distance - mean_distance) / static_cast<double>(count);
         }
     }
 
-    finite_mask[idx] = 1;
-    mean_distances[idx] = count > 0 ? sum / static_cast<double>(count) : 0.0;
+    finite_weights[idx] = 1.0;
+    invalid_distances[idx] = invalid_distance ? 1.0 : 0.0;
+    mean_distances[idx] = !invalid_distance && count > 0 ? mean_distance : 0.0;
 }
 
-__global__ void sorThresholdKeepMaskKernel(
+__global__ void normalizeSorMeanDistancesKernel(
+    double* mean_distances,
+    const double* finite_weights,
+    const double* maximum_mean_distance,
+    int point_count)
+{
+    const int idx = static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x)
+        + static_cast<int>(threadIdx.x);
+    if (idx >= point_count)
+    {
+        return;
+    }
+    const double scale = maximum_mean_distance[0];
+    if (finite_weights[idx] != 0.0 && isfinite(scale) && scale > 0.0)
+    {
+        mean_distances[idx] /= scale;
+    }
+}
+
+__global__ void sorSquaredDeviationKernel(
     const double* mean_distances,
-    const std::uint8_t* finite_mask,
+    const double* finite_weights,
+    const double* distance_sum,
+    const double* finite_count,
     int point_count,
-    double threshold,
-    std::uint8_t* keep_mask)
+    double* squared_deviations)
 {
     const int idx = static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x)
         + static_cast<int>(threadIdx.x);
@@ -156,7 +167,44 @@ __global__ void sorThresholdKeepMaskKernel(
         return;
     }
 
-    keep_mask[idx] = finite_mask[idx] && mean_distances[idx] <= threshold ? 1 : 0;
+    if (finite_weights[idx] == 0.0 || finite_count[0] <= 0.0)
+    {
+        squared_deviations[idx] = 0.0;
+        return;
+    }
+    const double mean = distance_sum[0] / finite_count[0];
+    const double difference = mean_distances[idx] - mean;
+    squared_deviations[idx] = difference * difference;
+}
+
+__global__ void sorThresholdKeepMaskKernel(
+    const double* mean_distances,
+    const double* finite_weights,
+    const double* distance_sum,
+    const double* finite_count,
+    const double* squared_deviation_sum,
+    const double* invalid_distance_count,
+    int point_count,
+    double stddev_mul,
+    std::uint8_t* keep_mask)
+{
+    const int idx = static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x)
+        + static_cast<int>(threadIdx.x);
+    if (idx >= point_count)
+    {
+        return;
+    }
+    if (invalid_distance_count[0] > 0.0
+        || finite_weights[idx] == 0.0
+        || finite_count[0] <= 0.0)
+    {
+        keep_mask[idx] = 0;
+        return;
+    }
+    const double global_mean = distance_sum[0] / finite_count[0];
+    const double variance = squared_deviation_sum[0] / finite_count[0];
+    const double threshold = global_mean + stddev_mul * sqrt(variance > 0.0 ? variance : 0.0);
+    keep_mask[idx] = mean_distances[idx] <= threshold ? 1 : 0;
 }
 
 std::vector<std::uint8_t> copyMaskToHost(
@@ -207,15 +255,17 @@ plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU> radiusOutlierRemova
         return plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>(0, 1);
     }
 
-    constexpr int kBlockSize = 256;
-    const int grid_size = (point_count + kBlockSize - 1) / kBlockSize;
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU> d_keep_mask(point_count, 1);
-    radiusOutlierKeepMaskKernel<Scalar>
-        <<<grid_size, kBlockSize>>>(points.data(), point_count, radius, min_neighbors, d_keep_mask.data());
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
-    PLAPOINT_CHECK_CUDA(cudaDeviceSynchronize());
-
-    return d_keep_mask;
+    auto copied_points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>
+        ::uninitialized(points.rows(), 3);
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(
+        copied_points.data(),
+        points.data(),
+        static_cast<std::size_t>(point_count) * 3u * sizeof(Scalar),
+        cudaMemcpyDeviceToDevice));
+    PointCloud<Scalar, plamatrix::Device::GPU> cloud(std::move(copied_points));
+    OutlierRemovalGpuWorkspace<Scalar> workspace;
+    return radiusOutlierRemovalKeepMaskDevice(
+        cloud, radius, min_neighbors, workspace, nullptr);
 }
 
 template <typename Scalar>
@@ -244,73 +294,17 @@ plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU> statisticalOutlierR
     {
         throw std::invalid_argument("GPU statistical outlier keep mask supports mean_k + 1 <= 32");
     }
-
-    constexpr int kBlockSize = 256;
-    const int grid_size = (point_count + kBlockSize - 1) / kBlockSize;
-    plamatrix::DenseMatrix<int, plamatrix::Device::GPU> d_indices(point_count, k_use);
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> d_distances(point_count, k_use);
-    plamatrix::DenseMatrix<double, plamatrix::Device::GPU> d_mean_distances(point_count, 1);
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU> d_finite_mask(point_count, 1);
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU> d_keep_mask(point_count, 1);
-
-    batchKnnDevice(points, points, k_use, d_indices, d_distances);
-
-    sorMeanDistanceKernel<Scalar>
-        <<<grid_size, kBlockSize>>>(
-            points.data(),
-            point_count,
-            d_indices.data(),
-            k_use,
-            d_mean_distances.data(),
-            d_finite_mask.data());
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
-    PLAPOINT_CHECK_CUDA(cudaDeviceSynchronize());
-
-    auto mean_distances_matrix = d_mean_distances.toCpu();
-    auto finite_mask_matrix = d_finite_mask.toCpu();
-
-    long double global_mean = 0;
-    std::size_t finite_count = 0;
-    for (int i = 0; i < point_count; ++i)
-    {
-        if (finite_mask_matrix(i, 0))
-        {
-            global_mean += mean_distances_matrix(i, 0);
-            ++finite_count;
-        }
-    }
-    if (finite_count == 0)
-    {
-        PLAPOINT_CHECK_CUDA(cudaMemset(
-            d_keep_mask.data(),
-            0,
-            static_cast<std::size_t>(point_count) * sizeof(std::uint8_t)));
-        return d_keep_mask;
-    }
-    global_mean /= static_cast<long double>(finite_count);
-
-    long double global_var = 0;
-    for (int i = 0; i < point_count; ++i)
-    {
-        if (finite_mask_matrix(i, 0))
-        {
-            const long double diff =
-                static_cast<long double>(mean_distances_matrix(i, 0)) - global_mean;
-            global_var += diff * diff;
-        }
-    }
-    global_var /= static_cast<long double>(finite_count);
-    const long double global_stddev = std::sqrt(global_var);
-    const double threshold = static_cast<double>(
-        global_mean + static_cast<long double>(stddev_mul) * global_stddev);
-
-    sorThresholdKeepMaskKernel
-        <<<grid_size, kBlockSize>>>(
-            d_mean_distances.data(), d_finite_mask.data(), point_count, threshold, d_keep_mask.data());
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
-    PLAPOINT_CHECK_CUDA(cudaDeviceSynchronize());
-
-    return d_keep_mask;
+    auto copied_points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>
+        ::uninitialized(points.rows(), 3);
+    PLAPOINT_CHECK_CUDA(cudaMemcpy(
+        copied_points.data(),
+        points.data(),
+        static_cast<std::size_t>(point_count) * 3u * sizeof(Scalar),
+        cudaMemcpyDeviceToDevice));
+    PointCloud<Scalar, plamatrix::Device::GPU> cloud(std::move(copied_points));
+    OutlierRemovalGpuWorkspace<Scalar> workspace;
+    return statisticalOutlierRemovalKeepMaskDevice(
+        cloud, mean_k, stddev_mul, workspace, nullptr);
 }
 
 } // namespace
@@ -341,6 +335,223 @@ std::vector<int> removedIndicesFromKeepMask(const std::vector<std::uint8_t>& kee
         }
     }
     return indices;
+}
+
+std::vector<std::uint8_t> keepMaskToHost(
+    const plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>& keep_mask)
+{
+    return copyMaskToHost(keep_mask);
+}
+
+std::vector<int> removedIndicesFromKeepMaskDevice(
+    const plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>& keep_mask,
+    cudaStream_t stream)
+{
+    if (keep_mask.cols() != 1)
+    {
+        throw std::invalid_argument(
+            "removedIndicesFromKeepMaskDevice: keep mask must have one column");
+    }
+    if (keep_mask.rows() > std::numeric_limits<int>::max())
+    {
+        throw std::overflow_error(
+            "removedIndicesFromKeepMaskDevice: point count exceeds int range");
+    }
+
+    const int point_count = static_cast<int>(keep_mask.rows());
+    if (point_count == 0)
+    {
+        return {};
+    }
+
+    auto remove_mask = plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>
+        ::uninitialized(keep_mask.rows(), 1);
+    constexpr int kBlockSize = 256;
+    const int grid_size = (point_count + kBlockSize - 1) / kBlockSize;
+    invertKeepMaskKernel<<<grid_size, kBlockSize, 0, stream>>>(
+        keep_mask.data(), point_count, remove_mask.data());
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> empty_values(keep_mask.rows(), 0);
+    plamatrix::IndexingWorkspace indexing_workspace;
+    auto compacted = plamatrix::compactRows(
+        empty_values, remove_mask, indexing_workspace, stream);
+    const auto host_indices = compacted.sourceIndices.toCpu();
+    std::vector<int> removed(static_cast<std::size_t>(host_indices.rows()));
+    for (plamatrix::Index row = 0; row < host_indices.rows(); ++row)
+    {
+        removed[static_cast<std::size_t>(row)] = static_cast<int>(host_indices(row, 0));
+    }
+    indexing_workspace.closeAsyncAllocation();
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    return removed;
+}
+
+template <typename Scalar>
+plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>
+radiusOutlierRemovalKeepMaskDevice(
+    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    Scalar radius,
+    int min_neighbors,
+    OutlierRemovalGpuWorkspace<Scalar>& workspace,
+    cudaStream_t stream)
+{
+    validatePointMatrix(cloud.points(), "GPU indexed radius outlier keep mask");
+    if (!std::isfinite(radius) || radius < Scalar(0))
+    {
+        throw std::invalid_argument(
+            "GPU indexed radius outlier keep mask: radius must be finite and non-negative");
+    }
+    if (min_neighbors <= 0)
+    {
+        throw std::invalid_argument(
+            "GPU indexed radius outlier keep mask: min neighbors must be positive");
+    }
+
+    const Scalar indexed_cell_size = workspace._index.cellSize();
+    if (indexed_cell_size <= Scalar(0)
+        || !workspace._index.matches(cloud, indexed_cell_size))
+    {
+        workspace._index.buildAdaptive(cloud, stream);
+        ++workspace._indexBuildCount;
+    }
+
+    const int point_count = static_cast<int>(cloud.points().rows());
+    auto keep_mask = plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>
+        ::uninitialized(cloud.points().rows(), 1);
+    if (point_count != 0)
+    {
+        auto counts = workspace._index.radiusCountAsync(
+            cloud.points(), radius, min_neighbors, workspace._queryWorkspace, stream);
+        constexpr int kBlockSize = 256;
+        const int grid_size = (point_count + kBlockSize - 1) / kBlockSize;
+        saturatedCountsToKeepMaskKernel<<<grid_size, kBlockSize, 0, stream>>>(
+            counts.data(), point_count, min_neighbors, keep_mask.data());
+        PLAPOINT_CHECK_CUDA(cudaGetLastError());
+        counts.closeAsyncAllocation();
+    }
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    workspace._lastBackend = GpuOutlierRemovalBackend::UniformGrid;
+    return keep_mask;
+}
+
+template <typename Scalar>
+plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>
+statisticalOutlierRemovalKeepMaskDevice(
+    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    int mean_k,
+    Scalar stddev_mul,
+    OutlierRemovalGpuWorkspace<Scalar>& workspace,
+    cudaStream_t stream)
+{
+    validatePointMatrix(cloud.points(), "GPU indexed statistical outlier keep mask");
+    if (mean_k <= 0 || mean_k > std::numeric_limits<int>::max() - 1)
+    {
+        throw std::invalid_argument(
+            "GPU indexed statistical outlier keep mask: mean k must be positive");
+    }
+    if (!std::isfinite(stddev_mul) || stddev_mul < Scalar(0))
+    {
+        throw std::invalid_argument(
+            "GPU indexed statistical outlier keep mask: stddev multiplier must be non-negative");
+    }
+
+    const int point_count = static_cast<int>(cloud.points().rows());
+    const int k_use = point_count == 0 ? 0 : std::min(mean_k + 1, point_count);
+    if (k_use > 32)
+    {
+        throw std::invalid_argument(
+            "GPU indexed statistical outlier keep mask supports mean_k + 1 <= 32");
+    }
+    const Scalar indexed_cell_size = workspace._index.cellSize();
+    if (indexed_cell_size <= Scalar(0)
+        || !workspace._index.matches(cloud, indexed_cell_size))
+    {
+        workspace._index.buildAdaptive(cloud, stream);
+        ++workspace._indexBuildCount;
+    }
+
+    auto keep_mask = plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>
+        ::uninitialized(cloud.points().rows(), 1);
+    if (point_count == 0)
+    {
+        workspace._lastBackend = GpuOutlierRemovalBackend::UniformGrid;
+        return keep_mask;
+    }
+
+    workspace.ensureBuffers(cloud.points().rows());
+    auto neighbors = workspace._index.knnSearchAsync(
+        cloud.points(), k_use, workspace._queryWorkspace, stream);
+    constexpr int kBlockSize = 256;
+    const int grid_size = (point_count + kBlockSize - 1) / kBlockSize;
+    sorMeanDistanceKernel<Scalar><<<grid_size, kBlockSize, 0, stream>>>(
+        cloud.points().data(),
+        point_count,
+        neighbors.indices.data(),
+        k_use,
+        workspace._meanDistances.data(),
+        workspace._finiteWeights.data(),
+        workspace._invalidDistances.data());
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    neighbors.indices.closeAsyncAllocation();
+    neighbors.squaredDistances.closeAsyncAllocation();
+
+    plamatrix::ReductionWorkspace reduction_workspace;
+    auto maximum_mean_distance = plamatrix::max(
+        workspace._meanDistances,
+        plamatrix::ReductionAxis::All,
+        reduction_workspace,
+        stream);
+    normalizeSorMeanDistancesKernel<<<grid_size, kBlockSize, 0, stream>>>(
+        workspace._meanDistances.data(),
+        workspace._finiteWeights.data(),
+        maximum_mean_distance.data(),
+        point_count);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    auto distance_sum = plamatrix::sum(
+        workspace._meanDistances,
+        plamatrix::ReductionAxis::All,
+        reduction_workspace,
+        stream);
+    auto finite_count = plamatrix::sum(
+        workspace._finiteWeights,
+        plamatrix::ReductionAxis::All,
+        reduction_workspace,
+        stream);
+    auto invalid_distance_count = plamatrix::sum(
+        workspace._invalidDistances,
+        plamatrix::ReductionAxis::All,
+        reduction_workspace,
+        stream);
+    sorSquaredDeviationKernel<<<grid_size, kBlockSize, 0, stream>>>(
+        workspace._meanDistances.data(),
+        workspace._finiteWeights.data(),
+        distance_sum.data(),
+        finite_count.data(),
+        point_count,
+        workspace._squaredDeviations.data());
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    auto squared_deviation_sum = plamatrix::sum(
+        workspace._squaredDeviations,
+        plamatrix::ReductionAxis::All,
+        reduction_workspace,
+        stream);
+    sorThresholdKeepMaskKernel<<<grid_size, kBlockSize, 0, stream>>>(
+        workspace._meanDistances.data(),
+        workspace._finiteWeights.data(),
+        distance_sum.data(),
+        finite_count.data(),
+        squared_deviation_sum.data(),
+        invalid_distance_count.data(),
+        point_count,
+        static_cast<double>(stddev_mul),
+        keep_mask.data());
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    reduction_workspace.closeAsyncAllocation();
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    workspace._lastBackend = GpuOutlierRemovalBackend::UniformGrid;
+    return keep_mask;
 }
 
 std::vector<std::uint8_t> radiusOutlierRemovalKeepMaskDeviceColumnMajor(
@@ -430,6 +641,38 @@ plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU> statisticalOutlierR
 {
     return statisticalOutlierRemovalKeepMaskMatrixImpl(points, mean_k, stddev_mul);
 }
+
+template plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>
+radiusOutlierRemovalKeepMaskDevice<float>(
+    const PointCloud<float, plamatrix::Device::GPU>&,
+    float,
+    int,
+    OutlierRemovalGpuWorkspace<float>&,
+    cudaStream_t);
+
+template plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>
+radiusOutlierRemovalKeepMaskDevice<double>(
+    const PointCloud<double, plamatrix::Device::GPU>&,
+    double,
+    int,
+    OutlierRemovalGpuWorkspace<double>&,
+    cudaStream_t);
+
+template plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>
+statisticalOutlierRemovalKeepMaskDevice<float>(
+    const PointCloud<float, plamatrix::Device::GPU>&,
+    int,
+    float,
+    OutlierRemovalGpuWorkspace<float>&,
+    cudaStream_t);
+
+template plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>
+statisticalOutlierRemovalKeepMaskDevice<double>(
+    const PointCloud<double, plamatrix::Device::GPU>&,
+    int,
+    double,
+    OutlierRemovalGpuWorkspace<double>&,
+    cudaStream_t);
 
 plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU> statisticalOutlierRemovalKeepMaskDevice(
     const plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& points,

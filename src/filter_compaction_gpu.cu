@@ -4,6 +4,8 @@
 
 #include <cuda_runtime.h>
 
+#include <plamatrix/ops/indexing.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -61,6 +63,29 @@ __global__ void gatherColumnMajorKernel(
 }
 
 template <typename T>
+__global__ void gatherColumnMajorIndexKernel(
+    const T* input,
+    const plamatrix::Index* indices,
+    int output_count,
+    int input_rows,
+    int cols,
+    T* output)
+{
+    const int linear = static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x)
+        + static_cast<int>(threadIdx.x);
+    const int total = output_count * cols;
+    if (linear >= total)
+    {
+        return;
+    }
+
+    const int row = linear % output_count;
+    const int col = linear / output_count;
+    const auto src = indices[row];
+    output[row + col * output_count] = input[src + col * input_rows];
+}
+
+template <typename T>
 void gatherColumnMajor(
     const plamatrix::DenseMatrix<T, plamatrix::Device::GPU>& input,
     const DeviceBuffer<int>& d_indices,
@@ -82,6 +107,36 @@ void gatherColumnMajor(
     gatherColumnMajorKernel<T><<<grid_size, kBlockSize>>>(
         input.data(),
         d_indices.get(),
+        output_count,
+        static_cast<int>(input.rows()),
+        static_cast<int>(input.cols()),
+        output.data());
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+}
+
+template <typename T>
+void gatherColumnMajor(
+    const plamatrix::DenseMatrix<T, plamatrix::Device::GPU>& input,
+    const plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU>& indices,
+    plamatrix::DenseMatrix<T, plamatrix::Device::GPU>& output,
+    cudaStream_t stream)
+{
+    const auto output_count = static_cast<int>(indices.rows());
+    if (output_count == 0 || input.cols() == 0)
+    {
+        return;
+    }
+    if (input.cols() > std::numeric_limits<int>::max() / output_count)
+    {
+        throw std::overflow_error("compactPointCloudByKeepMask: kernel item count exceeds int range");
+    }
+
+    constexpr int kBlockSize = 256;
+    const int total = output_count * static_cast<int>(input.cols());
+    const int grid_size = (total + kBlockSize - 1) / kBlockSize;
+    gatherColumnMajorIndexKernel<T><<<grid_size, kBlockSize, 0, stream>>>(
+        input.data(),
+        indices.data(),
         output_count,
         static_cast<int>(input.rows()),
         static_cast<int>(input.cols()),
@@ -142,8 +197,73 @@ PointCloud<Scalar, plamatrix::Device::GPU> gatherPointCloudByIndicesImpl(
         gatherColumnMajor(*input.scalarFields(), d_indices, output_count, scalar_fields);
         output.setScalarFields(input.scalarFieldNames(), std::move(scalar_fields));
     }
+    if (input.hasPointAlignedTextureCoords())
+    {
+        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> texture_coords(
+            static_cast<plamatrix::Index>(indices.size()), 2);
+        gatherColumnMajor(*input.textureCoords(), d_indices, output_count, texture_coords);
+        output.setTextureCoords(std::move(texture_coords));
+        output.setMaterialLibraryFile(input.materialLibraryFile());
+        output.setTextureImageFile(input.textureImageFile());
+    }
 
-    PLAPOINT_CHECK_CUDA(cudaDeviceSynchronize());
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(nullptr));
+    return output;
+}
+
+template <typename Scalar>
+PointCloud<Scalar, plamatrix::Device::GPU> compactPointCloudByKeepMaskImpl(
+    const PointCloud<Scalar, plamatrix::Device::GPU>& input,
+    const plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>& keep_mask,
+    cudaStream_t stream)
+{
+    if (keep_mask.rows() != input.points().rows() || keep_mask.cols() != 1)
+    {
+        throw std::invalid_argument(
+            "compactPointCloudByKeepMask: keep mask must have shape point_count x 1");
+    }
+
+    plamatrix::IndexingWorkspace indexing_workspace;
+    auto compacted = plamatrix::compactRows(
+        input.points(), keep_mask, indexing_workspace, stream);
+    const auto output_count = compacted.values.rows();
+    PointCloud<Scalar, plamatrix::Device::GPU> output(std::move(compacted.values));
+
+    if (input.hasNormals())
+    {
+        auto normals = plamatrix::gatherRows(
+            *input.normals(), compacted.sourceIndices, indexing_workspace, stream);
+        output.setNormals(std::move(normals));
+    }
+    if (input.hasColors())
+    {
+        plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU> colors(output_count, 3);
+        gatherColumnMajor(*input.colors(), compacted.sourceIndices, colors, stream);
+        output.setColors(std::move(colors));
+    }
+    if (input.hasIntensities())
+    {
+        plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::GPU> intensities(output_count, 1);
+        gatherColumnMajor(*input.intensities(), compacted.sourceIndices, intensities, stream);
+        output.setIntensities(std::move(intensities));
+    }
+    if (input.hasScalarFields())
+    {
+        auto scalar_fields = plamatrix::gatherRows(
+            *input.scalarFields(), compacted.sourceIndices, indexing_workspace, stream);
+        output.setScalarFields(input.scalarFieldNames(), std::move(scalar_fields));
+    }
+    if (input.hasPointAlignedTextureCoords())
+    {
+        auto texture_coords = plamatrix::gatherRows(
+            *input.textureCoords(), compacted.sourceIndices, indexing_workspace, stream);
+        output.setTextureCoords(std::move(texture_coords));
+        output.setMaterialLibraryFile(input.materialLibraryFile());
+        output.setTextureImageFile(input.textureImageFile());
+    }
+
+    indexing_workspace.closeAsyncAllocation();
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
     return output;
 }
 
@@ -161,6 +281,22 @@ PointCloud<double, plamatrix::Device::GPU> gatherPointCloudByIndices(
     const std::vector<int>& indices)
 {
     return gatherPointCloudByIndicesImpl(input, indices);
+}
+
+PointCloud<float, plamatrix::Device::GPU> compactPointCloudByKeepMask(
+    const PointCloud<float, plamatrix::Device::GPU>& input,
+    const plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>& keep_mask,
+    cudaStream_t stream)
+{
+    return compactPointCloudByKeepMaskImpl(input, keep_mask, stream);
+}
+
+PointCloud<double, plamatrix::Device::GPU> compactPointCloudByKeepMask(
+    const PointCloud<double, plamatrix::Device::GPU>& input,
+    const plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>& keep_mask,
+    cudaStream_t stream)
+{
+    return compactPointCloudByKeepMaskImpl(input, keep_mask, stream);
 }
 
 } // namespace gpu

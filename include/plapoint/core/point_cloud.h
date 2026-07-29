@@ -16,12 +16,21 @@
 namespace plapoint
 {
 
+namespace gpu
+{
+namespace marching_cubes_detail
+{
+struct PointCloudAccess;
+}
+}
+
 /// Nx3 point cloud with optional normals, colors, texture coordinates, faces, and CPU/GPU transfer helpers.
 template <typename Scalar, plamatrix::Device Dev>
 class PointCloud
 {
     template <typename, plamatrix::Device>
     friend class PointCloud;
+    friend struct gpu::marching_cubes_detail::PointCloudAccess;
 
 public:
     using MatrixType = plamatrix::DenseMatrix<Scalar, Dev>;
@@ -135,17 +144,75 @@ public:
 
     const MatrixType& points() const { return _points; }
 
-    std::uint64_t pointsVersion() const { return _points_version; }
+    /// Nonzero generation for caches derived from point positions; wraps from UINT64_MAX to one.
+    std::uint64_t pointsRevision() const noexcept { return _points_revision; }
+
+    /// Stable identity for this cloud's point ownership, retained by derived caches to prevent ABA matches.
+    const std::shared_ptr<const void>& pointsIdentity() const noexcept
+    {
+        return _points_identity;
+    }
+
+    /// True when mutable GPU point storage has escaped and writes cannot be observed individually.
+    bool hasUntrackedMutablePointAlias() const noexcept
+    {
+        if constexpr (Dev == plamatrix::Device::GPU)
+        {
+            return _mutable_points_alias_issued;
+        }
+        return false;
+    }
+
+    /// Backward-compatible alias for point-position cache identity.
+    std::uint64_t pointsVersion() const noexcept { return pointsRevision(); }
 
     /// Return mutable point storage and invalidate cached CPU mirrors; callers must preserve Nx3 shape.
     MatrixType& points()
     {
-        ++_points_version;
+        advancePointsRevision();
+        if constexpr (Dev == plamatrix::Device::GPU)
+        {
+            _mutable_points_alias_issued = true;
+        }
         invalidateCpuMirror();
         return _points;
     }
 
-    /// Return a CPU-readable view of points. GPU clouds cache the transfer until mutable points() is requested.
+    /// Replace point positions by copy, advancing the cache identity only after a successful replacement.
+    void setPoints(const MatrixType& points)
+    {
+        if (points.cols() != 3)
+        {
+            throw std::runtime_error("PointCloud requires Nx3 matrix");
+        }
+        validateReplacementPointCount(points.rows());
+
+        MatrixType replacement(points.rows(), points.cols());
+        for (plamatrix::Index row = 0; row < points.rows(); ++row)
+        {
+            for (int column = 0; column < 3; ++column)
+            {
+                replacement.setValue(row, column, pointGet(points, row, column));
+            }
+        }
+        setPoints(std::move(replacement));
+    }
+
+    /// Replace point positions by move, advancing the cache identity only after a successful replacement.
+    void setPoints(MatrixType&& points)
+    {
+        if (points.cols() != 3)
+        {
+            throw std::runtime_error("PointCloud requires Nx3 matrix");
+        }
+        validateReplacementPointCount(points.rows());
+
+        _points = std::move(points);
+        advancePointsRevision();
+        invalidateCpuMirror();
+    }
+
+    /// Return a CPU-readable view of points. GPU clouds cache while no mutable alias has escaped.
     const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& pointsCpu() const
     {
         if constexpr (Dev == plamatrix::Device::CPU)
@@ -158,6 +225,10 @@ public:
             {
                 _points_cpu_cache = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(
                     _points.toCpu());
+            }
+            else if (_mutable_points_alias_issued)
+            {
+                *_points_cpu_cache = _points.toCpu();
             }
             return *_points_cpu_cache;
         }
@@ -355,6 +426,12 @@ public:
 
     MatrixType* textureCoords() { return _textureCoords.get(); }
 
+    /// Return true when the UV table can be gathered by point index.
+    bool hasPointAlignedTextureCoords() const
+    {
+        return computePointAlignedTextureCoords();
+    }
+
     /// Set optional faces by copy (Fx3 int matrix)
     void setFaces(const plamatrix::DenseMatrix<int, Dev>& f)
     {
@@ -432,6 +509,29 @@ private:
         if constexpr (Dev == plamatrix::Device::GPU)
         {
             _points_cpu_cache.reset();
+        }
+    }
+
+    void advancePointsRevision() const noexcept
+    {
+        ++_points_revision;
+        if (_points_revision == 0)
+        {
+            _points_revision = 1;
+        }
+    }
+
+    void validateReplacementPointCount(plamatrix::Index point_count) const
+    {
+        if (point_count == _points.rows())
+        {
+            return;
+        }
+        if (_normals || _colors || _intensities || _scalarFields || _textureCoords
+            || _faces || _faceTextureIndices)
+        {
+            throw std::runtime_error(
+                "PointCloud cannot change point count while point or face attributes are present");
         }
     }
 
@@ -560,7 +660,7 @@ private:
             validateFaceTextureIndices(*_faceTextureIndices);
     }
 
-    bool hasPointAlignedTextureCoords() const
+    bool computePointAlignedTextureCoords() const
     {
         if (!_textureCoords || _textureCoords->rows() != _points.rows())
         {
@@ -598,7 +698,9 @@ private:
     std::unique_ptr<plamatrix::DenseMatrix<int, Dev>> _faceTextureIndices;
     std::string _materialLibraryFile;
     std::string _textureImageFile;
-    std::uint64_t _points_version = 0;
+    mutable std::uint64_t _points_revision = 1;
+    bool _mutable_points_alias_issued = false;
+    std::shared_ptr<const void> _points_identity = std::make_shared<char>(0);
     mutable std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>> _points_cpu_cache;
 };
 

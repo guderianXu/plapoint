@@ -60,53 +60,70 @@ public:
         {
             throw std::runtime_error("Filter: input cloud not set");
         }
-        const auto inliers = computeDiagnosticInlierIndices();
-        this->copyPointsAndAttributesForIndices(inliers, output);
-        removed_indices = this->removedIndicesFromKept(inliers);
-    }
-
-protected:
-    void applyFilter(PointCloudType& output) override
-    {
-        const auto inliers = computeDiagnosticInlierIndices();
-        this->copyPointsAndAttributesForIndices(inliers, output);
-    }
-
-private:
-    std::vector<int> computeDiagnosticInlierIndices() const
-    {
         if constexpr (Dev == plamatrix::Device::GPU)
         {
 #ifdef PLAPOINT_WITH_CUDA
-            checkedGpuPointCount();
-            const auto keep_mask_gpu = gpu::radiusOutlierRemovalKeepMaskDevice(
-                this->_input->points(), _radius, _min_pts);
-            const auto keep_mask_cpu = keep_mask_gpu.toCpu();
-            std::vector<std::uint8_t> keep_mask(static_cast<std::size_t>(keep_mask_cpu.rows()), 0);
-            for (plamatrix::Index i = 0; i < keep_mask_cpu.rows(); ++i)
-            {
-                keep_mask[static_cast<std::size_t>(i)] = keep_mask_cpu(i, 0);
-            }
-            return gpu::keptIndicesFromKeepMask(keep_mask);
+            auto keep_mask = gpu::radiusOutlierRemovalKeepMaskDevice(
+                *this->_input, _radius, _min_pts, gpuWorkspace());
+            output = gpu::compactPointCloudByKeepMask(*this->_input, keep_mask);
+            removed_indices = gpu::removedIndicesFromKeepMaskDevice(keep_mask);
+            return;
 #else
             throw std::runtime_error("PlaPoint was built without CUDA support");
 #endif
         }
         else
         {
-            return computeInlierIndices();
+            const auto inliers = computeInlierIndices();
+            this->copyPointsAndAttributesForIndices(inliers, output);
+            removed_indices = this->removedIndicesFromKept(inliers);
         }
     }
 
-    int checkedGpuPointCount() const
+#ifdef PLAPOINT_WITH_CUDA
+    gpu::GpuOutlierRemovalBackend lastGpuBackend() const noexcept
     {
-        const auto n = this->_input->size();
-        if (n > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-        {
-            throw std::overflow_error("RadiusOutlierRemoval: point count exceeds GPU int range");
-        }
-        return static_cast<int>(n);
+        return _gpuWorkspace ? _gpuWorkspace->lastBackend()
+            : gpu::GpuOutlierRemovalBackend::None;
     }
+
+    std::size_t gpuIndexBuildCount() const noexcept
+    {
+        return _gpuWorkspace ? _gpuWorkspace->indexBuildCount() : 0;
+    }
+#endif
+
+protected:
+    void applyFilter(PointCloudType& output) override
+    {
+        if constexpr (Dev == plamatrix::Device::GPU)
+        {
+#ifdef PLAPOINT_WITH_CUDA
+            auto keep_mask = gpu::radiusOutlierRemovalKeepMaskDevice(
+                *this->_input, _radius, _min_pts, gpuWorkspace());
+            output = gpu::compactPointCloudByKeepMask(*this->_input, keep_mask);
+#else
+            throw std::runtime_error("PlaPoint was built without CUDA support");
+#endif
+        }
+        else
+        {
+            const auto inliers = computeInlierIndices();
+            this->copyPointsAndAttributesForIndices(inliers, output);
+        }
+    }
+
+private:
+#ifdef PLAPOINT_WITH_CUDA
+    gpu::OutlierRemovalGpuWorkspace<Scalar>& gpuWorkspace() const
+    {
+        if (!_gpuWorkspace)
+        {
+            _gpuWorkspace = std::make_shared<gpu::OutlierRemovalGpuWorkspace<Scalar>>();
+        }
+        return *_gpuWorkspace;
+    }
+#endif
 
     std::vector<int> computeInlierIndices() const
     {
@@ -142,6 +159,9 @@ private:
 
     Scalar _radius = 0.1;
     int _min_pts = 2;
+#ifdef PLAPOINT_WITH_CUDA
+    mutable std::shared_ptr<gpu::OutlierRemovalGpuWorkspace<Scalar>> _gpuWorkspace;
+#endif
 };
 
 } // namespace plapoint

@@ -6,6 +6,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include <plamatrix/dense/dense_matrix.h>
@@ -68,53 +69,157 @@ public:
         {
             throw std::runtime_error("Filter: input cloud not set");
         }
-        const auto inliers = computeDiagnosticInlierIndices();
-        this->copyPointsAndAttributesForIndices(inliers, output);
-        removed_indices = this->removedIndicesFromKept(inliers);
-    }
-
-protected:
-    void applyFilter(PointCloudType& output) override
-    {
-        const auto inliers = computeDiagnosticInlierIndices();
-        this->copyPointsAndAttributesForIndices(inliers, output);
-    }
-
-private:
-    std::vector<int> computeDiagnosticInlierIndices() const
-    {
-        if (!_tree)
-        {
-            throw std::runtime_error("StatisticalOutlierRemoval: search method not set");
-        }
-
         if constexpr (Dev == plamatrix::Device::GPU)
         {
 #ifdef PLAPOINT_WITH_CUDA
-            const auto point_count = checkedGpuPointCount();
-            const auto k_use = point_count == 0 ? 0 : std::min(_mean_k + 1, point_count);
-            if (k_use > 32)
-            {
-                return computeInlierIndices();
-            }
-
-            const auto keep_mask_gpu = gpu::statisticalOutlierRemovalKeepMaskDevice(
-                this->_input->points(), _mean_k, _stddev_mul);
-            const auto keep_mask_cpu = keep_mask_gpu.toCpu();
-            std::vector<std::uint8_t> keep_mask(static_cast<std::size_t>(point_count));
-            for (int i = 0; i < point_count; ++i)
-            {
-                keep_mask[static_cast<std::size_t>(i)] = keep_mask_cpu(i, 0);
-            }
-            return gpu::keptIndicesFromKeepMask(keep_mask);
+            applyGpuFilter(output, &removed_indices);
 #else
             throw std::runtime_error("PlaPoint was built without CUDA support");
 #endif
         }
         else
         {
-            return computeInlierIndices();
+            const auto inliers = computeInlierIndices();
+            this->copyPointsAndAttributesForIndices(inliers, output);
+            removed_indices = this->removedIndicesFromKept(inliers);
         }
+    }
+
+#ifdef PLAPOINT_WITH_CUDA
+    gpu::GpuOutlierRemovalBackend lastGpuBackend() const noexcept
+    {
+        return _lastGpuBackend;
+    }
+
+    const std::string& lastGpuFallbackReason() const noexcept
+    {
+        return _lastGpuFallbackReason;
+    }
+
+    std::size_t gpuIndexBuildCount() const noexcept
+    {
+        return _gpuWorkspace ? _gpuWorkspace->indexBuildCount() : 0;
+    }
+#endif
+
+protected:
+    void applyFilter(PointCloudType& output) override
+    {
+        if constexpr (Dev == plamatrix::Device::GPU)
+        {
+#ifdef PLAPOINT_WITH_CUDA
+            applyGpuFilter(output, nullptr);
+#else
+            throw std::runtime_error("PlaPoint was built without CUDA support");
+#endif
+        }
+        else
+        {
+            const auto inliers = computeInlierIndices();
+            this->copyPointsAndAttributesForIndices(inliers, output);
+        }
+    }
+
+private:
+#ifdef PLAPOINT_WITH_CUDA
+    gpu::OutlierRemovalGpuWorkspace<Scalar>& gpuWorkspace()
+    {
+        if (!_gpuWorkspace)
+        {
+            _gpuWorkspace = std::make_shared<gpu::OutlierRemovalGpuWorkspace<Scalar>>();
+        }
+        return *_gpuWorkspace;
+    }
+
+    void applyGpuFilter(PointCloudType& output, std::vector<int>* removed_indices)
+    {
+        if constexpr (Dev != plamatrix::Device::GPU)
+        {
+            throw std::logic_error("StatisticalOutlierRemoval: GPU helper used for CPU filter");
+        }
+        else
+        {
+            _lastGpuBackend = gpu::GpuOutlierRemovalBackend::None;
+            _lastGpuFallbackReason.clear();
+            const int point_count = checkedGpuPointCount();
+            const int k_use = point_count == 0 ? 0 : std::min(_mean_k + 1, point_count);
+            if (k_use > 32)
+            {
+                if (!_tree)
+                {
+                    throw std::runtime_error(
+                        "StatisticalOutlierRemoval: search method required for CPU compatibility fallback");
+                }
+                _lastGpuBackend = gpu::GpuOutlierRemovalBackend::CpuCompatibility;
+                _lastGpuFallbackReason = "mean_k + 1 exceeds indexed KNN limit 32";
+                const auto inliers = computeInlierIndices();
+                this->copyPointsAndAttributesForIndices(inliers, output);
+                if (removed_indices)
+                {
+                    *removed_indices = this->removedIndicesFromKept(inliers);
+                }
+                return;
+            }
+
+            auto keep_mask = gpu::statisticalOutlierRemovalKeepMaskDevice(
+                *this->_input, _mean_k, _stddev_mul, gpuWorkspace());
+            output = gpu::compactPointCloudByKeepMask(*this->_input, keep_mask);
+            _lastGpuBackend = gpu::GpuOutlierRemovalBackend::UniformGrid;
+            if (removed_indices)
+            {
+                *removed_indices = gpu::removedIndicesFromKeepMaskDevice(keep_mask);
+            }
+        }
+    }
+#endif
+
+    struct NormalizedDistanceStats
+    {
+        long double scale = 0;
+        long double threshold = 0;
+        bool valid = false;
+    };
+
+    NormalizedDistanceStats normalizedDistanceStats(
+        const std::vector<long double>& distances) const
+    {
+        NormalizedDistanceStats stats;
+        for (const long double distance : distances)
+        {
+            if (!std::isfinite(distance))
+            {
+                return stats;
+            }
+            stats.scale = std::max(stats.scale, distance);
+        }
+        if (!std::isfinite(stats.scale))
+        {
+            return stats;
+        }
+        if (stats.scale == 0)
+        {
+            stats.valid = true;
+            return stats;
+        }
+
+        long double normalized_mean = 0;
+        for (const long double distance : distances)
+        {
+            normalized_mean += distance / stats.scale;
+        }
+        normalized_mean /= static_cast<long double>(distances.size());
+
+        long double normalized_variance = 0;
+        for (const long double distance : distances)
+        {
+            const long double difference = distance / stats.scale - normalized_mean;
+            normalized_variance += difference * difference;
+        }
+        normalized_variance /= static_cast<long double>(distances.size());
+        stats.threshold = normalized_mean
+            + static_cast<long double>(_stddev_mul) * std::sqrt(normalized_variance);
+        stats.valid = std::isfinite(stats.threshold);
+        return stats;
     }
 
     int checkedGpuPointCount() const
@@ -194,7 +299,7 @@ private:
                     finite_cloud->points()(static_cast<plamatrix::Index>(i), 2)
                 };
                 const auto& neighbors = all_neighbors[i];
-                long double sum = 0;
+                long double mean_distance = 0;
                 int count = 0;
                 for (int nb : neighbors)
                 {
@@ -205,26 +310,30 @@ private:
                             finite_cloud->points()(nb, 1),
                             finite_cloud->points()(nb, 2)
                         };
-                        sum += finiteDistance(pt, pt_nb);
                         ++count;
+                        const long double distance = finiteDistance(pt, pt_nb);
+                        if (!std::isfinite(distance))
+                        {
+                            return {};
+                        }
+                        mean_distance += (distance - mean_distance)
+                            / static_cast<long double>(count);
                     }
                 }
-                finite_mean_dists[i] = (count > 0) ? sum / static_cast<long double>(count) : 0;
+                finite_mean_dists[i] = count > 0 ? mean_distance : 0;
             }
 
-            long double global_mean = 0;
-            for (auto d : finite_mean_dists) global_mean += d;
-            global_mean /= static_cast<long double>(finite_mean_dists.size());
-
-            long double global_var = 0;
-            for (auto d : finite_mean_dists) { long double diff = d - global_mean; global_var += diff * diff; }
-            global_var /= static_cast<long double>(finite_mean_dists.size());
-            long double global_stddev = std::sqrt(global_var);
-
-            long double threshold = global_mean + static_cast<long double>(_stddev_mul) * global_stddev;
+            const auto stats = normalizedDistanceStats(finite_mean_dists);
+            if (!stats.valid)
+            {
+                return {};
+            }
             for (std::size_t i = 0; i < finite_indices.size(); ++i)
             {
-                if (finite_mean_dists[i] <= threshold)
+                const long double normalized_distance = stats.scale == 0
+                    ? 0
+                    : finite_mean_dists[i] / stats.scale;
+                if (normalized_distance <= stats.threshold)
                 {
                     inliers.push_back(finite_indices[i]);
                 }
@@ -237,33 +346,37 @@ private:
             {
                 plamatrix::Vec3<Scalar> pt = make_point(static_cast<int>(i));
                 const auto& neighbors = all_neighbors[i];
-                long double sum = 0;
+                long double mean_distance = 0;
                 int count = 0;
                 for (int nb : neighbors)
                 {
                     if (nb != static_cast<int>(i))
                     {
                         auto pt_nb = make_point(nb);
-                        sum += finiteDistance(pt, pt_nb);
                         ++count;
+                        const long double distance = finiteDistance(pt, pt_nb);
+                        if (!std::isfinite(distance))
+                        {
+                            return {};
+                        }
+                        mean_distance += (distance - mean_distance)
+                            / static_cast<long double>(count);
                     }
                 }
-                mean_dists[i] = (count > 0) ? sum / static_cast<long double>(count) : 0;
+                mean_dists[i] = count > 0 ? mean_distance : 0;
             }
 
-            long double global_mean = 0;
-            for (auto d : mean_dists) global_mean += d;
-            global_mean /= static_cast<long double>(n);
-
-            long double global_var = 0;
-            for (auto d : mean_dists) { long double diff = d - global_mean; global_var += diff * diff; }
-            global_var /= static_cast<long double>(n);
-            long double global_stddev = std::sqrt(global_var);
-
-            long double threshold = global_mean + static_cast<long double>(_stddev_mul) * global_stddev;
+            const auto stats = normalizedDistanceStats(mean_dists);
+            if (!stats.valid)
+            {
+                return {};
+            }
             for (std::size_t i = 0; i < n; ++i)
             {
-                if (mean_dists[i] <= threshold)
+                const long double normalized_distance = stats.scale == 0
+                    ? 0
+                    : mean_dists[i] / stats.scale;
+                if (normalized_distance <= stats.threshold)
                 {
                     inliers.push_back(static_cast<int>(i));
                 }
@@ -280,12 +393,22 @@ private:
         const long double dx = static_cast<long double>(a.x) - static_cast<long double>(b.x);
         const long double dy = static_cast<long double>(a.y) - static_cast<long double>(b.y);
         const long double dz = static_cast<long double>(a.z) - static_cast<long double>(b.z);
-        return std::hypot(std::hypot(dx, dy), dz);
+        const long double distance = std::hypot(std::hypot(dx, dy), dz);
+        if (distance > static_cast<long double>(std::numeric_limits<double>::max()))
+        {
+            return std::numeric_limits<long double>::infinity();
+        }
+        return distance;
     }
 
     int _mean_k = 8;
     Scalar _stddev_mul = 1;
     std::shared_ptr<search::KdTree<Scalar, Dev>> _tree;
+#ifdef PLAPOINT_WITH_CUDA
+    std::shared_ptr<gpu::OutlierRemovalGpuWorkspace<Scalar>> _gpuWorkspace;
+    gpu::GpuOutlierRemovalBackend _lastGpuBackend = gpu::GpuOutlierRemovalBackend::None;
+    std::string _lastGpuFallbackReason;
+#endif
 };
 
 } // namespace plapoint

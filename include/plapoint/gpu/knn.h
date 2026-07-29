@@ -16,6 +16,13 @@
 namespace plapoint {
 namespace gpu {
 
+enum class GpuNeighborBackend
+{
+    BruteForce,
+    UniformGrid,
+    CpuBruteForce
+};
+
 namespace detail {
 
 inline std::size_t checkedSizeProduct(std::size_t lhs, std::size_t rhs, const char* label)

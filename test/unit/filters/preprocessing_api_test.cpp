@@ -6,6 +6,7 @@
 #include <plamatrix/plamatrix.h>
 
 #include <cstdint>
+#include <stdexcept>
 
 #ifdef PLAPOINT_WITH_CUDA
 #include <plapoint/gpu/cuda_check.h>
@@ -64,12 +65,65 @@ TEST(PreprocessingApiTest, VoxelDownsampleCpuInputPreservesAveragedColors)
     ASSERT_EQ(output.size(), 2u);
     ASSERT_TRUE(output.hasColors());
     EXPECT_EQ(report.requestedDevice, plapoint::ProcessingDevice::CPU);
+    EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::CPU);
     EXPECT_EQ(report.usedDevice, plapoint::ProcessingDevice::CPU);
+    EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::None);
     EXPECT_FALSE(report.usedFallback);
     EXPECT_EQ(output.colors()->getValue(0, 0), 42);
     EXPECT_EQ(output.colors()->getValue(0, 2), 62);
     EXPECT_EQ(output.colors()->getValue(1, 0), 100);
 }
+
+TEST(PreprocessingApiTest, ProcessingPolicyUsesDocumentedAutoGpuBoundary)
+{
+    EXPECT_FALSE(plapoint::ProcessingPolicy::autoPrefersGpu(
+        plapoint::ProcessingPolicy::autoGpuPointThreshold - 1));
+    EXPECT_TRUE(plapoint::ProcessingPolicy::autoPrefersGpu(
+        plapoint::ProcessingPolicy::autoGpuPointThreshold));
+    EXPECT_EQ(plapoint::ProcessingPolicy::indexedKnnWorkThreshold, 4096u);
+}
+
+TEST(PreprocessingApiTest, CpuStatisticalFilterReportsCpuKdTreeBackend)
+{
+    const auto cloud = makeClusterWithOutlier();
+    plapoint::ProcessingReport report;
+
+    const auto output = plapoint::statisticalOutlierRemoval(
+        cloud, 2, 0.5f, plapoint::ProcessingDevice::CPU, nullptr, &report);
+
+    EXPECT_EQ(output.size(), 4u);
+    EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::CPU);
+    EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::CpuKdTree);
+    EXPECT_FALSE(report.usedFallback);
+    EXPECT_TRUE(report.fallbackReason.empty());
+}
+
+TEST(PreprocessingApiTest, AutoKeepsSmallNeighborWorkloadsOnCpuWithoutFailureFallback)
+{
+    const auto cloud = makeClusterWithOutlier();
+    plapoint::ProcessingReport report;
+
+    const auto output = plapoint::radiusOutlierRemoval(
+        cloud, 0.1f, 2, plapoint::ProcessingDevice::Auto, nullptr, &report);
+
+    EXPECT_EQ(output.size(), 4u);
+    EXPECT_EQ(report.requestedDevice, plapoint::ProcessingDevice::Auto);
+    EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::CPU);
+    EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::CpuKdTree);
+    EXPECT_FALSE(report.usedFallback);
+    EXPECT_TRUE(report.fallbackReason.empty());
+}
+
+#ifndef PLAPOINT_WITH_CUDA
+TEST(PreprocessingApiTest, ExplicitGpuRequestThrowsWhenCudaIsNotBuilt)
+{
+    const auto cloud = makeClusterWithOutlier();
+    EXPECT_THROW(
+        plapoint::radiusOutlierRemoval(
+            cloud, 0.1f, 2, plapoint::ProcessingDevice::GPU),
+        std::runtime_error);
+}
+#endif
 
 TEST(PreprocessingApiTest, StatisticalOutlierRemovalBuildsSearchInternally)
 {
@@ -103,7 +157,7 @@ TEST(PreprocessingApiTest, RadiusOutlierRemovalBuildsFilterInternally)
 }
 
 #ifdef PLAPOINT_WITH_CUDA
-TEST(PreprocessingApiTest, AutoDeviceUsesGpuWhenAvailableAndReturnsCpuCloud)
+TEST(PreprocessingApiTest, AutoSmallCloudUsesCpuWhenGpuIsAvailable)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -119,11 +173,13 @@ TEST(PreprocessingApiTest, AutoDeviceUsesGpuWhenAvailableAndReturnsCpuCloud)
     ASSERT_EQ(output.size(), 4u);
     ASSERT_TRUE(output.hasColors());
     EXPECT_EQ(report.requestedDevice, plapoint::ProcessingDevice::Auto);
-    EXPECT_EQ(report.usedDevice, plapoint::ProcessingDevice::GPU);
+    EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::CPU);
+    EXPECT_EQ(report.usedDevice, plapoint::ProcessingDevice::CPU);
+    EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::CpuKdTree);
     EXPECT_FALSE(report.usedFallback);
 }
 
-TEST(PreprocessingApiTest, VoxelAutoReportsCpuFallbackForAttributedCpuInput)
+TEST(PreprocessingApiTest, ExplicitGpuVoxelPreservesAttributedCpuInput)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -134,12 +190,41 @@ TEST(PreprocessingApiTest, VoxelAutoReportsCpuFallbackForAttributedCpuInput)
 
     plapoint::ProcessingReport report;
     const auto output = plapoint::voxelDownsample(
-        cloud, 1.0f, plapoint::ProcessingDevice::Auto, &report);
+        cloud, 1.0f, plapoint::ProcessingDevice::GPU, &report);
 
     ASSERT_TRUE(output.hasColors());
-    EXPECT_EQ(report.requestedDevice, plapoint::ProcessingDevice::Auto);
-    EXPECT_EQ(report.usedDevice, plapoint::ProcessingDevice::CPU);
-    EXPECT_TRUE(report.usedFallback);
-    EXPECT_NE(report.fallbackReason.find("preserve attributes"), std::string::npos);
+    EXPECT_EQ(report.requestedDevice, plapoint::ProcessingDevice::GPU);
+    EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::GPU);
+    EXPECT_EQ(report.usedDevice, plapoint::ProcessingDevice::GPU);
+    EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::None);
+    EXPECT_FALSE(report.usedFallback);
+    EXPECT_TRUE(report.fallbackReason.empty());
+}
+
+TEST(PreprocessingApiTest, AutoLargeRadiusFilterReportsUniformGridBackend)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping preprocessing auto-device test";
+    }
+
+    constexpr auto point_count = plapoint::ProcessingPolicy::autoGpuPointThreshold;
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> points(point_count, 3);
+    for (std::size_t row = 0; row < point_count; ++row)
+    {
+        points.setValue(row, 0, static_cast<float>(row) * 0.001f);
+        points.setValue(row, 1, 0.0f);
+        points.setValue(row, 2, 0.0f);
+    }
+    const plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(std::move(points));
+    plapoint::ProcessingReport report;
+
+    const auto output = plapoint::radiusOutlierRemoval(
+        cloud, 0.0011f, 1, plapoint::ProcessingDevice::Auto, nullptr, &report);
+
+    EXPECT_EQ(output.size(), point_count);
+    EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::GPU);
+    EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::GpuUniformGrid);
+    EXPECT_FALSE(report.usedFallback);
 }
 #endif

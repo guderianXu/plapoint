@@ -3,6 +3,7 @@
 #include <plapoint/core/point_cloud.h>
 #include <plapoint/gpu/cuda_check.h>
 #include <plapoint/gpu/knn.h>
+#include <plapoint/search/gpu_kdtree_policy.h>
 #include <plamatrix/ops/point_cloud.h>
 
 #ifdef PLAPOINT_WITH_CUDA
@@ -78,6 +79,14 @@ public:
         _cloud = cloud;
         _nodes.clear();
         _host_points.reset();
+        _host_points_identity.reset();
+        _host_points_data = nullptr;
+#ifdef PLAPOINT_WITH_CUDA
+        _gpu_spatial_index = {};
+        _gpu_host_occupied_cells.clear();
+        _gpu_host_occupancy_valid = false;
+        _last_neighbor_backend = gpu::GpuNeighborBackend::BruteForce;
+#endif
         _built = false;
     }
 
@@ -91,7 +100,10 @@ public:
         if constexpr (Dev == plamatrix::Device::GPU)
         {
             _host_points = std::make_shared<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(
-                copyCpuMatrix(_cloud->pointsCpu()));
+                _cloud->points().toCpu());
+            _host_points_revision = _cloud->pointsRevision();
+            _host_points_identity = _cloud->pointsIdentity();
+            _host_points_data = _cloud->points().data();
         }
         std::vector<int> indices(static_cast<std::size_t>(_cloud->size()));
         for (std::size_t i = 0; i < indices.size(); ++i)
@@ -101,6 +113,11 @@ public:
         _nodes.reserve(indices.size());
         buildRecursive(indices, 0, checkedInt(indices.size(), "KdTree: point count") - 1, 0);
         _built = true;
+    }
+
+    bool isBuilt() const noexcept
+    {
+        return _built;
     }
 
     struct DistComparator
@@ -157,10 +174,16 @@ public:
         std::vector<std::vector<int>> results(static_cast<std::size_t>(M));
         if (M <= 0 || k <= 0)
         {
+#ifdef PLAPOINT_WITH_CUDA
+            _last_neighbor_backend = gpu::GpuNeighborBackend::BruteForce;
+#endif
             return results;
         }
         if (!_cloud || _cloud->size() == 0)
         {
+#ifdef PLAPOINT_WITH_CUDA
+            _last_neighbor_backend = gpu::GpuNeighborBackend::BruteForce;
+#endif
             return results;
         }
 
@@ -188,23 +211,127 @@ public:
             const int K_use = std::min(k, N);
             if (K_use > 32)
             {
+                refreshGpuHostPoints();
                 for (int i = 0; i < M; ++i)
                 {
                     plamatrix::Vec3<Scalar> q{queries(i, 0), queries(i, 1), queries(i, 2)};
-                    auto row = nearestKSearch(q, k);
-                    results[static_cast<std::size_t>(i)] = filterFiniteNeighbors(q, row, N);
+                    struct Candidate
+                    {
+                        DistanceOrderKey distance;
+                        int index;
+                    };
+                    std::vector<Candidate> candidates;
+                    candidates.reserve(static_cast<std::size_t>(N));
+                    for (int point = 0; point < N; ++point)
+                    {
+                        const auto distance = makeDistanceOrderKey(q, pointVec(point));
+                        if (distance.exponent != std::numeric_limits<int>::max())
+                        {
+                            candidates.push_back({distance, point});
+                        }
+                    }
+                    std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs)
+                    {
+                        return distanceKeyLess(lhs.distance, rhs.distance)
+                            || (!distanceKeyLess(rhs.distance, lhs.distance)
+                                && lhs.index < rhs.index);
+                    });
+                    auto& row = results[static_cast<std::size_t>(i)];
+                    const auto count = std::min(
+                        static_cast<std::size_t>(K_use), candidates.size());
+                    row.reserve(count);
+                    for (std::size_t candidate = 0; candidate < count; ++candidate)
+                    {
+                        row.push_back(candidates[candidate].index);
+                    }
                 }
+                _last_neighbor_backend = gpu::GpuNeighborBackend::CpuBruteForce;
                 return results;
             }
 
             auto gpu_queries = queries.toGpu();
-            plamatrix::DenseMatrix<int, plamatrix::Device::GPU> gpu_indices(queries.rows(), K_use);
-            plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> gpu_dists(queries.rows(), K_use);
+            const bool enough_work = static_cast<std::size_t>(N)
+                >= (detail::kIndexedKnnWorkThreshold + static_cast<std::size_t>(M) - 1)
+                    / static_cast<std::size_t>(M);
+            bool use_indexed = enough_work;
+            bool rebuilt_index = false;
+            Scalar cell_size = Scalar(1);
+            if (use_indexed)
+            {
+                refreshGpuHostPoints();
+                cell_size = detail::estimateKnnCellSize(*_host_points);
+                if (!std::isfinite(cell_size) || cell_size <= Scalar(0))
+                {
+                    use_indexed = false;
+                }
+                else
+                {
+                    try
+                    {
+                        if (!_gpu_spatial_index.matches(*_cloud, cell_size))
+                        {
+                            _gpu_spatial_index.build(*_cloud, cell_size);
+                            rebuilt_index = true;
+                        }
+                    }
+                    catch (const std::overflow_error&)
+                    {
+                        use_indexed = false;
+                    }
+                    catch (const std::invalid_argument&)
+                    {
+                        use_indexed = false;
+                    }
+                }
+                if (use_indexed && !detail::indexedGridIsPathological(_gpu_spatial_index))
+                {
+                    const auto identity = _cloud->pointsIdentity();
+                    const auto revision = _cloud->pointsRevision();
+                    if (rebuilt_index
+                        || !_gpu_host_occupancy_valid
+                        || _gpu_host_occupancy_identity != identity
+                        || _gpu_host_occupancy_revision != revision
+                        || _gpu_host_occupancy_cell_size != cell_size
+                        || _cloud->hasUntrackedMutablePointAlias())
+                    {
+                        _gpu_host_occupancy_valid = detail::buildHostGridOccupancy(
+                            *_host_points, cell_size, _gpu_host_occupied_cells);
+                        _gpu_host_occupancy_identity = identity;
+                        _gpu_host_occupancy_revision = revision;
+                        _gpu_host_occupancy_cell_size = cell_size;
+                    }
+                    use_indexed = _gpu_host_occupancy_valid
+                        && detail::queriesFitIndexedShells(
+                            queries, cell_size, _gpu_host_occupied_cells);
+                }
+                else
+                {
+                    use_indexed = false;
+                }
+            }
 
-            gpu::batchKnnDevice(gpu_queries, _cloud->points(), K_use, gpu_indices, gpu_dists);
-
-            auto flat_idx = gpu_indices.toCpu();
-            auto flat_dst = gpu_dists.toCpu();
+            plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::CPU> indexed_indices;
+            plamatrix::DenseMatrix<int, plamatrix::Device::CPU> brute_indices;
+            plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> flat_dst;
+            if (use_indexed)
+            {
+                auto indexed = _gpu_spatial_index.knnSearchAsync(
+                    gpu_queries, K_use, _gpu_query_workspace, nullptr);
+                indexed_indices = indexed.indices.toCpu();
+                flat_dst = indexed.squaredDistances.toCpu();
+                _last_neighbor_backend = gpu::GpuNeighborBackend::UniformGrid;
+            }
+            else
+            {
+                plamatrix::DenseMatrix<int, plamatrix::Device::GPU> gpu_indices(
+                    queries.rows(), K_use);
+                plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> gpu_dists(
+                    queries.rows(), K_use);
+                gpu::batchKnnDevice(gpu_queries, _cloud->points(), K_use, gpu_indices, gpu_dists);
+                brute_indices = gpu_indices.toCpu();
+                flat_dst = gpu_dists.toCpu();
+                _last_neighbor_backend = gpu::GpuNeighborBackend::BruteForce;
+            }
 
             for (int i = 0; i < M; ++i)
             {
@@ -212,7 +339,15 @@ public:
                 row.reserve(static_cast<std::size_t>(K_use));
                 for (int j = 0; j < K_use; ++j)
                 {
-                    const int idx = flat_idx(i, j);
+                    const auto indexed_value = use_indexed
+                        ? indexed_indices(i, j)
+                        : plamatrix::Index(-1);
+                    const int idx = use_indexed
+                        ? (indexed_value >= 0
+                               && indexed_value <= std::numeric_limits<int>::max()
+                               ? static_cast<int>(indexed_value)
+                               : -1)
+                        : brute_indices(i, j);
                     const Scalar dist = flat_dst(i, j);
                     if (idx >= 0 && idx < N && std::isfinite(dist))
                     {
@@ -224,6 +359,15 @@ public:
         }
 
         return results;
+    }
+
+    gpu::GpuNeighborBackend lastNeighborBackend() const noexcept
+    {
+#ifdef PLAPOINT_WITH_CUDA
+        return _last_neighbor_backend;
+#else
+        return gpu::GpuNeighborBackend::BruteForce;
+#endif
     }
 
 #if defined(PLAPOINT_ENABLE_TESTING) && defined(PLAPOINT_WITH_CUDA)
@@ -239,6 +383,30 @@ public:
 #endif
 
 private:
+#ifdef PLAPOINT_WITH_CUDA
+    void refreshGpuHostPoints() const
+    {
+        if constexpr (Dev == plamatrix::Device::GPU)
+        {
+            const auto revision = _cloud->pointsRevision();
+            const auto* data = _cloud->points().data();
+            if (!_host_points
+                || _host_points_revision != revision
+                || _host_points_identity != _cloud->pointsIdentity()
+                || _host_points_data != data
+                || _cloud->hasUntrackedMutablePointAlias())
+            {
+                _host_points = std::make_shared<
+                    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(
+                    _cloud->points().toCpu());
+                _host_points_revision = revision;
+                _host_points_identity = _cloud->pointsIdentity();
+                _host_points_data = data;
+            }
+        }
+    }
+#endif
+
     void ensureBuilt() const
     {
         if (!_built)
@@ -296,14 +464,99 @@ private:
         return dx * dx + dy * dy + dz * dz;
     }
 
+    struct DistanceOrderKey
+    {
+        int exponent;
+        double mantissa;
+    };
+
+    static DistanceOrderKey absoluteDifferenceKey(double lhs, double rhs)
+    {
+        if (lhs == rhs)
+        {
+            return {std::numeric_limits<int>::min(), 0.0};
+        }
+        if (std::signbit(lhs) == std::signbit(rhs) || lhs == 0.0 || rhs == 0.0)
+        {
+            int exponent = 0;
+            const double mantissa = std::frexp(std::abs(lhs - rhs), &exponent);
+            return {exponent, mantissa};
+        }
+        int lhs_exponent = 0;
+        int rhs_exponent = 0;
+        const double lhs_mantissa = std::frexp(std::abs(lhs), &lhs_exponent);
+        const double rhs_mantissa = std::frexp(std::abs(rhs), &rhs_exponent);
+        const int exponent = std::max(lhs_exponent, rhs_exponent);
+        const double sum = std::ldexp(lhs_mantissa, lhs_exponent - exponent)
+            + std::ldexp(rhs_mantissa, rhs_exponent - exponent);
+        int adjustment = 0;
+        const double mantissa = std::frexp(sum, &adjustment);
+        return {exponent + adjustment, mantissa};
+    }
+
+    static DistanceOrderKey makeDistanceOrderKey(
+        const plamatrix::Vec3<Scalar>& a,
+        const plamatrix::Vec3<Scalar>& b)
+    {
+        const double coordinates[6] = {
+            static_cast<double>(a.x), static_cast<double>(a.y), static_cast<double>(a.z),
+            static_cast<double>(b.x), static_cast<double>(b.y), static_cast<double>(b.z)};
+        for (double coordinate : coordinates)
+        {
+            if (!std::isfinite(coordinate))
+            {
+                return {std::numeric_limits<int>::max(),
+                        std::numeric_limits<double>::max()};
+            }
+        }
+        const DistanceOrderKey components[3] = {
+            absoluteDifferenceKey(coordinates[0], coordinates[3]),
+            absoluteDifferenceKey(coordinates[1], coordinates[4]),
+            absoluteDifferenceKey(coordinates[2], coordinates[5])};
+        const int exponent = std::max({
+            components[0].exponent, components[1].exponent, components[2].exponent});
+        if (exponent == std::numeric_limits<int>::min())
+        {
+            return {exponent, 0.0};
+        }
+        const auto scaled = [exponent](const DistanceOrderKey& component)
+        {
+            return component.mantissa == 0.0
+                ? 0.0
+                : std::ldexp(component.mantissa, component.exponent - exponent);
+        };
+        const double distance = std::hypot(
+            std::hypot(scaled(components[0]), scaled(components[1])),
+            scaled(components[2]));
+        int adjustment = 0;
+        const double mantissa = std::frexp(distance, &adjustment);
+        return {exponent + adjustment, mantissa};
+    }
+
+    static bool distanceKeyLess(const DistanceOrderKey& lhs, const DistanceOrderKey& rhs)
+    {
+        return lhs.exponent < rhs.exponent
+            || (lhs.exponent == rhs.exponent && lhs.mantissa < rhs.mantissa);
+    }
+
     static double finiteDistance(
         const plamatrix::Vec3<Scalar>& a,
         const plamatrix::Vec3<Scalar>& b)
     {
-        const double dx = static_cast<double>(a.x) - static_cast<double>(b.x);
-        const double dy = static_cast<double>(a.y) - static_cast<double>(b.y);
-        const double dz = static_cast<double>(a.z) - static_cast<double>(b.z);
-        return std::hypot(std::hypot(dx, dy), dz);
+        const auto distance = makeDistanceOrderKey(a, b);
+        if (distance.exponent == std::numeric_limits<int>::max())
+        {
+            return std::numeric_limits<double>::infinity();
+        }
+        if (distance.exponent == std::numeric_limits<int>::min())
+        {
+            return 0.0;
+        }
+        if (distance.exponent > std::numeric_limits<double>::max_exponent)
+        {
+            return std::numeric_limits<double>::max();
+        }
+        return std::ldexp(distance.mantissa, distance.exponent);
     }
 
     static bool finiteDistanceWithinRadius(
@@ -311,8 +564,14 @@ private:
         const plamatrix::Vec3<Scalar>& b,
         Scalar radius)
     {
-        const double distance = finiteDistance(a, b);
-        return std::isfinite(distance) && distance <= static_cast<double>(radius);
+        const auto distance = makeDistanceOrderKey(a, b);
+        int radius_exponent = 0;
+        const double radius_mantissa = std::frexp(static_cast<double>(radius), &radius_exponent);
+        const DistanceOrderKey radius_key{
+            radius_mantissa == 0.0 ? std::numeric_limits<int>::min() : radius_exponent,
+            radius_mantissa};
+        return distance.exponent != std::numeric_limits<int>::max()
+            && !distanceKeyLess(radius_key, distance);
     }
 
     static void validateQuery(const plamatrix::Vec3<Scalar>& query)
@@ -482,8 +741,21 @@ private:
     }
 
     std::shared_ptr<const PointCloudType> _cloud;
-    std::shared_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>> _host_points;
+    mutable std::shared_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>> _host_points;
+    mutable std::uint64_t _host_points_revision = 0;
+    mutable std::shared_ptr<const void> _host_points_identity;
+    mutable const Scalar* _host_points_data = nullptr;
     std::vector<KdTreeNode<Scalar>> _nodes;
+#ifdef PLAPOINT_WITH_CUDA
+    mutable gpu::GpuSpatialIndex<Scalar> _gpu_spatial_index;
+    mutable gpu::GpuSpatialQueryWorkspace<Scalar> _gpu_query_workspace;
+    mutable detail::HostGridCellSet _gpu_host_occupied_cells;
+    mutable std::shared_ptr<const void> _gpu_host_occupancy_identity;
+    mutable std::uint64_t _gpu_host_occupancy_revision = 0;
+    mutable Scalar _gpu_host_occupancy_cell_size = Scalar(0);
+    mutable bool _gpu_host_occupancy_valid = false;
+    mutable gpu::GpuNeighborBackend _last_neighbor_backend = gpu::GpuNeighborBackend::BruteForce;
+#endif
     bool _built = false;
 };
 

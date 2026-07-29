@@ -3,10 +3,13 @@
 
 #include <cuda_runtime.h>
 #include <cfloat>
+#include <climits>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <math_constants.h>
+
+#include <plapoint/gpu/detail/distance_key.cuh>
 
 namespace plapoint {
 namespace gpu {
@@ -15,77 +18,48 @@ namespace gpu {
 // This makes it easy to compare against the K-th largest (which is at d[K-1])
 
 template <int K>
-__device__ void localTopKInsert(double* d, int* idx, double dist, int data_idx)
+__device__ void localTopKInsert(
+    double* mantissas,
+    int* exponents,
+    int* indices,
+    const detail::DistanceKey& distance,
+    int data_idx)
 {
-    if (!isfinite(dist)) return;
+    if (distance.exponent == INT_MAX) return;
 
     // Sorted ascending: d[0] is smallest, d[K-1] is largest
-    // If dist >= largest kept distance, skip
-    if (dist >= d[K - 1]) return;
+    // Equal distances are ordered by source index for backend-independent results.
+    const auto better = [](const detail::DistanceKey& lhs, int lhs_idx,
+                           const detail::DistanceKey& rhs, int rhs_idx)
+    {
+        return detail::distanceLess(lhs, rhs)
+            || (!detail::distanceLess(rhs, lhs) && (rhs_idx < 0 || lhs_idx < rhs_idx));
+    };
+    const detail::DistanceKey last{exponents[K - 1], mantissas[K - 1]};
+    if (!better(distance, data_idx, last, indices[K - 1])) return;
 
-    // Find insertion position: first j where d[j] > dist
+    // Find insertion position: first entry ordered after this candidate.
     int pos = 0;
-    while (pos < K && d[pos] <= dist) ++pos;
+    while (pos < K)
+    {
+        const detail::DistanceKey current{exponents[pos], mantissas[pos]};
+        if (better(distance, data_idx, current, indices[pos]))
+        {
+            break;
+        }
+        ++pos;
+    }
 
     // pos is where dist should go; shift larger elements right
     for (int j = K - 1; j > pos; --j)
     {
-        d[j]   = d[j - 1];
-        idx[j] = idx[j - 1];
+        mantissas[j] = mantissas[j - 1];
+        exponents[j] = exponents[j - 1];
+        indices[j] = indices[j - 1];
     }
-    d[pos]   = dist;
-    idx[pos] = data_idx;
-}
-
-__device__ __forceinline__ double knnInfinityDistance()
-{
-    return CUDART_INF;
-}
-
-template <typename Scalar>
-__device__ Scalar maxKnnDistance();
-
-template <>
-__device__ float maxKnnDistance<float>()
-{
-    return FLT_MAX;
-}
-
-template <>
-__device__ double maxKnnDistance<double>()
-{
-    return DBL_MAX;
-}
-
-template <typename Scalar>
-__device__ Scalar clampOutputDistance(double dist)
-{
-    const Scalar max_dist = maxKnnDistance<Scalar>();
-    if (!isfinite(dist) || dist >= static_cast<double>(max_dist))
-    {
-        return max_dist;
-    }
-    return static_cast<Scalar>(dist);
-}
-
-template <typename Scalar>
-__device__ double squaredOutputDistance(
-    Scalar qx, Scalar qy, Scalar qz,
-    Scalar data_x, Scalar data_y, Scalar data_z)
-{
-    const double dx = static_cast<double>(qx) - static_cast<double>(data_x);
-    const double dy = static_cast<double>(qy) - static_cast<double>(data_y);
-    const double dz = static_cast<double>(qz) - static_cast<double>(data_z);
-    const double scaled_distance = norm3d(dx, dy, dz);
-    if (!isfinite(scaled_distance))
-    {
-        return DBL_MAX;
-    }
-    if (scaled_distance >= sqrt(DBL_MAX))
-    {
-        return DBL_MAX;
-    }
-    return scaled_distance * scaled_distance;
+    mantissas[pos] = distance.mantissa;
+    exponents[pos] = distance.exponent;
+    indices[pos] = data_idx;
 }
 
 template <typename Scalar, int BLOCK_SIZE, int K>
@@ -100,10 +74,11 @@ __global__ void bruteForceKnnKernel(
     Scalar* __restrict__ out_dists)
 {
     // Shared memory: each thread writes its local K, then thread 0 merges
-    // Layout: BLOCK_SIZE * K double distances | BLOCK_SIZE * K indices
+    // Layout: BLOCK_SIZE * K mantissas | exponents | source indices
     extern __shared__ char smem[];
     double* s_dists = reinterpret_cast<double*>(smem);
-    int*    s_inds  = reinterpret_cast<int*>(s_dists + BLOCK_SIZE * K);
+    int* s_exponents = reinterpret_cast<int*>(s_dists + BLOCK_SIZE * K);
+    int* s_inds = s_exponents + BLOCK_SIZE * K;
 
     int tid = threadIdx.x;
     int query_idx = static_cast<int>(blockIdx.x);
@@ -112,10 +87,12 @@ __global__ void bruteForceKnnKernel(
 
     // Per-thread local top-K (registers)
     double local_key[K];
-    int    local_idx[K];
+    int local_exponent[K];
+    int local_idx[K];
     for (int j = 0; j < K; ++j)
     {
-        local_key[j] = knnInfinityDistance();
+        local_key[j] = DBL_MAX;
+        local_exponent[j] = INT_MAX;
         local_idx[j] = -1;
     }
 
@@ -133,11 +110,12 @@ __global__ void bruteForceKnnKernel(
         Scalar data_x = data_column_major ? data[data_idx] : data[row_major_offset];
         Scalar data_y = data_column_major ? data[n_size + data_idx] : data[row_major_offset + 1u];
         Scalar data_z = data_column_major ? data[2u * n_size + data_idx] : data[row_major_offset + 2u];
-        const double dx = static_cast<double>(qx) - static_cast<double>(data_x);
-        const double dy = static_cast<double>(qy) - static_cast<double>(data_y);
-        const double dz = static_cast<double>(qz) - static_cast<double>(data_z);
-        const double dist_key = norm3d(dx, dy, dz);
-        localTopKInsert<K>(local_key, local_idx, dist_key, point_idx);
+        const auto distance = detail::finiteDistanceKey(
+            static_cast<double>(qx), static_cast<double>(qy), static_cast<double>(qz),
+            static_cast<double>(data_x), static_cast<double>(data_y),
+            static_cast<double>(data_z));
+        localTopKInsert<K>(
+            local_key, local_exponent, local_idx, distance, point_idx);
     }
     __syncthreads();
 
@@ -145,7 +123,8 @@ __global__ void bruteForceKnnKernel(
     for (int j = 0; j < K; ++j)
     {
         s_dists[tid * K + j] = local_key[j];
-        s_inds[tid * K + j]  = local_idx[j];
+        s_exponents[tid * K + j] = local_exponent[j];
+        s_inds[tid * K + j] = local_idx[j];
     }
     __syncthreads();
 
@@ -153,10 +132,12 @@ __global__ void bruteForceKnnKernel(
     if (tid == 0)
     {
         double final_key[K];
-        int    final_idx[K];
+        int final_exponent[K];
+        int final_idx[K];
         for (int j = 0; j < K; ++j)
         {
-            final_key[j] = knnInfinityDistance();
+            final_key[j] = DBL_MAX;
+            final_exponent[j] = INT_MAX;
             final_idx[j] = -1;
         }
 
@@ -167,8 +148,10 @@ __global__ void bruteForceKnnKernel(
                 int idx = s_inds[t * K + j];
                 if (idx >= 0)
                 {
-                    const double candidate_key = s_dists[t * K + j];
-                    localTopKInsert<K>(final_key, final_idx, candidate_key, idx);
+                    const detail::DistanceKey candidate{
+                        s_exponents[t * K + j], s_dists[t * K + j]};
+                    localTopKInsert<K>(
+                        final_key, final_exponent, final_idx, candidate, idx);
                 }
             }
         }
@@ -181,17 +164,13 @@ __global__ void bruteForceKnnKernel(
             out_indices[output_offset] = final_idx[k];
             if (out_dists)
             {
-                double out_dist = DBL_MAX;
+                Scalar out_dist = sizeof(Scalar) == sizeof(float) ? Scalar(FLT_MAX) : Scalar(DBL_MAX);
                 if (final_idx[k] >= 0)
                 {
-                    const int idx = final_idx[k];
-                    const size_t row_major_offset = static_cast<size_t>(idx) * 3u;
-                    const Scalar data_x = data_column_major ? data[static_cast<size_t>(idx)] : data[row_major_offset];
-                    const Scalar data_y = data_column_major ? data[n_size + static_cast<size_t>(idx)] : data[row_major_offset + 1u];
-                    const Scalar data_z = data_column_major ? data[2u * n_size + static_cast<size_t>(idx)] : data[row_major_offset + 2u];
-                    out_dist = squaredOutputDistance(qx, qy, qz, data_x, data_y, data_z);
+                    const detail::DistanceKey distance{final_exponent[k], final_key[k]};
+                    out_dist = detail::squaredOutputDistance<Scalar>(distance);
                 }
-                out_dists[output_offset] = clampOutputDistance<Scalar>(out_dist);
+                out_dists[output_offset] = out_dist;
             }
         }
     }
@@ -208,7 +187,8 @@ cudaError_t launchBruteForceKnn(
     cudaStream_t stream)
 {
     constexpr int kDefaultBlockSize = 256;
-    constexpr int kLargeKBlockSize = 128;
+    constexpr int kMediumKBlockSize = 128;
+    constexpr int kLargeKBlockSize = 64;
 
     int K_template = K;
     if (K <= 1)      K_template = 1;
@@ -217,10 +197,12 @@ cudaError_t launchBruteForceKnn(
     else if (K <= 16) K_template = 16;
     else              K_template = 32;
 
-    // Shared memory: BLOCK_SIZE * K_template double distances plus indices.
-    const int block_size = (K_template <= 16) ? kDefaultBlockSize : kLargeKBlockSize;
+    // Shared memory: BLOCK_SIZE * K_template mantissas plus two integer arrays.
+    const int block_size = K_template <= 8
+        ? kDefaultBlockSize
+        : (K_template <= 16 ? kMediumKBlockSize : kLargeKBlockSize);
     size_t smem = static_cast<size_t>(block_size) * static_cast<size_t>(K_template)
-        * (sizeof(double) + sizeof(int));
+        * (sizeof(double) + 2 * sizeof(int));
 
     switch (K_template)
     {
@@ -246,8 +228,8 @@ cudaError_t launchBruteForceKnn(
                     d_out_indices, d_out_dists);
             break;
         case 16:
-            bruteForceKnnKernel<Scalar, kDefaultBlockSize, 16>
-                <<<M, kDefaultBlockSize, smem, stream>>>(
+            bruteForceKnnKernel<Scalar, kMediumKBlockSize, 16>
+                <<<M, kMediumKBlockSize, smem, stream>>>(
                     d_queries, d_data, M, N, K, queries_column_major, data_column_major,
                     output_column_major,
                     d_out_indices, d_out_dists);
