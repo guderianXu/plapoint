@@ -4,11 +4,13 @@
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include <cuda_runtime.h>
-#include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
-#include <thrust/extrema.h>
+#include <thrust/iterator/counting_iterator.h>
+#include <thrust/transform_reduce.h>
 
 #include <plapoint/gpu/cuda_check.h>
 #include <plapoint/gpu/height_grid.h>
@@ -17,279 +19,124 @@ namespace plapoint
 {
 namespace gpu
 {
+
+struct HeightGridGpuWorkspaceAccess
+{
+    template <typename Scalar>
+    static void prepare(
+        HeightGridGpuWorkspace<Scalar>& workspace,
+        std::size_t cell_count,
+        cudaStream_t stream)
+    {
+        workspace.bindStream(stream);
+        workspace.reserve(cell_count);
+    }
+
+    template <typename Scalar>
+    static Scalar* colorSums(HeightGridGpuWorkspace<Scalar>& workspace)
+    {
+        return workspace._colorSums.get();
+    }
+
+    template <typename Scalar>
+    static Scalar* colorWeights(HeightGridGpuWorkspace<Scalar>& workspace)
+    {
+        return workspace._colorWeights.get();
+    }
+
+    template <typename Scalar>
+    static Scalar* nextHeights(HeightGridGpuWorkspace<Scalar>& workspace)
+    {
+        return workspace._nextHeights.get();
+    }
+
+    template <typename Scalar>
+    static std::uint8_t* nextValid(HeightGridGpuWorkspace<Scalar>& workspace)
+    {
+        return workspace._nextValid.get();
+    }
+
+    template <typename Scalar>
+    static std::uint8_t* nextColors(HeightGridGpuWorkspace<Scalar>& workspace)
+    {
+        return workspace._nextColors.get();
+    }
+
+    template <typename Scalar>
+    static std::uint16_t* nextFillPass(HeightGridGpuWorkspace<Scalar>& workspace)
+    {
+        return workspace._nextFillPass.get();
+    }
+};
+
+struct GpuHeightGridAccess
+{
+    template <typename Scalar>
+    static void checkStream(
+        const GpuHeightGrid<Scalar>& grid,
+        const char* operation,
+        cudaStream_t stream)
+    {
+        if (grid._hasPendingWork && grid._pendingStream != stream)
+        {
+            throw std::logic_error(
+                std::string(operation) +
+                " must use the stream with pending GpuHeightGrid work");
+        }
+    }
+
+    template <typename Scalar>
+    static void markPending(GpuHeightGrid<Scalar>& grid, cudaStream_t stream) noexcept
+    {
+        grid._pendingStream = stream;
+        grid._hasPendingWork = true;
+    }
+
+    template <typename Scalar>
+    static int* status(GpuHeightGrid<Scalar>& grid) noexcept
+    {
+        return grid._status.data();
+    }
+
+    template <typename Scalar>
+    static const int* status(const GpuHeightGrid<Scalar>& grid) noexcept
+    {
+        return grid._status.data();
+    }
+
+    template <typename Scalar>
+    static void allocateStatus(GpuHeightGrid<Scalar>& grid)
+    {
+        grid._status = plamatrix::DenseMatrix<int, plamatrix::Device::GPU>::uninitialized(1, 1);
+    }
+};
+
 namespace
 {
 
-template <typename Scalar>
-__device__ Scalar clamp01Device(Scalar value)
+#include "height_grid_gpu_kernels.cuh"
+
+constexpr int kBlockSize = 256;
+
+int checkedBlockCount(int count)
 {
-    if (value < Scalar(0))
-    {
-        return Scalar(0);
-    }
-    if (value > Scalar(1))
-    {
-        return Scalar(1);
-    }
-    return value;
+    return count <= 0 ? 0 : (count - 1) / kBlockSize + 1;
 }
 
-__device__ int clampGridIndexDevice(int value, int upper_inclusive)
+template <typename Scalar>
+int aggregationCode(mesh::ElevationAggregation aggregation)
 {
-    if (value < 0)
+    static_cast<void>(sizeof(Scalar));
+    switch (aggregation)
     {
+    case mesh::ElevationAggregation::Mean:
         return 0;
+    case mesh::ElevationAggregation::Min:
+        return 1;
+    case mesh::ElevationAggregation::Max:
+        return 2;
     }
-    if (value > upper_inclusive)
-    {
-        return upper_inclusive;
-    }
-    return value;
-}
-
-__device__ void atomicAddScalar(float* address, float value)
-{
-    atomicAdd(address, value);
-}
-
-__device__ void atomicAddScalar(double* address, double value)
-{
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 600
-    auto* address_as_ull = reinterpret_cast<unsigned long long int*>(address);
-    unsigned long long int old = *address_as_ull;
-    unsigned long long int assumed = 0;
-    do
-    {
-        assumed = old;
-        old = atomicCAS(
-            address_as_ull,
-            assumed,
-            __double_as_longlong(value + __longlong_as_double(assumed)));
-    } while (assumed != old);
-#else
-    atomicAdd(address, value);
-#endif
-}
-
-template <typename Scalar>
-__global__ void validateHeightGridInputKernel(const Scalar* points, int point_count, int* error_code)
-{
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= point_count)
-    {
-        return;
-    }
-
-    const double x = static_cast<double>(points[idx]);
-    const double y = static_cast<double>(points[point_count + idx]);
-    const double z = static_cast<double>(points[2 * point_count + idx]);
-    if (!isfinite(x) || !isfinite(y) || !isfinite(z))
-    {
-        atomicCAS(error_code, 0, 1);
-    }
-}
-
-template <typename Scalar>
-void copyFromDevice(Scalar* h_values, const Scalar* d_values, std::size_t count, cudaStream_t stream)
-{
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
-        h_values, d_values, count * sizeof(Scalar), cudaMemcpyDeviceToHost, stream));
-}
-
-template <typename Scalar>
-void copyScalarFromDevice(Scalar& h_value, const Scalar* d_value, cudaStream_t stream)
-{
-    copyFromDevice(&h_value, d_value, std::size_t{1}, stream);
-}
-
-template <typename Scalar>
-void validateHeightGridInputColumnMajor(const Scalar* d_points, int point_count, cudaStream_t stream)
-{
-    if (!d_points)
-    {
-        throw std::invalid_argument("HeightGrid GPU: device points must not be null");
-    }
-
-    DeviceBuffer<int> d_error(1);
-    int host_error = 0;
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
-        d_error.get(), &host_error, sizeof(host_error), cudaMemcpyHostToDevice, stream));
-
-    constexpr int block_size = 256;
-    const int grid_size = (point_count + block_size - 1) / block_size;
-    validateHeightGridInputKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
-        d_points, point_count, d_error.get());
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
-    copyScalarFromDevice(host_error, d_error.get(), stream);
-    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-
-    if (host_error != 0)
-    {
-        throw std::invalid_argument("buildHeightGrid GPU: points must be finite");
-    }
-}
-
-template <typename Scalar>
-void computeBoundsColumnMajor(
-    const Scalar* d_points, int point_count, cudaStream_t stream,
-    Scalar& min_x, Scalar& max_x, Scalar& min_y, Scalar& max_y)
-{
-    auto policy = thrust::cuda::par.on(stream);
-    auto d_x = thrust::device_pointer_cast(d_points);
-    auto d_y = d_x + point_count;
-
-    const auto minmax_x = thrust::minmax_element(policy, d_x, d_x + point_count);
-    const auto minmax_y = thrust::minmax_element(policy, d_y, d_y + point_count);
-
-    copyScalarFromDevice(min_x, thrust::raw_pointer_cast(minmax_x.first), stream);
-    copyScalarFromDevice(max_x, thrust::raw_pointer_cast(minmax_x.second), stream);
-    copyScalarFromDevice(min_y, thrust::raw_pointer_cast(minmax_y.first), stream);
-    copyScalarFromDevice(max_y, thrust::raw_pointer_cast(minmax_y.second), stream);
-    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-}
-
-template <typename Scalar>
-__global__ void splatHeightGridKernel(
-    const Scalar* points,
-    const std::uint8_t* colors,
-    int point_count,
-    int width,
-    int height,
-    bool has_colors,
-    bool skip_non_finite,
-    bool use_bilinear_splat,
-    Scalar min_x,
-    Scalar min_y,
-    Scalar step_x,
-    Scalar step_y,
-    Scalar* heights,
-    Scalar* weights,
-    Scalar* color_sums,
-    Scalar* color_weights)
-{
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= point_count)
-    {
-        return;
-    }
-
-    const Scalar x = points[idx];
-    const Scalar y = points[point_count + idx];
-    const Scalar z = points[2 * point_count + idx];
-    if (!isfinite(static_cast<double>(x)) ||
-        !isfinite(static_cast<double>(y)) ||
-        !isfinite(static_cast<double>(z)))
-    {
-        if (skip_non_finite)
-        {
-            return;
-        }
-    }
-
-    const Scalar gx = (x - min_x) / step_x;
-    const Scalar gy = (y - min_y) / step_y;
-    if (gx < Scalar(0) || gx > Scalar(width - 1) ||
-        gy < Scalar(0) || gy > Scalar(height - 1))
-    {
-        return;
-    }
-
-    const auto accumulate_cell = [&](int cell, Scalar weight) {
-        if (weight <= Scalar(0))
-        {
-            return;
-        }
-        atomicAddScalar(heights + cell, z * weight);
-        atomicAddScalar(weights + cell, weight);
-        if (has_colors)
-        {
-            atomicAddScalar(color_sums + cell * 3, static_cast<Scalar>(colors[idx]) * weight);
-            atomicAddScalar(color_sums + cell * 3 + 1, static_cast<Scalar>(colors[point_count + idx]) * weight);
-            atomicAddScalar(color_sums + cell * 3 + 2, static_cast<Scalar>(colors[2 * point_count + idx]) * weight);
-            atomicAddScalar(color_weights + cell, weight);
-        }
-    };
-
-    if (!use_bilinear_splat)
-    {
-        const int ix = clampGridIndexDevice(static_cast<int>(floor(static_cast<double>(gx) + 0.5)), width - 1);
-        const int iy = clampGridIndexDevice(static_cast<int>(floor(static_cast<double>(gy) + 0.5)), height - 1);
-        accumulate_cell(iy * width + ix, Scalar(1));
-        return;
-    }
-
-    const int ix = clampGridIndexDevice(static_cast<int>(floor(static_cast<double>(gx))), width - 2);
-    const int iy = clampGridIndexDevice(static_cast<int>(floor(static_cast<double>(gy))), height - 2);
-    const Scalar tx = clamp01Device(gx - Scalar(ix));
-    const Scalar ty = clamp01Device(gy - Scalar(iy));
-
-    for (int dy = 0; dy <= 1; ++dy)
-    {
-        for (int dx = 0; dx <= 1; ++dx)
-        {
-            const Scalar wx = dx != 0 ? tx : Scalar(1) - tx;
-            const Scalar wy = dy != 0 ? ty : Scalar(1) - ty;
-            const Scalar w = wx * wy;
-            const int cell = (iy + dy) * width + (ix + dx);
-            accumulate_cell(cell, w);
-        }
-    }
-}
-
-template <typename Scalar>
-__device__ std::uint8_t colorByteFromWeightedSumDevice(Scalar weighted_sum, Scalar weight)
-{
-    if (weight <= Scalar(0))
-    {
-        return 0;
-    }
-    Scalar value = weighted_sum / weight;
-    if (value <= Scalar(0))
-    {
-        return 0;
-    }
-    if (value >= Scalar(255))
-    {
-        return 255;
-    }
-    return static_cast<std::uint8_t>(floor(static_cast<double>(value) + 0.5));
-}
-
-template <typename Scalar>
-__global__ void normalizeHeightGridKernel(
-    int cell_count,
-    bool has_colors,
-    Scalar* heights,
-    const Scalar* weights,
-    const Scalar* color_sums,
-    const Scalar* color_weights,
-    std::uint8_t* valid,
-    std::uint8_t* grid_colors)
-{
-    const int cell = blockIdx.x * blockDim.x + threadIdx.x;
-    if (cell >= cell_count)
-    {
-        return;
-    }
-
-    if (weights[cell] > Scalar(1.0e-9))
-    {
-        heights[cell] /= weights[cell];
-        valid[cell] = 1;
-        if (has_colors && color_weights[cell] > Scalar(0))
-        {
-            grid_colors[cell * 3] =
-                colorByteFromWeightedSumDevice(color_sums[cell * 3], color_weights[cell]);
-            grid_colors[cell * 3 + 1] =
-                colorByteFromWeightedSumDevice(color_sums[cell * 3 + 1], color_weights[cell]);
-            grid_colors[cell * 3 + 2] =
-                colorByteFromWeightedSumDevice(color_sums[cell * 3 + 2], color_weights[cell]);
-        }
-    }
-    else
-    {
-        valid[cell] = 0;
-    }
+    throw std::invalid_argument("buildHeightGrid GPU: unsupported elevation aggregation");
 }
 
 std::size_t checkedCellCount(int width, int height)
@@ -300,161 +147,469 @@ std::size_t checkedCellCount(int width, int height)
     {
         throw std::overflow_error("buildHeightGrid GPU: grid cell count overflow");
     }
-
-    const std::size_t cell_count = w * h;
-    if (cell_count > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+    const std::size_t count = w * h;
+    if (count > static_cast<std::size_t>(std::numeric_limits<int>::max()))
     {
-        throw std::overflow_error("buildHeightGrid GPU: first GPU path supports at most INT_MAX grid cells");
+        throw std::overflow_error("buildHeightGrid GPU supports at most INT_MAX grid cells");
     }
-    return cell_count;
+    return count;
 }
 
 template <typename Scalar>
-mesh::HeightGrid<Scalar> buildHeightGridImpl(
-    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
-    const mesh::HeightGridOptions<Scalar>& options,
+HeightGridBounds<Scalar> computeFiniteBounds(
+    const Scalar* points,
+    int point_count,
     cudaStream_t stream)
 {
-    if (options.elevationAggregation != mesh::ElevationAggregation::Mean ||
-        (options.skipNonFinite && !options.useExplicitBounds))
-    {
-        return mesh::buildHeightGrid(cloud.toCpu(), options);
-    }
+    const Scalar extreme = std::numeric_limits<Scalar>::max();
+    const HeightGridBounds<Scalar> initial = {
+        extreme, -extreme, extreme, -extreme, 0};
+    auto policy = thrust::cuda::par.on(stream);
+    const auto first = thrust::make_counting_iterator(0);
+    return thrust::transform_reduce(
+        policy,
+        first,
+        first + point_count,
+        HeightGridBoundsTransform<Scalar>{points, point_count, extreme},
+        initial,
+        HeightGridBoundsReduce<Scalar>{});
+}
 
-    mesh::HeightGrid<Scalar> grid;
+template <typename Scalar>
+void validateDeviceGridShape(const GpuHeightGrid<Scalar>& grid, const char* operation)
+{
+    if (grid.width == 0 && grid.height == 0)
+    {
+        if (grid.heights.size() != 0 || grid.weights.size() != 0 ||
+            grid.valid.size() != 0 || grid.colors.size() != 0 || grid.fillPass.size() != 0 ||
+            GpuHeightGridAccess::status(grid) != nullptr)
+        {
+            throw std::invalid_argument(std::string(operation) +
+                                        ": empty metadata has non-empty device storage");
+        }
+        return;
+    }
+    if (grid.width <= 0 || grid.height <= 0)
+    {
+        throw std::invalid_argument(std::string(operation) +
+                                    ": width and height must both be positive");
+    }
+    const std::size_t count = checkedCellCount(grid.width, grid.height);
+    const auto rows = static_cast<plamatrix::Index>(count);
+    const auto is_column = [rows](const auto& matrix) {
+        return matrix.rows() == rows && matrix.cols() == 1;
+    };
+    if (!is_column(grid.heights) || !is_column(grid.weights) ||
+        !is_column(grid.valid) || !is_column(grid.fillPass))
+    {
+        throw std::invalid_argument(std::string(operation) +
+                                    ": device fields must contain one value per grid cell");
+    }
+    if (GpuHeightGridAccess::status(grid) == nullptr)
+    {
+        throw std::invalid_argument(std::string(operation) +
+                                    ": device status storage is missing");
+    }
+    if (grid.colors.size() != 0 && !grid.hasColors())
+    {
+        throw std::invalid_argument(std::string(operation) +
+                                    ": colors must have cell_count rows and three columns");
+    }
+}
+
+template <typename Value>
+void copyDeviceToHostAsync(
+    Value* host,
+    const Value* device,
+    std::size_t count,
+    cudaStream_t stream)
+{
+    if (count != 0)
+    {
+        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+            host, device, count * sizeof(Value), cudaMemcpyDeviceToHost, stream));
+    }
+}
+
+template <typename Scalar>
+GpuHeightGrid<Scalar> buildHeightGridDeviceImpl(
+    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    const mesh::HeightGridOptions<Scalar>& options,
+    HeightGridGpuWorkspace<Scalar>& workspace,
+    cudaStream_t stream)
+{
+    GpuHeightGrid<Scalar> grid;
     if (cloud.size() == 0)
     {
         return grid;
     }
     if (cloud.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
     {
-        throw std::overflow_error("buildHeightGrid GPU: first GPU path supports at most INT_MAX points");
+        throw std::overflow_error("buildHeightGrid GPU supports at most INT_MAX points");
     }
     if (!std::isfinite(options.padding) || options.padding < Scalar(0))
     {
         throw std::invalid_argument("buildHeightGrid GPU: padding must be finite and non-negative");
     }
-
-    const auto point_count = static_cast<int>(cloud.size());
-    const Scalar* d_points = cloud.points().data();
-    if (!options.skipNonFinite)
-    {
-        validateHeightGridInputColumnMajor(d_points, point_count, stream);
-    }
-
-    Scalar min_x = Scalar(0);
-    Scalar max_x = Scalar(0);
-    Scalar min_y = Scalar(0);
-    Scalar max_y = Scalar(0);
-    if (options.useExplicitBounds)
-    {
-        if (!std::isfinite(options.minX) || !std::isfinite(options.maxX) ||
-            !std::isfinite(options.minY) || !std::isfinite(options.maxY) ||
-            options.maxX <= options.minX || options.maxY <= options.minY)
-        {
-            throw std::invalid_argument("buildHeightGrid GPU: explicit bounds must be finite and non-empty");
-        }
-        min_x = options.minX;
-        max_x = options.maxX;
-        min_y = options.minY;
-        max_y = options.maxY;
-    }
-    else
-    {
-        computeBoundsColumnMajor(d_points, point_count, stream, min_x, max_x, min_y, max_y);
-    }
-
-    Scalar span_x = std::max(max_x - min_x, Scalar(1.0e-6));
-    Scalar span_y = std::max(max_y - min_y, Scalar(1.0e-6));
     if (!options.useExplicitBounds)
     {
-        min_x -= span_x * options.padding;
-        max_x += span_x * options.padding;
-        min_y -= span_y * options.padding;
-        max_y += span_y * options.padding;
+        throw std::invalid_argument(
+            "buildHeightGridDeviceAsync requires explicit bounds; use buildHeightGrid "
+            "for synchronous automatic bounds");
     }
-    span_x = std::max(max_x - min_x, Scalar(1.0e-6));
-    span_y = std::max(max_y - min_y, Scalar(1.0e-6));
+    if (!std::isfinite(options.minX) || !std::isfinite(options.maxX) ||
+        !std::isfinite(options.minY) || !std::isfinite(options.maxY) ||
+        options.maxX <= options.minX || options.maxY <= options.minY)
+    {
+        throw std::invalid_argument(
+            "buildHeightGrid GPU: explicit bounds must be finite and non-empty");
+    }
 
-    const int requested_width = options.width > 0 ? options.width : options.resolution;
-    const int requested_height = options.height > 0 ? options.height : options.resolution;
-    if (requested_width < 2 || requested_height < 2)
+    const int point_count = static_cast<int>(cloud.size());
+    const Scalar min_x = options.minX;
+    const Scalar min_y = options.minY;
+    const Scalar span_x = std::max(options.maxX - options.minX, Scalar(1.0e-6));
+    const Scalar span_y = std::max(options.maxY - options.minY, Scalar(1.0e-6));
+
+    const int width = options.width > 0 ? options.width : options.resolution;
+    const int height = options.height > 0 ? options.height : options.resolution;
+    if (width < 2 || height < 2)
     {
         throw std::invalid_argument("buildHeightGrid GPU: grid dimensions must be at least 2");
     }
+    const std::size_t cell_count = checkedCellCount(width, height);
+    const auto cell_rows = static_cast<plamatrix::Index>(cell_count);
+    const bool has_colors = cloud.hasColors();
+    const int aggregation = aggregationCode<Scalar>(options.elevationAggregation);
 
-    grid.width = requested_width;
-    grid.height = requested_height;
+    HeightGridGpuWorkspaceAccess::prepare(workspace, cell_count, stream);
+    grid.width = width;
+    grid.height = height;
     grid.minX = min_x;
     grid.minY = min_y;
-    grid.stepX = span_x / Scalar(grid.width - 1);
-    grid.stepY = span_y / Scalar(grid.height - 1);
-
-    const std::size_t cell_count = checkedCellCount(grid.width, grid.height);
-    grid.heights.assign(cell_count, Scalar(0));
-    grid.weights.assign(cell_count, Scalar(0));
-    grid.valid.assign(cell_count, 0);
-    grid.fillPass.assign(cell_count, 0);
-    const bool source_has_colors = cloud.hasColors();
-    if (source_has_colors)
+    grid.stepX = span_x / Scalar(width - 1);
+    grid.stepY = span_y / Scalar(height - 1);
+    grid.heights = plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>::uninitialized(
+        cell_rows, 1);
+    grid.weights = plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>::uninitialized(
+        cell_rows, 1);
+    grid.valid = plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>::uninitialized(
+        cell_rows, 1);
+    grid.fillPass = plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::GPU>::uninitialized(
+        cell_rows, 1);
+    GpuHeightGridAccess::allocateStatus(grid);
+    if (has_colors)
     {
-        grid.colors.assign(cell_count * 3, 0);
+        grid.colors = plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>::uninitialized(
+            cell_rows, 3);
     }
-
-    DeviceBuffer<Scalar> d_heights(cell_count);
-    DeviceBuffer<Scalar> d_weights(cell_count);
-    DeviceBuffer<std::uint8_t> d_valid(cell_count);
-    DeviceBuffer<Scalar> d_color_sums(source_has_colors ? cell_count * 3 : std::size_t{1});
-    DeviceBuffer<Scalar> d_color_weights(source_has_colors ? cell_count : std::size_t{1});
-    DeviceBuffer<std::uint8_t> d_grid_colors(source_has_colors ? cell_count * 3 : std::size_t{1});
-    const auto value_bytes = cell_count * sizeof(Scalar);
-    PLAPOINT_CHECK_CUDA(cudaMemsetAsync(d_heights.get(), 0, value_bytes, stream));
-    PLAPOINT_CHECK_CUDA(cudaMemsetAsync(d_weights.get(), 0, value_bytes, stream));
-    if (source_has_colors)
-    {
-        PLAPOINT_CHECK_CUDA(cudaMemsetAsync(d_color_sums.get(), 0, cell_count * 3 * sizeof(Scalar), stream));
-        PLAPOINT_CHECK_CUDA(cudaMemsetAsync(d_color_weights.get(), 0, value_bytes, stream));
-        PLAPOINT_CHECK_CUDA(cudaMemsetAsync(d_grid_colors.get(), 0, cell_count * 3 * sizeof(std::uint8_t), stream));
-    }
-
-    constexpr int block_size = 256;
-    const int point_grid_size = (point_count + block_size - 1) / block_size;
-    const std::uint8_t* d_colors = source_has_colors ? cloud.colors()->data() : nullptr;
-    splatHeightGridKernel<Scalar><<<point_grid_size, block_size, 0, stream>>>(
-        d_points, d_colors, point_count, grid.width, grid.height,
-        source_has_colors, options.skipNonFinite, options.useBilinearSplat,
-        grid.minX, grid.minY, grid.stepX, grid.stepY,
-        d_heights.get(), d_weights.get(), d_color_sums.get(), d_color_weights.get());
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
     const int cell_count_int = static_cast<int>(cell_count);
-    const int cell_grid_size = (cell_count_int + block_size - 1) / block_size;
-    normalizeHeightGridKernel<Scalar><<<cell_grid_size, block_size, 0, stream>>>(
-        cell_count_int, source_has_colors, d_heights.get(), d_weights.get(),
-        d_color_sums.get(), d_color_weights.get(), d_valid.get(), d_grid_colors.get());
+    const int cell_blocks = checkedBlockCount(cell_count_int);
+    const int point_blocks = checkedBlockCount(point_count);
+    PLAPOINT_CHECK_CUDA(cudaMemsetAsync(
+        GpuHeightGridAccess::status(grid), 0, sizeof(int), stream));
+    if (!options.skipNonFinite)
+    {
+        validateHeightGridPointsKernel<<<point_blocks, kBlockSize, 0, stream>>>(
+            cloud.points().data(), point_count, GpuHeightGridAccess::status(grid));
+        PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    }
+    const Scalar extreme = std::numeric_limits<Scalar>::max();
+    initializeHeightGridKernel<<<cell_blocks, kBlockSize, 0, stream>>>(
+        cell_count_int,
+        aggregation,
+        has_colors,
+        extreme,
+        grid.heights.data(),
+        grid.weights.data(),
+        grid.valid.data(),
+        grid.fillPass.data(),
+        HeightGridGpuWorkspaceAccess::colorSums(workspace),
+        HeightGridGpuWorkspaceAccess::colorWeights(workspace),
+        has_colors ? grid.colors.data() : nullptr);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    copyFromDevice(grid.heights.data(), d_heights.get(), cell_count, stream);
-    copyFromDevice(grid.weights.data(), d_weights.get(), cell_count, stream);
-    copyFromDevice(grid.valid.data(), d_valid.get(), cell_count, stream);
-    if (source_has_colors)
-    {
-        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
-            grid.colors.data(), d_grid_colors.get(), cell_count * 3 * sizeof(std::uint8_t),
-            cudaMemcpyDeviceToHost, stream));
-    }
-    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    splatHeightGridKernel<<<point_blocks, kBlockSize, 0, stream>>>(
+        cloud.points().data(),
+        has_colors ? cloud.colors()->data() : nullptr,
+        point_count,
+        width,
+        height,
+        has_colors,
+        options.skipNonFinite,
+        options.useBilinearSplat,
+        aggregation,
+        grid.minX,
+        grid.minY,
+        grid.stepX,
+        grid.stepY,
+        grid.heights.data(),
+        grid.weights.data(),
+        HeightGridGpuWorkspaceAccess::colorSums(workspace),
+        HeightGridGpuWorkspaceAccess::colorWeights(workspace));
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+
+    normalizeHeightGridKernel<<<cell_blocks, kBlockSize, 0, stream>>>(
+        cell_count_int,
+        aggregation,
+        has_colors,
+        grid.heights.data(),
+        grid.weights.data(),
+        HeightGridGpuWorkspaceAccess::colorSums(workspace),
+        HeightGridGpuWorkspaceAccess::colorWeights(workspace),
+        grid.valid.data(),
+        has_colors ? grid.colors.data() : nullptr);
+    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    GpuHeightGridAccess::markPending(grid, stream);
     return grid;
 }
 
+template <typename Scalar>
+void fillHolesDeviceImpl(
+    GpuHeightGrid<Scalar>& grid,
+    int max_passes,
+    int min_neighbors,
+    int search_radius,
+    HeightGridGpuWorkspace<Scalar>& workspace,
+    cudaStream_t stream)
+{
+    validateDeviceGridShape(grid, "fillHolesAsync");
+    if (grid.width == 0 || max_passes <= 0)
+    {
+        return;
+    }
+    GpuHeightGridAccess::checkStream(grid, "fillHolesAsync", stream);
+    if (max_passes > static_cast<int>(std::numeric_limits<std::uint16_t>::max()))
+    {
+        throw std::overflow_error("fillHolesAsync: max_passes exceeds fillPass range");
+    }
+    min_neighbors = std::max(1, min_neighbors);
+    search_radius = std::max(1, search_radius);
+    search_radius = std::min(search_radius, std::max(grid.width, grid.height));
+
+    const std::size_t cell_count = grid.cellCount();
+    const int cell_count_int = static_cast<int>(cell_count);
+    const int blocks = checkedBlockCount(cell_count_int);
+    const bool has_colors = grid.hasColors();
+    HeightGridGpuWorkspaceAccess::prepare(workspace, cell_count, stream);
+
+    const Scalar* input_heights = grid.heights.data();
+    const std::uint8_t* input_valid = grid.valid.data();
+    const std::uint8_t* input_colors = has_colors ? grid.colors.data() : nullptr;
+    const std::uint16_t* input_fill_pass = grid.fillPass.data();
+    for (int pass = 0; pass < max_passes; ++pass)
+    {
+        const bool write_workspace = (pass % 2) == 0;
+        Scalar* output_heights = write_workspace
+            ? HeightGridGpuWorkspaceAccess::nextHeights(workspace)
+            : grid.heights.data();
+        std::uint8_t* output_valid = write_workspace
+            ? HeightGridGpuWorkspaceAccess::nextValid(workspace)
+            : grid.valid.data();
+        std::uint8_t* output_colors = has_colors
+            ? (write_workspace ? HeightGridGpuWorkspaceAccess::nextColors(workspace)
+                               : grid.colors.data())
+            : nullptr;
+        std::uint16_t* output_fill_pass = write_workspace
+            ? HeightGridGpuWorkspaceAccess::nextFillPass(workspace)
+            : grid.fillPass.data();
+        fillHeightGridHolesKernel<<<blocks, kBlockSize, 0, stream>>>(
+            grid.width,
+            grid.height,
+            pass,
+            min_neighbors,
+            search_radius,
+            has_colors,
+            input_heights,
+            input_valid,
+            input_colors,
+            input_fill_pass,
+            output_heights,
+            output_valid,
+            output_colors,
+            output_fill_pass);
+        PLAPOINT_CHECK_CUDA(cudaGetLastError());
+        input_heights = output_heights;
+        input_valid = output_valid;
+        input_colors = output_colors;
+        input_fill_pass = output_fill_pass;
+    }
+
+    if ((max_passes % 2) != 0)
+    {
+        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+            grid.heights.data(), HeightGridGpuWorkspaceAccess::nextHeights(workspace),
+            cell_count * sizeof(Scalar), cudaMemcpyDeviceToDevice, stream));
+        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+            grid.valid.data(), HeightGridGpuWorkspaceAccess::nextValid(workspace),
+            cell_count * sizeof(std::uint8_t), cudaMemcpyDeviceToDevice, stream));
+        PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+            grid.fillPass.data(), HeightGridGpuWorkspaceAccess::nextFillPass(workspace),
+            cell_count * sizeof(std::uint16_t), cudaMemcpyDeviceToDevice, stream));
+        if (has_colors)
+        {
+            PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+                grid.colors.data(), HeightGridGpuWorkspaceAccess::nextColors(workspace),
+                cell_count * 3 * sizeof(std::uint8_t), cudaMemcpyDeviceToDevice, stream));
+        }
+    }
+    GpuHeightGridAccess::markPending(grid, stream);
+}
+
+template <typename Scalar>
+mesh::HeightGrid<Scalar> downloadHeightGridImpl(
+    const GpuHeightGrid<Scalar>& grid,
+    cudaStream_t stream)
+{
+    validateDeviceGridShape(grid, "downloadHeightGrid");
+    mesh::HeightGrid<Scalar> host;
+    if (grid.width == 0)
+    {
+        return host;
+    }
+    GpuHeightGridAccess::checkStream(grid, "downloadHeightGrid", stream);
+    const std::size_t cell_count = grid.cellCount();
+    host.width = grid.width;
+    host.height = grid.height;
+    host.minX = grid.minX;
+    host.minY = grid.minY;
+    host.stepX = grid.stepX;
+    host.stepY = grid.stepY;
+    host.heights.resize(cell_count);
+    host.weights.resize(cell_count);
+    host.valid.resize(cell_count);
+    host.fillPass.resize(cell_count);
+    copyDeviceToHostAsync(host.heights.data(), grid.heights.data(), cell_count, stream);
+    copyDeviceToHostAsync(host.weights.data(), grid.weights.data(), cell_count, stream);
+    copyDeviceToHostAsync(host.valid.data(), grid.valid.data(), cell_count, stream);
+    copyDeviceToHostAsync(host.fillPass.data(), grid.fillPass.data(), cell_count, stream);
+    int input_status = 0;
+    copyDeviceToHostAsync(
+        &input_status, GpuHeightGridAccess::status(grid), std::size_t{1}, stream);
+
+    std::vector<std::uint8_t> planar_colors;
+    if (grid.hasColors())
+    {
+        planar_colors.resize(cell_count * 3);
+        copyDeviceToHostAsync(
+            planar_colors.data(), grid.colors.data(), planar_colors.size(), stream);
+    }
+    grid.synchronize(stream);
+    if (input_status != 0)
+    {
+        throw std::invalid_argument("buildHeightGrid GPU: points must be finite");
+    }
+    if (!planar_colors.empty())
+    {
+        host.colors.resize(cell_count * 3);
+        for (std::size_t cell = 0; cell < cell_count; ++cell)
+        {
+            for (std::size_t channel = 0; channel < 3; ++channel)
+            {
+                host.colors[cell * 3 + channel] =
+                    planar_colors[cell + channel * cell_count];
+            }
+        }
+    }
+    return host;
+}
+
 } // namespace
+
+template <typename Scalar>
+GpuHeightGrid<Scalar> buildHeightGridDeviceAsync(
+    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    const mesh::HeightGridOptions<Scalar>& options,
+    HeightGridGpuWorkspace<Scalar>& workspace,
+    cudaStream_t stream)
+{
+    return buildHeightGridDeviceImpl(cloud, options, workspace, stream);
+}
+
+template <typename Scalar>
+void fillHolesAsync(
+    GpuHeightGrid<Scalar>& grid,
+    int max_passes,
+    int min_neighbors,
+    int search_radius,
+    HeightGridGpuWorkspace<Scalar>& workspace,
+    cudaStream_t stream)
+{
+    fillHolesDeviceImpl(
+        grid, max_passes, min_neighbors, search_radius, workspace, stream);
+}
+
+template <typename Scalar>
+mesh::HeightGrid<Scalar> downloadHeightGrid(
+    const GpuHeightGrid<Scalar>& grid,
+    cudaStream_t stream)
+{
+    return downloadHeightGridImpl(grid, stream);
+}
+
+template <typename Scalar>
+GpuHeightGrid<Scalar> buildHeightGridDeviceResolved(
+    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    const mesh::HeightGridOptions<Scalar>& options,
+    HeightGridGpuWorkspace<Scalar>& workspace,
+    cudaStream_t stream)
+{
+    if (cloud.size() == 0)
+    {
+        return {};
+    }
+    if (cloud.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+    {
+        throw std::overflow_error("buildHeightGrid GPU supports at most INT_MAX points");
+    }
+    if (!std::isfinite(options.padding) || options.padding < Scalar(0))
+    {
+        throw std::invalid_argument("buildHeightGrid GPU: padding must be finite and non-negative");
+    }
+    const int point_count = static_cast<int>(cloud.size());
+    const auto bounds = computeFiniteBounds(cloud.points().data(), point_count, stream);
+    if (!options.skipNonFinite && bounds.finiteCount != point_count)
+    {
+        throw std::invalid_argument("buildHeightGrid GPU: points must be finite");
+    }
+    if (bounds.finiteCount == 0)
+    {
+        return {};
+    }
+
+    auto resolved = options;
+    if (!resolved.useExplicitBounds)
+    {
+        Scalar span_x = std::max(bounds.maxX - bounds.minX, Scalar(1.0e-6));
+        Scalar span_y = std::max(bounds.maxY - bounds.minY, Scalar(1.0e-6));
+        resolved.minX = bounds.minX - span_x * options.padding;
+        resolved.maxX = bounds.maxX + span_x * options.padding;
+        resolved.minY = bounds.minY - span_y * options.padding;
+        resolved.maxY = bounds.maxY + span_y * options.padding;
+        resolved.useExplicitBounds = true;
+        resolved.padding = Scalar(0);
+    }
+    return buildHeightGridDeviceAsync(cloud, resolved, workspace, stream);
+}
+
+template <typename Scalar>
+mesh::HeightGrid<Scalar> buildHeightGridCompat(
+    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    const mesh::HeightGridOptions<Scalar>& options,
+    cudaStream_t stream)
+{
+    HeightGridGpuWorkspace<Scalar> workspace;
+    const auto device_grid = buildHeightGridDeviceResolved(cloud, options, workspace, stream);
+    return downloadHeightGrid(device_grid, stream);
+}
 
 mesh::HeightGrid<float> buildHeightGrid(
     const PointCloud<float, plamatrix::Device::GPU>& cloud,
     const mesh::HeightGridOptions<float>& options,
     cudaStream_t stream)
 {
-    return buildHeightGridImpl<float>(cloud, options, stream);
+    return buildHeightGridCompat(cloud, options, stream);
 }
 
 mesh::HeightGrid<double> buildHeightGrid(
@@ -462,7 +617,7 @@ mesh::HeightGrid<double> buildHeightGrid(
     const mesh::HeightGridOptions<double>& options,
     cudaStream_t stream)
 {
-    return buildHeightGridImpl<double>(cloud, options, stream);
+    return buildHeightGridCompat(cloud, options, stream);
 }
 
 void fillHoles(mesh::HeightGrid<float>& grid, int max_passes)
@@ -475,13 +630,21 @@ void fillHoles(mesh::HeightGrid<double>& grid, int max_passes)
     mesh::fillHoles(grid, max_passes);
 }
 
+template <typename Scalar>
+PointCloud<Scalar, plamatrix::Device::CPU> heightGridToMeshImpl(
+    const mesh::HeightGrid<Scalar>& grid,
+    const PointCloud<Scalar, plamatrix::Device::GPU>& source_cloud,
+    const mesh::HeightGridOptions<Scalar>& options)
+{
+    return mesh::heightGridToMesh(grid, source_cloud.toCpu(), options);
+}
+
 PointCloud<float, plamatrix::Device::CPU> heightGridToMesh(
     const mesh::HeightGrid<float>& grid,
     const PointCloud<float, plamatrix::Device::GPU>& source_cloud,
     const mesh::HeightGridOptions<float>& options)
 {
-    const auto cpu_cloud = source_cloud.toCpu();
-    return mesh::heightGridToMesh(grid, cpu_cloud, options);
+    return heightGridToMeshImpl(grid, source_cloud, options);
 }
 
 PointCloud<double, plamatrix::Device::CPU> heightGridToMesh(
@@ -489,8 +652,27 @@ PointCloud<double, plamatrix::Device::CPU> heightGridToMesh(
     const PointCloud<double, plamatrix::Device::GPU>& source_cloud,
     const mesh::HeightGridOptions<double>& options)
 {
-    const auto cpu_cloud = source_cloud.toCpu();
-    return mesh::heightGridToMesh(grid, cpu_cloud, options);
+    return heightGridToMeshImpl(grid, source_cloud, options);
+}
+
+template <typename Scalar>
+PointCloud<Scalar, plamatrix::Device::CPU> heightGridToMeshPipeline(
+    const PointCloud<Scalar, plamatrix::Device::GPU>& source_cloud,
+    const mesh::HeightGridOptions<Scalar>& options,
+    int fill_passes,
+    cudaStream_t stream)
+{
+    HeightGridGpuWorkspace<Scalar> workspace;
+    auto device_grid = buildHeightGridDeviceResolved(source_cloud, options, workspace, stream);
+    fillHolesAsync(
+        device_grid,
+        fill_passes,
+        options.holeFillMinNeighbors,
+        options.holeFillSearchRadius,
+        workspace,
+        stream);
+    const auto grid = downloadHeightGrid(device_grid, stream);
+    return heightGridToMeshImpl(grid, source_cloud, options);
 }
 
 PointCloud<float, plamatrix::Device::CPU> heightGridToMesh(
@@ -499,9 +681,7 @@ PointCloud<float, plamatrix::Device::CPU> heightGridToMesh(
     int fill_passes,
     cudaStream_t stream)
 {
-    auto grid = buildHeightGrid(source_cloud, options, stream);
-    fillHoles(grid, fill_passes);
-    return heightGridToMesh(grid, source_cloud, options);
+    return heightGridToMeshPipeline(source_cloud, options, fill_passes, stream);
 }
 
 PointCloud<double, plamatrix::Device::CPU> heightGridToMesh(
@@ -510,10 +690,27 @@ PointCloud<double, plamatrix::Device::CPU> heightGridToMesh(
     int fill_passes,
     cudaStream_t stream)
 {
-    auto grid = buildHeightGrid(source_cloud, options, stream);
-    fillHoles(grid, fill_passes);
-    return heightGridToMesh(grid, source_cloud, options);
+    return heightGridToMeshPipeline(source_cloud, options, fill_passes, stream);
 }
+
+template GpuHeightGrid<float> buildHeightGridDeviceAsync<float>(
+    const PointCloud<float, plamatrix::Device::GPU>&,
+    const mesh::HeightGridOptions<float>&,
+    HeightGridGpuWorkspace<float>&,
+    cudaStream_t);
+template GpuHeightGrid<double> buildHeightGridDeviceAsync<double>(
+    const PointCloud<double, plamatrix::Device::GPU>&,
+    const mesh::HeightGridOptions<double>&,
+    HeightGridGpuWorkspace<double>&,
+    cudaStream_t);
+template void fillHolesAsync<float>(
+    GpuHeightGrid<float>&, int, int, int, HeightGridGpuWorkspace<float>&, cudaStream_t);
+template void fillHolesAsync<double>(
+    GpuHeightGrid<double>&, int, int, int, HeightGridGpuWorkspace<double>&, cudaStream_t);
+template mesh::HeightGrid<float> downloadHeightGrid<float>(
+    const GpuHeightGrid<float>&, cudaStream_t);
+template mesh::HeightGrid<double> downloadHeightGrid<double>(
+    const GpuHeightGrid<double>&, cudaStream_t);
 
 } // namespace gpu
 } // namespace plapoint

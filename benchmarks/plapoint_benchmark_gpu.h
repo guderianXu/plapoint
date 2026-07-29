@@ -1,5 +1,104 @@
 // Included once by plapoint_benchmarks.cpp inside its anonymous namespace.
 #ifdef PLAPOINT_WITH_CUDA
+void benchmarkGpuSearchFeatures(int points, int iterations)
+{
+    const std::vector<std::string> row_names = {
+        "gpu_knn_brute_force_k8",
+        "gpu_knn_indexed_k8",
+        "gpu_radius_count",
+        "gpu_normal_estimation_k8",
+        "gpu_normal_smoothing_k8",
+        "gpu_statistical_outlier_removal_k8",
+        "gpu_radius_outlier_removal"};
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        for (const auto& row_name : row_names)
+        {
+            printSkipped(row_name, "no_usable_cuda_device");
+        }
+        return;
+    }
+
+    const int query_count = std::min(points, 512);
+    const int k = std::min(points, 8);
+    auto cpu_cloud = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(points));
+    auto gpu_cloud = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_cloud->toGpu());
+    auto gpu_queries = makeQueries<float>(query_count).toGpu();
+    plamatrix::DenseMatrix<int, plamatrix::Device::GPU> brute_indices(query_count, k);
+    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> brute_distances(query_count, k);
+
+    double elapsed = bestMilliseconds(iterations, [&] {
+        plapoint::gpu::batchKnnDevice(
+            gpu_queries, std::as_const(*gpu_cloud).points(), k, brute_indices, brute_distances);
+    });
+    printResult(row_names[0], points, iterations, elapsed);
+
+    plapoint::gpu::GpuSpatialIndex<float> index;
+    index.buildAdaptive(*gpu_cloud);
+    plapoint::gpu::GpuSpatialQueryWorkspace<float> query_workspace;
+    plapoint::gpu::GpuKnnSearchResult<float> indexed_result;
+    elapsed = bestMilliseconds(iterations, [&] {
+        indexed_result = index.knnSearchAsync(gpu_queries, k, query_workspace, nullptr);
+    });
+    printResult(row_names[1], points, iterations, elapsed);
+
+    plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU> radius_counts;
+    elapsed = bestMilliseconds(iterations, [&] {
+        radius_counts = index.radiusCountAsync(
+            gpu_queries, 0.011f, 16, query_workspace, nullptr);
+    });
+    printResult(row_names[2], points, iterations, elapsed);
+
+    auto tree = std::make_shared<plapoint::search::KdTree<float, plamatrix::Device::GPU>>();
+    tree->setInputCloud(gpu_cloud);
+    tree->build();
+    if (k >= 3)
+    {
+        plapoint::NormalEstimation<float, plamatrix::Device::GPU> estimator;
+        estimator.setInputCloud(gpu_cloud);
+        estimator.setSearchMethod(tree);
+        estimator.setKSearch(k);
+        plamatrix::DenseMatrix<float, plamatrix::Device::GPU> estimated_normals;
+        elapsed = bestMilliseconds(iterations, [&] {
+            estimated_normals = estimator.compute();
+        });
+        printResult(row_names[3], points, iterations, elapsed);
+
+        gpu_cloud->setNormals(std::move(estimated_normals));
+        plapoint::NormalRefinement<float, plamatrix::Device::GPU> refinement;
+        refinement.setInputCloud(gpu_cloud);
+        refinement.setSearchMethod(tree);
+        elapsed = bestMilliseconds(iterations, [&] {
+            refinement.smooth(k);
+        });
+        printResult(row_names[4], points, iterations, elapsed);
+    }
+    else
+    {
+        printSkipped(row_names[3], "requires_at_least_3_points");
+        printSkipped(row_names[4], "requires_at_least_3_points");
+    }
+
+    plapoint::StatisticalOutlierRemoval<float, plamatrix::Device::GPU> sor;
+    sor.setInputCloud(gpu_cloud);
+    sor.setMeanK(std::max(1, k - 1));
+    Cloud<plamatrix::Device::GPU> sor_output;
+    elapsed = bestMilliseconds(iterations, [&] {
+        sor.filter(sor_output);
+    });
+    printResult(row_names[5], points, iterations, elapsed);
+
+    plapoint::RadiusOutlierRemoval<float, plamatrix::Device::GPU> radius_filter;
+    radius_filter.setInputCloud(gpu_cloud);
+    radius_filter.setRadius(0.011f);
+    radius_filter.setMinNeighbors(1);
+    Cloud<plamatrix::Device::GPU> radius_output;
+    elapsed = bestMilliseconds(iterations, [&] {
+        radius_filter.filter(radius_output);
+    });
+    printResult(row_names[6], points, iterations, elapsed);
+}
+
 void benchmarkGpuKnn(int points, int iterations)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())

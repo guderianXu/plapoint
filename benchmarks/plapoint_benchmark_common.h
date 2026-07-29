@@ -31,8 +31,12 @@ struct Options
     int iterations = 3;
     int icp_points = 512;
     int icp_max_iterations = 3;
+    int poisson_points = 8192;
+    int poisson_depth = 6;
     bool skip_cpu_icp = false;
     bool skip_icp_identity = false;
+    bool search_features_only = false;
+    bool mesh_only = false;
     bool self_test_benchmark_gpu_sync = false;
 };
 
@@ -91,6 +95,27 @@ Options parseOptions(int argc, char** argv)
             }
             options.icp_max_iterations = parseIntegerOption(arg, argv[++i], 1);
         }
+        else if (arg == "--poisson-points")
+        {
+            if (i + 1 >= argc)
+            {
+                throw std::invalid_argument("Missing value for --poisson-points");
+            }
+            options.poisson_points = parseIntegerOption(arg, argv[++i], 48);
+        }
+        else if (arg == "--poisson-depth")
+        {
+            if (i + 1 >= argc)
+            {
+                throw std::invalid_argument("Missing value for --poisson-depth");
+            }
+            options.poisson_depth = parseIntegerOption(arg, argv[++i], 1);
+            if (options.poisson_depth > 8)
+            {
+                throw std::invalid_argument("Invalid value for --poisson-depth: " +
+                    std::to_string(options.poisson_depth));
+            }
+        }
         else if (arg == "--skip-cpu-icp")
         {
             options.skip_cpu_icp = true;
@@ -98,6 +123,14 @@ Options parseOptions(int argc, char** argv)
         else if (arg == "--skip-icp-identity")
         {
             options.skip_icp_identity = true;
+        }
+        else if (arg == "--search-features-only")
+        {
+            options.search_features_only = true;
+        }
+        else if (arg == "--mesh-only")
+        {
+            options.mesh_only = true;
         }
         else if (arg == "--self-test-benchmark-gpu-sync")
         {
@@ -108,7 +141,9 @@ Options parseOptions(int argc, char** argv)
             std::cout
                 << "Usage: plapoint_benchmarks [--points N] [--iterations N]\n"
                 << "                           [--icp-points N] [--icp-max-iterations N]\n"
+                << "                           [--poisson-points N] [--poisson-depth 1..8]\n"
                 << "                           [--skip-cpu-icp] [--skip-icp-identity]\n"
+                << "                           [--search-features-only] [--mesh-only]\n"
                 << "                           [--self-test-benchmark-gpu-sync]\n";
             std::exit(0);
         }

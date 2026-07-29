@@ -1,13 +1,21 @@
 #include <plapoint/core/point_cloud.h>
 #include <plapoint/features/normal_estimation.h>
+#include <plapoint/features/normal_refinement.h>
+#include <plapoint/filters/radius_outlier_removal.h>
+#include <plapoint/filters/statistical_outlier_removal.h>
 #include <plapoint/filters/voxel_grid.h>
 #include <plapoint/registration/icp.h>
 #include <plapoint/search/kdtree.h>
+#include <plapoint/mesh/poisson_reconstruction.h>
 #include <plamatrix/plamatrix.h>
 
 #ifdef PLAPOINT_WITH_CUDA
 #include <plapoint/gpu/cuda_check.h>
 #include <plapoint/gpu/icp.h>
+#include <plapoint/gpu/height_grid.h>
+#include <plapoint/gpu/knn.h>
+#include <plapoint/gpu/marching_cubes.h>
+#include <plapoint/gpu/spatial_index.h>
 #endif
 
 #include <algorithm>
@@ -30,11 +38,13 @@ namespace
 #include "plapoint_benchmark_common.h"
 #include "plapoint_benchmark_cpu.h"
 #include "plapoint_benchmark_gpu.h"
+#include "plapoint_benchmark_mesh.h"
 
 } // namespace
 
 int main(int argc, char** argv)
 {
+    std::cout << std::unitbuf;
     Options options;
     try
     {
@@ -57,17 +67,41 @@ int main(int argc, char** argv)
     }
 
     std::cout << "benchmark,points,iterations,best_ms\n";
+#ifdef PLAPOINT_WITH_CUDA
+    if (options.mesh_only)
+    {
+        const ScopedCudaBenchmarkSynchronization scoped_gpu_sync(true);
+        benchmarkGpuMesh(
+            options.points,
+            options.iterations,
+            options.poisson_points,
+            options.poisson_depth);
+        return 0;
+    }
+#else
+    if (options.mesh_only)
+    {
+        printSkipped("marching_cubes_field", "cuda_disabled");
+        printSkipped("height_grid_fill", "cuda_disabled");
+        printSkipped("poisson_solve", "cuda_disabled");
+        printSkipped("poisson_end_to_end", "cuda_disabled");
+        return 0;
+    }
+#endif
     benchmarkCpuKnn(options.points, options.iterations);
     benchmarkCpuVoxelGrid(options.points, options.iterations);
     benchmarkCpuNormalEstimation(options.points, options.iterations);
-    if (options.skip_cpu_icp)
+    benchmarkCpuNormalSmoothing(options.points, options.iterations);
+    benchmarkCpuStatisticalOutlierRemoval(options.points, options.iterations);
+    benchmarkCpuRadiusOutlierRemoval(options.points, options.iterations);
+    if (!options.search_features_only && options.skip_cpu_icp)
     {
         printSkipped("cpu_icp_identity", "disabled");
         printSkipped("cpu_icp_finite_radius", "disabled");
         printSkipped("cpu_icp_finite_radius_translation", "disabled");
         printSkipped("cpu_icp_finite_radius_translation_reuse", "disabled");
     }
-    else
+    else if (!options.search_features_only)
     {
         if (options.skip_icp_identity)
         {
@@ -88,6 +122,11 @@ int main(int argc, char** argv)
     const ScopedCudaBenchmarkSynchronization scoped_gpu_sync(true);
     benchmarkGpuKnn(options.points, options.iterations);
     benchmarkGpuVoxelGrid(options.points, options.iterations);
+    benchmarkGpuSearchFeatures(options.points, options.iterations);
+    if (options.search_features_only)
+    {
+        return 0;
+    }
     if (options.skip_icp_identity)
     {
         printSkipped("gpu_icp_identity", "disabled");

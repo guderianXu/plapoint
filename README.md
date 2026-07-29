@@ -9,6 +9,7 @@ GPU-accelerated point cloud processing library built on [PlaMatrix](https://gith
 
 ### Spatial Indexing
 - **KdTree\<Scalar, Dev\>** — 3D kd-tree with KNN search (priority queue) and radius search. Call `build()` after `setInputCloud()`; searches throw a clear exception if the tree has not been built.
+- **GpuSpatialIndex\<Scalar\>** — deterministic uniform-grid index for finite GPU points, with bounded radius count/search and KNN (`k <= 32`). Cached users invalidate the index when point storage identity, point count, or `pointsRevision()` changes.
 
 ### Filters
 - **VoxelGrid** — centroid-based voxel downsampling with mean aggregation for normals, colors, intensities, and named scalar fields
@@ -24,15 +25,16 @@ the main aggregation filter: it averages per-voxel scalar fields instead of
 dropping them.
 
 ### Features
-- **NormalEstimation** — PCA-based surface normal estimation via covariance + SVD
-- **NormalRefinement** — normal smoothing (KNN averaging) and viewpoint-based orientation
+- **NormalEstimation** — PCA-based surface normal estimation; the CUDA path keeps KNN, covariance, batched eigensolve, normalization, and sign selection on device
+- **NormalRefinement** — normal smoothing and viewpoint orientation, with device-resident CUDA kernels for GPU clouds
 
 ### Registration
 - **IterativeClosestPoint** (ICP) — point-to-point ICP with SVD-based rigid transform, initial guess support, and PCL-style correspondence/convergence controls
 
 ### Mesh
-- **MarchingCubes** — isosurface extraction from implicit scalar fields
-- **PoissonReconstruction** — Poisson surface reconstruction (Gauss-Seidel solver + MC extraction)
+- **MarchingCubes** — CPU callback extraction plus deterministic CUDA extraction from a device scalar field
+- **HeightGrid** — CPU/GPU terrain aggregation with mean/min/max elevation and multi-pass hole fill
+- **PoissonReconstruction** — deterministic symmetric CSR assembly, PlaMatrix Jacobi-PCG, and MC extraction
 
 ### I/O
 - **PLY** — ASCII read/write with positions and optional normals
@@ -43,13 +45,25 @@ dropping them.
 When `PLAPOINT_WITH_CUDA=ON`, CUDA Toolkit is available, and `plamatrix::plamatrix`
 was built with CUDA support:
 
-- **Brute-force KNN** (`src/knn_gpu.cu`) — batched K-nearest neighbor search with one CUDA block per query point, shared memory top-K reduction. `KdTree<Scalar, GPU>::batchNearestKSearch()` reads PlaMatrix column-major device buffers directly.
+- **Adaptive KNN** — `KdTree<Scalar, GPU>` selects between the shared-memory brute-force kernel and `GpuSpatialIndex`. Grid KNN is limited to `k <= 32`; wide empty-shell queries, pathological occupancy, unsafe quantization, small work, and larger `k` use a compatibility backend. Results are ordered deterministically by distance then source index.
 - **Stream-aware device KNN** — `gpu::batchKnnDeviceAsync()` and `gpu::batchKnnDeviceColumnMajorAsync()` launch on a caller-provided `cudaStream_t`; existing non-async overloads preserve synchronous behavior.
+- **Indexed radius and outlier filters** — RadiusOR uses saturated uniform-grid counts. SOR uses indexed KNN plus PlaMatrix reductions and device compaction. Normals, colors, intensities, named scalar fields, and point-aligned UV data stay aligned during stable GPU compaction.
+- **Device normal processing** — normal estimation uses batched symmetric eigensolves; smoothing and viewpoint orientation remain on device for supported GPU inputs.
 - **VoxelGrid CUDA downsampling** (`src/voxel_grid_gpu.cu`) — GPU path computes voxel keys, sorts them, reduces centroids, and preserves deterministic sorted voxel-key output.
+- **GPU mesh primitives** — `gpu::marchingCubes()` returns a GPU triangle soup directly from a device field. `buildHeightGridDeviceAsync()` aggregates into a device grid using explicit bounds, and `fillHolesAsync()` keeps multi-pass fill on the producing stream until one final download.
+- **Poisson PCG** — CPU and GPU solver selections share the same deterministic symmetric CSR. A scale-aware anchor per connected component makes the system SPD. Explicit GPU non-convergence throws; `Auto` records the failure and retries CPU. Field evaluation and MC extraction remain CPU, so `PoissonProcessingReport::solverDevice` reports the PCG device while `actualDevice` remains CPU for the complete chain.
 - **ICP GPU path** (`src/icp_gpu.cu`) — `IterativeClosestPoint<Scalar, GPU>` keeps source/target point buffers on GPU, reads the initial source buffer directly without a startup device-to-device copy, computes correspondences with a cached finite-radius target spatial grid or the shared-memory target-tiling fallback, uses precomputed finite-radius tile bounding-box skips and per-candidate axis pruning on the fallback path, accumulates centroid/covariance/residual stats with block-level reductions, derives degeneracy flags from covariance invariants, fuses stats reduction with device-side step-transform solving through a CUDA quaternion/Jacobi solver, applies point transforms through persistent GPU scratch buffers, initializes and asynchronously accumulates the final 4x4 transform on GPU, and writes terminal-iteration transforms directly into a plain non-input caller output cloud when possible. Reduced stats, step deltas, and metric checks still synchronize to CPU, while `getFinalTransformationDevice()` exposes the final transform without forcing callers through the CPU copy and the legacy CPU `getFinalTransformation()` materializes that copy lazily. The stats helper can skip per-source correspondence index output when callers only need aggregate ICP moments, persistent workspaces and GPU buffers avoid repeated reduction, target spatial-grid, target-tile bound, step-solver, transform-buffer, point-scratch, output-allocation, and final output-copy overhead across repeated `align()` calls on the same ICP object and plain same-shaped output cloud, and `alignGpu()` skips transformed final-stats scans on non-terminal iterations. `setComputeFinalMetrics(false)` is an opt-in throughput mode that skips the terminal post-transform fitness/RMSE scan when callers only need the transform or aligned output. Input-aliased, attributed, or metadata-bearing output clouds still use safe scratch/copy or replacement paths so stale normals, colors, intensities, named scalar fields, mesh, material, or texture data cannot leak into aligned-point results. PCL-style robust ICP options that need correspondence rejectors currently preserve GPU input/output types through a CPU-staged semantic fallback; the default CUDA fast path remains unchanged for the base ICP configuration.
-- **CPU-staged GPU fallbacks** — remaining filters and normal estimation/refinement preserve GPU input/output types but stage data through CPU for algorithms that do not yet have production CUDA kernels. GPU point staging is cached by `PointCloud::pointsCpu()` and invalidated when mutable `points()` is requested.
+- **Compatibility fallbacks** — KNN/SOR requests above the indexed `k` limit and pathological grid queries use documented fallback paths. High-level explicit `ProcessingDevice::GPU` requests rethrow unsupported/runtime failures; `Auto` may retry CPU and records the reason.
 - **VoxelGrid CPU hot path** — CPU path uses hash aggregation and sorted voxel keys to keep deterministic centroid order.
 - Explicit template instantiations in `src/plapoint.cpp` reduce downstream compile times
+
+CPU-owned convenience APIs expose `ProcessingReport`, including `requestedDevice`,
+`actualDevice` (`usedDevice` remains a compatibility alias), `neighborBackend`,
+`usedFallback`, and `fallbackReason`. `Auto` keeps workloads below 4096 points on
+CPU and uses GPU above that benchmark-calibrated boundary when supported. Policy
+selection is not reported as a failure fallback; a failed attempted GPU execution is.
+See [GPU search and selection](docs/gpu-search.md) and [GPU mesh processing](docs/gpu-mesh.md)
+for limits and lifetime rules.
 
 ## Requirements
 
@@ -124,6 +138,19 @@ benchmark,points,iterations,best_ms
 
 Each benchmark case runs one unmeasured warm-up before reporting the best timed iteration.
 CUDA benchmark rows are emitted only when PlaPoint is built with `PLAPOINT_WITH_CUDA=ON` and a usable CUDA device is available.
+Use `--search-features-only` to run KNN brute-force/indexed comparisons, radius
+counts, normal estimation/smoothing, SOR, and RadiusOR without the ICP suite.
+Use `--mesh-only` to emit `marching_cubes_field`, `height_grid_fill`,
+`poisson_solve`, and `poisson_end_to_end` without the search or ICP rows:
+
+```bash
+./build-bench/benchmarks/plapoint_benchmarks \
+  --points 4096 --poisson-points 8192 --poisson-depth 6 \
+  --iterations 3 --mesh-only
+```
+
+`--poisson-points` and `--poisson-depth` are independent from the general point count so
+the PCG row can exercise a production-sized adaptive octree. Their defaults are 8192 and 6.
 
 For repeatable local baseline artifacts, use the wrapper script. It writes CSV,
 JSON, and Markdown into the selected build output directory:

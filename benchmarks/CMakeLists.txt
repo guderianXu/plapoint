@@ -18,6 +18,21 @@ add_test(
 
 if(PLAPOINT_WITH_CUDA)
     add_test(
+        NAME plapoint.benchmarks.gpu_search_feature_rows_registered
+        COMMAND
+            ${CMAKE_COMMAND}
+            -DPLAPOINT_BENCHMARK_EXE=$<TARGET_FILE:plapoint_benchmarks>
+            -P ${PROJECT_SOURCE_DIR}/cmake/check_gpu_search_benchmark_rows.cmake
+    )
+
+    add_test(
+        NAME plapoint.benchmarks.gpu_mesh_rows_registered
+        COMMAND ${CMAKE_COMMAND}
+            -DPLAPOINT_BENCHMARK_EXE=$<TARGET_FILE:plapoint_benchmarks>
+            -P ${PROJECT_SOURCE_DIR}/cmake/check_gpu_mesh_benchmark_rows.cmake
+    )
+
+    add_test(
         NAME plapoint.benchmarks.gpu_icp_rows_registered
         COMMAND
             ${CMAKE_COMMAND}

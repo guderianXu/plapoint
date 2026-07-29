@@ -5,18 +5,40 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <set>
 #include <stdexcept>
+#include <string>
 #include <tuple>
 #include <vector>
 
 #include <plamatrix/dense/dense_matrix.h>
 #include <plamatrix/ops/point_cloud.h>
+#include <plamatrix/sparse/iterative_solver.h>
+#include <plamatrix/sparse/sparse_ops.h>
 
+#include <plapoint/core/processing_policy.h>
 #include <plapoint/core/point_cloud.h>
 #include <plapoint/mesh/marching_cubes.h>
+#include <plapoint/mesh/poisson_system.h>
 
 namespace plapoint {
 namespace mesh {
+
+struct PoissonProcessingReport
+{
+    ProcessingDevice requestedDevice = ProcessingDevice::CPU;
+    /// Device used by the full reconstruction chain. Field evaluation and extraction are CPU.
+    ProcessingDevice actualDevice = ProcessingDevice::CPU;
+    /// Device used only for the sparse PCG solve.
+    ProcessingDevice solverDevice = ProcessingDevice::CPU;
+    bool usedFallback = false;
+    std::string fallbackReason;
+    std::size_t leafCount = 0;
+    plamatrix::IterativeSolverReport solver;
+    double fieldMinimum = 0.0;
+    double fieldMaximum = 0.0;
+    double isoLevel = 0.0;
+};
 
 /// Reconstruct a triangle mesh from a point cloud with normals using a Poisson-style field solve.
 template <typename Scalar>
@@ -39,7 +61,7 @@ public:
         _max_depth = d;
     }
 
-    /// Set positive Gauss-Seidel solver iterations.
+    /// Set the positive maximum PCG iteration count.
     void setSolverIterations(int n)
     {
         if (n <= 0)
@@ -49,9 +71,39 @@ public:
         _solver_iters = n;
     }
 
+    void setSolverTolerance(double tolerance)
+    {
+        if (!std::isfinite(tolerance) || tolerance <= 0.0 || tolerance > 1.0)
+        {
+            throw std::invalid_argument("Poisson: solver tolerance must be finite and in (0, 1]");
+        }
+        _solver_tolerance = tolerance;
+    }
+
+    void setProcessingDevice(ProcessingDevice device) noexcept
+    {
+        _processing_device = device;
+    }
+
+    const PoissonProcessingReport& lastReport() const noexcept { return _lastReport; }
+
+    /// Return the most recently assembled system. The reference is invalidated by the next
+    /// reconstruct() call on this object or by destruction.
+    const PoissonSystem<Scalar>& lastSystem() const
+    {
+        if (!_lastSystem)
+        {
+            throw std::logic_error("Poisson: no assembled system is available before reconstruct()");
+        }
+        return *_lastSystem;
+    }
+
     /// Reconstruct vertices and triangular faces from the configured input cloud.
     std::tuple<Matrix, Matrix> reconstruct() const
     {
+        _lastSystem.reset();
+        _lastReport = {};
+        _lastReport.requestedDevice = _processing_device;
         if (!_cloud) throw std::runtime_error("Poisson: input cloud not set");
         if (!_cloud->hasNormals()) throw std::runtime_error("Poisson: cloud must have normals");
         validateInputCloud();
@@ -121,7 +173,45 @@ public:
 
         int res = 1 << _max_depth;
         mc.setResolution(res, res, res);
-        mc.setIsoLevel(Scalar(0));
+        long double iso_sum = 0.0L;
+        for (int i = 0; i < n; ++i)
+        {
+            iso_sum += static_cast<long double>(evaluateSolution(
+                nodes,
+                root,
+                _cloud->points()(i, 0),
+                _cloud->points()(i, 1),
+                _cloud->points()(i, 2)));
+        }
+        Scalar field_min = std::numeric_limits<Scalar>::max();
+        Scalar field_max = std::numeric_limits<Scalar>::lowest();
+        for (int iz = 0; iz <= res; ++iz)
+        {
+            const Scalar z = min_z + (max_z - min_z) *
+                static_cast<Scalar>(iz) / static_cast<Scalar>(res);
+            for (int iy = 0; iy <= res; ++iy)
+            {
+                const Scalar y = min_y + (max_y - min_y) *
+                    static_cast<Scalar>(iy) / static_cast<Scalar>(res);
+                for (int ix = 0; ix <= res; ++ix)
+                {
+                    const Scalar x = min_x + (max_x - min_x) *
+                        static_cast<Scalar>(ix) / static_cast<Scalar>(res);
+                    const Scalar value = evaluateSolution(nodes, root, x, y, z);
+                    field_min = std::min(field_min, value);
+                    field_max = std::max(field_max, value);
+                }
+            }
+        }
+        Scalar iso_level = static_cast<Scalar>(iso_sum / static_cast<long double>(n));
+        if (!(iso_level > field_min && iso_level < field_max))
+        {
+            iso_level = field_min + (field_max - field_min) * Scalar(0.5);
+        }
+        _lastReport.fieldMinimum = static_cast<double>(field_min);
+        _lastReport.fieldMaximum = static_cast<double>(field_max);
+        _lastReport.isoLevel = static_cast<double>(iso_level);
+        mc.setIsoLevel(iso_level);
 
         auto [vertices, faces] = mc.extract([&](Scalar x, Scalar y, Scalar z) -> Scalar {
             return evaluateSolution(nodes, root, x, y, z);
@@ -385,40 +475,204 @@ private:
             node.divergence = div;
         }
 
-        // Gauss-Seidel solver
-        for (int iter = 0; iter < _solver_iters; ++iter)
+        std::vector<int> node_to_row(nodes.size(), -1);
+        for (int row = 0; row < n_leaves; ++row)
         {
-            for (int li = 0; li < n_leaves; ++li)
+            node_to_row[static_cast<std::size_t>(leaf_indices[static_cast<std::size_t>(row)])] = row;
+        }
+
+        std::set<std::pair<int, int>> edges;
+        for (int row = 0; row < n_leaves; ++row)
+        {
+            const auto& node = nodes[static_cast<std::size_t>(
+                leaf_indices[static_cast<std::size_t>(row)])];
+            const Scalar off = node.size;
+            const Scalar neighbors[6][3] = {
+                {node.ox-off, node.oy, node.oz}, {node.ox+off, node.oy, node.oz},
+                {node.ox, node.oy-off, node.oz}, {node.ox, node.oy+off, node.oz},
+                {node.ox, node.oy, node.oz-off}, {node.ox, node.oy, node.oz+off}
+            };
+            for (const auto& position : neighbors)
             {
-                int idx = leaf_indices[static_cast<std::size_t>(li)];
-                auto& node = nodes[static_cast<std::size_t>(idx)];
-
-                Scalar lap_sum = 0;
-                int nb_count = 0;
-                Scalar off = node.size;
-                Scalar nbs[6][3] = {
-                    {node.ox-off, node.oy, node.oz}, {node.ox+off, node.oy, node.oz},
-                    {node.ox, node.oy-off, node.oz}, {node.ox, node.oy+off, node.oz},
-                    {node.ox, node.oy, node.oz-off}, {node.ox, node.oy, node.oz+off}
-                };
-
-                for (int nb = 0; nb < 6; ++nb)
+                const int neighbor_node = findLeafAt(
+                    nodes, 0, position[0], position[1], position[2]);
+                if (neighbor_node < 0)
                 {
-                    int nb_idx = findLeafAt(nodes, 0, nbs[nb][0], nbs[nb][1], nbs[nb][2]);
-                    if (nb_idx >= 0)
-                    {
-                        lap_sum += nodes[static_cast<std::size_t>(nb_idx)].solution;
-                        ++nb_count;
-                    }
+                    continue;
                 }
-
-                if (nb_count > 0)
+                const int neighbor_row = node_to_row[static_cast<std::size_t>(neighbor_node)];
+                if (neighbor_row >= 0 && neighbor_row != row)
                 {
-                    Scalar h2 = node.size * node.size;
-                    node.solution = (lap_sum - h2 * node.divergence) / Scalar(nb_count);
+                    edges.emplace(std::min(row, neighbor_row), std::max(row, neighbor_row));
                 }
             }
         }
+
+        std::vector<int> degrees(static_cast<std::size_t>(n_leaves), 0);
+        for (const auto& edge : edges)
+        {
+            ++degrees[static_cast<std::size_t>(edge.first)];
+            ++degrees[static_cast<std::size_t>(edge.second)];
+        }
+
+        // Each connected graph component has one constant Laplacian null mode. Deterministically
+        // choose its lowest row as an anchor so the assembled matrix is strictly positive definite.
+        std::vector<int> parents(static_cast<std::size_t>(n_leaves));
+        for (int row = 0; row < n_leaves; ++row)
+        {
+            parents[static_cast<std::size_t>(row)] = row;
+        }
+        auto find_root = [&](int row)
+        {
+            int root = row;
+            while (parents[static_cast<std::size_t>(root)] != root)
+            {
+                root = parents[static_cast<std::size_t>(root)];
+            }
+            while (parents[static_cast<std::size_t>(row)] != row)
+            {
+                const int next = parents[static_cast<std::size_t>(row)];
+                parents[static_cast<std::size_t>(row)] = root;
+                row = next;
+            }
+            return root;
+        };
+        for (const auto& edge : edges)
+        {
+            const int first_root = find_root(edge.first);
+            const int second_root = find_root(edge.second);
+            if (first_root != second_root)
+            {
+                const int anchor = std::min(first_root, second_root);
+                const int merged = std::max(first_root, second_root);
+                parents[static_cast<std::size_t>(merged)] = anchor;
+            }
+        }
+        for (int row = 0; row < n_leaves; ++row)
+        {
+            parents[static_cast<std::size_t>(row)] = find_root(row);
+        }
+
+        std::vector<plamatrix::Index> coo_rows;
+        std::vector<plamatrix::Index> coo_columns;
+        std::vector<Scalar> coo_values;
+        coo_rows.reserve(static_cast<std::size_t>(n_leaves) + edges.size() * 2);
+        coo_columns.reserve(coo_rows.capacity());
+        coo_values.reserve(coo_rows.capacity());
+        for (int row = 0; row < n_leaves; ++row)
+        {
+            const int degree = degrees[static_cast<std::size_t>(row)];
+            Scalar diagonal = static_cast<Scalar>(degree);
+            if (parents[static_cast<std::size_t>(row)] == row)
+            {
+                diagonal += static_cast<Scalar>(std::max(1, degree));
+            }
+            coo_rows.push_back(row);
+            coo_columns.push_back(row);
+            coo_values.push_back(diagonal);
+        }
+        for (const auto& edge : edges)
+        {
+            coo_rows.push_back(edge.first);
+            coo_columns.push_back(edge.second);
+            coo_values.push_back(Scalar(-1));
+            coo_rows.push_back(edge.second);
+            coo_columns.push_back(edge.first);
+            coo_values.push_back(Scalar(-1));
+        }
+
+        Matrix rhs(n_leaves, 1);
+        for (int row = 0; row < n_leaves; ++row)
+        {
+            const auto& node = nodes[static_cast<std::size_t>(
+                leaf_indices[static_cast<std::size_t>(row)])];
+            const Scalar value = -node.size * node.size * node.divergence;
+            rhs(row, 0) = value;
+        }
+
+        auto matrix = plamatrix::cooToCsr(
+            n_leaves, n_leaves, coo_rows, coo_columns, coo_values);
+        PoissonSystem<Scalar> system{
+            std::move(matrix), std::move(rhs), leaf_indices};
+        Matrix solution(n_leaves, 1);
+        solution.fill(Scalar(0));
+        plamatrix::IterativeSolverOptions solver_options;
+        solver_options.maxIterations = _solver_iters;
+        solver_options.relativeTolerance = _solver_tolerance;
+        solver_options.absoluteTolerance = 0.0;
+        solver_options.useJacobiPreconditioner = true;
+        solver_options.requireConvergence = false;
+
+        const bool try_gpu = _processing_device == ProcessingDevice::GPU ||
+            (_processing_device == ProcessingDevice::Auto &&
+             ProcessingPolicy::autoPrefersGpu(std::max(
+                 _cloud->size(), static_cast<std::size_t>(n_leaves))));
+        bool solved = false;
+#ifdef PLAPOINT_WITH_CUDA
+        if (try_gpu)
+        {
+            try
+            {
+                auto matrix_gpu = system.matrix.toGpu();
+                auto rhs_gpu = system.rhs.toGpu();
+                auto solution_gpu = solution.toGpu();
+                plamatrix::IterativeSolverWorkspace<Scalar> workspace;
+                const auto gpu_report = plamatrix::pcg(
+                    matrix_gpu, rhs_gpu, solution_gpu, workspace, solver_options);
+                if (!gpu_report.converged)
+                {
+                    throw std::runtime_error(
+                        std::string("Poisson GPU PCG did not converge after ") +
+                        std::to_string(gpu_report.iterations) + " iterations; residual=" +
+                        std::to_string(gpu_report.finalResidual));
+                }
+                _lastReport.solver = gpu_report;
+                solution = solution_gpu.toCpu();
+                _lastReport.solverDevice = ProcessingDevice::GPU;
+                solved = true;
+            }
+            catch (const std::exception& error)
+            {
+                if (_processing_device == ProcessingDevice::GPU)
+                {
+                    throw std::runtime_error(
+                        std::string("Poisson GPU PCG failed for ") +
+                        std::to_string(n_leaves) + " leaves and " +
+                        std::to_string(_solver_iters) + " iterations: " + error.what());
+                }
+                _lastReport.usedFallback = true;
+                _lastReport.fallbackReason = error.what();
+            }
+        }
+#else
+        if (_processing_device == ProcessingDevice::GPU)
+        {
+            throw std::runtime_error("Poisson GPU PCG requires PLAPOINT_WITH_CUDA=ON");
+        }
+#endif
+        if (!solved)
+        {
+            _lastReport.solver = plamatrix::pcg(
+                system.matrix, system.rhs, solution, solver_options);
+            _lastReport.solverDevice = ProcessingDevice::CPU;
+            if (_lastReport.usedFallback && !_lastReport.solver.converged)
+            {
+                _lastReport.leafCount = static_cast<std::size_t>(n_leaves);
+                throw std::runtime_error(
+                    std::string("Poisson Auto PCG failed: GPU: ") +
+                    _lastReport.fallbackReason + "; CPU did not converge after " +
+                    std::to_string(_lastReport.solver.iterations) +
+                    " iterations; residual=" +
+                    std::to_string(_lastReport.solver.finalResidual));
+            }
+        }
+        _lastReport.leafCount = static_cast<std::size_t>(n_leaves);
+        for (int row = 0; row < n_leaves; ++row)
+        {
+            nodes[static_cast<std::size_t>(leaf_indices[static_cast<std::size_t>(row)])].solution =
+                solution(row, 0);
+        }
+        _lastSystem = std::make_shared<PoissonSystem<Scalar>>(std::move(system));
     }
 
     void collectLeaves(const std::vector<OctreeNode>& nodes, int node_idx,
@@ -566,6 +820,10 @@ private:
     static constexpr int kMaxDepth = 8;
     int _max_depth = 6;
     int _solver_iters = 30;
+    double _solver_tolerance = 1.0e-6;
+    ProcessingDevice _processing_device = ProcessingDevice::CPU;
+    mutable PoissonProcessingReport _lastReport;
+    mutable std::shared_ptr<PoissonSystem<Scalar>> _lastSystem;
 };
 
 } // namespace mesh
