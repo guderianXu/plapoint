@@ -603,10 +603,21 @@ private:
         solver_options.useJacobiPreconditioner = true;
         solver_options.requireConvergence = false;
 
-        const bool try_gpu = _processing_device == ProcessingDevice::GPU ||
-            (_processing_device == ProcessingDevice::Auto &&
-             ProcessingPolicy::autoPrefersGpu(std::max(
-                 _cloud->size(), static_cast<std::size_t>(n_leaves))));
+        if (_processing_device == ProcessingDevice::OpenCL)
+        {
+            throw std::runtime_error("Poisson PCG does not implement an OpenCL solver backend");
+        }
+        const bool try_gpu = _processing_device == ProcessingDevice::CUDA
+            || _processing_device == ProcessingDevice::Auto;
+        auto append_fallback = [&](const std::string& backend, const std::string& reason)
+        {
+            if (!_lastReport.fallbackReason.empty())
+            {
+                _lastReport.fallbackReason += "; ";
+            }
+            _lastReport.fallbackReason += backend + ": " + reason;
+            _lastReport.usedFallback = true;
+        };
         bool solved = false;
 #ifdef PLAPOINT_WITH_CUDA
         if (try_gpu)
@@ -628,28 +639,35 @@ private:
                 }
                 _lastReport.solver = gpu_report;
                 solution = solution_gpu.toCpu();
-                _lastReport.solverDevice = ProcessingDevice::GPU;
+                _lastReport.solverDevice = ProcessingDevice::CUDA;
                 solved = true;
             }
             catch (const std::exception& error)
             {
-                if (_processing_device == ProcessingDevice::GPU)
+                if (_processing_device == ProcessingDevice::CUDA)
                 {
                     throw std::runtime_error(
                         std::string("Poisson GPU PCG failed for ") +
                         std::to_string(n_leaves) + " leaves and " +
                         std::to_string(_solver_iters) + " iterations: " + error.what());
                 }
-                _lastReport.usedFallback = true;
-                _lastReport.fallbackReason = error.what();
+                append_fallback("CUDA", error.what());
             }
         }
 #else
-        if (_processing_device == ProcessingDevice::GPU)
+        if (_processing_device == ProcessingDevice::CUDA)
         {
             throw std::runtime_error("Poisson GPU PCG requires PLAPOINT_WITH_CUDA=ON");
         }
+        if (_processing_device == ProcessingDevice::Auto)
+        {
+            append_fallback("CUDA", "PlaPoint was built without CUDA support");
+        }
 #endif
+        if (!solved && _processing_device == ProcessingDevice::Auto)
+        {
+            append_fallback("OpenCL", "Poisson PCG does not implement an OpenCL solver backend");
+        }
         if (!solved)
         {
             _lastReport.solver = plamatrix::pcg(
@@ -659,7 +677,7 @@ private:
             {
                 _lastReport.leafCount = static_cast<std::size_t>(n_leaves);
                 throw std::runtime_error(
-                    std::string("Poisson Auto PCG failed: GPU: ") +
+                    std::string("Poisson Auto PCG failed; accelerator attempts: ") +
                     _lastReport.fallbackReason + "; CPU did not converge after " +
                     std::to_string(_lastReport.solver.iterations) +
                     " iterations; residual=" +

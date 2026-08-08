@@ -262,6 +262,24 @@ TEST(PoissonReconstructionTest, RejectsInvalidDepthAndSolverIterations)
     EXPECT_THROW(pr.setSolverTolerance(std::numeric_limits<double>::infinity()), std::invalid_argument);
 }
 
+TEST(PoissonReconstructionTest, ExplicitOpenClRejectsUnsupportedSolverWithoutFallback)
+{
+    plapoint::mesh::PoissonReconstruction<float> reconstruction;
+    reconstruction.setInputCloud(makeSphereCloud(48));
+    reconstruction.setDepth(3);
+    reconstruction.setProcessingDevice(plapoint::ProcessingDevice::OpenCL);
+    try
+    {
+        static_cast<void>(reconstruction.reconstruct());
+        FAIL() << "Expected explicit OpenCL Poisson solver request to throw";
+    }
+    catch (const std::runtime_error& error)
+    {
+        EXPECT_NE(std::string(error.what()).find("does not implement"), std::string::npos)
+            << error.what();
+    }
+}
+
 #ifdef PLAPOINT_WITH_CUDA
 TEST(PoissonReconstructionTest, ExplicitGpuUsesPlaMatrixPcg)
 {

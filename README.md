@@ -1,6 +1,6 @@
 # PlaPoint
 
-GPU-accelerated point cloud processing library built on [PlaMatrix](https://github.com/guderianXu/plamatrix).
+CUDA/OpenCL-accelerated point cloud processing library built on [PlaMatrix](https://github.com/guderianXu/plamatrix).
 
 ## Features
 
@@ -25,7 +25,7 @@ the main aggregation filter: it averages per-voxel scalar fields instead of
 dropping them.
 
 ### Features
-- **NormalEstimation** — PCA-based surface normal estimation; the CUDA path keeps KNN, covariance, batched eigensolve, normalization, and sign selection on device
+- **NormalEstimation** — PCA-based surface normal estimation; CUDA keeps the complete supported path on device, while OpenCL accelerates uniform-grid KNN for CPU-owned clouds
 - **NormalRefinement** — normal smoothing and viewpoint orientation, with device-resident CUDA kernels for GPU clouds
 
 ### Registration
@@ -33,14 +33,14 @@ dropping them.
 
 ### Mesh
 - **MarchingCubes** — CPU callback extraction plus deterministic CUDA extraction from a device scalar field
-- **HeightGrid** — CPU/GPU terrain aggregation with mean/min/max elevation and multi-pass hole fill
+- **HeightGrid** — CPU/CUDA/OpenCL terrain aggregation with mean/min/max elevation and multi-pass hole fill
 - **PoissonReconstruction** — deterministic symmetric CSR assembly, PlaMatrix Jacobi-PCG, and MC extraction
 
 ### I/O
 - **PLY** — ASCII read/write with positions and optional normals
 - **XYZ** — strict-by-default text XYZ reader. Strict rows must be exactly `x y z` or `x y z r g b`; malformed rows throw with file path and line number. Pass `io::XyzReadMode::Permissive` to skip bad legacy rows and keep the older trailing-column tolerance.
 
-## GPU Acceleration
+## Accelerator Backends
 
 When `PLAPOINT_WITH_CUDA=ON`, CUDA Toolkit is available, and `plamatrix::plamatrix`
 was built with CUDA support:
@@ -53,15 +53,25 @@ was built with CUDA support:
 - **GPU mesh primitives** — `gpu::marchingCubes()` returns a GPU triangle soup directly from a device field. `buildHeightGridDeviceAsync()` aggregates into a device grid using explicit bounds, and `fillHolesAsync()` keeps multi-pass fill on the producing stream until one final download.
 - **Poisson PCG** — CPU and GPU solver selections share the same deterministic symmetric CSR. A scale-aware anchor per connected component makes the system SPD. Explicit GPU non-convergence throws; `Auto` records the failure and retries CPU. Field evaluation and MC extraction remain CPU, so `PoissonProcessingReport::solverDevice` reports the PCG device while `actualDevice` remains CPU for the complete chain.
 - **ICP GPU path** (`src/icp_gpu.cu`) — `IterativeClosestPoint<Scalar, GPU>` keeps source/target point buffers on GPU, reads the initial source buffer directly without a startup device-to-device copy, computes correspondences with a cached finite-radius target spatial grid or the shared-memory target-tiling fallback, uses precomputed finite-radius tile bounding-box skips and per-candidate axis pruning on the fallback path, accumulates centroid/covariance/residual stats with block-level reductions, derives degeneracy flags from covariance invariants, fuses stats reduction with device-side step-transform solving through a CUDA quaternion/Jacobi solver, applies point transforms through persistent GPU scratch buffers, initializes and asynchronously accumulates the final 4x4 transform on GPU, and writes terminal-iteration transforms directly into a plain non-input caller output cloud when possible. Reduced stats, step deltas, and metric checks still synchronize to CPU, while `getFinalTransformationDevice()` exposes the final transform without forcing callers through the CPU copy and the legacy CPU `getFinalTransformation()` materializes that copy lazily. The stats helper can skip per-source correspondence index output when callers only need aggregate ICP moments, persistent workspaces and GPU buffers avoid repeated reduction, target spatial-grid, target-tile bound, step-solver, transform-buffer, point-scratch, output-allocation, and final output-copy overhead across repeated `align()` calls on the same ICP object and plain same-shaped output cloud, and `alignGpu()` skips transformed final-stats scans on non-terminal iterations. `setComputeFinalMetrics(false)` is an opt-in throughput mode that skips the terminal post-transform fitness/RMSE scan when callers only need the transform or aligned output. Input-aliased, attributed, or metadata-bearing output clouds still use safe scratch/copy or replacement paths so stale normals, colors, intensities, named scalar fields, mesh, material, or texture data cannot leak into aligned-point results. PCL-style robust ICP options that need correspondence rejectors currently preserve GPU input/output types through a CPU-staged semantic fallback; the default CUDA fast path remains unchanged for the base ICP configuration.
-- **Compatibility fallbacks** — KNN/SOR requests above the indexed `k` limit and pathological grid queries use documented fallback paths. High-level explicit `ProcessingDevice::GPU` requests rethrow unsupported/runtime failures; `Auto` may retry CPU and records the reason.
+- **Compatibility fallbacks** — KNN/SOR requests above the indexed `k` limit and pathological grid queries use documented fallback paths.
 - **VoxelGrid CPU hot path** — CPU path uses hash aggregation and sorted voxel keys to keep deterministic centroid order.
 - Explicit template instantiations in `src/plapoint.cpp` reduce downstream compile times
 
+When `PLAPOINT_WITH_OPENCL=ON`, PlaPoint uses OpenCL C 1.2 kernels with private
+`cl_mem` buffers for CPU-owned voxel downsampling, statistical/radius outlier removal,
+normal-estimation KNN, and height-grid aggregation. Inputs and results remain PlaMatrix
+CPU objects; this backend does not add OpenCL storage to PlaMatrix. Enumerate devices
+with `opencl::enumerateOpenClGpuDevices()`. Set `PLAPOINT_OPENCL_DEVICE_INDEX` to a
+stable enumerated GPU index (`-1` or unset means automatic selection).
+For attributed voxel clouds, OpenCL computes geometric centroids while the existing CPU
+VoxelGrid performs exact attribute aggregation, so that path is a partial offload.
+
 CPU-owned convenience APIs expose `ProcessingReport`, including `requestedDevice`,
 `actualDevice` (`usedDevice` remains a compatibility alias), `neighborBackend`,
-`usedFallback`, and `fallbackReason`. `Auto` keeps workloads below 4096 points on
-CPU and uses GPU above that benchmark-calibrated boundary when supported. Policy
-selection is not reported as a failure fallback; a failed attempted GPU execution is.
+`usedFallback`, and `fallbackReason`. `ProcessingDevice::Auto` always tries CUDA,
+then OpenCL, then CPU, independent of point count. An explicit `CUDA` or `OpenCL`
+request never silently falls back. `ProcessingDevice::GPU` remains a compatibility
+alias for `CUDA`.
 See [GPU search and selection](docs/gpu-search.md) and [GPU mesh processing](docs/gpu-mesh.md)
 for limits and lifetime rules.
 
@@ -70,7 +80,8 @@ for limits and lifetime rules.
 - C++17
 - CMake ≥ 3.18
 - [PlaMatrix](https://github.com/guderianXu/plamatrix) (math backend)
-- CUDA Toolkit (optional, for GPU kernels)
+- CUDA Toolkit (optional, for CUDA kernels)
+- OpenCL SDK/loader and a GPU OpenCL driver (optional, for OpenCL C 1.2 kernels)
 - Google Test (for tests)
 
 ## Build
@@ -84,7 +95,8 @@ cmake --install . --prefix ../install
 
 # Build plapoint
 cd plapoint && mkdir build && cd build
-cmake .. -DBUILD_TESTS=ON -DCMAKE_PREFIX_PATH=/path/to/plamatrix/install
+cmake .. -DBUILD_TESTS=ON -DPLAPOINT_WITH_OPENCL=ON \
+  -DCMAKE_PREFIX_PATH=/path/to/plamatrix/install
 cmake --build . -j$(nproc)
 ./test/plapoint_tests
 ```

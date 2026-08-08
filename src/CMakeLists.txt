@@ -3,6 +3,23 @@ target_sources(plapoint PRIVATE
     plapoint.cpp
 )
 
+if(PLAPOINT_WITH_OPENCL)
+    target_sources(plapoint PRIVATE
+        opencl_device_enumeration.cpp
+        opencl_runtime.cpp
+        height_grid_opencl.cpp
+        knn_opencl.cpp
+        normal_estimation_opencl.cpp
+        outlier_removal_opencl.cpp
+        voxel_grid_opencl.cpp
+    )
+else()
+    target_sources(plapoint PRIVATE
+        opencl_algorithm_stubs.cpp
+        opencl_runtime_stub.cpp
+    )
+endif()
+
 # GPU / CUDA sources
 if(PLAPOINT_WITH_CUDA)
     target_sources(plapoint PRIVATE

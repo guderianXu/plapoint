@@ -1,4 +1,4 @@
-# GPU Search and Selection
+# Accelerator Search and Selection
 
 ## Uniform-grid index
 
@@ -28,9 +28,11 @@ queries far outside a thin cloud.
 
 ## Processing policy and reports
 
-`ProcessingPolicy::autoGpuPointThreshold` is 4096 points. CPU-owned Auto APIs remain on
-CPU below this size and try GPU at or above it. `indexedKnnWorkThreshold` is a
-query-by-point work product of 4096, followed by the geometric suitability checks above.
+CPU-owned high-level APIs use the strict `ProcessingDevice::Auto` order CUDA, OpenCL,
+then CPU. Point count does not change this order. `ProcessingPolicy::autoGpuPointThreshold`
+is retained only as a source-compatibility performance hint and is not consulted by
+high-level Auto dispatch. `indexedKnnWorkThreshold` remains a query-by-point work-product
+threshold internal to CUDA KNN implementation selection.
 
 `ProcessingReport` exposes:
 
@@ -40,9 +42,35 @@ query-by-point work product of 4096, followed by the geometric suitability check
 - `usedFallback`
 - `fallbackReason`
 
-Explicit GPU requests never silently retry CPU. Auto retries CPU after an attempted GPU
-failure and reports that failure. Choosing CPU because the input is below the Auto
-threshold is normal policy selection and leaves `usedFallback == false`.
+Explicit `CUDA` or `OpenCL` requests never silently retry another backend. `GPU` is an
+alias for `CUDA`. Auto records each unavailable, unsupported, or failed backend in
+`fallbackReason`; a successful OpenCL call after CUDA failure therefore reports OpenCL
+as `actualDevice` with `usedFallback == true`.
+
+## OpenCL device selection
+
+PlaPoint's OpenCL path is independent of PlaMatrix device storage: public inputs and
+outputs remain CPU-owned while kernels use private OpenCL buffers. The current scope is
+voxel downsampling, statistical/radius outlier removal, normal-estimation KNN, and
+height-grid aggregation.
+
+`opencl::enumerateOpenClGpuDevices()` returns stable platform/device-order GPU indices
+and device metadata. `PLAPOINT_OPENCL_DEVICE_INDEX` is read on first OpenCL runtime use;
+set it to one of those indices, or leave it unset/use `-1` for automatic selection.
+Automatic selection prefers discrete GPUs and then higher compute-unit counts. A bad
+explicit index, an unavailable device, or a missing compiler produces a detailed error
+for explicit OpenCL calls and an Auto fallback reason. Kernels target OpenCL C 1.2.
+Uniform-grid candidate work and serial per-voxel/per-cell reductions have conservative
+host-side limits to avoid long-running kernels and Windows driver-watchdog resets; Auto
+falls through to CPU when a pathological distribution exceeds one of these limits.
+The current adaptive KNN cell-size heuristic is tuned for volumetric distributions.
+Very large surface-like or line-like photogrammetry clouds can hit occupancy or global
+span guards and fall back to CPU; this release should not be presented as a guaranteed
+OpenCL acceleration path for multi-million-point SOR or normal estimation.
+OpenCL processing is also in-memory rather than out-of-core: algorithms retain several
+O(N) host/device buffers, and bilinear height gridding materializes and sorts as many as
+four contributions per point. Very large inputs can therefore fail allocation and let
+Auto retry CPU; attributed voxel processing additionally runs CPU attribute aggregation.
 
 ## Workspace and stream lifetime
 

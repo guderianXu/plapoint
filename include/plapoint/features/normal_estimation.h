@@ -6,14 +6,23 @@
 #ifdef PLAPOINT_WITH_CUDA
 #include <plapoint/gpu/normal_estimation.h>
 #endif
+#ifdef PLAPOINT_WITH_OPENCL
+#include <plapoint/opencl/normal_estimation.h>
+#endif
 #include <plapoint/search/kdtree.h>
 #include <plamatrix/dense/dense_matrix.h>
 #include <plamatrix/ops/point_cloud.h>
 #include <plamatrix/ops/decomposition.h>
+#include <atomic>
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <stdexcept>
 #include <vector>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace plapoint {
 
@@ -82,34 +91,99 @@ private:
 
         // Compute normals per point. The neighbor search can run on CUDA for GPU trees;
         // the small per-point covariance/SVD stage is CPU-parallelized.
+        int failure_slot_count = 1;
+#ifdef _OPENMP
+        failure_slot_count = omp_get_max_threads();
+        if (failure_slot_count < 1)
+        {
+            failure_slot_count = 1;
+        }
+#endif
+        std::vector<int> failure_rows(
+            static_cast<std::size_t>(failure_slot_count), n);
+        std::vector<std::exception_ptr> failures(
+            static_cast<std::size_t>(failure_slot_count));
+        std::atomic<int> first_failed_row{n};
+        const auto record_failure = [&](int row) noexcept
+        {
+            int worker_index = 0;
+#ifdef _OPENMP
+            worker_index = omp_get_thread_num();
+#endif
+            const auto failure_slot = static_cast<std::size_t>(worker_index);
+            if (row < failure_rows[failure_slot])
+            {
+                failures[failure_slot] = std::current_exception();
+                failure_rows[failure_slot] = row;
+            }
+
+            int previous = first_failed_row.load(std::memory_order_relaxed);
+            while (row < previous
+                   && !first_failed_row.compare_exchange_weak(
+                       previous,
+                       row,
+                       std::memory_order_relaxed,
+                       std::memory_order_relaxed))
+            {
+            }
+        };
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
         for (int i = 0; i < n; ++i)
         {
-            const auto& neighbors = all_neighbors[static_cast<std::size_t>(i)];
-            if (neighbors.size() < 3) continue;
-
-            int nn = static_cast<int>(neighbors.size());
-            plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> nb(nn, 3);
-            for (int j = 0; j < nn; ++j)
+            if (i > first_failed_row.load(std::memory_order_relaxed))
             {
-                int idx = neighbors[static_cast<std::size_t>(j)];
-                nb(j, 0) = points_cpu(idx, 0);
-                nb(j, 1) = points_cpu(idx, 1);
-                nb(j, 2) = points_cpu(idx, 2);
+                continue;
             }
+            try
+            {
+                const auto& neighbors = all_neighbors[static_cast<std::size_t>(i)];
+                if (neighbors.size() < 3)
+                {
+                    continue;
+                }
 
-            auto cov = plamatrix::covarianceMatrix(nb);
-            auto [U, S, Vt] = plamatrix::svd(cov);
+                int nn = static_cast<int>(neighbors.size());
+                plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> nb(nn, 3);
+                for (int j = 0; j < nn; ++j)
+                {
+                    int idx = neighbors[static_cast<std::size_t>(j)];
+                    nb(j, 0) = points_cpu(idx, 0);
+                    nb(j, 1) = points_cpu(idx, 1);
+                    nb(j, 2) = points_cpu(idx, 2);
+                }
 
-            Scalar nx = Vt.getValue(2, 0);
-            Scalar ny = Vt.getValue(2, 1);
-            Scalar nz = Vt.getValue(2, 2);
+                auto cov = plamatrix::covarianceMatrix(nb);
+                auto [U, S, Vt] = plamatrix::svd(cov);
 
-            normals.setValue(i, 0, nx);
-            normals.setValue(i, 1, ny);
-            normals.setValue(i, 2, nz);
+                Scalar nx = Vt.getValue(2, 0);
+                Scalar ny = Vt.getValue(2, 1);
+                Scalar nz = Vt.getValue(2, 2);
+
+                normals.setValue(i, 0, nx);
+                normals.setValue(i, 1, ny);
+                normals.setValue(i, 2, nz);
+            }
+            catch (...)
+            {
+                record_failure(i);
+            }
+        }
+
+        int selected_failure_row = n;
+        std::exception_ptr selected_failure;
+        for (std::size_t failure_slot = 0; failure_slot < failures.size(); ++failure_slot)
+        {
+            if (failure_rows[failure_slot] < selected_failure_row)
+            {
+                selected_failure_row = failure_rows[failure_slot];
+                selected_failure = failures[failure_slot];
+            }
+        }
+        if (selected_failure)
+        {
+            std::rethrow_exception(selected_failure);
         }
         return normals;
     }
@@ -129,16 +203,16 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> estimateNormals(
     ProcessingReport* report = nullptr)
 {
     std::string fallback_reason;
-    const bool try_gpu = detail::shouldTryGpu(device, input.size());
-    if (try_gpu)
+    if (device == ProcessingDevice::CUDA || device == ProcessingDevice::Auto)
     {
         if (k > 32)
         {
-            fallback_reason = "indexed GPU normal estimation requires k <= 32";
-            if (device == ProcessingDevice::GPU)
+            const std::string reason = "indexed normal estimation requires k <= 32";
+            if (device == ProcessingDevice::CUDA)
             {
-                throw std::invalid_argument(fallback_reason);
+                throw std::invalid_argument("CUDA " + reason);
             }
+            detail::appendFallbackReason(fallback_reason, "CUDA", reason);
         }
         else
         {
@@ -162,35 +236,81 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> estimateNormals(
                     estimator.setKSearch(k);
                     auto gpu_normals = estimator.compute();
                     detail::setReport(
-                        report, device, ProcessingDevice::GPU, false, {},
+                        report, device, ProcessingDevice::CUDA,
+                        !fallback_reason.empty(), fallback_reason,
                         ProcessingNeighborBackend::GpuUniformGrid);
                     return gpu_normals.toCpu();
                 }
                 catch (const std::exception& ex)
                 {
-                    if (device == ProcessingDevice::GPU)
+                    if (device == ProcessingDevice::CUDA)
                     {
                         throw;
                     }
-                    fallback_reason = ex.what();
+                    detail::appendFallbackReason(fallback_reason, "CUDA", ex.what());
                 }
             }
             else
             {
-                fallback_reason = "CUDA device is not available";
-                if (device == ProcessingDevice::GPU)
+                const std::string reason = "device is not available";
+                if (device == ProcessingDevice::CUDA)
                 {
-                    throw std::runtime_error(fallback_reason);
+                    throw std::runtime_error("CUDA " + reason);
                 }
+                detail::appendFallbackReason(fallback_reason, "CUDA", reason);
             }
 #else
-            fallback_reason = "PlaPoint was built without CUDA support";
-            if (device == ProcessingDevice::GPU)
+            const std::string reason = "PlaPoint was built without CUDA support";
+            if (device == ProcessingDevice::CUDA)
             {
-                throw std::runtime_error(fallback_reason);
+                throw std::runtime_error(reason);
             }
+            detail::appendFallbackReason(fallback_reason, "CUDA", reason);
 #endif
         }
+    }
+
+    if (device == ProcessingDevice::OpenCL || device == ProcessingDevice::Auto)
+    {
+#ifdef PLAPOINT_WITH_OPENCL
+        if (k > 32)
+        {
+            const std::string reason = "uniform-grid normal estimation requires k <= 32";
+            if (device == ProcessingDevice::OpenCL)
+            {
+                throw std::invalid_argument("OpenCL " + reason);
+            }
+            detail::appendFallbackReason(fallback_reason, "OpenCL", reason);
+        }
+        else
+        {
+            try
+            {
+                opencl::requireUsableOpenClDevice();
+                auto normals = opencl::estimateNormals(input, k);
+                detail::setReport(
+                    report, device, ProcessingDevice::OpenCL,
+                    !fallback_reason.empty(), fallback_reason,
+                    ProcessingNeighborBackend::OpenClUniformGrid);
+                return normals;
+            }
+            catch (const std::exception& ex)
+            {
+                if (device == ProcessingDevice::OpenCL)
+                {
+                    throw;
+                }
+                detail::appendFallbackReason(fallback_reason, "OpenCL", ex.what());
+            }
+        }
+#else
+        const std::string reason = "PlaPoint was built without OpenCL support";
+        if (device == ProcessingDevice::OpenCL)
+        {
+            throw std::runtime_error(reason);
+        }
+        detail::appendFallbackReason(fallback_reason, "OpenCL", reason);
+#endif
     }
 
     auto cloud = detail::nonOwningCloudPtr(input);
@@ -204,7 +324,7 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> estimateNormals(
     estimator.setKSearch(k);
     auto normals = estimator.compute();
     detail::setReport(report, device, ProcessingDevice::CPU,
-                      try_gpu && !fallback_reason.empty(),
+                      !fallback_reason.empty(),
                       fallback_reason,
                       ProcessingNeighborBackend::CpuKdTree);
     return normals;

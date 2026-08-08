@@ -74,7 +74,7 @@ TEST(PreprocessingApiTest, VoxelDownsampleCpuInputPreservesAveragedColors)
     EXPECT_EQ(output.colors()->getValue(1, 0), 100);
 }
 
-TEST(PreprocessingApiTest, ProcessingPolicyUsesDocumentedAutoGpuBoundary)
+TEST(PreprocessingApiTest, LegacyAutoGpuHintRetainsCompatibilityBoundary)
 {
     EXPECT_FALSE(plapoint::ProcessingPolicy::autoPrefersGpu(
         plapoint::ProcessingPolicy::autoGpuPointThreshold - 1));
@@ -98,7 +98,7 @@ TEST(PreprocessingApiTest, CpuStatisticalFilterReportsCpuKdTreeBackend)
     EXPECT_TRUE(report.fallbackReason.empty());
 }
 
-TEST(PreprocessingApiTest, AutoKeepsSmallNeighborWorkloadsOnCpuWithoutFailureFallback)
+TEST(PreprocessingApiTest, AutoUsesTheFirstAvailableAcceleratorEvenForSmallClouds)
 {
     const auto cloud = makeClusterWithOutlier();
     plapoint::ProcessingReport report;
@@ -108,10 +108,41 @@ TEST(PreprocessingApiTest, AutoKeepsSmallNeighborWorkloadsOnCpuWithoutFailureFal
 
     EXPECT_EQ(output.size(), 4u);
     EXPECT_EQ(report.requestedDevice, plapoint::ProcessingDevice::Auto);
+#ifdef PLAPOINT_WITH_CUDA
+    if (plapoint::gpu::hasUsableCudaDevice())
+    {
+        EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::CUDA);
+        EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::GpuUniformGrid);
+        EXPECT_FALSE(report.usedFallback);
+        EXPECT_TRUE(report.fallbackReason.empty());
+        return;
+    }
+#endif
+#ifdef PLAPOINT_WITH_OPENCL
+    if (plapoint::opencl::hasUsableOpenClDevice())
+    {
+        EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::OpenCL);
+        EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::OpenClUniformGrid);
+        EXPECT_TRUE(report.usedFallback);
+        EXPECT_FALSE(report.fallbackReason.empty());
+        return;
+    }
+#endif
     EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::CPU);
     EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::CpuKdTree);
-    EXPECT_FALSE(report.usedFallback);
-    EXPECT_TRUE(report.fallbackReason.empty());
+    EXPECT_TRUE(report.usedFallback);
+    EXPECT_FALSE(report.fallbackReason.empty());
+}
+
+TEST(PreprocessingApiTest, ProcessingEnumValuesRemainBackwardCompatible)
+{
+    EXPECT_EQ(static_cast<int>(plapoint::ProcessingDevice::CPU), 0);
+    EXPECT_EQ(static_cast<int>(plapoint::ProcessingDevice::CUDA), 1);
+    EXPECT_EQ(static_cast<int>(plapoint::ProcessingDevice::GPU), 1);
+    EXPECT_EQ(static_cast<int>(plapoint::ProcessingDevice::Auto), 2);
+    EXPECT_EQ(static_cast<int>(plapoint::ProcessingDevice::OpenCL), 3);
+    EXPECT_EQ(static_cast<int>(plapoint::ProcessingNeighborBackend::CpuCompatibility), 4);
+    EXPECT_EQ(static_cast<int>(plapoint::ProcessingNeighborBackend::OpenClUniformGrid), 5);
 }
 
 #ifndef PLAPOINT_WITH_CUDA
@@ -157,7 +188,7 @@ TEST(PreprocessingApiTest, RadiusOutlierRemovalBuildsFilterInternally)
 }
 
 #ifdef PLAPOINT_WITH_CUDA
-TEST(PreprocessingApiTest, AutoSmallCloudUsesCpuWhenGpuIsAvailable)
+TEST(PreprocessingApiTest, AutoSmallCloudUsesCudaWhenAvailable)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -173,9 +204,9 @@ TEST(PreprocessingApiTest, AutoSmallCloudUsesCpuWhenGpuIsAvailable)
     ASSERT_EQ(output.size(), 4u);
     ASSERT_TRUE(output.hasColors());
     EXPECT_EQ(report.requestedDevice, plapoint::ProcessingDevice::Auto);
-    EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::CPU);
-    EXPECT_EQ(report.usedDevice, plapoint::ProcessingDevice::CPU);
-    EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::CpuKdTree);
+    EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::CUDA);
+    EXPECT_EQ(report.usedDevice, plapoint::ProcessingDevice::CUDA);
+    EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::GpuUniformGrid);
     EXPECT_FALSE(report.usedFallback);
 }
 

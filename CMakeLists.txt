@@ -26,6 +26,12 @@ if(DEFINED PLAPOINT_WITH_CUDA)
 endif()
 option(PLAPOINT_WITH_CUDA "Build with CUDA GPU acceleration" ON)
 
+set(_PLAPOINT_WITH_OPENCL_USER_DEFINED OFF)
+if(DEFINED PLAPOINT_WITH_OPENCL)
+    set(_PLAPOINT_WITH_OPENCL_USER_DEFINED ON)
+endif()
+option(PLAPOINT_WITH_OPENCL "Build CPU-owned OpenCL processing backends" ON)
+
 # OpenMP (required by plamatrix)
 find_package(OpenMP REQUIRED)
 
@@ -73,6 +79,19 @@ else()
     set(PLAPOINT_WITH_CUDA OFF)
 endif()
 
+# OpenCL is independent from PlaMatrix device storage. The public high-level APIs
+# keep their input/output CPU-owned and use private cl_mem buffers internally.
+if(PLAPOINT_WITH_OPENCL)
+    find_package(OpenCL QUIET)
+    if(NOT OpenCL_FOUND)
+        if(_PLAPOINT_WITH_OPENCL_USER_DEFINED)
+            message(FATAL_ERROR "PLAPOINT_WITH_OPENCL=ON requires an OpenCL SDK/loader")
+        endif()
+        message(STATUS "PlaPoint OpenCL disabled because an OpenCL SDK/loader was not found")
+        set(PLAPOINT_WITH_OPENCL OFF CACHE BOOL "Build CPU-owned OpenCL processing backends" FORCE)
+    endif()
+endif()
+
 # plapoint library (compiled, not header-only)
 add_library(plapoint)
 add_library(plapoint::plapoint ALIAS plapoint)
@@ -81,6 +100,12 @@ if(PLAPOINT_WITH_CUDA)
     set_target_properties(plapoint PROPERTIES
         CUDA_ARCHITECTURES "${PLAPOINT_CUDA_ARCHITECTURES}"
     )
+endif()
+
+if(PLAPOINT_WITH_OPENCL)
+    target_compile_definitions(plapoint PUBLIC PLAPOINT_WITH_OPENCL=1)
+    target_compile_definitions(plapoint PRIVATE CL_TARGET_OPENCL_VERSION=120)
+    target_link_libraries(plapoint PUBLIC OpenCL::OpenCL)
 endif()
 
 target_include_directories(plapoint
@@ -163,5 +188,6 @@ message(STATUS "  CUDA support: ${PLAPOINT_WITH_CUDA}")
 if(PLAPOINT_WITH_CUDA)
     message(STATUS "  CUDA arch:    ${PLAPOINT_CUDA_ARCHITECTURES}")
 endif()
+message(STATUS "  OpenCL support: ${PLAPOINT_WITH_OPENCL}")
 message(STATUS "  Build tests:  ${PLAPOINT_BUILD_TESTS}")
 message(STATUS "  Benchmarks:   ${PLAPOINT_BUILD_BENCHMARKS}")
