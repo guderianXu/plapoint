@@ -132,6 +132,38 @@ TEST(HeightGridTest, BuildHeightGridUsesExplicitBoundsAndSkipsInvalidInput)
     EXPECT_FALSE(grid.isValid(1, 1));
 }
 
+TEST(HeightGridTest, RejectsNonFiniteDerivedGeometry)
+{
+    FloatMatrix extreme_points(2, 3);
+    extreme_points.setValue(0, 0, std::numeric_limits<float>::lowest());
+    extreme_points.setValue(0, 1, 0.0f);
+    extreme_points.setValue(0, 2, 0.0f);
+    extreme_points.setValue(1, 0, std::numeric_limits<float>::max());
+    extreme_points.setValue(1, 1, 1.0f);
+    extreme_points.setValue(1, 2, 0.0f);
+    const Cloud extreme_cloud(std::move(extreme_points));
+
+    plapoint::mesh::HeightGridOptions<float> options;
+    options.width = 2;
+    options.height = 2;
+    EXPECT_THROW(
+        static_cast<void>(plapoint::mesh::buildHeightGrid(extreme_cloud, options)),
+        std::overflow_error);
+
+    FloatMatrix padded_points(2, 3);
+    padded_points.setValue(0, 0, 0.0f);
+    padded_points.setValue(0, 1, 0.0f);
+    padded_points.setValue(0, 2, 0.0f);
+    padded_points.setValue(1, 0, 1.0f);
+    padded_points.setValue(1, 1, 1.0f);
+    padded_points.setValue(1, 2, 0.0f);
+    const Cloud padded_cloud(std::move(padded_points));
+    options.padding = std::numeric_limits<float>::max();
+    EXPECT_THROW(
+        static_cast<void>(plapoint::mesh::buildHeightGrid(padded_cloud, options)),
+        std::overflow_error);
+}
+
 TEST(HeightGridTest, FillHolesUsesNeighborMeanAndRecordsPass)
 {
     plapoint::mesh::HeightGrid<float> grid;

@@ -45,6 +45,18 @@ void appendContribution(
 }
 
 template <typename Scalar>
+Scalar checkedGridSpan(Scalar minimum, Scalar maximum)
+{
+    const Scalar span = std::max(maximum - minimum, Scalar(1.0e-6));
+    if (!std::isfinite(span) || span <= Scalar(0))
+    {
+        throw std::overflow_error(
+            "OpenCL height grid: derived axis span must be finite and positive");
+    }
+    return span;
+}
+
+template <typename Scalar>
 std::vector<Contribution<Scalar>> buildContributions(
     const PointCloud<Scalar, plamatrix::Device::CPU>& cloud,
     const mesh::HeightGridOptions<Scalar>& options,
@@ -64,7 +76,8 @@ std::vector<Contribution<Scalar>> buildContributions(
         }
         const Scalar gx = (x - grid.minX) / grid.stepX;
         const Scalar gy = (y - grid.minY) / grid.stepY;
-        if (gx < Scalar(0) || gx > Scalar(grid.width - 1)
+        if (!std::isfinite(gx) || !std::isfinite(gy)
+            || gx < Scalar(0) || gx > Scalar(grid.width - 1)
             || gy < Scalar(0) || gy > Scalar(grid.height - 1))
         {
             continue;
@@ -166,17 +179,31 @@ mesh::HeightGrid<Scalar> initializeGridGeometry(
         min_y = options.minY;
         max_y = options.maxY;
     }
-    Scalar span_x = std::max(max_x - min_x, Scalar(1.0e-6));
-    Scalar span_y = std::max(max_y - min_y, Scalar(1.0e-6));
+    Scalar span_x = checkedGridSpan(min_x, max_x);
+    Scalar span_y = checkedGridSpan(min_y, max_y);
     if (!options.useExplicitBounds)
     {
-        min_x -= span_x * options.padding;
-        max_x += span_x * options.padding;
-        min_y -= span_y * options.padding;
-        max_y += span_y * options.padding;
+        const Scalar padding_x = span_x * options.padding;
+        const Scalar padding_y = span_y * options.padding;
+        if (!std::isfinite(padding_x) || !std::isfinite(padding_y))
+        {
+            throw std::overflow_error(
+                "OpenCL height grid: derived padding must be finite");
+        }
+        min_x -= padding_x;
+        max_x += padding_x;
+        min_y -= padding_y;
+        max_y += padding_y;
+        if (!std::isfinite(min_x) || !std::isfinite(max_x)
+            || !std::isfinite(min_y) || !std::isfinite(max_y)
+            || max_x < min_x || max_y < min_y)
+        {
+            throw std::overflow_error(
+                "OpenCL height grid: derived bounds must be finite and ordered");
+        }
     }
-    span_x = std::max(max_x - min_x, Scalar(1.0e-6));
-    span_y = std::max(max_y - min_y, Scalar(1.0e-6));
+    span_x = checkedGridSpan(min_x, max_x);
+    span_y = checkedGridSpan(min_y, max_y);
     grid.width = options.width > 0 ? options.width : options.resolution;
     grid.height = options.height > 0 ? options.height : options.resolution;
     if (grid.width < 2 || grid.height < 2)
@@ -198,6 +225,12 @@ mesh::HeightGrid<Scalar> initializeGridGeometry(
     grid.minY = min_y;
     grid.stepX = span_x / Scalar(grid.width - 1);
     grid.stepY = span_y / Scalar(grid.height - 1);
+    if (!std::isfinite(grid.stepX) || grid.stepX <= Scalar(0)
+        || !std::isfinite(grid.stepY) || grid.stepY <= Scalar(0))
+    {
+        throw std::overflow_error(
+            "OpenCL height grid: derived grid step must be finite and positive");
+    }
     grid.heights.assign(cell_count, Scalar(0));
     grid.weights.assign(cell_count, Scalar(0));
     grid.valid.assign(cell_count, 0);

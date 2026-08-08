@@ -194,7 +194,10 @@ PointCloud<Scalar, plamatrix::Device::CPU> voxelDownsampleImpl(
     }
     if (input.size() == 0)
     {
-        return PointCloud<Scalar, plamatrix::Device::CPU>(0);
+        PointCloud<Scalar, plamatrix::Device::CPU> output(0);
+        const std::vector<int> empty;
+        setAveragedAttributes(input, empty, empty, empty, output);
+        return output;
     }
 
     const auto points = detail::rowMajorPoints(input);

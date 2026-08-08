@@ -13,6 +13,7 @@
 
 #include <plapoint/filters/preprocessing.h>
 #include <plapoint/opencl/opencl_runtime.h>
+#include <plapoint/opencl/preprocessing.h>
 
 namespace
 {
@@ -83,6 +84,34 @@ TEST(PreprocessingOpenClTest, EnumeratesAndReportsSelectedGpu)
     EXPECT_EQ(found->name, plapoint::opencl::selectedOpenClDeviceName());
     EXPECT_TRUE(found->available);
     EXPECT_TRUE(found->compilerAvailable);
+}
+
+TEST(PreprocessingOpenClTest, EmptyVoxelInputPreservesAttributeSchemaWithoutDeviceUse)
+{
+    Cloud cloud(0);
+    cloud.setNormals(plamatrix::DenseMatrix<float, plamatrix::Device::CPU>(0, 3));
+    cloud.setColors(plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>(0, 3));
+    cloud.setIntensities(plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU>(0, 1));
+    cloud.setScalarFields(
+        {"error", "confidence"},
+        plamatrix::DenseMatrix<float, plamatrix::Device::CPU>(0, 2));
+
+    const auto result = plapoint::opencl::voxelDownsample(cloud, 1.0f, 1.0f, 1.0f);
+
+    EXPECT_EQ(result.size(), 0u);
+    ASSERT_TRUE(result.hasNormals());
+    EXPECT_EQ(result.normals()->rows(), 0);
+    EXPECT_EQ(result.normals()->cols(), 3);
+    ASSERT_TRUE(result.hasColors());
+    EXPECT_EQ(result.colors()->rows(), 0);
+    EXPECT_EQ(result.colors()->cols(), 3);
+    ASSERT_TRUE(result.hasIntensities());
+    EXPECT_EQ(result.intensities()->rows(), 0);
+    EXPECT_EQ(result.intensities()->cols(), 1);
+    ASSERT_TRUE(result.hasScalarFields());
+    EXPECT_EQ(result.scalarFieldNames(), (std::vector<std::string>{"error", "confidence"}));
+    EXPECT_EQ(result.scalarFields()->rows(), 0);
+    EXPECT_EQ(result.scalarFields()->cols(), 2);
 }
 
 TEST(PreprocessingOpenClTest, VoxelMatchesCpuAndPreservesAveragedAttributes)
@@ -158,6 +187,32 @@ TEST(PreprocessingOpenClTest, RadiusMatchesCpuAndPreservesSelectedAttributes)
                   cpu.colors()->getValue(static_cast<plamatrix::Index>(row), 0));
         EXPECT_FLOAT_EQ(result.normals()->getValue(static_cast<plamatrix::Index>(row), 0),
                         cpu.normals()->getValue(static_cast<plamatrix::Index>(row), 0));
+    }
+}
+
+TEST(PreprocessingOpenClTest, RadiusHandlesMaximumReachableGridSpan)
+{
+    if (!hasOpenCl()) GTEST_SKIP() << "No usable OpenCL GPU device";
+    using DoubleCloud = plapoint::PointCloud<double, plamatrix::Device::CPU>;
+    plamatrix::DenseMatrix<double, plamatrix::Device::CPU> points(2, 3);
+    points.fill(0.0);
+    // These raw cells normalize to [0, INT64_MAX], so the upper query must skip +1.
+    points(0, 0) = -1023.0;
+    points(1, 0) = std::ldexp(1.0, 63) - 1024.0;
+    const DoubleCloud cloud(std::move(points));
+
+    try
+    {
+        const auto keep_mask = plapoint::opencl::radiusOutlierKeepMask(cloud, 1.0, 2);
+        EXPECT_EQ(keep_mask, (std::vector<std::uint8_t>{0, 0}));
+    }
+    catch (const std::runtime_error& error)
+    {
+        if (std::string(error.what()).find("double precision") != std::string::npos)
+        {
+            GTEST_SKIP() << error.what();
+        }
+        throw;
     }
 }
 

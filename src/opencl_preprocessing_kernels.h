@@ -274,14 +274,17 @@ __kernel void radiusKeepMask(__global const real* points, __global const uchar* 
     int found = 0;
     for (long dx = -1; dx <= 1 && found < min_neighbors; ++dx)
     {
+        if ((dx < 0 && center_x == 0) || (dx > 0 && center_x == span_x)) continue;
         const long x = center_x + dx;
         if (x < 0 || x > span_x) continue;
         for (long dy = -1; dy <= 1 && found < min_neighbors; ++dy)
         {
+            if ((dy < 0 && center_y == 0) || (dy > 0 && center_y == span_y)) continue;
             const long y = center_y + dy;
             if (y < 0 || y > span_y) continue;
             for (long dz = -1; dz <= 1 && found < min_neighbors; ++dz)
             {
+                if ((dz < 0 && center_z == 0) || (dz > 0 && center_z == span_z)) continue;
                 const long z = center_z + dz;
                 if (z < 0 || z > span_z) continue;
                 const int cell = find_cell(cells, cell_count, x, y, z);

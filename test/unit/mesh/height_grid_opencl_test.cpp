@@ -3,6 +3,7 @@
 #ifdef PLAPOINT_WITH_OPENCL
 
 #include <cstdint>
+#include <limits>
 
 #include <plapoint/opencl/height_grid.h>
 #include <plapoint/opencl/opencl_runtime.h>
@@ -82,6 +83,31 @@ TEST(HeightGridOpenClTest, MatchesCpuNearestMinimumAggregation)
     EXPECT_EQ(result.colors, cpu.colors);
     EXPECT_EQ(result.heights, cpu.heights);
     EXPECT_EQ(result.weights, cpu.weights);
+}
+
+TEST(HeightGridOpenClTest, RejectsNonFiniteDerivedGeometryBeforeDeviceUse)
+{
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> points(2, 3);
+    points(0, 0) = std::numeric_limits<float>::lowest();
+    points(0, 1) = 0.0f;
+    points(0, 2) = 0.0f;
+    points(1, 0) = std::numeric_limits<float>::max();
+    points(1, 1) = 1.0f;
+    points(1, 2) = 0.0f;
+    const Cloud extreme_cloud(std::move(points));
+
+    plapoint::mesh::HeightGridOptions<float> options;
+    options.width = 2;
+    options.height = 2;
+    EXPECT_THROW(
+        static_cast<void>(plapoint::opencl::buildHeightGrid(extreme_cloud, options)),
+        std::overflow_error);
+
+    auto padded_cloud = makeHeightPoints();
+    options.padding = std::numeric_limits<float>::max();
+    EXPECT_THROW(
+        static_cast<void>(plapoint::opencl::buildHeightGrid(padded_cloud, options)),
+        std::overflow_error);
 }
 
 #endif // PLAPOINT_WITH_OPENCL
