@@ -619,6 +619,8 @@ private:
             _lastReport.usedFallback = true;
         };
         bool solved = false;
+        bool cuda_solve_nonconverged = false;
+        double fallback_absolute_tolerance = solver_options.absoluteTolerance;
 #ifdef PLAPOINT_WITH_CUDA
         if (try_gpu)
         {
@@ -630,17 +632,31 @@ private:
                 plamatrix::IterativeSolverWorkspace<Scalar> workspace;
                 const auto gpu_report = plamatrix::pcg(
                     matrix_gpu, rhs_gpu, solution_gpu, workspace, solver_options);
-                if (!gpu_report.converged)
-                {
-                    throw std::runtime_error(
-                        std::string("Poisson GPU PCG did not converge after ") +
-                        std::to_string(gpu_report.iterations) + " iterations; residual=" +
-                        std::to_string(gpu_report.finalResidual));
-                }
                 _lastReport.solver = gpu_report;
                 solution = solution_gpu.toCpu();
-                _lastReport.solverDevice = ProcessingDevice::CUDA;
-                solved = true;
+                if (!gpu_report.converged)
+                {
+                    const std::string reason =
+                        std::string("Poisson GPU PCG did not converge after ") +
+                        std::to_string(gpu_report.iterations) + " iterations; residual=" +
+                        std::to_string(gpu_report.finalResidual);
+                    if (_processing_device == ProcessingDevice::CUDA)
+                    {
+                        throw std::runtime_error(reason);
+                    }
+                    cuda_solve_nonconverged = true;
+                    // Resume on CPU from the CUDA iterate. Preserve the convergence target
+                    // from the original zero guess and grant the fallback its own solve budget.
+                    fallback_absolute_tolerance = std::max(
+                        fallback_absolute_tolerance,
+                        solver_options.relativeTolerance * gpu_report.initialResidual);
+                    append_fallback("CUDA", reason);
+                }
+                else
+                {
+                    _lastReport.solverDevice = ProcessingDevice::CUDA;
+                    solved = true;
+                }
             }
             catch (const std::exception& error)
             {
@@ -670,10 +686,18 @@ private:
         }
         if (!solved)
         {
+            auto cpu_solver_options = solver_options;
+            cpu_solver_options.absoluteTolerance = fallback_absolute_tolerance;
+            if (cuda_solve_nonconverged)
+            {
+                cpu_solver_options.maxIterations = static_cast<int>(std::min<long long>(
+                    std::numeric_limits<int>::max(),
+                    2LL * solver_options.maxIterations));
+            }
             _lastReport.solver = plamatrix::pcg(
-                system.matrix, system.rhs, solution, solver_options);
+                system.matrix, system.rhs, solution, cpu_solver_options);
             _lastReport.solverDevice = ProcessingDevice::CPU;
-            if (_lastReport.usedFallback && !_lastReport.solver.converged)
+            if (cuda_solve_nonconverged && !_lastReport.solver.converged)
             {
                 _lastReport.leafCount = static_cast<std::size_t>(n_leaves);
                 throw std::runtime_error(

@@ -37,6 +37,38 @@ std::shared_ptr<FloatCloud> makeSphereCloud(int count)
     return cloud;
 }
 
+std::shared_ptr<FloatCloud> makeRegularSphereCloud(int rings, int segments)
+{
+    const int count = rings * segments;
+    FloatMatrix points(count, 3);
+    FloatMatrix normals(count, 3);
+    constexpr float pi = 3.14159265358979323846f;
+    int row = 0;
+    for (int ring = 0; ring < rings; ++ring)
+    {
+        const float phi = static_cast<float>(ring + 1) * pi /
+            static_cast<float>(rings + 1);
+        for (int segment = 0; segment < segments; ++segment)
+        {
+            const float theta = static_cast<float>(segment) * 2.0f * pi /
+                static_cast<float>(segments);
+            const float x = std::sin(phi) * std::cos(theta);
+            const float y = std::sin(phi) * std::sin(theta);
+            const float z = std::cos(phi);
+            points.setValue(row, 0, 2.0f * x);
+            points.setValue(row, 1, 2.0f * y);
+            points.setValue(row, 2, 2.0f * z);
+            normals.setValue(row, 0, x);
+            normals.setValue(row, 1, y);
+            normals.setValue(row, 2, z);
+            ++row;
+        }
+    }
+    auto cloud = std::make_shared<FloatCloud>(std::move(points));
+    cloud->setNormals(std::move(normals));
+    return cloud;
+}
+
 static_assert(std::is_copy_constructible_v<plapoint::mesh::PoissonReconstruction<float>>);
 static_assert(std::is_copy_assignable_v<plapoint::mesh::PoissonReconstruction<float>>);
 
@@ -366,6 +398,26 @@ TEST(PoissonReconstructionTest, AutoReportsWhenGpuAndCpuDoNotConverge)
     EXPECT_EQ(report.solverDevice, plapoint::ProcessingDevice::CPU);
     EXPECT_NE(report.fallbackReason.find("did not converge"), std::string::npos);
     EXPECT_FALSE(report.solver.converged);
+}
+
+TEST(PoissonReconstructionTest, AutoContinuesCpuFromCudaApproximation)
+{
+    plapoint::mesh::PoissonReconstruction<float> reconstruction;
+    reconstruction.setInputCloud(makeRegularSphereCloud(16, 16));
+    reconstruction.setDepth(4);
+    reconstruction.setSolverIterations(30);
+    reconstruction.setSolverTolerance(1.0e-6);
+    reconstruction.setProcessingDevice(plapoint::ProcessingDevice::Auto);
+
+    auto [vertices, faces] = reconstruction.reconstruct();
+    const auto& report = reconstruction.lastReport();
+
+    EXPECT_GT(vertices.rows(), 0);
+    EXPECT_GT(faces.rows(), 0);
+    EXPECT_TRUE(report.usedFallback);
+    EXPECT_EQ(report.solverDevice, plapoint::ProcessingDevice::CPU);
+    EXPECT_TRUE(report.solver.converged);
+    EXPECT_NE(report.fallbackReason.find("did not converge"), std::string::npos);
 }
 
 TEST(PoissonReconstructionTest, CpuAndGpuProduceComparableSphereGeometry)
