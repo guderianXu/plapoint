@@ -27,7 +27,8 @@ struct OpenClDeviceInfo
 std::vector<OpenClDeviceInfo> enumerateOpenClGpuDevices();
 
 /// Return true when a usable GPU OpenCL device and compiler can be initialized.
-/// PLAPOINT_OPENCL_DEVICE_INDEX is read on first runtime use; -1 or unset selects automatically.
+/// PLAMATRIX_OPENCL_DEVICE_INDEX is read on first runtime use; -1 or unset selects automatically.
+/// PLAPOINT_OPENCL_DEVICE_INDEX remains available as a compatibility fallback.
 bool hasUsableOpenClDevice() noexcept;
 
 /// Initialize the selected OpenCL GPU or throw the full platform/device selection error.

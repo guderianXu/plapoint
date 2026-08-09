@@ -2,8 +2,42 @@
 
 include(CMakeFindDependencyMacro)
 find_dependency(plamatrix CONFIG)
+
+function(_plapoint_target_has_definition target definition result)
+    get_target_property(_plapoint_definitions ${target} INTERFACE_COMPILE_DEFINITIONS)
+    if(NOT _plapoint_definitions)
+        set(_plapoint_definitions "")
+    endif()
+    set(_plapoint_found_definition OFF)
+    foreach(_plapoint_definition IN LISTS _plapoint_definitions)
+        if(_plapoint_definition MATCHES "^${definition}(=1)?$")
+            set(_plapoint_found_definition ON)
+            break()
+        endif()
+    endforeach()
+    set(${result} ${_plapoint_found_definition} PARENT_SCOPE)
+endfunction()
+
 if(@PLAPOINT_WITH_CUDA@)
+    _plapoint_target_has_definition(
+        plamatrix::plamatrix PLAMATRIX_WITH_CUDA _plapoint_matrix_has_cuda)
+    if(NOT _plapoint_matrix_has_cuda)
+        set(plapoint_FOUND FALSE)
+        set(plapoint_NOT_FOUND_MESSAGE
+            "PlaPoint was built with CUDA, but PlaMatrix does not provide its CUDA backend")
+        return()
+    endif()
     find_dependency(CUDAToolkit)
+endif()
+if(@PLAPOINT_WITH_OPENCL@)
+    _plapoint_target_has_definition(
+        plamatrix::plamatrix PLAMATRIX_WITH_OPENCL _plapoint_matrix_has_opencl)
+    if(NOT _plapoint_matrix_has_opencl)
+        set(plapoint_FOUND FALSE)
+        set(plapoint_NOT_FOUND_MESSAGE
+            "PlaPoint was built with OpenCL, but PlaMatrix does not provide its OpenCL backend")
+        return()
+    endif()
 endif()
 include("${CMAKE_CURRENT_LIST_DIR}/plapointTargets.cmake")
 check_required_components(plapoint)
