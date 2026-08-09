@@ -45,9 +45,13 @@ if(NOT _PLAPOINT_PLAMATRIX_DEFS)
     set(_PLAPOINT_PLAMATRIX_DEFS "")
 endif()
 set(_PLAPOINT_PLAMATRIX_WITH_CUDA OFF)
+set(_PLAPOINT_PLAMATRIX_WITH_OPENCL OFF)
 foreach(_PLAPOINT_DEF IN LISTS _PLAPOINT_PLAMATRIX_DEFS)
     if(_PLAPOINT_DEF MATCHES "^PLAMATRIX_WITH_CUDA(=1)?$")
         set(_PLAPOINT_PLAMATRIX_WITH_CUDA ON)
+    endif()
+    if(_PLAPOINT_DEF MATCHES "^PLAMATRIX_WITH_OPENCL(=1)?$")
+        set(_PLAPOINT_PLAMATRIX_WITH_OPENCL ON)
     endif()
 endforeach()
 
@@ -79,17 +83,15 @@ else()
     set(PLAPOINT_WITH_CUDA OFF)
 endif()
 
-# OpenCL is independent from PlaMatrix device storage. The public high-level APIs
-# keep their input/output CPU-owned and use private cl_mem buffers internally.
-if(PLAPOINT_WITH_OPENCL)
-    find_package(OpenCL QUIET)
-    if(NOT OpenCL_FOUND)
-        if(_PLAPOINT_WITH_OPENCL_USER_DEFINED)
-            message(FATAL_ERROR "PLAPOINT_WITH_OPENCL=ON requires an OpenCL SDK/loader")
-        endif()
-        message(STATUS "PlaPoint OpenCL disabled because an OpenCL SDK/loader was not found")
-        set(PLAPOINT_WITH_OPENCL OFF CACHE BOOL "Build CPU-owned OpenCL processing backends" FORCE)
+# PlaPoint OpenCL kernels use PlaMatrix's OpenCL runtime and buffer resources.
+if(PLAPOINT_WITH_OPENCL AND NOT _PLAPOINT_PLAMATRIX_WITH_OPENCL)
+    if(_PLAPOINT_WITH_OPENCL_USER_DEFINED)
+        message(FATAL_ERROR "PLAPOINT_WITH_OPENCL=ON requires plamatrix::plamatrix built with OpenCL. "
+                            "Use an OpenCL PlaMatrix package or configure PlaPoint with "
+                            "-DPLAPOINT_WITH_OPENCL=OFF.")
     endif()
+    message(STATUS "PlaPoint OpenCL disabled because plamatrix::plamatrix has no OpenCL backend")
+    set(PLAPOINT_WITH_OPENCL OFF CACHE BOOL "Build CPU-owned OpenCL processing backends" FORCE)
 endif()
 
 # plapoint library (compiled, not header-only)
@@ -105,7 +107,6 @@ endif()
 if(PLAPOINT_WITH_OPENCL)
     target_compile_definitions(plapoint PUBLIC PLAPOINT_WITH_OPENCL=1)
     target_compile_definitions(plapoint PRIVATE CL_TARGET_OPENCL_VERSION=120)
-    target_link_libraries(plapoint PUBLIC OpenCL::OpenCL)
 endif()
 
 target_include_directories(plapoint

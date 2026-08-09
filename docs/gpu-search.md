@@ -49,14 +49,16 @@ as `actualDevice` with `usedFallback == true`.
 
 ## OpenCL device selection
 
-PlaPoint's OpenCL path is independent of PlaMatrix device storage: public inputs and
-outputs remain CPU-owned while kernels use private OpenCL buffers. The current scope is
-voxel downsampling, statistical/radius outlier removal, normal-estimation KNN, and
-height-grid aggregation.
+PlaPoint's OpenCL path uses PlaMatrix's OpenCL runtime, queues, program cache, and
+device-buffer resources. Public inputs and outputs for the current high-level
+algorithms remain CPU-owned, and point-cloud-specific kernels stay in PlaPoint.
+The current scope is voxel downsampling,
+statistical/radius outlier removal, normal-estimation KNN, and height-grid aggregation.
 
 `opencl::enumerateOpenClGpuDevices()` returns stable platform/device-order GPU indices
-and device metadata. `PLAPOINT_OPENCL_DEVICE_INDEX` is read on first OpenCL runtime use;
-set it to one of those indices, or leave it unset/use `-1` for automatic selection.
+and device metadata. `PLAMATRIX_OPENCL_DEVICE_INDEX` is read on first OpenCL runtime
+use; set it to one of those indices, or leave it unset/use `-1` for automatic selection.
+`PLAPOINT_OPENCL_DEVICE_INDEX` remains supported when the PlaMatrix variable is unset.
 Automatic selection prefers discrete GPUs and then higher compute-unit counts. A bad
 explicit index, an unavailable device, or a missing compiler produces a detailed error
 for explicit OpenCL calls and an Auto fallback reason. Kernels target OpenCL C 1.2.

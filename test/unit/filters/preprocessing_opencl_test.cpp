@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <cstdint>
 #include <string>
@@ -14,6 +15,7 @@
 #include <plapoint/filters/preprocessing.h>
 #include <plapoint/opencl/opencl_runtime.h>
 #include <plapoint/opencl/preprocessing.h>
+#include <plamatrix/opencl/runtime.h>
 
 namespace
 {
@@ -73,7 +75,20 @@ TEST(PreprocessingOpenClTest, EnumeratesAndReportsSelectedGpu)
 {
     if (!hasOpenCl()) GTEST_SKIP() << "No usable OpenCL GPU device";
     const auto devices = plapoint::opencl::enumerateOpenClGpuDevices();
+    const auto matrix_devices = plamatrix::opencl::enumerateOpenClGpuDevices();
     ASSERT_FALSE(devices.empty());
+    ASSERT_EQ(devices.size(), matrix_devices.size());
+    for (std::size_t index = 0; index < devices.size(); ++index)
+    {
+        EXPECT_EQ(devices[index].index, matrix_devices[index].index);
+        EXPECT_EQ(devices[index].name, matrix_devices[index].name);
+        EXPECT_EQ(devices[index].vendor, matrix_devices[index].vendor);
+        EXPECT_EQ(devices[index].version, matrix_devices[index].version);
+        EXPECT_EQ(devices[index].computeUnits, matrix_devices[index].computeUnits);
+        EXPECT_EQ(devices[index].unifiedMemory, matrix_devices[index].unifiedMemory);
+        EXPECT_EQ(devices[index].available, matrix_devices[index].available);
+        EXPECT_EQ(devices[index].compilerAvailable, matrix_devices[index].compilerAvailable);
+    }
     const int selected = plapoint::opencl::selectedOpenClDeviceIndex();
     ASSERT_GE(selected, 0);
     const auto found = std::find_if(devices.begin(), devices.end(), [&](const auto& device)
@@ -82,6 +97,8 @@ TEST(PreprocessingOpenClTest, EnumeratesAndReportsSelectedGpu)
     });
     ASSERT_NE(found, devices.end());
     EXPECT_EQ(found->name, plapoint::opencl::selectedOpenClDeviceName());
+    EXPECT_EQ(selected, plamatrix::opencl::selectedOpenClDeviceIndex());
+    EXPECT_EQ(found->name, plamatrix::opencl::selectedOpenClDeviceName());
     EXPECT_TRUE(found->available);
     EXPECT_TRUE(found->compilerAvailable);
 }

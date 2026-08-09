@@ -5,7 +5,6 @@ target_sources(plapoint PRIVATE
 
 if(PLAPOINT_WITH_OPENCL)
     target_sources(plapoint PRIVATE
-        opencl_device_enumeration.cpp
         opencl_runtime.cpp
         height_grid_opencl.cpp
         knn_opencl.cpp

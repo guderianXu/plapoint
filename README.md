@@ -57,12 +57,15 @@ was built with CUDA support:
 - **VoxelGrid CPU hot path** — CPU path uses hash aggregation and sorted voxel keys to keep deterministic centroid order.
 - Explicit template instantiations in `src/plapoint.cpp` reduce downstream compile times
 
-When `PLAPOINT_WITH_OPENCL=ON`, PlaPoint uses OpenCL C 1.2 kernels with private
-`cl_mem` buffers for CPU-owned voxel downsampling, statistical/radius outlier removal,
-normal-estimation KNN, and height-grid aggregation. Inputs and results remain PlaMatrix
-CPU objects; this backend does not add OpenCL storage to PlaMatrix. Enumerate devices
-with `opencl::enumerateOpenClGpuDevices()`. Set `PLAPOINT_OPENCL_DEVICE_INDEX` to a
-stable enumerated GPU index (`-1` or unset means automatic selection).
+When `PLAPOINT_WITH_OPENCL=ON`, PlaPoint uses PlaMatrix's OpenCL runtime and buffer
+resources to run OpenCL C 1.2 kernels for CPU-owned voxel downsampling,
+statistical/radius outlier removal, normal-estimation KNN, and height-grid aggregation.
+The current high-level APIs still accept and return PlaMatrix CPU objects, while
+PlaMatrix owns OpenCL device discovery, program caching, queues, and device storage.
+Point-cloud-specific kernels and their dispatch policy remain in PlaPoint.
+Enumerate devices with `opencl::enumerateOpenClGpuDevices()`. Set
+`PLAMATRIX_OPENCL_DEVICE_INDEX` to a stable enumerated GPU index (`-1` or unset means
+automatic selection); `PLAPOINT_OPENCL_DEVICE_INDEX` remains a compatibility fallback.
 For attributed voxel clouds, OpenCL computes geometric centroids while the existing CPU
 VoxelGrid performs exact attribute aggregation, so that path is a partial offload.
 
