@@ -60,8 +60,9 @@ auto [vertices, faces] = reconstruction.reconstruct();
 const auto& report = reconstruction.lastReport();
 ```
 
-CPU and GPU selections call PlaMatrix Jacobi-PCG on the same CSR. Explicit GPU non-convergence
-throws with iteration and residual context. `Auto` retries CPU and fills `fallbackReason`.
+CPU, CUDA, and OpenCL selections call PlaMatrix Jacobi-PCG on the same CSR. Explicit accelerator
+non-convergence throws with iteration and residual context. `Auto` tries CUDA, OpenCL, then CPU,
+continues from a non-converged accelerator iterate when available, and fills `fallbackReason`.
 `solverDevice` identifies the PCG device; `actualDevice` remains CPU because octree field
 evaluation and final Marching Cubes extraction are not yet device-resident. `lastSystem()` exposes
 the latest CSR/RHS for diagnostics and benchmark reuse; its reference is invalidated by the next

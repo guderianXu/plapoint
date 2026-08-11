@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <plamatrix/dense/dense_matrix.h>
+#include <plamatrix/opencl/iterative_solver.h>
 #include <plamatrix/ops/point_cloud.h>
 #include <plamatrix/sparse/iterative_solver.h>
 #include <plamatrix/sparse/sparse_ops.h>
@@ -603,12 +604,12 @@ private:
         solver_options.useJacobiPreconditioner = true;
         solver_options.requireConvergence = false;
 
-        if (_processing_device == ProcessingDevice::OpenCL)
-        {
-            throw std::runtime_error("Poisson PCG does not implement an OpenCL solver backend");
-        }
-        const bool try_gpu = _processing_device == ProcessingDevice::CUDA
+        const bool try_cuda = _processing_device == ProcessingDevice::CUDA
             || _processing_device == ProcessingDevice::Auto;
+#ifdef PLAPOINT_WITH_OPENCL
+        const bool try_opencl = _processing_device == ProcessingDevice::OpenCL
+            || _processing_device == ProcessingDevice::Auto;
+#endif
         auto append_fallback = [&](const std::string& backend, const std::string& reason)
         {
             if (!_lastReport.fallbackReason.empty())
@@ -619,10 +620,10 @@ private:
             _lastReport.usedFallback = true;
         };
         bool solved = false;
-        bool cuda_solve_nonconverged = false;
+        bool accelerator_solve_nonconverged = false;
         double fallback_absolute_tolerance = solver_options.absoluteTolerance;
 #ifdef PLAPOINT_WITH_CUDA
-        if (try_gpu)
+        if (try_cuda)
         {
             try
             {
@@ -644,7 +645,7 @@ private:
                     {
                         throw std::runtime_error(reason);
                     }
-                    cuda_solve_nonconverged = true;
+                    accelerator_solve_nonconverged = true;
                     // Resume on CPU from the CUDA iterate. Preserve the convergence target
                     // from the original zero guess and grant the fallback its own solve budget.
                     fallback_absolute_tolerance = std::max(
@@ -680,15 +681,63 @@ private:
             append_fallback("CUDA", "PlaPoint was built without CUDA support");
         }
 #endif
+#ifdef PLAPOINT_WITH_OPENCL
+        if (!solved && try_opencl)
+        {
+            try
+            {
+                const auto opencl_report = plamatrix::opencl::pcg(
+                    system.matrix, system.rhs, solution, solver_options);
+                _lastReport.solver = opencl_report;
+                if (!opencl_report.converged)
+                {
+                    const std::string reason =
+                        std::string("Poisson OpenCL PCG did not converge after ") +
+                        std::to_string(opencl_report.iterations) + " iterations; residual=" +
+                        std::to_string(opencl_report.finalResidual);
+                    if (_processing_device == ProcessingDevice::OpenCL)
+                    {
+                        throw std::runtime_error(reason);
+                    }
+                    accelerator_solve_nonconverged = true;
+                    fallback_absolute_tolerance = std::max(
+                        fallback_absolute_tolerance,
+                        solver_options.relativeTolerance * opencl_report.initialResidual);
+                    append_fallback("OpenCL", reason);
+                }
+                else
+                {
+                    _lastReport.solverDevice = ProcessingDevice::OpenCL;
+                    solved = true;
+                }
+            }
+            catch (const std::exception& error)
+            {
+                if (_processing_device == ProcessingDevice::OpenCL)
+                {
+                    throw std::runtime_error(
+                        std::string("Poisson OpenCL PCG failed for ") +
+                        std::to_string(n_leaves) + " leaves and " +
+                        std::to_string(_solver_iters) + " iterations: " + error.what());
+                }
+                append_fallback("OpenCL", error.what());
+            }
+        }
+#else
+        if (_processing_device == ProcessingDevice::OpenCL)
+        {
+            throw std::runtime_error("Poisson OpenCL PCG requires PLAPOINT_WITH_OPENCL=ON");
+        }
         if (!solved && _processing_device == ProcessingDevice::Auto)
         {
-            append_fallback("OpenCL", "Poisson PCG does not implement an OpenCL solver backend");
+            append_fallback("OpenCL", "PlaPoint was built without OpenCL support");
         }
+#endif
         if (!solved)
         {
             auto cpu_solver_options = solver_options;
             cpu_solver_options.absoluteTolerance = fallback_absolute_tolerance;
-            if (cuda_solve_nonconverged)
+            if (accelerator_solve_nonconverged)
             {
                 cpu_solver_options.maxIterations = static_cast<int>(std::min<long long>(
                     std::numeric_limits<int>::max(),
@@ -697,7 +746,7 @@ private:
             _lastReport.solver = plamatrix::pcg(
                 system.matrix, system.rhs, solution, cpu_solver_options);
             _lastReport.solverDevice = ProcessingDevice::CPU;
-            if (cuda_solve_nonconverged && !_lastReport.solver.converged)
+            if (accelerator_solve_nonconverged && !_lastReport.solver.converged)
             {
                 _lastReport.leafCount = static_cast<std::size_t>(n_leaves);
                 throw std::runtime_error(

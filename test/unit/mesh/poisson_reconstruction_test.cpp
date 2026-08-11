@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <plapoint/mesh/poisson_reconstruction.h>
 #include <plapoint/core/point_cloud.h>
+#include <plapoint/opencl/opencl_runtime.h>
 #include <plamatrix/plamatrix.h>
 #include <cmath>
 #include <limits>
@@ -294,23 +295,38 @@ TEST(PoissonReconstructionTest, RejectsInvalidDepthAndSolverIterations)
     EXPECT_THROW(pr.setSolverTolerance(std::numeric_limits<double>::infinity()), std::invalid_argument);
 }
 
-TEST(PoissonReconstructionTest, ExplicitOpenClRejectsUnsupportedSolverWithoutFallback)
+#ifdef PLAPOINT_WITH_OPENCL
+TEST(PoissonReconstructionTest, ExplicitOpenClUsesPlaMatrixPcgWithoutFallback)
+{
+    if (!plapoint::opencl::hasUsableOpenClDevice())
+    {
+        GTEST_SKIP() << "No usable OpenCL GPU";
+    }
+    plapoint::mesh::PoissonReconstruction<float> reconstruction;
+    reconstruction.setInputCloud(makeRegularSphereCloud(12, 12));
+    reconstruction.setDepth(3);
+    reconstruction.setSolverIterations(200);
+    reconstruction.setSolverTolerance(1.0e-5);
+    reconstruction.setProcessingDevice(plapoint::ProcessingDevice::OpenCL);
+    auto [vertices, faces] = reconstruction.reconstruct();
+
+    EXPECT_GT(vertices.rows(), 0);
+    EXPECT_GT(faces.rows(), 0);
+    EXPECT_EQ(reconstruction.lastReport().requestedDevice, plapoint::ProcessingDevice::OpenCL);
+    EXPECT_EQ(reconstruction.lastReport().solverDevice, plapoint::ProcessingDevice::OpenCL);
+    EXPECT_FALSE(reconstruction.lastReport().usedFallback);
+    EXPECT_TRUE(reconstruction.lastReport().solver.converged);
+}
+#else
+TEST(PoissonReconstructionTest, ExplicitOpenClRejectsDisabledBackendWithoutFallback)
 {
     plapoint::mesh::PoissonReconstruction<float> reconstruction;
     reconstruction.setInputCloud(makeSphereCloud(48));
     reconstruction.setDepth(3);
     reconstruction.setProcessingDevice(plapoint::ProcessingDevice::OpenCL);
-    try
-    {
-        static_cast<void>(reconstruction.reconstruct());
-        FAIL() << "Expected explicit OpenCL Poisson solver request to throw";
-    }
-    catch (const std::runtime_error& error)
-    {
-        EXPECT_NE(std::string(error.what()).find("does not implement"), std::string::npos)
-            << error.what();
-    }
+    EXPECT_THROW(static_cast<void>(reconstruction.reconstruct()), std::runtime_error);
 }
+#endif
 
 #ifdef PLAPOINT_WITH_CUDA
 TEST(PoissonReconstructionTest, ExplicitGpuUsesPlaMatrixPcg)
