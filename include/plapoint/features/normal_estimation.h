@@ -11,8 +11,8 @@
 #endif
 #include <plapoint/search/kdtree.h>
 #include <plamatrix/dense/dense_matrix.h>
-#include <plamatrix/ops/point_cloud.h>
-#include <plamatrix/ops/decomposition.h>
+#include <plamatrix/ops/small_matrix.h>
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <exception>
@@ -144,26 +144,46 @@ private:
                     continue;
                 }
 
-                int nn = static_cast<int>(neighbors.size());
-                plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> nb(nn, 3);
-                for (int j = 0; j < nn; ++j)
+                std::array<Scalar, 3> centroid{};
+                for (const int index : neighbors)
                 {
-                    int idx = neighbors[static_cast<std::size_t>(j)];
-                    nb(j, 0) = points_cpu(idx, 0);
-                    nb(j, 1) = points_cpu(idx, 1);
-                    nb(j, 2) = points_cpu(idx, 2);
+                    centroid[0] += points_cpu(index, 0);
+                    centroid[1] += points_cpu(index, 1);
+                    centroid[2] += points_cpu(index, 2);
+                }
+                const Scalar inverse_count = Scalar(1) /
+                    static_cast<Scalar>(neighbors.size());
+                for (Scalar& value : centroid)
+                {
+                    value *= inverse_count;
                 }
 
-                auto cov = plamatrix::covarianceMatrix(nb);
-                auto [U, S, Vt] = plamatrix::svd(cov);
+                std::array<Scalar, 6> covariance{};
+                for (const int index : neighbors)
+                {
+                    const Scalar x = points_cpu(index, 0) - centroid[0];
+                    const Scalar y = points_cpu(index, 1) - centroid[1];
+                    const Scalar z = points_cpu(index, 2) - centroid[2];
+                    covariance[0] += x * x;
+                    covariance[1] += x * y;
+                    covariance[2] += x * z;
+                    covariance[3] += y * y;
+                    covariance[4] += y * z;
+                    covariance[5] += z * z;
+                }
+                for (Scalar& value : covariance)
+                {
+                    value *= inverse_count;
+                }
 
-                Scalar nx = Vt.getValue(2, 0);
-                Scalar ny = Vt.getValue(2, 1);
-                Scalar nz = Vt.getValue(2, 2);
+                std::array<Scalar, 3> eigenvalues{};
+                std::array<Scalar, 9> eigenvectors{};
+                plamatrix::symmetricEigh3x3(
+                    covariance, &eigenvalues, &eigenvectors);
 
-                normals.setValue(i, 0, nx);
-                normals.setValue(i, 1, ny);
-                normals.setValue(i, 2, nz);
+                normals.setValue(i, 0, eigenvectors[0]);
+                normals.setValue(i, 1, eigenvectors[1]);
+                normals.setValue(i, 2, eigenvectors[2]);
             }
             catch (...)
             {

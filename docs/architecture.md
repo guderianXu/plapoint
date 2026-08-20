@@ -31,6 +31,11 @@ GPU normal estimation performs indexed KNN, covariance accumulation, PlaMatrix b
 symmetric eigensolve, normalization, and deterministic sign selection on device.
 Normal smoothing and viewpoint orientation also use device kernels.
 
+CPU normal estimation accumulates centroid and compact 3x3 covariance directly from the
+neighbor list, then calls PlaMatrix's allocation-free `symmetricEigh3x3()` and selects the
+smallest eigenvector. CPU point-to-point ICP similarly sends its stack 3x3 cross-covariance
+to `svd3x3()`. Neither hot path constructs a dynamic neighbor matrix or invokes general SVD.
+
 GPU RadiusOR consumes saturated radius counts. GPU SOR computes indexed neighbor means,
 normalizes distance statistics to avoid overflow, reduces through PlaMatrix, creates a
 keep mask, and stably compacts points and all point-aligned attributes. Only requested

@@ -8,7 +8,8 @@
 #include <plapoint/search/kdtree.h>
 #include <plamatrix/dense/dense_matrix.h>
 #include <plamatrix/ops/point_cloud.h>
-#include <plamatrix/ops/decomposition.h>
+#include <plamatrix/ops/small_matrix.h>
+#include <array>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -364,8 +365,6 @@ private:
             }
 
             // Cross-covariance H (3x3)
-            plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> H(3, 3);
-            H.fill(0);
             double h_acc[3][3]{};
             for (int i : active_indices)
             {
@@ -380,41 +379,54 @@ private:
                 h_acc[1][0] += sy * tx; h_acc[1][1] += sy * ty; h_acc[1][2] += sy * tz;
                 h_acc[2][0] += sz * tx; h_acc[2][1] += sz * ty; h_acc[2][2] += sz * tz;
             }
+            std::array<Scalar, 9> h{};
             for (int r = 0; r < 3; ++r)
             {
                 for (int c = 0; c < 3; ++c)
                 {
-                    H(r, c) = finiteScalarFromDouble(h_acc[r][c], "ICP: cross-covariance is not representable");
+                    h[static_cast<std::size_t>(r * 3 + c)] = finiteScalarFromDouble(
+                        h_acc[r][c], "ICP: cross-covariance is not representable");
                 }
             }
 
-            auto [U, S, Vt] = plamatrix::svd(H);
+            std::array<Scalar, 9> u{};
+            std::array<Scalar, 3> singular_values{};
+            std::array<Scalar, 9> vt{};
+            plamatrix::svd3x3(h, &u, &singular_values, &vt);
+            const auto U = [&u](int row, int column)
+            {
+                return u[static_cast<std::size_t>(row * 3 + column)];
+            };
+            const auto Vt = [&vt](int row, int column)
+            {
+                return vt[static_cast<std::size_t>(row * 3 + column)];
+            };
 
             // R = V * U^T
-            Scalar r00 = Vt.getValue(0,0)*U.getValue(0,0) + Vt.getValue(1,0)*U.getValue(0,1) + Vt.getValue(2,0)*U.getValue(0,2);
-            Scalar r01 = Vt.getValue(0,0)*U.getValue(1,0) + Vt.getValue(1,0)*U.getValue(1,1) + Vt.getValue(2,0)*U.getValue(1,2);
-            Scalar r02 = Vt.getValue(0,0)*U.getValue(2,0) + Vt.getValue(1,0)*U.getValue(2,1) + Vt.getValue(2,0)*U.getValue(2,2);
-            Scalar r10 = Vt.getValue(0,1)*U.getValue(0,0) + Vt.getValue(1,1)*U.getValue(0,1) + Vt.getValue(2,1)*U.getValue(0,2);
-            Scalar r11 = Vt.getValue(0,1)*U.getValue(1,0) + Vt.getValue(1,1)*U.getValue(1,1) + Vt.getValue(2,1)*U.getValue(1,2);
-            Scalar r12 = Vt.getValue(0,1)*U.getValue(2,0) + Vt.getValue(1,1)*U.getValue(2,1) + Vt.getValue(2,1)*U.getValue(2,2);
-            Scalar r20 = Vt.getValue(0,2)*U.getValue(0,0) + Vt.getValue(1,2)*U.getValue(0,1) + Vt.getValue(2,2)*U.getValue(0,2);
-            Scalar r21 = Vt.getValue(0,2)*U.getValue(1,0) + Vt.getValue(1,2)*U.getValue(1,1) + Vt.getValue(2,2)*U.getValue(1,2);
-            Scalar r22 = Vt.getValue(0,2)*U.getValue(2,0) + Vt.getValue(1,2)*U.getValue(2,1) + Vt.getValue(2,2)*U.getValue(2,2);
+            Scalar r00 = Vt(0,0)*U(0,0) + Vt(1,0)*U(0,1) + Vt(2,0)*U(0,2);
+            Scalar r01 = Vt(0,0)*U(1,0) + Vt(1,0)*U(1,1) + Vt(2,0)*U(1,2);
+            Scalar r02 = Vt(0,0)*U(2,0) + Vt(1,0)*U(2,1) + Vt(2,0)*U(2,2);
+            Scalar r10 = Vt(0,1)*U(0,0) + Vt(1,1)*U(0,1) + Vt(2,1)*U(0,2);
+            Scalar r11 = Vt(0,1)*U(1,0) + Vt(1,1)*U(1,1) + Vt(2,1)*U(1,2);
+            Scalar r12 = Vt(0,1)*U(2,0) + Vt(1,1)*U(2,1) + Vt(2,1)*U(2,2);
+            Scalar r20 = Vt(0,2)*U(0,0) + Vt(1,2)*U(0,1) + Vt(2,2)*U(0,2);
+            Scalar r21 = Vt(0,2)*U(1,0) + Vt(1,2)*U(1,1) + Vt(2,2)*U(1,2);
+            Scalar r22 = Vt(0,2)*U(2,0) + Vt(1,2)*U(2,1) + Vt(2,2)*U(2,2);
 
             // Handle reflection case
             Scalar det = r00*(r11*r22 - r12*r21) - r01*(r10*r22 - r12*r20) + r02*(r10*r21 - r11*r20);
             if (det < 0)
             {
                 // Flip sign on last column of V
-                r00 = Vt.getValue(0,0)*U.getValue(0,0) + Vt.getValue(1,0)*U.getValue(0,1) - Vt.getValue(2,0)*U.getValue(0,2);
-                r01 = Vt.getValue(0,0)*U.getValue(1,0) + Vt.getValue(1,0)*U.getValue(1,1) - Vt.getValue(2,0)*U.getValue(1,2);
-                r02 = Vt.getValue(0,0)*U.getValue(2,0) + Vt.getValue(1,0)*U.getValue(2,1) - Vt.getValue(2,0)*U.getValue(2,2);
-                r10 = Vt.getValue(0,1)*U.getValue(0,0) + Vt.getValue(1,1)*U.getValue(0,1) - Vt.getValue(2,1)*U.getValue(0,2);
-                r11 = Vt.getValue(0,1)*U.getValue(1,0) + Vt.getValue(1,1)*U.getValue(1,1) - Vt.getValue(2,1)*U.getValue(1,2);
-                r12 = Vt.getValue(0,1)*U.getValue(2,0) + Vt.getValue(1,1)*U.getValue(2,1) - Vt.getValue(2,1)*U.getValue(2,2);
-                r20 = Vt.getValue(0,2)*U.getValue(0,0) + Vt.getValue(1,2)*U.getValue(0,1) - Vt.getValue(2,2)*U.getValue(0,2);
-                r21 = Vt.getValue(0,2)*U.getValue(1,0) + Vt.getValue(1,2)*U.getValue(1,1) - Vt.getValue(2,2)*U.getValue(1,2);
-                r22 = Vt.getValue(0,2)*U.getValue(2,0) + Vt.getValue(1,2)*U.getValue(2,1) - Vt.getValue(2,2)*U.getValue(2,2);
+                r00 = Vt(0,0)*U(0,0) + Vt(1,0)*U(0,1) - Vt(2,0)*U(0,2);
+                r01 = Vt(0,0)*U(1,0) + Vt(1,0)*U(1,1) - Vt(2,0)*U(1,2);
+                r02 = Vt(0,0)*U(2,0) + Vt(1,0)*U(2,1) - Vt(2,0)*U(2,2);
+                r10 = Vt(0,1)*U(0,0) + Vt(1,1)*U(0,1) - Vt(2,1)*U(0,2);
+                r11 = Vt(0,1)*U(1,0) + Vt(1,1)*U(1,1) - Vt(2,1)*U(1,2);
+                r12 = Vt(0,1)*U(2,0) + Vt(1,1)*U(2,1) - Vt(2,1)*U(2,2);
+                r20 = Vt(0,2)*U(0,0) + Vt(1,2)*U(0,1) - Vt(2,2)*U(0,2);
+                r21 = Vt(0,2)*U(1,0) + Vt(1,2)*U(1,1) - Vt(2,2)*U(1,2);
+                r22 = Vt(0,2)*U(2,0) + Vt(1,2)*U(2,1) - Vt(2,2)*U(2,2);
             }
 
             const double tx_d = tgt_ct[0] - (static_cast<double>(r00) * src_ct[0]

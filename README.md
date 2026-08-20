@@ -25,11 +25,11 @@ the main aggregation filter: it averages per-voxel scalar fields instead of
 dropping them.
 
 ### Features
-- **NormalEstimation** — PCA-based surface normal estimation; CUDA keeps the complete supported path on device, while OpenCL accelerates uniform-grid KNN for CPU-owned clouds
+- **NormalEstimation** — PCA-based surface normal estimation; CPU accumulates each 3x3 covariance on the stack and calls PlaMatrix's allocation-free symmetric eigensolver, CUDA keeps the complete supported path on device, while OpenCL accelerates uniform-grid KNN for CPU-owned clouds
 - **NormalRefinement** — normal smoothing and viewpoint orientation, with device-resident CUDA kernels for GPU clouds
 
 ### Registration
-- **IterativeClosestPoint** (ICP) — point-to-point ICP with SVD-based rigid transform, initial guess support, and PCL-style correspondence/convergence controls
+- **IterativeClosestPoint** (ICP) — point-to-point ICP with PlaMatrix's fixed 3x3 SVD rigid transform, initial guess support, and PCL-style correspondence/convergence controls
 
 ### Mesh
 - **MarchingCubes** — CPU callback extraction plus deterministic CUDA extraction from a device scalar field
