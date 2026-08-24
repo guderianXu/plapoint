@@ -76,6 +76,18 @@ inline void setReport(ProcessingReport* report,
     report->neighborBackend = backend;
     report->usedFallback = fallback;
     report->fallbackReason = std::move(reason);
+    report->selectionReason.clear();
+}
+
+inline void setAutoCpuReport(ProcessingReport* report,
+                             ProcessingNeighborBackend backend,
+                             std::string reason)
+{
+    setReport(report, ProcessingDevice::Auto, ProcessingDevice::CPU, false, {}, backend);
+    if (report)
+    {
+        report->selectionReason = std::move(reason);
+    }
 }
 
 template <typename Scalar>

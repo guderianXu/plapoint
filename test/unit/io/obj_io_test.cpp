@@ -3,12 +3,14 @@
 #include <plapoint/io/obj_io.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <cstdio>
+#include <vector>
 
 namespace {
 
@@ -862,4 +864,80 @@ TEST(ObjIoTest, ReadNonExistentFileThrows)
     std::filesystem::remove(path);
 
     EXPECT_THROW(plapoint::io::readObj<float>(path), std::runtime_error);
+}
+
+TEST(ObjIoTest, StreamsRecordsWithTokensAndProgress)
+{
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
+    {
+        std::ofstream output(path, std::ios::binary);
+        output << "v 0 0 0\n"
+               << "vt 0 0\n"
+               << "f 1/1 1/1 1/1\n";
+    }
+
+    std::vector<std::string> tokens;
+    std::uint64_t final_processed = 0;
+    std::uint64_t total = 0;
+    plapoint::io::ObjStreamOptions options;
+    options.progress = [&](std::uint64_t processed, std::uint64_t total_bytes)
+    {
+        final_processed = processed;
+        total = total_bytes;
+    };
+    const auto status = plapoint::io::forEachObjRecord(
+        path,
+        options,
+        [&](std::string_view, std::string_view token, std::size_t line_number)
+        {
+            EXPECT_EQ(line_number, tokens.size() + 1u);
+            tokens.emplace_back(token);
+        });
+
+    EXPECT_EQ(status, plapoint::io::ObjStreamStatus::Completed);
+    EXPECT_EQ(tokens, (std::vector<std::string>{"v", "vt", "f"}));
+    EXPECT_EQ(final_processed, total);
+    EXPECT_GT(total, 0u);
+}
+
+TEST(ObjIoTest, StreamsCanStopOrCancelWithoutReadingTheWholeFile)
+{
+    const plapoint::test::TempFile temp_file(".obj");
+    const auto path = temp_file.string();
+    {
+        std::ofstream output(path);
+        output << "v 0 0 0\n"
+               << "v 1 0 0\n";
+    }
+
+    const auto stopped = plapoint::io::forEachObjRecord(
+        path,
+        {},
+        [](std::string_view, std::string_view, std::size_t) { return false; });
+    EXPECT_EQ(stopped, plapoint::io::ObjStreamStatus::StoppedByVisitor);
+
+    std::atomic_bool cancelled{true};
+    plapoint::io::ObjStreamOptions options;
+    options.cancellationFlag = &cancelled;
+    int visits = 0;
+    const auto cancelled_status = plapoint::io::forEachObjRecord(
+        path,
+        options,
+        [&](std::string_view, std::string_view, std::size_t) { ++visits; });
+    EXPECT_EQ(cancelled_status, plapoint::io::ObjStreamStatus::Cancelled);
+    EXPECT_EQ(visits, 0);
+
+    cancelled.store(false, std::memory_order_relaxed);
+    visits = 0;
+    const auto cancelled_after_visit = plapoint::io::forEachObjRecord(
+        path,
+        options,
+        [&](std::string_view, std::string_view, std::size_t)
+        {
+            ++visits;
+            cancelled.store(true, std::memory_order_relaxed);
+        });
+    EXPECT_EQ(cancelled_after_visit, plapoint::io::ObjStreamStatus::Cancelled);
+    EXPECT_EQ(visits, 1);
 }

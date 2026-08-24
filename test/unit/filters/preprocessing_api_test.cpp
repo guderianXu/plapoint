@@ -74,13 +74,16 @@ TEST(PreprocessingApiTest, VoxelDownsampleCpuInputPreservesAveragedColors)
     EXPECT_EQ(output.colors()->getValue(1, 0), 100);
 }
 
-TEST(PreprocessingApiTest, LegacyAutoGpuHintRetainsCompatibilityBoundary)
+TEST(PreprocessingApiTest, AutoPolicyUsesLinearAndNeighborhoodWorkThresholds)
 {
     EXPECT_FALSE(plapoint::ProcessingPolicy::autoPrefersGpu(
         plapoint::ProcessingPolicy::autoGpuPointThreshold - 1));
     EXPECT_TRUE(plapoint::ProcessingPolicy::autoPrefersGpu(
         plapoint::ProcessingPolicy::autoGpuPointThreshold));
     EXPECT_EQ(plapoint::ProcessingPolicy::indexedKnnWorkThreshold, 4096u);
+    EXPECT_FALSE(plapoint::ProcessingPolicy::autoPrefersNeighborhoodGpu(5, 32));
+    EXPECT_FALSE(plapoint::ProcessingPolicy::autoPrefersNeighborhoodGpu(256, 8));
+    EXPECT_TRUE(plapoint::ProcessingPolicy::autoPrefersNeighborhoodGpu(512, 8));
 }
 
 TEST(PreprocessingApiTest, CpuStatisticalFilterReportsCpuKdTreeBackend)
@@ -98,7 +101,7 @@ TEST(PreprocessingApiTest, CpuStatisticalFilterReportsCpuKdTreeBackend)
     EXPECT_TRUE(report.fallbackReason.empty());
 }
 
-TEST(PreprocessingApiTest, AutoUsesTheFirstAvailableAcceleratorEvenForSmallClouds)
+TEST(PreprocessingApiTest, AutoUsesCpuForSmallCloudsWithoutReportingFallback)
 {
     const auto cloud = makeClusterWithOutlier();
     plapoint::ProcessingReport report;
@@ -108,31 +111,57 @@ TEST(PreprocessingApiTest, AutoUsesTheFirstAvailableAcceleratorEvenForSmallCloud
 
     EXPECT_EQ(output.size(), 4u);
     EXPECT_EQ(report.requestedDevice, plapoint::ProcessingDevice::Auto);
-#ifdef PLAPOINT_WITH_CUDA
-    if (plapoint::gpu::hasUsableCudaDevice())
-    {
-        EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::CUDA);
-        EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::GpuUniformGrid);
-        EXPECT_FALSE(report.usedFallback);
-        EXPECT_TRUE(report.fallbackReason.empty());
-        return;
-    }
-#endif
-#ifdef PLAPOINT_WITH_OPENCL
-    if (plapoint::opencl::hasUsableOpenClDevice())
-    {
-        EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::OpenCL);
-        EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::OpenClUniformGrid);
-        EXPECT_TRUE(report.usedFallback);
-        EXPECT_FALSE(report.fallbackReason.empty());
-        return;
-    }
-#endif
     EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::CPU);
     EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::CpuKdTree);
-    EXPECT_TRUE(report.usedFallback);
-    EXPECT_FALSE(report.fallbackReason.empty());
+    EXPECT_FALSE(report.usedFallback);
+    EXPECT_TRUE(report.fallbackReason.empty());
+    EXPECT_FALSE(report.selectionReason.empty());
 }
+
+TEST(PreprocessingApiTest, AutoSmallAttributedVoxelUsesCpuWithoutTransfer)
+{
+    const auto cloud = makeClusterWithOutlier();
+    plapoint::ProcessingReport report;
+
+    const auto output = plapoint::voxelDownsample(
+        cloud, 0.01f, plapoint::ProcessingDevice::Auto, &report);
+
+    EXPECT_EQ(output.size(), cloud.size());
+    EXPECT_TRUE(output.hasColors());
+    EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::CPU);
+    EXPECT_FALSE(report.usedFallback);
+    EXPECT_FALSE(report.selectionReason.empty());
+}
+
+#if defined(PLAPOINT_WITH_OPENCL) && !defined(PLAPOINT_WITH_CUDA)
+TEST(PreprocessingApiTest, AutoLargeAttributedVoxelSkipsPartialOpenClOffload)
+{
+    constexpr std::size_t point_count = plapoint::ProcessingPolicy::autoGpuPointThreshold;
+    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> points(point_count, 3);
+    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(point_count, 3);
+    for (std::size_t row = 0; row < point_count; ++row)
+    {
+        points.setValue(row, 0, static_cast<float>(row) * 0.01f);
+        points.setValue(row, 1, 0.0f);
+        points.setValue(row, 2, 0.0f);
+        colors.setValue(row, 0, 10);
+        colors.setValue(row, 1, 20);
+        colors.setValue(row, 2, 30);
+    }
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(std::move(points));
+    cloud.setColors(std::move(colors));
+    plapoint::ProcessingReport report;
+
+    const auto output = plapoint::voxelDownsample(
+        cloud, 0.001f, plapoint::ProcessingDevice::Auto, &report);
+
+    EXPECT_EQ(output.size(), cloud.size());
+    EXPECT_TRUE(output.hasColors());
+    EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::CPU);
+    EXPECT_FALSE(report.selectionReason.empty());
+    EXPECT_NE(report.selectionReason.find("attributes"), std::string::npos);
+}
+#endif
 
 TEST(PreprocessingApiTest, ProcessingEnumValuesRemainBackwardCompatible)
 {
@@ -188,7 +217,7 @@ TEST(PreprocessingApiTest, RadiusOutlierRemovalBuildsFilterInternally)
 }
 
 #ifdef PLAPOINT_WITH_CUDA
-TEST(PreprocessingApiTest, AutoSmallCloudUsesCudaWhenAvailable)
+TEST(PreprocessingApiTest, AutoSmallCloudUsesCpuWhenCudaIsAvailable)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
@@ -204,10 +233,11 @@ TEST(PreprocessingApiTest, AutoSmallCloudUsesCudaWhenAvailable)
     ASSERT_EQ(output.size(), 4u);
     ASSERT_TRUE(output.hasColors());
     EXPECT_EQ(report.requestedDevice, plapoint::ProcessingDevice::Auto);
-    EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::CUDA);
-    EXPECT_EQ(report.usedDevice, plapoint::ProcessingDevice::CUDA);
-    EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::GpuUniformGrid);
+    EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::CPU);
+    EXPECT_EQ(report.usedDevice, plapoint::ProcessingDevice::CPU);
+    EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::CpuKdTree);
     EXPECT_FALSE(report.usedFallback);
+    EXPECT_FALSE(report.selectionReason.empty());
 }
 
 TEST(PreprocessingApiTest, ExplicitGpuVoxelPreservesAttributedCpuInput)

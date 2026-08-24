@@ -66,7 +66,12 @@ int main(int argc, char** argv)
 #endif
     }
 
-    std::cout << "benchmark,points,iterations,best_ms\n";
+    if (options.self_test_benchmark_statistics)
+    {
+        return runBenchmarkStatisticsSelfTest();
+    }
+
+    std::cout << "benchmark,points,iterations,best_ms,median_ms,p95_ms,stddev_ms,cv\n";
 #ifdef PLAPOINT_WITH_CUDA
     if (options.mesh_only)
     {

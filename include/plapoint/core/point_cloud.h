@@ -187,15 +187,7 @@ public:
         }
         validateReplacementPointCount(points.rows());
 
-        MatrixType replacement(points.rows(), points.cols());
-        for (plamatrix::Index row = 0; row < points.rows(); ++row)
-        {
-            for (int column = 0; column < 3; ++column)
-            {
-                replacement.setValue(row, column, pointGet(points, row, column));
-            }
-        }
-        setPoints(std::move(replacement));
+        setPoints(copyMatrix(points));
     }
 
     /// Replace point positions by move, advancing the cache identity only after a successful replacement.
@@ -285,10 +277,7 @@ public:
     {
         if (n.rows() != _points.rows() || n.cols() != 3)
             throw std::runtime_error("Normals must match point count and be Nx3");
-        _normals = std::make_unique<MatrixType>(n.rows(), n.cols());
-        for (plamatrix::Index r = 0; r < n.rows(); ++r)
-            for (int c = 0; c < 3; ++c)
-                _normals->setValue(r, c, pointGet(n, r, c));
+        _normals = std::make_unique<MatrixType>(copyMatrix(n));
     }
 
     /// Set optional normals by move
@@ -310,10 +299,7 @@ public:
     {
         if (c.rows() != _points.rows() || c.cols() != 3)
             throw std::runtime_error("Colors must match point count and be Nx3");
-        _colors = std::make_unique<plamatrix::DenseMatrix<uint8_t, Dev>>(c.rows(), c.cols());
-        for (plamatrix::Index r = 0; r < c.rows(); ++r)
-            for (int col = 0; col < 3; ++col)
-                _colors->setValue(r, col, pointGet(c, r, col));
+        _colors = std::make_unique<plamatrix::DenseMatrix<uint8_t, Dev>>(copyMatrix(c));
     }
 
     /// Set optional RGB colors by move
@@ -335,9 +321,7 @@ public:
     {
         if (values.rows() != _points.rows() || values.cols() != 1)
             throw std::runtime_error("Intensities must match point count and be Nx1");
-        _intensities = std::make_unique<plamatrix::DenseMatrix<std::uint16_t, Dev>>(values.rows(), values.cols());
-        for (plamatrix::Index r = 0; r < values.rows(); ++r)
-            _intensities->setValue(r, 0, pointGet(values, r, 0));
+        _intensities = std::make_unique<plamatrix::DenseMatrix<std::uint16_t, Dev>>(copyMatrix(values));
     }
 
     /// Set optional intensity values by move
@@ -358,15 +342,10 @@ public:
     void setScalarFields(const std::vector<std::string>& names, const MatrixType& values)
     {
         validateScalarFields(names, values);
-        _scalarFields = std::make_unique<MatrixType>(values.rows(), values.cols());
-        for (plamatrix::Index r = 0; r < values.rows(); ++r)
-        {
-            for (int c = 0; c < values.cols(); ++c)
-            {
-                _scalarFields->setValue(r, c, pointGet(values, r, c));
-            }
-        }
-        _scalarFieldNames = names;
+        auto replacement = std::make_unique<MatrixType>(copyMatrix(values));
+        auto replacement_names = names;
+        _scalarFields = std::move(replacement);
+        _scalarFieldNames = std::move(replacement_names);
     }
 
     /// Set optional named scalar fields by move (NxK matrix, one name per column).
@@ -404,10 +383,7 @@ public:
             throw std::runtime_error("Texture coords must be Tx2");
         if (_faceTextureIndices)
             validateIndexMatrix(*_faceTextureIndices, t.rows(), "Face texture");
-        _textureCoords = std::make_unique<MatrixType>(t.rows(), t.cols());
-        for (plamatrix::Index r = 0; r < t.rows(); ++r)
-            for (int col = 0; col < 2; ++col)
-                _textureCoords->setValue(r, col, pointGet(t, r, col));
+        _textureCoords = std::make_unique<MatrixType>(copyMatrix(t));
     }
 
     /// Set optional texture coordinates by move
@@ -439,10 +415,7 @@ public:
             throw std::runtime_error("Faces must be Fx3");
         validateIndexMatrix(f, _points.rows(), "Faces");
         validateFaceCountForExistingTextureIndices(f.rows());
-        _faces = std::make_unique<plamatrix::DenseMatrix<int, Dev>>(f.rows(), f.cols());
-        for (plamatrix::Index r = 0; r < f.rows(); ++r)
-            for (int col = 0; col < 3; ++col)
-                _faces->setValue(r, col, pointGet(f, r, col));
+        _faces = std::make_unique<plamatrix::DenseMatrix<int, Dev>>(copyMatrix(f));
     }
 
     /// Set optional faces by move
@@ -467,10 +440,7 @@ public:
         if (ft.cols() != 3)
             throw std::runtime_error("Face texture indices must be Fx3");
         validateFaceTextureIndices(ft);
-        _faceTextureIndices = std::make_unique<plamatrix::DenseMatrix<int, Dev>>(ft.rows(), ft.cols());
-        for (plamatrix::Index r = 0; r < ft.rows(); ++r)
-            for (int col = 0; col < 3; ++col)
-                _faceTextureIndices->setValue(r, col, pointGet(ft, r, col));
+        _faceTextureIndices = std::make_unique<plamatrix::DenseMatrix<int, Dev>>(copyMatrix(ft));
     }
 
     /// Set optional face texture indices by move
@@ -495,13 +465,35 @@ public:
     void setTextureImageFile(const std::string& f) { _textureImageFile = f; }
 
 private:
+    /// Create an independent same-device matrix using one contiguous transfer.
     template <typename T>
-    static T pointGet(const plamatrix::DenseMatrix<T, Dev>& m, plamatrix::Index r, int c)
+    static plamatrix::DenseMatrix<T, Dev> copyMatrix(const plamatrix::DenseMatrix<T, Dev>& source)
     {
         if constexpr (Dev == plamatrix::Device::CPU)
-            return m(r, c);
+        {
+            plamatrix::DenseMatrix<T, Dev> result(source.rows(), source.cols());
+            if (source.size() > 0)
+            {
+                std::copy_n(source.data(), source.size(), result.data());
+            }
+            return result;
+        }
         else
-            return m.getValue(r, c);
+        {
+            auto result = plamatrix::DenseMatrix<T, Dev>::uninitialized(source.rows(), source.cols());
+            if (source.size() > 0)
+            {
+#ifdef PLAMATRIX_NO_CUDA
+                std::copy_n(source.data(), source.size(), result.data());
+#else
+                PLAMATRIX_CHECK_CUDA(cudaMemcpy(result.data(),
+                                                source.data(),
+                                                static_cast<std::size_t>(source.size()) * sizeof(T),
+                                                cudaMemcpyDeviceToDevice));
+#endif
+            }
+            return result;
+        }
     }
 
     void invalidateCpuMirror()

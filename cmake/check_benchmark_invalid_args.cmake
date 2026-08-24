@@ -72,3 +72,37 @@ if(unknown_result EQUAL 0)
         "stdout:\n${unknown_output}\n"
         "stderr:\n${unknown_error}")
 endif()
+
+execute_process(
+    COMMAND
+        "${PLAPOINT_BENCHMARK_EXE}"
+        --mesh-only
+        --search-features-only
+        --poisson-points 8192
+        --poisson-depth 8
+    RESULT_VARIABLE sparse_poisson_result
+    OUTPUT_VARIABLE sparse_poisson_output
+    ERROR_VARIABLE sparse_poisson_error
+)
+
+if(sparse_poisson_result EQUAL 0)
+    message(FATAL_ERROR
+        "plapoint_benchmarks accepted an undersampled Poisson fixture\n"
+        "stdout:\n${sparse_poisson_output}\n"
+        "stderr:\n${sparse_poisson_error}")
+endif()
+
+if(NOT sparse_poisson_output STREQUAL "")
+    message(FATAL_ERROR
+        "plapoint_benchmarks emitted output before rejecting the undersampled Poisson fixture\n"
+        "stdout:\n${sparse_poisson_output}\n"
+        "stderr:\n${sparse_poisson_error}")
+endif()
+
+if(NOT sparse_poisson_error MATCHES
+   "Poisson benchmark sampling is too sparse.*use at least 65536 points or reduce the depth")
+    message(FATAL_ERROR
+        "plapoint_benchmarks did not explain the undersampled Poisson fixture\n"
+        "stdout:\n${sparse_poisson_output}\n"
+        "stderr:\n${sparse_poisson_error}")
+endif()

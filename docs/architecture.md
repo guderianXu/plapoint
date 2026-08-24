@@ -7,6 +7,11 @@ point-aligned attributes. GPU algorithms accept GPU clouds directly and return G
 matrices or clouds; CPU-owned convenience APIs perform explicit transfers and return
 CPU-owned results.
 
+Same-device copy setters delegate to PlaMatrix bulk copies rather than issuing one
+`getValue()`/`setValue()` pair per scalar. Move setters remain the zero-copy ownership
+transfer path. Large-file readers can use the public PLY/OBJ streaming visitors to keep
+input memory bounded and expose cancellation/progress at chunk or record boundaries.
+
 Mutable point access advances `pointsRevision()` and marks untracked aliases so cached
 spatial structures cannot silently reuse stale coordinates. Attribute-only changes do
 not invalidate the point-position revision.
@@ -36,6 +41,11 @@ neighbor list, then calls PlaMatrix's allocation-free `symmetricEigh3x3()` and s
 smallest eigenvector. CPU point-to-point ICP similarly sends its stack 3x3 cross-covariance
 to `svd3x3()`. Neither hot path constructs a dynamic neighbor matrix or invokes general SVD.
 
+CUDA ICP white-box counters and their accessors live in dedicated test-only implementation
+headers and are compiled only with `PLAPOINT_ENABLE_TESTING`. Production and benchmark-only
+objects therefore contain no `ForTesting` accessors or `g_icp_*` counter storage; test code
+uses the guarded `plapoint/gpu/icp_testing.h` declarations instead of duplicating them.
+
 GPU RadiusOR consumes saturated radius counts. GPU SOR computes indexed neighbor means,
 normalizes distance statistics to avoid overflow, reduces through PlaMatrix, creates a
 keep mask, and stably compacts points and all point-aligned attributes. Only requested
@@ -43,11 +53,13 @@ removed-index diagnostics are copied to host.
 
 ## High-level selection
 
-`ProcessingPolicy` centralizes benchmark-derived thresholds. CPU-owned `Auto` calls use
-CPU below 4096 points and try GPU at or above that boundary. An explicit GPU request
-does not silently change devices: unsupported parameters, unavailable CUDA, allocation
-failure, or kernel failure are rethrown. `Auto` records an attempted-GPU failure and
-retries CPU.
+`ProcessingPolicy` centralizes tunable dispatch thresholds. CPU-owned `Auto` calls use
+a point-count boundary for transfer-bound linear work and a point-count-by-neighbor
+work estimate for KNN-style algorithms. An explicit accelerator request does not
+silently change devices: unsupported parameters, unavailable CUDA/OpenCL, allocation
+failure, or kernel failure are rethrown. `Auto` records ordinary policy choices in
+`selectionReason`; only failed backend attempts set `usedFallback`/`fallbackReason`.
+Attributed voxel clouds do not select the partial OpenCL implementation in Auto mode.
 
 `ProcessingReport` records requested and actual devices, the neighbor backend, whether
 a runtime fallback occurred, and its reason. A normal Auto policy choice is not a
@@ -65,10 +77,14 @@ color weighting, validity masks, fill-pass tracking, and ping-pong hole fill sta
 producer stream. Automatic bounds belong to the synchronous convenience wrapper because
 they require a host-visible reduction result.
 
-Poisson assembly orders leaves and undirected edges deterministically, anchors one row per
-connected graph component, and solves the resulting SPD CSR with PlaMatrix Jacobi-PCG.
-Only the sparse solve can run on GPU today; field sampling and Marching Cubes extraction
-remain CPU. `PoissonProcessingReport` separates full-chain `actualDevice` from
-`solverDevice` and records non-convergence fallback details.
+Poisson completes only missing siblings below existing internal nodes, then locally refines
+coarse leaves until face-, edge-, and corner-adjacent leaves satisfy 2:1 balance. Empty
+structural leaves are excluded from the linear system. Assembly orders populated leaves and
+undirected edges deterministically, anchors one row per connected graph component, and solves
+the resulting SPD CSR with PlaMatrix Jacobi-PCG. The extraction field is sampled once and
+reused for extrema and Marching Cubes, while face orientation builds one CPU kd-tree. Only the
+sparse solve can run on GPU today; field sampling and extraction remain CPU.
+`PoissonProcessingReport` separates full-chain `actualDevice` from `solverDevice` and records
+balance, sampling, orientation-index, and non-convergence diagnostics.
 
 See [GPU mesh processing](gpu-mesh.md) for stream and status contracts.

@@ -60,30 +60,6 @@ TEST(NormalEstimationOpenClTest, MatchesCpuPlaneNormals)
     }
 }
 
-TEST(NormalEstimationOpenClTest, AutoReportsFirstAvailableBackend)
-{
-    if (!plapoint::opencl::hasUsableOpenClDevice())
-    {
-        GTEST_SKIP() << "No usable OpenCL GPU device";
-    }
-    const auto cloud = makePlane();
-    plapoint::ProcessingReport report;
-    const auto normals = plapoint::estimateNormals(
-        cloud, 8, plapoint::ProcessingDevice::Auto, &report);
-    EXPECT_EQ(normals.rows(), static_cast<plamatrix::Index>(cloud.size()));
-#ifdef PLAPOINT_WITH_CUDA
-    if (plapoint::gpu::hasUsableCudaDevice())
-    {
-        EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::CUDA);
-        EXPECT_FALSE(report.usedFallback);
-        return;
-    }
-#endif
-    EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::OpenCL);
-    EXPECT_TRUE(report.usedFallback);
-    EXPECT_NE(report.fallbackReason.find("CUDA"), std::string::npos);
-}
-
 TEST(NormalEstimationOpenClTest, RejectsNonFiniteInputLikeCpuBackend)
 {
     if (!plapoint::opencl::hasUsableOpenClDevice())

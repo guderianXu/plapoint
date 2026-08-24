@@ -21,6 +21,16 @@ PointCloud<Scalar, plamatrix::Device::CPU> voxelDownsample(
         return output;
     }
 
+    if (device == ProcessingDevice::Auto && !ProcessingPolicy::autoPrefersGpu(input.size()))
+    {
+        auto output = voxelDownsample(input, leaf_x, leaf_y, leaf_z);
+        detail::setAutoCpuReport(
+            report,
+            ProcessingNeighborBackend::None,
+            "Auto selected CPU because voxel work is below the accelerator transfer threshold");
+        return output;
+    }
+
     if (device == ProcessingDevice::CUDA || device == ProcessingDevice::Auto)
     {
 #ifdef PLAPOINT_WITH_CUDA
@@ -61,6 +71,26 @@ PointCloud<Scalar, plamatrix::Device::CPU> voxelDownsample(
         detail::appendFallbackReason(fallback_reason, "CUDA", reason);
 #endif
     }
+
+#ifdef PLAPOINT_WITH_OPENCL
+    const bool opencl_requires_cpu_attribute_aggregation =
+        input.hasNormals() || input.hasColors() || input.hasIntensities() || input.hasScalarFields();
+    if (device == ProcessingDevice::Auto && opencl_requires_cpu_attribute_aggregation)
+    {
+        auto output = voxelDownsample(input, leaf_x, leaf_y, leaf_z);
+        detail::setReport(report,
+                          device,
+                          ProcessingDevice::CPU,
+                          !fallback_reason.empty(),
+                          fallback_reason);
+        if (report)
+        {
+            report->selectionReason =
+                "Auto skipped partial OpenCL voxel offload because attributes require CPU aggregation";
+        }
+        return output;
+    }
+#endif
 
     if (device == ProcessingDevice::OpenCL || device == ProcessingDevice::Auto)
     {

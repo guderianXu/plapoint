@@ -16,6 +16,19 @@ add_test(
         -P ${PROJECT_SOURCE_DIR}/cmake/check_benchmark_invalid_args.cmake
 )
 
+add_test(
+    NAME plapoint.benchmarks.statistics_self_test
+    COMMAND plapoint_benchmarks --self-test-benchmark-statistics
+)
+
+add_test(
+    NAME plapoint.benchmarks.cpu_csv_schema_smoke
+    COMMAND
+        ${CMAKE_COMMAND}
+        -DPLAPOINT_BENCHMARK_EXE=$<TARGET_FILE:plapoint_benchmarks>
+        -P ${PROJECT_SOURCE_DIR}/cmake/check_cpu_benchmark_csv.cmake
+)
+
 if(PLAPOINT_WITH_CUDA)
     add_test(
         NAME plapoint.benchmarks.gpu_search_feature_rows_registered

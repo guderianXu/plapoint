@@ -21,6 +21,7 @@
 #include <plapoint/core/point_cloud.h>
 #include <plapoint/mesh/marching_cubes.h>
 #include <plapoint/mesh/poisson_system.h>
+#include <plapoint/search/kdtree.h>
 
 namespace plapoint {
 namespace mesh {
@@ -34,11 +35,22 @@ struct PoissonProcessingReport
     ProcessingDevice solverDevice = ProcessingDevice::CPU;
     bool usedFallback = false;
     std::string fallbackReason;
+    /// Number of populated leaves assembled into the sparse Poisson system.
     std::size_t leafCount = 0;
     plamatrix::IterativeSolverReport solver;
+    /// Total number of leaves in the complete, balanced octree, including empty leaves.
+    std::size_t octreeLeafCount = 0;
     double fieldMinimum = 0.0;
     double fieldMaximum = 0.0;
     double isoLevel = 0.0;
+    /// Maximum depth difference among face-, edge-, or corner-adjacent octree leaves.
+    int maximumLeafNeighborDepthDifference = 0;
+    /// Number of extraction-grid samples evaluated during reconstruction.
+    std::size_t fieldGridSampleCount = 0;
+    /// Number of spatial indices built while orienting the extracted faces.
+    std::size_t orientationIndexBuildCount = 0;
+    /// Number of nearest-normal queries issued while orienting non-degenerate faces.
+    std::size_t orientationQueryCount = 0;
 };
 
 /// Reconstruct a triangle mesh from a point cloud with normals using a Poisson-style field solve.
@@ -153,7 +165,8 @@ public:
         subdivideLeaves(nodes, root);
 
         // Balance: ensure adjacent nodes differ by at most 1 level
-        balanceOctree(nodes, root);
+        _lastReport.maximumLeafNeighborDepthDifference = balanceOctree(nodes, root);
+        _lastReport.octreeLeafCount = countOctreeLeaves(nodes, root);
 
         // Splat normals into leaf nodes
         for (int i = 0; i < n; ++i)
@@ -184,26 +197,14 @@ public:
                 _cloud->points()(i, 1),
                 _cloud->points()(i, 2)));
         }
-        Scalar field_min = std::numeric_limits<Scalar>::max();
-        Scalar field_max = std::numeric_limits<Scalar>::lowest();
-        for (int iz = 0; iz <= res; ++iz)
+        const auto field = mc.sampleField([&](Scalar x, Scalar y, Scalar z) -> Scalar
         {
-            const Scalar z = min_z + (max_z - min_z) *
-                static_cast<Scalar>(iz) / static_cast<Scalar>(res);
-            for (int iy = 0; iy <= res; ++iy)
-            {
-                const Scalar y = min_y + (max_y - min_y) *
-                    static_cast<Scalar>(iy) / static_cast<Scalar>(res);
-                for (int ix = 0; ix <= res; ++ix)
-                {
-                    const Scalar x = min_x + (max_x - min_x) *
-                        static_cast<Scalar>(ix) / static_cast<Scalar>(res);
-                    const Scalar value = evaluateSolution(nodes, root, x, y, z);
-                    field_min = std::min(field_min, value);
-                    field_max = std::max(field_max, value);
-                }
-            }
-        }
+            return evaluateSolution(nodes, root, x, y, z);
+        });
+        _lastReport.fieldGridSampleCount = field.size();
+        const auto field_extrema = std::minmax_element(field.begin(), field.end());
+        const Scalar field_min = *field_extrema.first;
+        const Scalar field_max = *field_extrema.second;
         Scalar iso_level = static_cast<Scalar>(iso_sum / static_cast<long double>(n));
         if (!(iso_level > field_min && iso_level < field_max))
         {
@@ -214,9 +215,7 @@ public:
         _lastReport.isoLevel = static_cast<double>(iso_level);
         mc.setIsoLevel(iso_level);
 
-        auto [vertices, faces] = mc.extract([&](Scalar x, Scalar y, Scalar z) -> Scalar {
-            return evaluateSolution(nodes, root, x, y, z);
-        });
+        auto [vertices, faces] = mc.extractSampledField(field);
         orientFacesWithInputNormals(vertices, faces);
         return {std::move(vertices), std::move(faces)};
     }
@@ -354,25 +353,215 @@ private:
             if (c >= 0) subdivideLeaves(nodes, c);
     }
 
-    void balanceOctree(std::vector<OctreeNode>& nodes, int node_idx) const
+    struct LeafCell
     {
-        // Ensure no two adjacent leaves differ by more than 1 level
-        auto& node = nodes[static_cast<std::size_t>(node_idx)];
-        if (node.depth >= _max_depth - 1) return;
+        int nodeIndex = -1;
+        int x = 0;
+        int y = 0;
+        int z = 0;
+        int span = 0;
+    };
 
-        for (int c : node.children)
+    static bool isLeaf(const OctreeNode& node)
+    {
+        return std::all_of(node.children.begin(), node.children.end(), [](int child)
         {
-            if (c >= 0) balanceOctree(nodes, c);
+            return child < 0;
+        });
+    }
+
+    void subdivideLeaf(std::vector<OctreeNode>& nodes, int node_idx) const
+    {
+        const auto node_pos = static_cast<std::size_t>(node_idx);
+        if (!isLeaf(nodes[node_pos]))
+        {
+            return;
+        }
+        if (nodes[node_pos].depth >= _max_depth)
+        {
+            throw std::logic_error("Poisson: cannot subdivide an octree leaf beyond maximum depth");
         }
 
-        // Check if any child needs subdivision for balance
-        bool is_leaf = true;
-        for (int c : node.children) if (c >= 0) { is_leaf = false; break; }
+        const Scalar half = nodes[node_pos].size * Scalar(0.5);
+        const Scalar ox = nodes[node_pos].ox;
+        const Scalar oy = nodes[node_pos].oy;
+        const Scalar oz = nodes[node_pos].oz;
+        const int child_depth = nodes[node_pos].depth + 1;
+        for (int oct = 0; oct < 8; ++oct)
+        {
+            const Scalar qx = ox + (oct & 1 ? half : Scalar(0));
+            const Scalar qy = oy + (oct & 2 ? half : Scalar(0));
+            const Scalar qz = oz + (oct & 4 ? half : Scalar(0));
+            const int child = createNode(nodes, qx, qy, qz, half, child_depth);
+            nodes[node_pos].children[static_cast<std::size_t>(oct)] = child;
+        }
+    }
 
-        if (!is_leaf && node.depth < _max_depth - 1) return;
+    void completeOctree(std::vector<OctreeNode>& nodes, int node_idx) const
+    {
+        const auto node_pos = static_cast<std::size_t>(node_idx);
+        if (isLeaf(nodes[node_pos]))
+        {
+            return;
+        }
+        if (nodes[node_pos].depth >= _max_depth)
+        {
+            throw std::logic_error("Poisson: internal octree node exceeds maximum depth");
+        }
 
-        // If this is a leaf near max depth, ensure neighbors are close in depth
-        if (node.depth >= _max_depth - 1) node.point_count = std::min(node.point_count, 1);
+        const Scalar half = nodes[node_pos].size * Scalar(0.5);
+        const Scalar ox = nodes[node_pos].ox;
+        const Scalar oy = nodes[node_pos].oy;
+        const Scalar oz = nodes[node_pos].oz;
+        const int child_depth = nodes[node_pos].depth + 1;
+        for (int oct = 0; oct < 8; ++oct)
+        {
+            if (nodes[node_pos].children[static_cast<std::size_t>(oct)] >= 0)
+            {
+                continue;
+            }
+            const Scalar qx = ox + (oct & 1 ? half : Scalar(0));
+            const Scalar qy = oy + (oct & 2 ? half : Scalar(0));
+            const Scalar qz = oz + (oct & 4 ? half : Scalar(0));
+            const int child = createNode(nodes, qx, qy, qz, half, child_depth);
+            nodes[node_pos].children[static_cast<std::size_t>(oct)] = child;
+        }
+
+        const auto children = nodes[node_pos].children;
+        for (int child : children)
+        {
+            completeOctree(nodes, child);
+        }
+    }
+
+    void collectLeafCells(const std::vector<OctreeNode>& nodes, int node_idx,
+                          int x, int y, int z, int span,
+                          std::vector<LeafCell>& leaves) const
+    {
+        const auto& node = nodes[static_cast<std::size_t>(node_idx)];
+        if (isLeaf(node))
+        {
+            leaves.push_back({node_idx, x, y, z, span});
+            return;
+        }
+
+        const int child_span = span / 2;
+        for (int oct = 0; oct < 8; ++oct)
+        {
+            const int child = node.children[static_cast<std::size_t>(oct)];
+            if (child < 0)
+            {
+                throw std::logic_error("Poisson: incomplete octree encountered during balancing");
+            }
+            collectLeafCells(
+                nodes,
+                child,
+                x + (oct & 1 ? child_span : 0),
+                y + (oct & 2 ? child_span : 0),
+                z + (oct & 4 ? child_span : 0),
+                child_span,
+                leaves);
+        }
+    }
+
+    int findLeafForGridCell(const std::vector<OctreeNode>& nodes, int node_idx,
+                            int x, int y, int z) const
+    {
+        int current = node_idx;
+        while (current >= 0)
+        {
+            const auto& node = nodes[static_cast<std::size_t>(current)];
+            if (isLeaf(node))
+            {
+                return current;
+            }
+
+            const int bit = 1 << (_max_depth - node.depth - 1);
+            const int oct = ((x & bit) != 0 ? 1 : 0)
+                | ((y & bit) != 0 ? 2 : 0)
+                | ((z & bit) != 0 ? 4 : 0);
+            current = node.children[static_cast<std::size_t>(oct)];
+        }
+        return -1;
+    }
+
+    int inspectLeafBalance(const std::vector<OctreeNode>& nodes, int root,
+                           std::set<int>* leaves_to_subdivide) const
+    {
+        const int grid_resolution = 1 << _max_depth;
+        std::vector<LeafCell> leaves;
+        collectLeafCells(nodes, root, 0, 0, 0, grid_resolution, leaves);
+
+        int maximum_difference = 0;
+        for (const auto& leaf : leaves)
+        {
+            const int center_x = leaf.x + leaf.span / 2;
+            const int center_y = leaf.y + leaf.span / 2;
+            const int center_z = leaf.z + leaf.span / 2;
+            for (int dz = -1; dz <= 1; ++dz)
+            {
+                for (int dy = -1; dy <= 1; ++dy)
+                {
+                    for (int dx = -1; dx <= 1; ++dx)
+                    {
+                        if (dx == 0 && dy == 0 && dz == 0)
+                        {
+                            continue;
+                        }
+                        const int query_x = dx < 0 ? leaf.x - 1
+                            : (dx > 0 ? leaf.x + leaf.span : center_x);
+                        const int query_y = dy < 0 ? leaf.y - 1
+                            : (dy > 0 ? leaf.y + leaf.span : center_y);
+                        const int query_z = dz < 0 ? leaf.z - 1
+                            : (dz > 0 ? leaf.z + leaf.span : center_z);
+                        if (query_x < 0 || query_x >= grid_resolution
+                            || query_y < 0 || query_y >= grid_resolution
+                            || query_z < 0 || query_z >= grid_resolution)
+                        {
+                            continue;
+                        }
+
+                        const int neighbor_idx = findLeafForGridCell(
+                            nodes, root, query_x, query_y, query_z);
+                        if (neighbor_idx < 0 || neighbor_idx == leaf.nodeIndex)
+                        {
+                            continue;
+                        }
+                        const int leaf_depth = nodes[static_cast<std::size_t>(leaf.nodeIndex)].depth;
+                        const int neighbor_depth = nodes[static_cast<std::size_t>(neighbor_idx)].depth;
+                        const int difference = std::abs(leaf_depth - neighbor_depth);
+                        maximum_difference = std::max(maximum_difference, difference);
+                        if (difference > 1 && leaves_to_subdivide != nullptr)
+                        {
+                            leaves_to_subdivide->insert(
+                                leaf_depth < neighbor_depth ? leaf.nodeIndex : neighbor_idx);
+                        }
+                    }
+                }
+            }
+        }
+        return maximum_difference;
+    }
+
+    int balanceOctree(std::vector<OctreeNode>& nodes, int node_idx) const
+    {
+        // Materialize empty siblings first so the leaves cover the root cube. Balance all
+        // face-, edge-, and corner-adjacent leaves on the integer grid at maximum depth.
+        completeOctree(nodes, node_idx);
+        while (true)
+        {
+            std::set<int> leaves_to_subdivide;
+            const int maximum_difference = inspectLeafBalance(
+                nodes, node_idx, &leaves_to_subdivide);
+            if (leaves_to_subdivide.empty())
+            {
+                return maximum_difference;
+            }
+            for (int leaf : leaves_to_subdivide)
+            {
+                subdivideLeaf(nodes, leaf);
+            }
+        }
     }
 
     void splatNormal(std::vector<OctreeNode>& nodes, int node_idx,
@@ -406,15 +595,23 @@ private:
         }
         else
         {
-            for (int c : node.children)
-                if (c >= 0) splatNormal(nodes, c, px, py, pz, nx, ny, nz);
+            const Scalar half = node.size * Scalar(0.5);
+            const Scalar cx = node.ox + half;
+            const Scalar cy = node.oy + half;
+            const Scalar cz = node.oz + half;
+            const int oct = (px >= cx ? 1 : 0) | (py >= cy ? 2 : 0) | (pz >= cz ? 4 : 0);
+            const int child = node.children[static_cast<std::size_t>(oct)];
+            if (child >= 0)
+            {
+                splatNormal(nodes, child, px, py, pz, nx, ny, nz);
+            }
         }
     }
 
     void solvePoisson(std::vector<OctreeNode>& nodes) const
     {
         std::vector<int> leaf_indices;
-        collectLeaves(nodes, 0, leaf_indices);
+        collectPopulatedLeaves(nodes, 0, leaf_indices);
 
         int n_leaves = static_cast<int>(leaf_indices.size());
 
@@ -766,17 +963,44 @@ private:
         _lastSystem = std::make_shared<PoissonSystem<Scalar>>(std::move(system));
     }
 
-    void collectLeaves(const std::vector<OctreeNode>& nodes, int node_idx,
-                       std::vector<int>& leaves) const
+    std::size_t countOctreeLeaves(const std::vector<OctreeNode>& nodes, int node_idx) const
     {
         const auto& node = nodes[static_cast<std::size_t>(node_idx)];
-        bool is_leaf = true;
-        for (int c : node.children) if (c >= 0) { is_leaf = false; break; }
-        if (is_leaf)
-            leaves.push_back(node_idx);
-        else
-            for (int c : node.children)
-                if (c >= 0) collectLeaves(nodes, c, leaves);
+        if (isLeaf(node))
+        {
+            return 1;
+        }
+
+        std::size_t count = 0;
+        for (int child : node.children)
+        {
+            if (child >= 0)
+            {
+                count += countOctreeLeaves(nodes, child);
+            }
+        }
+        return count;
+    }
+
+    void collectPopulatedLeaves(const std::vector<OctreeNode>& nodes, int node_idx,
+                                std::vector<int>& leaves) const
+    {
+        const auto& node = nodes[static_cast<std::size_t>(node_idx)];
+        if (isLeaf(node))
+        {
+            if (node.point_count > 0)
+            {
+                leaves.push_back(node_idx);
+            }
+            return;
+        }
+        for (int child : node.children)
+        {
+            if (child >= 0)
+            {
+                collectPopulatedLeaves(nodes, child, leaves);
+            }
+        }
     }
 
     int findLeafAt(const std::vector<OctreeNode>& nodes, int node_idx,
@@ -791,7 +1015,7 @@ private:
 
         bool is_leaf = true;
         for (int c : node.children) if (c >= 0) { is_leaf = false; break; }
-        if (is_leaf) return node_idx;
+        if (is_leaf) return node.point_count > 0 ? node_idx : -1;
 
         Scalar half = node.size * Scalar(0.5);
         Scalar cx = node.ox + half, cy = node.oy + half, cz = node.oz + half;
@@ -821,10 +1045,14 @@ private:
 
     void orientFacesWithInputNormals(const Matrix& vertices, Matrix& faces) const
     {
-        if (!_cloud || !_cloud->hasNormals()) return;
+        if (!_cloud || !_cloud->hasNormals() || faces.rows() == 0) return;
         const auto* normals = _cloud->normals();
         constexpr double kDegenerateArea = 1e-20;
         constexpr double kOrientationEpsilon = 1e-12;
+        search::KdTree<Scalar, plamatrix::Device::CPU> spatial_index;
+        spatial_index.setInputCloud(_cloud);
+        spatial_index.build();
+        ++_lastReport.orientationIndexBuildCount;
 
         for (plamatrix::Index f = 0; f < faces.rows(); ++f)
         {
@@ -874,26 +1102,18 @@ private:
             const double center_y = (ay + by + cy) / 3.0;
             const double center_z = (az + bz + cz) / 3.0;
 
-            std::size_t nearest = 0;
-            double best_d2 = std::numeric_limits<double>::infinity();
-            for (std::size_t i = 0; i < _cloud->size(); ++i)
+            const auto nearest = spatial_index.nearestKSearch(
+                {static_cast<Scalar>(center_x),
+                 static_cast<Scalar>(center_y),
+                 static_cast<Scalar>(center_z)},
+                1);
+            ++_lastReport.orientationQueryCount;
+            if (nearest.empty())
             {
-                const auto row = static_cast<plamatrix::Index>(i);
-                const double px = static_cast<double>(_cloud->points().getValue(row, 0));
-                const double py = static_cast<double>(_cloud->points().getValue(row, 1));
-                const double pz = static_cast<double>(_cloud->points().getValue(row, 2));
-                const double dx = center_x - px;
-                const double dy = center_y - py;
-                const double dz = center_z - pz;
-                const double d2 = dx * dx + dy * dy + dz * dz;
-                if (d2 < best_d2)
-                {
-                    best_d2 = d2;
-                    nearest = i;
-                }
+                continue;
             }
 
-            const auto normal_row = static_cast<plamatrix::Index>(nearest);
+            const auto normal_row = static_cast<plamatrix::Index>(nearest.front());
             const double nx = static_cast<double>(normals->getValue(normal_row, 0));
             const double ny = static_cast<double>(normals->getValue(normal_row, 1));
             const double nz = static_cast<double>(normals->getValue(normal_row, 2));

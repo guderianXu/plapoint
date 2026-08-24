@@ -1,0 +1,100 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_EXTENSIONS": "OFF",
+        "CMAKE_PREFIX_PATH": "$env{PLAPOINT_DEPS_PREFIX}"
+      }
+    },
+    {
+      "name": "cpu-release",
+      "inherits": "base",
+      "displayName": "CPU Release with tests",
+      "cacheVariables": {
+        "PLAPOINT_WITH_CUDA": "OFF",
+        "PLAPOINT_WITH_OPENCL": "OFF",
+        "PLAPOINT_BUILD_TESTS": "ON",
+        "PLAPOINT_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "cpu-benchmark",
+      "inherits": "base",
+      "displayName": "CPU benchmark without test instrumentation",
+      "cacheVariables": {
+        "PLAPOINT_WITH_CUDA": "OFF",
+        "PLAPOINT_WITH_OPENCL": "OFF",
+        "PLAPOINT_BUILD_TESTS": "OFF",
+        "PLAPOINT_BUILD_BENCHMARKS": "ON"
+      }
+    },
+    {
+      "name": "cuda-release",
+      "inherits": "base",
+      "displayName": "CUDA Release with tests",
+      "cacheVariables": {
+        "PLAPOINT_WITH_CUDA": "ON",
+        "PLAPOINT_WITH_OPENCL": "OFF",
+        "PLAPOINT_BUILD_TESTS": "ON",
+        "PLAPOINT_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "opencl-release",
+      "inherits": "base",
+      "displayName": "OpenCL Release with tests",
+      "cacheVariables": {
+        "PLAPOINT_WITH_CUDA": "OFF",
+        "PLAPOINT_WITH_OPENCL": "ON",
+        "PLAPOINT_BUILD_TESTS": "ON",
+        "PLAPOINT_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "cuda-benchmark",
+      "inherits": "base",
+      "displayName": "CUDA benchmark without test instrumentation",
+      "cacheVariables": {
+        "PLAPOINT_WITH_CUDA": "ON",
+        "PLAPOINT_WITH_OPENCL": "OFF",
+        "PLAPOINT_BUILD_TESTS": "OFF",
+        "PLAPOINT_BUILD_BENCHMARKS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "cpu-release", "configurePreset": "cpu-release" },
+    { "name": "cpu-benchmark", "configurePreset": "cpu-benchmark" },
+    { "name": "opencl-release", "configurePreset": "opencl-release" },
+    { "name": "cuda-release", "configurePreset": "cuda-release" },
+    { "name": "cuda-benchmark", "configurePreset": "cuda-benchmark" }
+  ],
+  "testPresets": [
+    {
+      "name": "cpu-release",
+      "configurePreset": "cpu-release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "opencl-release",
+      "configurePreset": "opencl-release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "cuda-release",
+      "configurePreset": "cuda-release",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

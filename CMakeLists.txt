@@ -98,6 +98,14 @@ endif()
 add_library(plapoint)
 add_library(plapoint::plapoint ALIAS plapoint)
 
+target_compile_features(plapoint PUBLIC cxx_std_17)
+set_target_properties(plapoint PROPERTIES
+    CXX_EXTENSIONS OFF
+)
+if(WIN32 AND BUILD_SHARED_LIBS)
+    set_target_properties(plapoint PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
+
 if(PLAPOINT_WITH_CUDA)
     set_target_properties(plapoint PROPERTIES
         CUDA_ARCHITECTURES "${PLAPOINT_CUDA_ARCHITECTURES}"
@@ -126,6 +134,12 @@ endif()
 
 if(PLAPOINT_BUILD_TESTS)
     target_compile_definitions(plapoint PRIVATE PLAPOINT_ENABLE_TESTING=1)
+endif()
+
+if(PLAPOINT_BUILD_TESTS AND PLAPOINT_BUILD_BENCHMARKS)
+    message(WARNING
+        "PlaPoint tests enable internal ICP instrumentation in the library. "
+        "Use a benchmark-only build with PLAPOINT_BUILD_TESTS=OFF for performance baselines.")
 endif()
 
 # Source files
@@ -159,9 +173,12 @@ install(TARGETS plapoint
     EXPORT plapointTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 install(DIRECTORY include/plapoint
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    PATTERN "icp_testing.h" EXCLUDE
 )
 install(EXPORT plapointTargets
     NAMESPACE plapoint::

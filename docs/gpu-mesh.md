@@ -48,7 +48,10 @@ stream-bound until `resetStream()` synchronizes and rebinds it.
 `PoissonReconstruction` constructs sorted symmetric CSR deterministically. Each connected graph
 component receives a deterministic, degree-scaled anchor, which removes the constant Laplacian
 null mode and makes the matrix SPD without a float-sized fixed epsilon. The iso level is derived
-from the solved field and clamped to the actual extraction-grid range.
+from the solved field and clamped to the actual extraction-grid range. The adaptive octree is
+completed only around existing branches and locally refined to a 2:1 balance; empty structural
+leaves do not enter the CSR. Extraction-grid samples are evaluated once and reused by Marching
+Cubes, and final face orientation reuses one CPU kd-tree.
 
 ```cpp
 mesh::PoissonReconstruction<float> reconstruction;
@@ -76,7 +79,10 @@ plapoint_benchmarks --points 4096 --poisson-points 8192 --poisson-depth 6 \
 ```
 
 The Poisson input uses a uniform Fibonacci sphere. Its point count and octree depth are
-independent from the generic mesh point count; defaults are 8192 points and depth 6.
+independent from the generic mesh point count; defaults are 8192 points and depth 6. Use at
+least `4^depth` sphere points for this fixture. The benchmark validates that density and
+performs an untimed field/mesh preflight before emitting timing rows, so a degenerate
+sparse-depth combination cannot produce partial benchmark output.
 
 The mode emits:
 

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <cerrno>
 #include <cmath>
@@ -10,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <limits>
 #include <memory>
@@ -17,6 +19,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include <plamatrix/dense/dense_matrix.h>
@@ -185,6 +188,109 @@ inline std::uint8_t objColorByte(Scalar value, bool normalized)
 }
 
 } // namespace detail
+
+/// Public token helper for bounded-memory OBJ stream parsers.
+inline std::string_view nextObjToken(const char*& cursor, const char* end)
+{
+    return detail::nextObjToken(cursor, end);
+}
+
+/// Resolve a parsed zero-based or negative OBJ index against the current element count.
+inline int resolveObjIndex(int index, std::size_t count, const char* label)
+{
+    return detail::resolveObjIndex(index, count, label);
+}
+
+enum class ObjStreamStatus
+{
+    Completed,
+    Cancelled,
+    StoppedByVisitor
+};
+
+struct ObjStreamOptions
+{
+    const std::atomic_bool* cancellationFlag = nullptr;
+    std::function<void(std::uint64_t processedBytes, std::uint64_t totalBytes)> progress;
+};
+
+/// Visit OBJ records line by line without loading the complete text file.
+/// The line and record token views remain valid only for the duration of the visitor call.
+template <typename Visitor>
+ObjStreamStatus forEachObjRecord(const std::string& path,
+                                 const ObjStreamOptions& options,
+                                 Visitor&& visitor)
+{
+    using VisitorResult =
+        std::invoke_result_t<Visitor&, std::string_view, std::string_view, std::size_t>;
+    static_assert(std::is_same_v<VisitorResult, void> || std::is_same_v<VisitorResult, bool>,
+                  "OBJ stream visitor must return void or bool");
+
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream)
+    {
+        throw std::runtime_error("Cannot open OBJ file: " + path);
+    }
+    stream.seekg(0, std::ios::end);
+    const std::streamoff end_offset = stream.tellg();
+    const std::uint64_t total_bytes =
+        end_offset > 0 ? static_cast<std::uint64_t>(end_offset) : std::uint64_t(0);
+    stream.seekg(0, std::ios::beg);
+
+    if (options.cancellationFlag &&
+        options.cancellationFlag->load(std::memory_order_relaxed))
+    {
+        return ObjStreamStatus::Cancelled;
+    }
+
+    std::string line;
+    std::size_t line_number = 0;
+    std::uint64_t processed_bytes = 0;
+    while (true)
+    {
+        if (options.cancellationFlag &&
+            options.cancellationFlag->load(std::memory_order_relaxed))
+        {
+            return ObjStreamStatus::Cancelled;
+        }
+        if (!std::getline(stream, line))
+        {
+            break;
+        }
+        ++line_number;
+        if (options.cancellationFlag &&
+            options.cancellationFlag->load(std::memory_order_relaxed))
+        {
+            return ObjStreamStatus::Cancelled;
+        }
+        processed_bytes = std::min<std::uint64_t>(
+            total_bytes,
+            processed_bytes + static_cast<std::uint64_t>(line.size()) + 1u);
+        const char* cursor = line.data();
+        const char* end = cursor + line.size();
+        const std::string_view token = nextObjToken(cursor, end);
+        if constexpr (std::is_same_v<VisitorResult, bool>)
+        {
+            if (!std::invoke(visitor, std::string_view(line), token, line_number))
+            {
+                return ObjStreamStatus::StoppedByVisitor;
+            }
+        }
+        else
+        {
+            std::invoke(visitor, std::string_view(line), token, line_number);
+        }
+        if (options.progress)
+        {
+            options.progress(processed_bytes, total_bytes);
+        }
+    }
+    if (!stream.eof())
+    {
+        throw std::runtime_error("Failed while reading OBJ file: " + path);
+    }
+    return ObjStreamStatus::Completed;
+}
 
 template <typename Scalar>
 std::shared_ptr<PointCloud<Scalar, plamatrix::Device::CPU>>

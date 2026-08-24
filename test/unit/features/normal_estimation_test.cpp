@@ -54,6 +54,38 @@ TEST(NormalEstimationTest, PlaneNormals)
     EXPECT_GT(std::abs(z), Scalar(0.9));
 }
 
+TEST(NormalEstimationTest, AutoUsesCpuForSmallNeighborhoodWork)
+{
+    using Scalar = float;
+    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+
+    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(9, 3);
+    int row = 0;
+    for (int x = 0; x < 3; ++x)
+    {
+        for (int y = 0; y < 3; ++y)
+        {
+            points.setValue(row, 0, static_cast<Scalar>(x));
+            points.setValue(row, 1, static_cast<Scalar>(y));
+            points.setValue(row, 2, Scalar(0));
+            ++row;
+        }
+    }
+
+    const Cloud cloud(std::move(points));
+    plapoint::ProcessingReport report;
+    const auto normals = plapoint::estimateNormals(
+        cloud, 8, plapoint::ProcessingDevice::Auto, &report);
+
+    EXPECT_EQ(normals.rows(), static_cast<plamatrix::Index>(cloud.size()));
+    EXPECT_EQ(report.requestedDevice, plapoint::ProcessingDevice::Auto);
+    EXPECT_EQ(report.actualDevice, plapoint::ProcessingDevice::CPU);
+    EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::CpuKdTree);
+    EXPECT_FALSE(report.usedFallback);
+    EXPECT_TRUE(report.fallbackReason.empty());
+    EXPECT_FALSE(report.selectionReason.empty());
+}
+
 TEST(NormalEstimationTest, ThrowsIfNoInput)
 {
     plapoint::NormalEstimation<float, plamatrix::Device::CPU> ne;

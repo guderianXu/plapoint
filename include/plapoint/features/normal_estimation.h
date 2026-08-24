@@ -223,6 +223,27 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> estimateNormals(
     ProcessingReport* report = nullptr)
 {
     std::string fallback_reason;
+    const auto estimated_neighbors = k > 0 ? static_cast<std::size_t>(k) : std::size_t(0);
+    if (device == ProcessingDevice::Auto &&
+        !ProcessingPolicy::autoPrefersNeighborhoodGpu(input.size(), estimated_neighbors))
+    {
+        auto cloud = detail::nonOwningCloudPtr(input);
+        auto tree = std::make_shared<search::KdTree<Scalar, plamatrix::Device::CPU>>();
+        tree->setInputCloud(cloud);
+        tree->build();
+
+        NormalEstimation<Scalar, plamatrix::Device::CPU> estimator;
+        estimator.setInputCloud(cloud);
+        estimator.setSearchMethod(tree);
+        estimator.setKSearch(k);
+        auto normals = estimator.compute();
+        detail::setAutoCpuReport(
+            report,
+            ProcessingNeighborBackend::CpuKdTree,
+            "Auto selected CPU because normal-estimation work is below the accelerator threshold");
+        return normals;
+    }
+
     if (device == ProcessingDevice::CUDA || device == ProcessingDevice::Auto)
     {
         if (k > 32)

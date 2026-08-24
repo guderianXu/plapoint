@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,9 +21,13 @@ class HotspotRow:
 def measured_time(row: dict[str, object]) -> float | None:
     if row.get("status") != "measured":
         return None
-    best_ms = row.get("best_ms", row.get("current_ms"))
-    if isinstance(best_ms, (int, float)):
-        return float(best_ms)
+    for field in ("median_ms", "best_ms", "current_ms"):
+        value = row.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        measured = float(value)
+        if math.isfinite(measured) and measured >= 0.0:
+            return measured
     return None
 
 

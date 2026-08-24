@@ -124,7 +124,11 @@ public:
     {
         bool operator()(const std::pair<double, int>& a, const std::pair<double, int>& b) const
         {
-            return a.first < b.first;
+            if (a.first != b.first)
+            {
+                return a.first < b.first;
+            }
+            return a.second < b.second;
         }
     };
 
@@ -658,7 +662,8 @@ private:
             heap.push_back({d, node.point_idx});
             std::push_heap(heap.begin(), heap.end(), compare);
         }
-        else if (std::isfinite(d) && !heap.empty() && d < heap.front().first)
+        else if (std::isfinite(d) && !heap.empty() &&
+                 compare({d, node.point_idx}, heap.front()))
         {
             std::pop_heap(heap.begin(), heap.end(), compare);
             heap.back() = {d, node.point_idx};

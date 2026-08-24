@@ -150,6 +150,24 @@ TEST_F(KdTreeTest, NearestKSearchReturnsDuplicatePointTiesBeforeFartherPoint)
     EXPECT_EQ(results, (std::vector<int>{0, 1, 2}));
 }
 
+TEST_F(KdTreeTest, NearestKSearchBreaksDistanceTiesByInputIndex)
+{
+    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(4, 3);
+    mat.setValue(0, 0, -1); mat.setValue(0, 1, 0); mat.setValue(0, 2, 0);
+    mat.setValue(1, 0, 1);  mat.setValue(1, 1, 0); mat.setValue(1, 2, 0);
+    mat.setValue(2, 0, 0);  mat.setValue(2, 1, -1); mat.setValue(2, 2, 0);
+    mat.setValue(3, 0, 0);  mat.setValue(3, 1, 1); mat.setValue(3, 2, 0);
+    auto tied_cloud = std::make_shared<Cloud>(std::move(mat));
+
+    KdTree tree;
+    tree.setInputCloud(tied_cloud);
+    tree.build();
+
+    const plamatrix::Vec3<Scalar> query{0, 0, 0};
+    EXPECT_EQ(tree.nearestKSearch(query, 1), (std::vector<int>{0}));
+    EXPECT_EQ(tree.nearestKSearch(query, 3), (std::vector<int>{0, 1, 2}));
+}
+
 TEST_F(KdTreeTest, NearestKSearchKeepsExtremeButFiniteDistance)
 {
     constexpr Scalar max_value = std::numeric_limits<Scalar>::max();

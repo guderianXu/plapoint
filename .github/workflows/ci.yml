@@ -1,0 +1,105 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-cpu-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PlaPoint
+        uses: actions/checkout@v7
+        with:
+          path: plapoint
+      - name: Check out PlaMatrix
+        uses: actions/checkout@v7
+        with:
+          repository: guderianXu/plamatrix
+          ref: d67dc6cfe2525a7a5053a7a3d0c1eedc82948904
+          path: plamatrix
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgtest-dev ninja-build
+      - name: Build and install CPU PlaMatrix
+        run: |
+          cmake -S plamatrix -B build/plamatrix -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/build/deps" \
+            -DPLAMATRIX_WITH_CUDA=OFF \
+            -DPLAMATRIX_WITH_OPENCL=OFF \
+            -DPLAMATRIX_BUILD_TESTS=OFF \
+            -DPLAMATRIX_BUILD_BENCHMARKS=OFF
+          cmake --build build/plamatrix --target install
+      - name: Configure PlaPoint CPU tests
+        run: |
+          cmake -S plapoint -B build/plapoint -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$PWD/build/deps" \
+            -DPLAPOINT_WITH_CUDA=OFF \
+            -DPLAPOINT_WITH_OPENCL=OFF \
+            -DPLAPOINT_BUILD_TESTS=ON \
+            -DPLAPOINT_BUILD_BENCHMARKS=OFF
+      - name: Build and test PlaPoint
+        run: |
+          cmake --build build/plapoint
+          ctest --test-dir build/plapoint --output-on-failure
+      - name: Validate benchmark tooling without test instrumentation
+        run: |
+          cmake -S plapoint -B build/plapoint-benchmark -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$PWD/build/deps" \
+            -DPLAPOINT_WITH_CUDA=OFF \
+            -DPLAPOINT_WITH_OPENCL=OFF \
+            -DPLAPOINT_BUILD_TESTS=OFF \
+            -DPLAPOINT_BUILD_BENCHMARKS=ON
+          cmake --build build/plapoint-benchmark --target plapoint_benchmarks
+          ctest --test-dir build/plapoint-benchmark --output-on-failure
+          python3 plapoint/scripts/test_python_tools.py
+
+  windows-msvc-build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out PlaPoint
+        uses: actions/checkout@v7
+        with:
+          path: plapoint
+      - name: Check out PlaMatrix
+        uses: actions/checkout@v7
+        with:
+          repository: guderianXu/plamatrix
+          ref: d67dc6cfe2525a7a5053a7a3d0c1eedc82948904
+          path: plamatrix
+      - name: Build and install CPU PlaMatrix
+        shell: pwsh
+        run: |
+          cmake -S plamatrix -B build/plamatrix -A x64 `
+            -DCMAKE_INSTALL_PREFIX="$pwd/build/deps" `
+            -DOpenMP_CXX_FLAGS="/openmp:llvm /openmp:experimental" `
+            -DPLAMATRIX_WITH_CUDA=OFF `
+            -DPLAMATRIX_WITH_OPENCL=OFF `
+            -DPLAMATRIX_BUILD_TESTS=OFF `
+            -DPLAMATRIX_BUILD_BENCHMARKS=OFF
+          cmake --build build/plamatrix --config Release --target install
+      - name: Build and install PlaPoint
+        shell: pwsh
+        run: |
+          cmake -S plapoint -B build/plapoint -A x64 `
+            -DCMAKE_PREFIX_PATH="$pwd/build/deps" `
+            -DCMAKE_INSTALL_PREFIX="$pwd/build/install" `
+            -DBUILD_SHARED_LIBS=ON `
+            -DPLAPOINT_WITH_CUDA=OFF `
+            -DPLAPOINT_WITH_OPENCL=OFF `
+            -DPLAPOINT_BUILD_TESTS=OFF `
+            -DPLAPOINT_BUILD_BENCHMARKS=OFF
+          cmake --build build/plapoint --config Release --target install
+      - name: Build and run installed-package consumer
+        shell: pwsh
+        run: |
+          cmake -S plapoint/cmake/consumer_smoke -B build/consumer -A x64 `
+            -DCMAKE_PREFIX_PATH="$pwd/build/install;$pwd/build/deps"
+          cmake --build build/consumer --config Release
+          $env:PATH = "$pwd\build\install\bin;$env:PATH"
+          & build/consumer/Release/plapoint_consumer_smoke.exe

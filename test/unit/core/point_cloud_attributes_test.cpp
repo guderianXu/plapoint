@@ -2,6 +2,7 @@
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
 #include <string>
+#include <utility>
 
 #ifdef PLAPOINT_WITH_CUDA
 #include <plapoint/gpu/cuda_check.h>
@@ -95,6 +96,118 @@ TEST(PointCloudAttributesTest, SetIntensitiesRejectsWrongSize)
 
     EXPECT_THROW(cloud.setIntensities(wrong_rows), std::runtime_error);
     EXPECT_THROW(cloud.setIntensities(wrong_cols), std::runtime_error);
+}
+
+TEST(PointCloudAttributesTest, CopySettersOwnIndependentAttributeStorage)
+{
+    using Matrix = plamatrix::DenseMatrix<float, plamatrix::Device::CPU>;
+
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
+
+    Matrix normals(3, 3);
+    normals.fill(0.0f);
+    normals.setValue(2, 2, 1.0f);
+    cloud.setNormals(std::as_const(normals));
+
+    plamatrix::DenseMatrix<uint8_t, plamatrix::Device::CPU> colors(3, 3);
+    colors.fill(0);
+    colors.setValue(2, 1, 80);
+    cloud.setColors(std::as_const(colors));
+
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(3, 1);
+    intensities.fill(0);
+    intensities.setValue(2, 0, 4096);
+    cloud.setIntensities(std::as_const(intensities));
+
+    Matrix scalar_fields(3, 2);
+    scalar_fields.fill(0.0f);
+    scalar_fields.setValue(1, 1, 0.75f);
+    cloud.setScalarFields({"error", "confidence"}, std::as_const(scalar_fields));
+
+    Matrix texture_coords(3, 2);
+    texture_coords.fill(0.0f);
+    texture_coords.setValue(2, 1, 0.6f);
+    cloud.setTextureCoords(std::as_const(texture_coords));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
+    faces.setValue(0, 0, 0);
+    faces.setValue(0, 1, 1);
+    faces.setValue(0, 2, 2);
+    cloud.setFaces(std::as_const(faces));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(1, 3);
+    face_texture_indices.setValue(0, 0, 2);
+    face_texture_indices.setValue(0, 1, 1);
+    face_texture_indices.setValue(0, 2, 0);
+    cloud.setFaceTextureIndices(std::as_const(face_texture_indices));
+
+    EXPECT_NE(cloud.normals()->data(), normals.data());
+    EXPECT_NE(cloud.colors()->data(), colors.data());
+    EXPECT_NE(cloud.intensities()->data(), intensities.data());
+    EXPECT_NE(cloud.scalarFields()->data(), scalar_fields.data());
+    EXPECT_NE(cloud.textureCoords()->data(), texture_coords.data());
+    EXPECT_NE(cloud.faces()->data(), faces.data());
+    EXPECT_NE(cloud.faceTextureIndices()->data(), face_texture_indices.data());
+
+    normals.setValue(2, 2, 9.0f);
+    colors.setValue(2, 1, 9);
+    intensities.setValue(2, 0, 9);
+    scalar_fields.setValue(1, 1, 9.0f);
+    texture_coords.setValue(2, 1, 0.9f);
+    faces.setValue(0, 2, 0);
+    face_texture_indices.setValue(0, 0, 0);
+
+    EXPECT_FLOAT_EQ(cloud.normals()->getValue(2, 2), 1.0f);
+    EXPECT_EQ(cloud.colors()->getValue(2, 1), 80);
+    EXPECT_EQ(cloud.intensities()->getValue(2, 0), 4096);
+    EXPECT_FLOAT_EQ(cloud.scalarFields()->getValue(1, 1), 0.75f);
+    EXPECT_FLOAT_EQ(cloud.textureCoords()->getValue(2, 1), 0.6f);
+    EXPECT_EQ(cloud.faces()->getValue(0, 2), 2);
+    EXPECT_EQ(cloud.faceTextureIndices()->getValue(0, 0), 2);
+}
+
+TEST(PointCloudAttributesTest, CopySettersPreserveEmptyAttributeShapes)
+{
+    using Matrix = plamatrix::DenseMatrix<float, plamatrix::Device::CPU>;
+
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud;
+    Matrix normals(0, 3);
+    plamatrix::DenseMatrix<uint8_t, plamatrix::Device::CPU> colors(0, 3);
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(0, 1);
+    Matrix scalar_fields(0, 1);
+    Matrix texture_coords(0, 2);
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(0, 3);
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(0, 3);
+
+    cloud.setNormals(std::as_const(normals));
+    cloud.setColors(std::as_const(colors));
+    cloud.setIntensities(std::as_const(intensities));
+    cloud.setScalarFields({"confidence"}, std::as_const(scalar_fields));
+    cloud.setTextureCoords(std::as_const(texture_coords));
+    cloud.setFaces(std::as_const(faces));
+    cloud.setFaceTextureIndices(std::as_const(face_texture_indices));
+
+    ASSERT_NE(cloud.normals(), nullptr);
+    EXPECT_EQ(cloud.normals()->rows(), 0);
+    EXPECT_EQ(cloud.normals()->cols(), 3);
+    ASSERT_NE(cloud.colors(), nullptr);
+    EXPECT_EQ(cloud.colors()->rows(), 0);
+    EXPECT_EQ(cloud.colors()->cols(), 3);
+    ASSERT_NE(cloud.intensities(), nullptr);
+    EXPECT_EQ(cloud.intensities()->rows(), 0);
+    EXPECT_EQ(cloud.intensities()->cols(), 1);
+    ASSERT_NE(cloud.scalarFields(), nullptr);
+    EXPECT_EQ(cloud.scalarFields()->rows(), 0);
+    EXPECT_EQ(cloud.scalarFields()->cols(), 1);
+    ASSERT_NE(cloud.textureCoords(), nullptr);
+    EXPECT_EQ(cloud.textureCoords()->rows(), 0);
+    EXPECT_EQ(cloud.textureCoords()->cols(), 2);
+    ASSERT_NE(cloud.faces(), nullptr);
+    EXPECT_EQ(cloud.faces()->rows(), 0);
+    EXPECT_EQ(cloud.faces()->cols(), 3);
+    ASSERT_NE(cloud.faceTextureIndices(), nullptr);
+    EXPECT_EQ(cloud.faceTextureIndices()->rows(), 0);
+    EXPECT_EQ(cloud.faceTextureIndices()->cols(), 3);
 }
 
 TEST(PointCloudAttributesTest, SetNamedScalarFields)
@@ -471,6 +584,147 @@ TEST(PointCloudAttributesTest, CpuGpuRoundtripPreservesOptionalAttributes)
     ASSERT_TRUE(roundtrip.hasScalarFields());
     EXPECT_EQ(roundtrip.scalarFieldNames().at(0), "error");
     EXPECT_FLOAT_EQ(roundtrip.scalarFields()->getValue(2, 0), 0.3f);
+}
+
+TEST(PointCloudAttributesTest, GpuCopySettersOwnIndependentDeviceStorage)
+{
+    if (!hasCudaDeviceForAttributes())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping point-cloud GPU copy setter test";
+    }
+
+    using CpuMatrix = plamatrix::DenseMatrix<float, plamatrix::Device::CPU>;
+
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cpu_cloud(3);
+    auto cloud = cpu_cloud.toGpu();
+
+    CpuMatrix normals_cpu(3, 3);
+    normals_cpu.fill(0.0f);
+    normals_cpu.setValue(2, 2, 1.0f);
+    auto normals = normals_cpu.toGpu();
+    cloud.setNormals(std::as_const(normals));
+
+    plamatrix::DenseMatrix<uint8_t, plamatrix::Device::CPU> colors_cpu(3, 3);
+    colors_cpu.fill(0);
+    colors_cpu.setValue(2, 1, 80);
+    auto colors = colors_cpu.toGpu();
+    cloud.setColors(std::as_const(colors));
+
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities_cpu(3, 1);
+    intensities_cpu.fill(0);
+    intensities_cpu.setValue(2, 0, 4096);
+    auto intensities = intensities_cpu.toGpu();
+    cloud.setIntensities(std::as_const(intensities));
+
+    CpuMatrix scalar_fields_cpu(3, 1);
+    scalar_fields_cpu.fill(0.0f);
+    scalar_fields_cpu.setValue(1, 0, 0.75f);
+    auto scalar_fields = scalar_fields_cpu.toGpu();
+    cloud.setScalarFields({"confidence"}, std::as_const(scalar_fields));
+
+    CpuMatrix texture_coords_cpu(3, 2);
+    texture_coords_cpu.fill(0.0f);
+    texture_coords_cpu.setValue(2, 1, 0.6f);
+    auto texture_coords = texture_coords_cpu.toGpu();
+    cloud.setTextureCoords(std::as_const(texture_coords));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces_cpu(1, 3);
+    faces_cpu.setValue(0, 0, 0);
+    faces_cpu.setValue(0, 1, 1);
+    faces_cpu.setValue(0, 2, 2);
+    auto faces = faces_cpu.toGpu();
+    cloud.setFaces(std::as_const(faces));
+
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices_cpu(1, 3);
+    face_texture_indices_cpu.setValue(0, 0, 2);
+    face_texture_indices_cpu.setValue(0, 1, 1);
+    face_texture_indices_cpu.setValue(0, 2, 0);
+    auto face_texture_indices = face_texture_indices_cpu.toGpu();
+    cloud.setFaceTextureIndices(std::as_const(face_texture_indices));
+
+    EXPECT_NE(cloud.normals()->data(), normals.data());
+    EXPECT_NE(cloud.colors()->data(), colors.data());
+    EXPECT_NE(cloud.intensities()->data(), intensities.data());
+    EXPECT_NE(cloud.scalarFields()->data(), scalar_fields.data());
+    EXPECT_NE(cloud.textureCoords()->data(), texture_coords.data());
+    EXPECT_NE(cloud.faces()->data(), faces.data());
+    EXPECT_NE(cloud.faceTextureIndices()->data(), face_texture_indices.data());
+
+    normals.setValue(2, 2, 9.0f);
+    colors.setValue(2, 1, 9);
+    intensities.setValue(2, 0, 9);
+    scalar_fields.setValue(1, 0, 9.0f);
+    texture_coords.setValue(2, 1, 0.9f);
+    faces.setValue(0, 2, 0);
+    face_texture_indices.setValue(0, 0, 0);
+
+    const auto stored = cloud.toCpu();
+    EXPECT_FLOAT_EQ(stored.normals()->getValue(2, 2), 1.0f);
+    EXPECT_EQ(stored.colors()->getValue(2, 1), 80);
+    EXPECT_EQ(stored.intensities()->getValue(2, 0), 4096);
+    EXPECT_FLOAT_EQ(stored.scalarFields()->getValue(1, 0), 0.75f);
+    EXPECT_FLOAT_EQ(stored.textureCoords()->getValue(2, 1), 0.6f);
+    EXPECT_EQ(stored.faces()->getValue(0, 2), 2);
+    EXPECT_EQ(stored.faceTextureIndices()->getValue(0, 0), 2);
+}
+
+TEST(PointCloudAttributesTest, GpuCopySettersPreserveEmptyAttributeShapes)
+{
+    if (!hasCudaDeviceForAttributes())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping empty point-cloud GPU copy setter test";
+    }
+
+    using CpuMatrix = plamatrix::DenseMatrix<float, plamatrix::Device::CPU>;
+
+    plapoint::PointCloud<float, plamatrix::Device::CPU> cpu_cloud;
+    auto cloud = cpu_cloud.toGpu();
+
+    CpuMatrix normals_cpu(0, 3);
+    auto normals = normals_cpu.toGpu();
+    plamatrix::DenseMatrix<uint8_t, plamatrix::Device::CPU> colors_cpu(0, 3);
+    auto colors = colors_cpu.toGpu();
+    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities_cpu(0, 1);
+    auto intensities = intensities_cpu.toGpu();
+    CpuMatrix scalar_fields_cpu(0, 1);
+    auto scalar_fields = scalar_fields_cpu.toGpu();
+    CpuMatrix texture_coords_cpu(0, 2);
+    auto texture_coords = texture_coords_cpu.toGpu();
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces_cpu(0, 3);
+    auto faces = faces_cpu.toGpu();
+    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices_cpu(0, 3);
+    auto face_texture_indices = face_texture_indices_cpu.toGpu();
+
+    cloud.setNormals(std::as_const(normals));
+    cloud.setColors(std::as_const(colors));
+    cloud.setIntensities(std::as_const(intensities));
+    cloud.setScalarFields({"confidence"}, std::as_const(scalar_fields));
+    cloud.setTextureCoords(std::as_const(texture_coords));
+    cloud.setFaces(std::as_const(faces));
+    cloud.setFaceTextureIndices(std::as_const(face_texture_indices));
+
+    const auto stored = cloud.toCpu();
+    ASSERT_NE(stored.normals(), nullptr);
+    EXPECT_EQ(stored.normals()->rows(), 0);
+    EXPECT_EQ(stored.normals()->cols(), 3);
+    ASSERT_NE(stored.colors(), nullptr);
+    EXPECT_EQ(stored.colors()->rows(), 0);
+    EXPECT_EQ(stored.colors()->cols(), 3);
+    ASSERT_NE(stored.intensities(), nullptr);
+    EXPECT_EQ(stored.intensities()->rows(), 0);
+    EXPECT_EQ(stored.intensities()->cols(), 1);
+    ASSERT_NE(stored.scalarFields(), nullptr);
+    EXPECT_EQ(stored.scalarFields()->rows(), 0);
+    EXPECT_EQ(stored.scalarFields()->cols(), 1);
+    ASSERT_NE(stored.textureCoords(), nullptr);
+    EXPECT_EQ(stored.textureCoords()->rows(), 0);
+    EXPECT_EQ(stored.textureCoords()->cols(), 2);
+    ASSERT_NE(stored.faces(), nullptr);
+    EXPECT_EQ(stored.faces()->rows(), 0);
+    EXPECT_EQ(stored.faces()->cols(), 3);
+    ASSERT_NE(stored.faceTextureIndices(), nullptr);
+    EXPECT_EQ(stored.faceTextureIndices()->rows(), 0);
+    EXPECT_EQ(stored.faceTextureIndices()->cols(), 3);
 }
 
 TEST(PointCloudAttributesTest, ToGpuRejectsMutableInvalidFaceTextureIndices)

@@ -23,6 +23,18 @@ PointCloud<Scalar, plamatrix::Device::CPU> statisticalOutlierRemoval(
         return output;
     }
 
+    const auto estimated_neighbors = mean_k > 0 ? static_cast<std::size_t>(mean_k) : std::size_t(0);
+    if (device == ProcessingDevice::Auto &&
+        !ProcessingPolicy::autoPrefersNeighborhoodGpu(input.size(), estimated_neighbors))
+    {
+        auto output = statisticalOutlierRemoval(input, mean_k, stddev_mul, removed_indices);
+        detail::setAutoCpuReport(
+            report,
+            ProcessingNeighborBackend::CpuKdTree,
+            "Auto selected CPU because statistical-neighbor work is below the accelerator threshold");
+        return output;
+    }
+
     const auto indexed_k = input.size() == 0
         ? std::size_t(0)
         : std::min<std::size_t>(static_cast<std::size_t>(mean_k) + 1, input.size());
@@ -141,6 +153,16 @@ PointCloud<Scalar, plamatrix::Device::CPU> radiusOutlierRemoval(
         detail::setReport(
             report, device, ProcessingDevice::CPU, false, {},
             ProcessingNeighborBackend::CpuKdTree);
+        return output;
+    }
+
+    if (device == ProcessingDevice::Auto && !ProcessingPolicy::autoPrefersGpu(input.size()))
+    {
+        auto output = radiusOutlierRemoval(input, radius, min_neighbors, removed_indices);
+        detail::setAutoCpuReport(
+            report,
+            ProcessingNeighborBackend::CpuKdTree,
+            "Auto selected CPU because radius-neighbor work is below the accelerator transfer threshold");
         return output;
     }
 

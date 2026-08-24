@@ -15,6 +15,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import compare_benchmark_baseline as compare_benchmark
+import run_benchmark_baseline as benchmark_runner
 import run_cpu_only_validation as cpu_validation
 import run_real_reconstruction_regression as real_regression
 
@@ -41,6 +42,71 @@ def write_ply(path: Path, rows: list[tuple[float, float, float, float, int]]) ->
 
 
 class BenchmarkBaselineCompareTest(unittest.TestCase):
+    def test_prefers_median_when_both_artifacts_provide_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            baseline = root / "baseline.json"
+            current = root / "current.json"
+            write_json(
+                baseline,
+                [
+                    {
+                        "benchmark": "representative",
+                        "status": "measured",
+                        "best_ms": 1.0,
+                        "median_ms": 10.0,
+                    }
+                ],
+            )
+            write_json(
+                current,
+                [
+                    {
+                        "benchmark": "representative",
+                        "status": "measured",
+                        "best_ms": 2.0,
+                        "median_ms": 11.0,
+                    }
+                ],
+            )
+
+            result = compare_benchmark.compare_files(baseline, current)
+
+        row = result.rows[0]
+        self.assertEqual(row.metric, "median_ms")
+        self.assertEqual(row.status, "unchanged")
+        self.assertEqual(row.baseline_ms, 10.0)
+        self.assertEqual(row.current_ms, 11.0)
+
+    def test_legacy_artifact_falls_back_to_best_for_both_sides(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            baseline = root / "baseline.json"
+            current = root / "current.json"
+            write_json(
+                baseline,
+                [{"benchmark": "legacy", "status": "measured", "best_ms": 10.0}],
+            )
+            write_json(
+                current,
+                [
+                    {
+                        "benchmark": "legacy",
+                        "status": "measured",
+                        "best_ms": 10.5,
+                        "median_ms": 20.0,
+                    }
+                ],
+            )
+
+            result = compare_benchmark.compare_files(baseline, current)
+
+        row = result.rows[0]
+        self.assertEqual(row.metric, "best_ms")
+        self.assertEqual(row.status, "unchanged")
+        self.assertEqual(row.baseline_ms, 10.0)
+        self.assertEqual(row.current_ms, 10.5)
+
     def test_detects_regression_and_improvement(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -126,6 +192,7 @@ class BenchmarkBaselineCompareTest(unittest.TestCase):
                         "regression_threshold": 0.20,
                         "improvement_threshold": 0.20,
                         "min_ms": 0.001,
+                        "primary_metric": "median_ms",
                         "ignore_benchmarks": ["gpu_noisy"],
                     }
                 )
@@ -148,6 +215,69 @@ class BenchmarkBaselineCompareTest(unittest.TestCase):
         self.assertEqual(by_name["gpu_real"].status, "regressed")
         self.assertEqual(result.ignored_count, 1)
         self.assertEqual(result.regression_count, 1)
+        self.assertEqual(config.primary_metric, "median_ms")
+
+    def test_gate_config_rejects_non_string_metric_and_non_finite_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "gate.json"
+            config_path.write_text(
+                '{"primary_metric": [], "regression_threshold": 0.2}\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "primary_metric"):
+                compare_benchmark.load_gate_config(config_path)
+
+            config_path.write_text(
+                '{"primary_metric": "median_ms", "regression_threshold": 1e999}\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "regression_threshold"):
+                compare_benchmark.load_gate_config(config_path)
+
+
+class BenchmarkBaselineRunnerTest(unittest.TestCase):
+    def test_finds_preset_benchmark_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            executable_name = (
+                "plapoint_benchmarks.exe"
+                if benchmark_runner.platform.system() == "Windows"
+                else "plapoint_benchmarks"
+            )
+            executable = root / "build" / "cpu-benchmark" / "benchmarks" / executable_name
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+
+            self.assertEqual(benchmark_runner.find_benchmark_exe(root), executable)
+
+    def test_parses_statistical_csv(self) -> None:
+        rows = benchmark_runner.parse_benchmark_csv(
+            "benchmark,points,iterations,best_ms,median_ms,p95_ms,stddev_ms,cv\n"
+            "cpu_knn,1000,7,1.0,1.2,1.5,0.2,0.16\n"
+            "gpu_knn,skipped,cuda_disabled,,,,,\n"
+        )
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["median_ms"], 1.2)
+        self.assertEqual(rows[0]["p95_ms"], 1.5)
+        self.assertEqual(rows[0]["stddev_ms"], 0.2)
+        self.assertEqual(rows[0]["cv"], 0.16)
+        self.assertEqual(rows[1]["status"], "skipped")
+        self.assertEqual(rows[1]["reason"], "cuda_disabled")
+
+    def test_parses_legacy_best_only_csv(self) -> None:
+        rows = benchmark_runner.parse_benchmark_csv(
+            "benchmark,points,iterations,best_ms\n"
+            "cpu_knn,1000,1,1.0\n"
+        )
+
+        self.assertEqual(rows[0]["best_ms"], 1.0)
+        self.assertNotIn("median_ms", rows[0])
+
+    def test_default_repeat_count_supports_distribution_statistics(self) -> None:
+        args = benchmark_runner.build_parser().parse_args([])
+
+        self.assertEqual(args.iterations, 7)
 
 
 class RealReconstructionRegressionTest(unittest.TestCase):
@@ -327,9 +457,9 @@ class CudaHotspotReportTest(unittest.TestCase):
         hotspots = importlib.import_module("report_cuda_hotspots")
 
         rows = [
-            {"benchmark": "cpu_knn", "status": "measured", "best_ms": 10.0},
-            {"benchmark": "gpu_knn", "status": "measured", "best_ms": 2.0},
-            {"benchmark": "gpu_icp", "status": "measured", "best_ms": 5.0},
+            {"benchmark": "cpu_knn", "status": "measured", "best_ms": 10.0, "median_ms": 12.0},
+            {"benchmark": "gpu_knn", "status": "measured", "best_ms": 2.0, "median_ms": 3.0},
+            {"benchmark": "gpu_icp", "status": "measured", "best_ms": 5.0, "median_ms": 6.0},
             {"benchmark": "cpu_voxel_grid", "status": "measured", "best_ms": 3.0},
         ]
 
@@ -337,8 +467,9 @@ class CudaHotspotReportTest(unittest.TestCase):
         markdown = hotspots.markdown_report(selected)
 
         self.assertEqual([row.name for row in selected], ["gpu_icp", "gpu_knn"])
+        self.assertEqual(selected[0].current_ms, 6.0)
         self.assertIsNone(selected[0].cpu_to_gpu_ratio)
-        self.assertAlmostEqual(selected[1].cpu_to_gpu_ratio, 5.0)
+        self.assertAlmostEqual(selected[1].cpu_to_gpu_ratio, 4.0)
         self.assertIn("gpu_icp", markdown)
         self.assertIn("gpu_knn", markdown)
 

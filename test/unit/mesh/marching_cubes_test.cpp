@@ -226,12 +226,60 @@ TEST(MarchingCubesTest, RejectsNonFiniteScalarFunctionSamples)
     mc.setResolution(2, 2, 2);
     mc.setIsoLevel(Scalar(0));
 
-    EXPECT_THROW(
-        (void)mc.extract([](Scalar, Scalar, Scalar)
+    EXPECT_THROW((void)mc.extract([](Scalar, Scalar, Scalar) { return std::numeric_limits<Scalar>::quiet_NaN(); }),
+                 std::invalid_argument);
+}
+
+TEST(MarchingCubesTest, PresampledFieldCanBeReusedWithoutReevaluatingFunction)
+{
+    using Scalar = float;
+
+    plapoint::mesh::MarchingCubes<Scalar> mc;
+    mc.setBounds({-1, -2, -3}, {1, 2, 3});
+    mc.setResolution(4, 3, 2);
+    mc.setIsoLevel(Scalar(0));
+
+    std::size_t evaluation_count = 0;
+    const auto field = mc.sampleField(
+        [&](Scalar x, Scalar y, Scalar z)
         {
-            return std::numeric_limits<Scalar>::quiet_NaN();
-        }),
-        std::invalid_argument);
+            ++evaluation_count;
+            return x + y + z;
+        });
+
+    EXPECT_EQ(evaluation_count, 5u * 4u * 3u);
+    auto [first_vertices, first_faces] = mc.extractSampledField(field);
+    auto [second_vertices, second_faces] = mc.extractSampledField(field);
+    EXPECT_EQ(evaluation_count, 5u * 4u * 3u);
+    ASSERT_EQ(first_vertices.rows(), second_vertices.rows());
+    ASSERT_EQ(first_faces.rows(), second_faces.rows());
+    for (plamatrix::Index row = 0; row < first_vertices.rows(); ++row)
+    {
+        for (plamatrix::Index column = 0; column < first_vertices.cols(); ++column)
+        {
+            EXPECT_EQ(first_vertices(row, column), second_vertices(row, column));
+        }
+    }
+    for (plamatrix::Index row = 0; row < first_faces.rows(); ++row)
+    {
+        for (plamatrix::Index column = 0; column < first_faces.cols(); ++column)
+        {
+            EXPECT_EQ(first_faces(row, column), second_faces(row, column));
+        }
+    }
+}
+
+TEST(MarchingCubesTest, RejectsPresampledFieldWithWrongSizeOrNonFiniteValues)
+{
+    using Scalar = float;
+
+    plapoint::mesh::MarchingCubes<Scalar> mc;
+    mc.setResolution(2, 2, 2);
+
+    EXPECT_THROW((void)mc.extractSampledField(std::vector<Scalar>(26, Scalar(0))), std::invalid_argument);
+    auto field = std::vector<Scalar>(27, Scalar(0));
+    field[13] = std::numeric_limits<Scalar>::infinity();
+    EXPECT_THROW((void)mc.extractSampledField(field), std::invalid_argument);
 }
 
 TEST(MarchingCubesTest, KnownNonEmptyCubeCasesProduceTriangles)

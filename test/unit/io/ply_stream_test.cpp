@@ -7,9 +7,11 @@
 
 #include <plamatrix/plamatrix.h>
 
+#include <atomic>
 #include <cstdint>
 #include <fstream>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -110,6 +112,25 @@ TEST(PlyStreamTest, ReadsChunksAndDecodesVertexRecords)
     EXPECT_FLOAT_EQ(first.nz, 1.0f);
 }
 
+TEST(PlyStreamTest, VectorDecodersRejectShortRecords)
+{
+    const plapoint::test::TempFile temp_file(".ply");
+    const std::string path = temp_file.string();
+    writeStreamFixture(path);
+
+    plapoint::io::PlyVertexStreamHeader header;
+    ASSERT_TRUE(plapoint::io::parseBinaryPlyVertexStreamHeader(path, &header));
+    ASSERT_GT(header.vertexStride, 0);
+
+    const std::vector<char> empty_record;
+    const std::vector<char> short_record(
+        static_cast<std::size_t>(header.vertexStride - 1));
+    EXPECT_THROW(plapoint::io::readPlyVertexPoint(empty_record, header), std::invalid_argument);
+    EXPECT_THROW(plapoint::io::readPlyVertexPoint(short_record, header), std::invalid_argument);
+    EXPECT_THROW(plapoint::io::readPlyVertexPoint64(empty_record, header), std::invalid_argument);
+    EXPECT_THROW(plapoint::io::readPlyVertexPoint64(short_record, header), std::invalid_argument);
+}
+
 TEST(PlyStreamTest, SamplesBinaryVerticesWithoutLoadingWholeCloud)
 {
     const plapoint::test::TempFile temp_file(".ply");
@@ -125,4 +146,222 @@ TEST(PlyStreamTest, SamplesBinaryVerticesWithoutLoadingWholeCloud)
     EXPECT_FLOAT_EQ(points[0].x, 1.0f);
     EXPECT_FLOAT_EQ(points[1].x, 3.0f);
     EXPECT_EQ(points[1].r, 12);
+}
+
+TEST(PlyStreamTest, HighLevelVisitorStreamsChunksAndReportsProgress)
+{
+    const plapoint::test::TempFile temp_file(".ply");
+    const std::string path = temp_file.string();
+    writeStreamFixture(path);
+
+    plapoint::io::PlyVertexStreamOptions options;
+    options.chunkBytes = 54;
+    std::vector<std::uint64_t> progress;
+    options.progress = [&](std::uint64_t processed, std::uint64_t total)
+    {
+        EXPECT_EQ(total, 4u);
+        progress.push_back(processed);
+    };
+
+    std::vector<float> xs;
+    const auto status = plapoint::io::forEachBinaryPlyVertex(
+        path,
+        options,
+        [&](const char* record,
+            const plapoint::io::PlyVertexPoint64& point,
+            std::uint64_t index)
+        {
+            ASSERT_NE(record, nullptr);
+            EXPECT_EQ(index, xs.size());
+            xs.push_back(point.x);
+        });
+
+    EXPECT_EQ(status, plapoint::io::PlyVertexStreamStatus::Completed);
+    EXPECT_EQ(xs, (std::vector<float>{1.0f, 2.0f, 3.0f, 4.0f}));
+    EXPECT_EQ(progress, (std::vector<std::uint64_t>{2u, 4u}));
+}
+
+TEST(PlyStreamTest, HighLevelVisitorSupportsStopAndCancellation)
+{
+    const plapoint::test::TempFile temp_file(".ply");
+    const std::string path = temp_file.string();
+    writeStreamFixture(path);
+
+    plapoint::io::PlyVertexStreamOptions options;
+    const auto stopped = plapoint::io::forEachBinaryPlyVertex(
+        path,
+        options,
+        [](const char*, const plapoint::io::PlyVertexPoint64&, std::uint64_t index)
+        {
+            return index < 1;
+        });
+    EXPECT_EQ(stopped, plapoint::io::PlyVertexStreamStatus::StoppedByVisitor);
+
+    std::atomic_bool cancelled{true};
+    options.cancellationFlag = &cancelled;
+    int visits = 0;
+    const auto cancelled_status = plapoint::io::forEachBinaryPlyVertex(
+        path,
+        options,
+        [&](const char*, const plapoint::io::PlyVertexPoint64&, std::uint64_t)
+        {
+            ++visits;
+        });
+    EXPECT_EQ(cancelled_status, plapoint::io::PlyVertexStreamStatus::Cancelled);
+    EXPECT_EQ(visits, 0);
+}
+
+TEST(PlyStreamTest, HighLevelVisitorAcceptsAnEmptyVertexElement)
+{
+    const plapoint::test::TempFile temp_file(".ply");
+    const std::string path = temp_file.string();
+    {
+        std::ofstream output(path, std::ios::binary);
+        output << "ply\n"
+               << "format binary_little_endian 1.0\n"
+               << "element vertex 0\n"
+               << "property float x\n"
+               << "property float y\n"
+               << "property float z\n"
+               << "end_header\n";
+    }
+
+    int visits = 0;
+    const auto status = plapoint::io::forEachBinaryPlyVertex(
+        path,
+        {},
+        [&](const char*, const plapoint::io::PlyVertexPoint64&, std::uint64_t)
+        {
+            ++visits;
+        });
+
+    EXPECT_EQ(status, plapoint::io::PlyVertexStreamStatus::Completed);
+    EXPECT_EQ(visits, 0);
+}
+
+TEST(PlyStreamTest, HeaderRejectsMissingOrMalformedVertexCounts)
+{
+    const plapoint::test::TempFile temp_file(".ply");
+    const std::string path = temp_file.string();
+    const std::vector<std::string> malformed_elements{
+        "element vertex",
+        "element vertex nope",
+        "element vertex -1",
+        "element vertex 0 trailing"};
+
+    for (const std::string& element : malformed_elements)
+    {
+        {
+            std::ofstream output(path, std::ios::binary | std::ios::trunc);
+            output << "ply\n"
+                   << "format binary_little_endian 1.0\n"
+                   << element << "\n"
+                   << "property float x\n"
+                   << "property float y\n"
+                   << "property float z\n"
+                   << "end_header\n";
+        }
+
+        plapoint::io::PlyVertexStreamHeader header;
+        std::string error;
+        EXPECT_FALSE(plapoint::io::parseBinaryPlyVertexStreamHeader(path, &header, &error))
+            << element;
+        EXPECT_FALSE(error.empty()) << element;
+    }
+}
+
+TEST(PlyStreamTest, HeaderRejectsNonEmptyElementsBeforeVertices)
+{
+    const plapoint::test::TempFile temp_file(".ply");
+    const std::string path = temp_file.string();
+    {
+        std::ofstream output(path, std::ios::binary);
+        output << "ply\n"
+               << "format binary_little_endian 1.0\n"
+               << "element edge 1\n"
+               << "property uchar flag\n"
+               << "element vertex 1\n"
+               << "property float x\n"
+               << "property float y\n"
+               << "property float z\n"
+               << "end_header\n";
+    }
+
+    plapoint::io::PlyVertexStreamHeader header;
+    std::string error;
+    EXPECT_FALSE(plapoint::io::parseBinaryPlyVertexStreamHeader(path, &header, &error));
+    EXPECT_NE(error.find("first non-empty element"), std::string::npos);
+}
+
+TEST(PlyStreamTest, HighLevelVisitorPreservesDoublePrecision)
+{
+    const plapoint::test::TempFile temp_file(".ply");
+    const std::string path = temp_file.string();
+    const double coordinates[3]{
+        123456789.123456789,
+        -987654321.654321,
+        0.123456789012345};
+    {
+        std::ofstream output(path, std::ios::binary);
+        output << "ply\n"
+               << "format binary_little_endian 1.0\n"
+               << "element vertex 1\n"
+               << "property double x\n"
+               << "property double y\n"
+               << "property double z\n"
+               << "end_header\n";
+        output.write(reinterpret_cast<const char*>(coordinates), sizeof(coordinates));
+    }
+
+    int visits = 0;
+    const auto status = plapoint::io::forEachBinaryPlyVertex(
+        path,
+        {},
+        [&](const char*, const plapoint::io::PlyVertexPoint64& point, std::uint64_t index)
+        {
+            ++visits;
+            EXPECT_EQ(index, 0u);
+            EXPECT_DOUBLE_EQ(point.x, coordinates[0]);
+            EXPECT_DOUBLE_EQ(point.y, coordinates[1]);
+            EXPECT_DOUBLE_EQ(point.z, coordinates[2]);
+            EXPECT_NE(point.x, static_cast<double>(static_cast<float>(coordinates[0])));
+        });
+
+    EXPECT_EQ(status, plapoint::io::PlyVertexStreamStatus::Completed);
+    EXPECT_EQ(visits, 1);
+}
+
+TEST(PlyStreamTest, HighLevelVisitorDoesNotMaterializeChunkMetadata)
+{
+    const plapoint::test::TempFile temp_file(".ply");
+    const std::string path = temp_file.string();
+    {
+        std::ofstream output(path, std::ios::binary);
+        output << "ply\n"
+               << "format binary_little_endian 1.0\n"
+               << "element vertex 1000000000\n"
+               << "property float x\n"
+               << "property float y\n"
+               << "property float z\n"
+               << "end_header\n";
+        const float point[3]{1.0f, 2.0f, 3.0f};
+        output.write(reinterpret_cast<const char*>(point), sizeof(point));
+    }
+
+    plapoint::io::PlyVertexStreamOptions options;
+    options.chunkBytes = static_cast<int>(sizeof(float) * 3);
+    int visits = 0;
+    const auto status = plapoint::io::forEachBinaryPlyVertex(
+        path,
+        options,
+        [&](const char*, const plapoint::io::PlyVertexPoint64& point, std::uint64_t index)
+        {
+            ++visits;
+            EXPECT_EQ(index, 0u);
+            EXPECT_FLOAT_EQ(point.x, 1.0f);
+            return false;
+        });
+
+    EXPECT_EQ(status, plapoint::io::PlyVertexStreamStatus::StoppedByVisitor);
+    EXPECT_EQ(visits, 1);
 }

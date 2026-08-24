@@ -2,12 +2,15 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <limits>
 #include <memory>
@@ -113,6 +116,37 @@ struct PlyVertexPoint
     std::uint8_t r = 200;
     std::uint8_t g = 200;
     std::uint8_t b = 200;
+};
+
+/// Precision-preserving decoded vertex for streaming large or georeferenced PLY files.
+/// PlyVertexPoint remains available for callers that explicitly want float output.
+struct PlyVertexPoint64
+{
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    bool hasNormal = false;
+    double nx = 0.0;
+    double ny = 0.0;
+    double nz = 1.0;
+    std::uint8_t r = 200;
+    std::uint8_t g = 200;
+    std::uint8_t b = 200;
+};
+
+enum class PlyVertexStreamStatus
+{
+    Completed,
+    Cancelled,
+    StoppedByVisitor
+};
+
+struct PlyVertexStreamOptions
+{
+    int chunkBytes = 8 * 1024 * 1024;
+    const std::atomic_bool* cancellationFlag = nullptr;
+    std::function<void(std::uint64_t processedVertices,
+                       std::uint64_t totalVertices)> progress;
 };
 
 namespace detail {
@@ -1038,6 +1072,8 @@ inline bool parseBinaryPlyVertexStreamHeader(const std::string& path,
     }
 
     bool inVertexElement = false;
+    bool sawVertexElement = false;
+    bool sawNonEmptyElementBeforeVertex = false;
     bool sawEndHeader = false;
     while (std::getline(file, line))
     {
@@ -1064,11 +1100,58 @@ inline bool parseBinaryPlyVertexStreamHeader(const std::string& path,
         else if (first == "element")
         {
             std::string elementName;
-            iss >> elementName;
+            std::string countToken;
+            std::string trailingToken;
+            if (!(iss >> elementName >> countToken) || (iss >> trailingToken))
+            {
+                if (errorMsg)
+                {
+                    *errorMsg = "PLY element must declare a name and one non-negative count";
+                }
+                return false;
+            }
+
+            std::uint64_t elementCount = 0;
+            const auto parsed = std::from_chars(
+                countToken.data(),
+                countToken.data() + countToken.size(),
+                elementCount);
+            if (parsed.ec != std::errc() ||
+                parsed.ptr != countToken.data() + countToken.size())
+            {
+                if (errorMsg)
+                {
+                    *errorMsg = "PLY element count is not a non-negative integer";
+                }
+                return false;
+            }
+
             inVertexElement = elementName == "vertex";
             if (inVertexElement)
             {
-                iss >> header->vertexCount;
+                if (sawVertexElement)
+                {
+                    if (errorMsg)
+                    {
+                        *errorMsg = "PLY header contains more than one vertex element";
+                    }
+                    return false;
+                }
+                if (sawNonEmptyElementBeforeVertex)
+                {
+                    if (errorMsg)
+                    {
+                        *errorMsg =
+                            "PLY vertex streaming requires vertex to be the first non-empty element";
+                    }
+                    return false;
+                }
+                sawVertexElement = true;
+                header->vertexCount = elementCount;
+            }
+            else if (!sawVertexElement && elementCount > 0)
+            {
+                sawNonEmptyElementBeforeVertex = true;
             }
         }
         else if (inVertexElement && first == "property")
@@ -1118,8 +1201,8 @@ inline bool parseBinaryPlyVertexStreamHeader(const std::string& path,
 
     header->valid = header->binaryLittleEndian
         && sawEndHeader
+        && sawVertexElement
         && header->dataStartOffset > 0
-        && header->vertexCount > 0
         && header->vertexStride > 0
         && header->xProperty >= 0
         && header->yProperty >= 0
@@ -1134,9 +1217,9 @@ inline bool parseBinaryPlyVertexStreamHeader(const std::string& path,
         {
             *errorMsg = "PLY header is missing end_header";
         }
-        else if (header->vertexCount == 0)
+        else if (!sawVertexElement)
         {
-            *errorMsg = "PLY header is missing a positive vertex count";
+            *errorMsg = "PLY header is missing a vertex element";
         }
         else if (header->vertexStride <= 0)
         {
@@ -1295,7 +1378,145 @@ inline PlyVertexPoint readPlyVertexPoint(const char* record,
 inline PlyVertexPoint readPlyVertexPoint(const std::vector<char>& record,
                                          const PlyVertexStreamHeader& header)
 {
+    if (!header.valid || header.vertexStride <= 0 ||
+        record.size() < static_cast<std::size_t>(header.vertexStride))
+    {
+        throw std::invalid_argument("PLY vertex record is shorter than the declared stride");
+    }
     return readPlyVertexPoint(record.data(), header);
+}
+
+inline PlyVertexPoint64 readPlyVertexPoint64(const char* record,
+                                             const PlyVertexStreamHeader& header)
+{
+    if (!record || !header.valid)
+    {
+        throw std::invalid_argument("PLY vertex record or stream header is invalid");
+    }
+
+    PlyVertexPoint64 point;
+    point.x = detail::readPlyVertexScalarAsDouble(record, header.properties[header.xProperty]);
+    point.y = detail::readPlyVertexScalarAsDouble(record, header.properties[header.yProperty]);
+    point.z = detail::readPlyVertexScalarAsDouble(record, header.properties[header.zProperty]);
+    if (header.hasColors())
+    {
+        point.r = detail::readPlyVertexColorAsByte(record, header.properties[header.redProperty]);
+        point.g = detail::readPlyVertexColorAsByte(record, header.properties[header.greenProperty]);
+        point.b = detail::readPlyVertexColorAsByte(record, header.properties[header.blueProperty]);
+    }
+    if (header.hasNormals())
+    {
+        point.hasNormal = true;
+        point.nx = detail::readPlyVertexScalarAsDouble(record, header.properties[header.nxProperty]);
+        point.ny = detail::readPlyVertexScalarAsDouble(record, header.properties[header.nyProperty]);
+        point.nz = detail::readPlyVertexScalarAsDouble(record, header.properties[header.nzProperty]);
+    }
+    return point;
+}
+
+inline PlyVertexPoint64 readPlyVertexPoint64(const std::vector<char>& record,
+                                             const PlyVertexStreamHeader& header)
+{
+    if (!header.valid || header.vertexStride <= 0 ||
+        record.size() < static_cast<std::size_t>(header.vertexStride))
+    {
+        throw std::invalid_argument("PLY vertex record is shorter than the declared stride");
+    }
+    return readPlyVertexPoint64(record.data(), header);
+}
+
+/// Visit a binary little-endian PLY without materializing the complete cloud.
+/// The visitor receives the raw record, decoded common fields, and absolute vertex index.
+/// The raw-record pointer remains valid only for the duration of the visitor call.
+/// A bool-returning visitor may return false to stop; a void-returning visitor always continues.
+template <typename Visitor>
+PlyVertexStreamStatus forEachBinaryPlyVertex(const std::string& path,
+                                             const PlyVertexStreamOptions& options,
+                                             Visitor&& visitor)
+{
+    using VisitorResult =
+        std::invoke_result_t<Visitor&, const char*, const PlyVertexPoint64&, std::uint64_t>;
+    static_assert(std::is_same_v<VisitorResult, void> || std::is_same_v<VisitorResult, bool>,
+                  "PLY stream visitor must return void or bool");
+
+    PlyVertexStreamHeader header;
+    std::string error;
+    if (!parseBinaryPlyVertexStreamHeader(path, &header, &error))
+    {
+        throw std::runtime_error(error.empty()
+                                     ? "Cannot parse PLY vertex stream: " + path
+                                     : error);
+    }
+
+    if (options.cancellationFlag &&
+        options.cancellationFlag->load(std::memory_order_relaxed))
+    {
+        return PlyVertexStreamStatus::Cancelled;
+    }
+
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+    {
+        throw std::runtime_error("Cannot open PLY file: " + path);
+    }
+
+    const int safe_chunk_bytes = std::max(options.chunkBytes, header.vertexStride);
+    const std::uint64_t chunk_vertices = std::max<std::uint64_t>(
+        1,
+        static_cast<std::uint64_t>(safe_chunk_bytes) /
+            static_cast<std::uint64_t>(header.vertexStride));
+    std::vector<char> buffer;
+    std::uint64_t processed = 0;
+    for (std::uint64_t start = 0; start < header.vertexCount;)
+    {
+        const PlyVertexChunk chunk{
+            start,
+            std::min(chunk_vertices, header.vertexCount - start)};
+        if (options.cancellationFlag &&
+            options.cancellationFlag->load(std::memory_order_relaxed))
+        {
+            return PlyVertexStreamStatus::Cancelled;
+        }
+        if (!readPlyVertexChunk(file, header, chunk, &buffer, &error))
+        {
+            throw std::runtime_error(error.empty()
+                                         ? "Failed to read PLY vertex stream: " + path
+                                         : error);
+        }
+
+        for (std::uint64_t local = 0; local < chunk.vertexCount; ++local)
+        {
+            if (options.cancellationFlag &&
+                options.cancellationFlag->load(std::memory_order_relaxed))
+            {
+                return PlyVertexStreamStatus::Cancelled;
+            }
+            const char* record = buffer.data() +
+                static_cast<std::size_t>(local) *
+                    static_cast<std::size_t>(header.vertexStride);
+            const PlyVertexPoint64 point = readPlyVertexPoint64(record, header);
+            const std::uint64_t absolute_index = chunk.startVertex + local;
+            if constexpr (std::is_same_v<VisitorResult, bool>)
+            {
+                if (!std::invoke(visitor, record, point, absolute_index))
+                {
+                    return PlyVertexStreamStatus::StoppedByVisitor;
+                }
+            }
+            else
+            {
+                std::invoke(visitor, record, point, absolute_index);
+            }
+            ++processed;
+        }
+
+        if (options.progress)
+        {
+            options.progress(processed, header.vertexCount);
+        }
+        start += chunk.vertexCount;
+    }
+    return PlyVertexStreamStatus::Completed;
 }
 
 inline std::vector<PlyVertexPoint> sampleBinaryPlyVertices(const std::string& path,

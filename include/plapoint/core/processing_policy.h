@@ -52,13 +52,18 @@ struct ProcessingReport
     ProcessingNeighborBackend neighborBackend = ProcessingNeighborBackend::None;
     bool usedFallback = false;
     std::string fallbackReason;
+    /// Explains a normal Auto policy choice. Unlike fallbackReason, this is not an error.
+    std::string selectionReason;
 };
 
-/// Legacy performance hints and indexed-neighbor-search thresholds.
+/// Centralized, tunable Auto-dispatch and indexed-neighbor-search thresholds.
 struct ProcessingPolicy
 {
-    /// Legacy compatibility hint. Strict high-level Auto dispatch does not use this threshold.
+    /// Minimum point count for transfer-bound, approximately linear accelerator work.
     static constexpr std::size_t autoGpuPointThreshold = 4096;
+
+    /// Do not accelerate tiny neighborhood problems even when k makes the product look large.
+    static constexpr std::size_t autoNeighborhoodMinPointCount = 256;
 
     /// Minimum query-by-point work product before KNN builds the uniform-grid index.
     static constexpr std::size_t indexedKnnWorkThreshold = 4096;
@@ -66,6 +71,21 @@ struct ProcessingPolicy
     static constexpr bool autoPrefersGpu(std::size_t point_count) noexcept
     {
         return point_count >= autoGpuPointThreshold;
+    }
+
+    /// Decide whether CPU-owned neighborhood work is large enough to amortize transfers.
+    static constexpr bool autoPrefersNeighborhoodGpu(std::size_t point_count,
+                                                     std::size_t neighbors) noexcept
+    {
+        if (point_count < autoNeighborhoodMinPointCount || neighbors == 0)
+        {
+            return false;
+        }
+        if (point_count > static_cast<std::size_t>(-1) / neighbors)
+        {
+            return true;
+        }
+        return point_count * neighbors >= indexedKnnWorkThreshold;
     }
 };
 

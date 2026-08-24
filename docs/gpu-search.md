@@ -28,11 +28,11 @@ queries far outside a thin cloud.
 
 ## Processing policy and reports
 
-CPU-owned high-level APIs use the strict `ProcessingDevice::Auto` order CUDA, OpenCL,
-then CPU. Point count does not change this order. `ProcessingPolicy::autoGpuPointThreshold`
-is retained only as a source-compatibility performance hint and is not consulted by
-high-level Auto dispatch. `indexedKnnWorkThreshold` remains a query-by-point work-product
-threshold internal to CUDA KNN implementation selection.
+CPU-owned high-level APIs first apply a transfer-amortization policy. Linear work below
+`ProcessingPolicy::autoGpuPointThreshold` stays on CPU; KNN-style work uses
+`autoPrefersNeighborhoodGpu(pointCount, neighbors)`. Work above those boundaries tries
+CUDA, OpenCL, then CPU. `indexedKnnWorkThreshold` also remains the query-by-point
+work-product threshold used by CUDA KNN implementation selection.
 
 `ProcessingReport` exposes:
 
@@ -41,11 +41,13 @@ threshold internal to CUDA KNN implementation selection.
 - `neighborBackend`
 - `usedFallback`
 - `fallbackReason`
+- `selectionReason`
 
 Explicit `CUDA` or `OpenCL` requests never silently retry another backend. `GPU` is an
 alias for `CUDA`. Auto records each unavailable, unsupported, or failed backend in
 `fallbackReason`; a successful OpenCL call after CUDA failure therefore reports OpenCL
-as `actualDevice` with `usedFallback == true`.
+as `actualDevice` with `usedFallback == true`. A deliberate small-work CPU choice is not
+a fallback and is explained by `selectionReason`.
 
 ## OpenCL device selection
 

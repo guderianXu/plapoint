@@ -5,7 +5,7 @@ CUDA/OpenCL-accelerated point cloud processing library built on [PlaMatrix](http
 ## Features
 
 ### Core
-- **PointCloud\<Scalar, Dev\>** — Nx3 point cloud with optional normals, colors, intensities, texture coordinates, mesh/material metadata, and named scalar fields. CPU/GPU transfer uses `toGpu()`/`toCpu()`, and `pointsCpu()` provides a cached CPU point view for GPU clouds.
+- **PointCloud\<Scalar, Dev\>** — Nx3 point cloud with optional normals, colors, intensities, texture coordinates, mesh/material metadata, and named scalar fields. Same-device copy setters use bulk matrix copies, CPU/GPU transfer uses `toGpu()`/`toCpu()`, and `pointsCpu()` provides a cached CPU point view for GPU clouds.
 
 ### Spatial Indexing
 - **KdTree\<Scalar, Dev\>** — 3D kd-tree with KNN search (priority queue) and radius search. Call `build()` after `setInputCloud()`; searches throw a clear exception if the tree has not been built.
@@ -34,10 +34,11 @@ dropping them.
 ### Mesh
 - **MarchingCubes** — CPU callback extraction plus deterministic CUDA extraction from a device scalar field
 - **HeightGrid** — CPU/CUDA/OpenCL terrain aggregation with mean/min/max elevation and multi-pass hole fill
-- **PoissonReconstruction** — deterministic symmetric CSR assembly, PlaMatrix Jacobi-PCG, and MC extraction
+- **PoissonReconstruction** — deterministic 2:1-balanced adaptive octree, symmetric CSR assembly, PlaMatrix Jacobi-PCG, single-pass field sampling, and MC extraction
 
 ### I/O
-- **PLY** — ASCII read/write with positions and optional normals
+- **PLY** — ASCII/binary read/write plus chunked binary vertex traversal with cancellation and progress callbacks
+- **OBJ** — geometry/material read/write plus bounded-memory line-record streaming with non-owning token views
 - **XYZ** — strict-by-default text XYZ reader. Strict rows must be exactly `x y z` or `x y z r g b`; malformed rows throw with file path and line number. Pass `io::XyzReadMode::Permissive` to skip bad legacy rows and keep the older trailing-column tolerance.
 
 ## Accelerator Backends
@@ -51,7 +52,7 @@ was built with CUDA support:
 - **Device normal processing** — normal estimation uses batched symmetric eigensolves; smoothing and viewpoint orientation remain on device for supported GPU inputs.
 - **VoxelGrid CUDA downsampling** (`src/voxel_grid_gpu.cu`) — GPU path computes voxel keys, sorts them, reduces centroids, and preserves deterministic sorted voxel-key output.
 - **GPU mesh primitives** — `gpu::marchingCubes()` returns a GPU triangle soup directly from a device field. `buildHeightGridDeviceAsync()` aggregates into a device grid using explicit bounds, and `fillHolesAsync()` keeps multi-pass fill on the producing stream until one final download.
-- **Poisson PCG** — CPU, CUDA, and OpenCL solver selections share the same deterministic symmetric CSR. A scale-aware anchor per connected component makes the system SPD. Explicit accelerator non-convergence throws; `Auto` tries CUDA, OpenCL, then CPU and continues from the latest available iterate. Field evaluation and MC extraction remain CPU, so `PoissonProcessingReport::solverDevice` reports the PCG device while `actualDevice` remains CPU for the complete chain.
+- **Poisson PCG** — CPU, CUDA, and OpenCL solver selections share the same deterministic symmetric CSR. A scale-aware anchor per connected component makes the system SPD. Explicit accelerator non-convergence throws; `Auto` tries CUDA, OpenCL, then CPU and continues from the latest available iterate. The extraction grid is evaluated once and reused for range selection and Marching Cubes; face orientation builds one CPU kd-tree instead of scanning every input point per face. Field evaluation and MC extraction remain CPU, so `PoissonProcessingReport::solverDevice` reports the PCG device while `actualDevice` remains CPU for the complete chain.
 - **ICP GPU path** (`src/icp_gpu.cu`) — `IterativeClosestPoint<Scalar, GPU>` keeps source/target point buffers on GPU, reads the initial source buffer directly without a startup device-to-device copy, computes correspondences with a cached finite-radius target spatial grid or the shared-memory target-tiling fallback, uses precomputed finite-radius tile bounding-box skips and per-candidate axis pruning on the fallback path, accumulates centroid/covariance/residual stats with block-level reductions, derives degeneracy flags from covariance invariants, fuses stats reduction with device-side step-transform solving through a CUDA quaternion/Jacobi solver, applies point transforms through persistent GPU scratch buffers, initializes and asynchronously accumulates the final 4x4 transform on GPU, and writes terminal-iteration transforms directly into a plain non-input caller output cloud when possible. Reduced stats, step deltas, and metric checks still synchronize to CPU, while `getFinalTransformationDevice()` exposes the final transform without forcing callers through the CPU copy and the legacy CPU `getFinalTransformation()` materializes that copy lazily. The stats helper can skip per-source correspondence index output when callers only need aggregate ICP moments, persistent workspaces and GPU buffers avoid repeated reduction, target spatial-grid, target-tile bound, step-solver, transform-buffer, point-scratch, output-allocation, and final output-copy overhead across repeated `align()` calls on the same ICP object and plain same-shaped output cloud, and `alignGpu()` skips transformed final-stats scans on non-terminal iterations. `setComputeFinalMetrics(false)` is an opt-in throughput mode that skips the terminal post-transform fitness/RMSE scan when callers only need the transform or aligned output. Input-aliased, attributed, or metadata-bearing output clouds still use safe scratch/copy or replacement paths so stale normals, colors, intensities, named scalar fields, mesh, material, or texture data cannot leak into aligned-point results. PCL-style robust ICP options that need correspondence rejectors currently preserve GPU input/output types through a CPU-staged semantic fallback; the default CUDA fast path remains unchanged for the base ICP configuration.
 - **Compatibility fallbacks** — KNN/SOR requests above the indexed `k` limit and pathological grid queries use documented fallback paths.
 - **VoxelGrid CPU hot path** — CPU path uses hash aggregation and sorted voxel keys to keep deterministic centroid order.
@@ -72,23 +73,42 @@ VoxelGrid performs exact attribute aggregation, so that path is a partial offloa
 
 CPU-owned convenience APIs expose `ProcessingReport`, including `requestedDevice`,
 `actualDevice` (`usedDevice` remains a compatibility alias), `neighborBackend`,
-`usedFallback`, and `fallbackReason`. `ProcessingDevice::Auto` always tries CUDA,
-then OpenCL, then CPU, independent of point count. An explicit `CUDA` or `OpenCL`
-request never silently falls back. `ProcessingDevice::GPU` remains a compatibility
-alias for `CUDA`.
+`usedFallback`, `fallbackReason`, and `selectionReason`. `ProcessingDevice::Auto`
+keeps small transfer-bound work on CPU, uses a point-count threshold for linear work,
+and a point-count-by-neighbor threshold for KNN-style work. Larger calls try CUDA,
+then OpenCL, then CPU; attributed voxel clouds skip the partial OpenCL path in Auto
+mode because exact attribute aggregation is still CPU-side. An explicit `CUDA` or
+`OpenCL` request never silently falls back. `ProcessingDevice::GPU` remains a
+compatibility alias for `CUDA`.
 See [GPU search and selection](docs/gpu-search.md) and [GPU mesh processing](docs/gpu-mesh.md)
 for limits and lifetime rules.
 
 ## Requirements
 
 - C++17
-- CMake ≥ 3.18
+- CMake ≥ 3.21
 - [PlaMatrix](https://github.com/guderianXu/plamatrix) (math backend)
 - CUDA Toolkit (optional, for CUDA kernels)
 - OpenCL SDK/loader and a GPU OpenCL driver (optional, for OpenCL C 1.2 kernels)
 - Google Test (for tests)
 
 ## Build
+
+Set `PLAPOINT_DEPS_PREFIX` to a CMake prefix list containing PlaMatrix and, for the
+test-enabled `*-release` presets, Google Test. Benchmark-only presets need only
+PlaMatrix. Use the checked-in presets for reproducible CPU, OpenCL, CUDA, and
+instrumentation-free benchmark builds:
+
+```bash
+export PLAPOINT_DEPS_PREFIX="/path/to/plamatrix/install;/path/to/gtest/install"
+cmake --preset cpu-release
+cmake --build --preset cpu-release
+ctest --preset cpu-release
+```
+
+PowerShell uses
+`$env:PLAPOINT_DEPS_PREFIX = 'C:\path\to\plamatrix\install;C:\path\to\gtest\install'`.
+The equivalent manual build remains available:
 
 ```bash
 # Build and install plamatrix first
@@ -125,11 +145,16 @@ PlaPoint includes a dependency-free benchmark executable for local performance b
 ```bash
 cmake -S . -B build-bench \
   -DPLAPOINT_BUILD_BENCHMARKS=ON \
-  -DPLAPOINT_BUILD_TESTS=ON \
+  -DPLAPOINT_BUILD_TESTS=OFF \
   -DCMAKE_PREFIX_PATH=/path/to/plamatrix/install
 cmake --build build-bench -j$(nproc)
-./build-bench/benchmarks/plapoint_benchmarks --points 20000 --iterations 3
+./build-bench/benchmarks/plapoint_benchmarks --points 20000 --iterations 7
 ```
+
+Performance baselines must use a benchmark-only build. Test-enabled libraries contain
+deliberate ICP instrumentation for white-box assertions; CMake warns when tests and
+benchmarks share a build tree. The `cpu-benchmark` and `cuda-benchmark` presets configure
+the clean baseline mode.
 
 ICP benchmark rows use 512 points and 3 ICP iterations by default. Use `--icp-points`,
 `--icp-max-iterations`, `--skip-cpu-icp`, and `--skip-icp-identity` to stress larger
@@ -139,7 +164,7 @@ baseline:
 ```bash
 ./build-bench/benchmarks/plapoint_benchmarks \
   --points 1000 \
-  --iterations 3 \
+  --iterations 7 \
   --icp-points 10000 \
   --icp-max-iterations 3 \
   --skip-cpu-icp \
@@ -149,10 +174,12 @@ baseline:
 The benchmark prints CSV columns:
 
 ```text
-benchmark,points,iterations,best_ms
+benchmark,points,iterations,best_ms,median_ms,p95_ms,stddev_ms,cv
 ```
 
-Each benchmark case runs one unmeasured warm-up before reporting the best timed iteration.
+Each benchmark case runs one unmeasured warm-up, retains the best value for backward
+compatibility, and uses median latency as the primary regression metric. It also reports
+nearest-rank p95, population standard deviation, and coefficient of variation.
 CUDA benchmark rows are emitted only when PlaPoint is built with `PLAPOINT_WITH_CUDA=ON` and a usable CUDA device is available.
 Use `--search-features-only` to run KNN brute-force/indexed comparisons, radius
 counts, normal estimation/smoothing, SOR, and RadiusOR without the ICP suite.
@@ -162,11 +189,13 @@ Use `--mesh-only` to emit `marching_cubes_field`, `height_grid_fill`,
 ```bash
 ./build-bench/benchmarks/plapoint_benchmarks \
   --points 4096 --poisson-points 8192 --poisson-depth 6 \
-  --iterations 3 --mesh-only
+  --iterations 7 --mesh-only
 ```
 
 `--poisson-points` and `--poisson-depth` are independent from the general point count so
 the PCG row can exercise a production-sized adaptive octree. Their defaults are 8192 and 6.
+For the uniform sphere fixture, keep at least `4^depth` points; undersampled combinations are
+rejected before timing with guidance to increase the point count or reduce the depth.
 
 For repeatable local baseline artifacts, use the wrapper script. It writes CSV,
 JSON, and Markdown into the selected build output directory:
@@ -189,7 +218,8 @@ Compare two baseline JSON files with:
 ```
 
 The comparison script reports regressions, improvements, added rows, and missing
-rows. `scripts/benchmark_gate_config.json` stores the default regression and
+rows. New baselines compare `median_ms`; comparisons involving a legacy four-column
+baseline consistently fall back to `best_ms`. `scripts/benchmark_gate_config.json` stores the default regression and
 improvement thresholds plus any known noisy benchmark names that should be
 reported as `ignored`. Add `--fail-on-regression` when using it as a CI gate.
 
@@ -328,6 +358,15 @@ auto [verts, faces] = pr.reconstruct();
 // PLY I/O
 auto ply_cloud = io::readPly<float>("input.ply");
 io::writePly("output.ply", *ply_cloud);
+
+// Stream a large binary PLY without materializing the complete cloud.
+io::PlyVertexStreamOptions stream_options;
+stream_options.chunkBytes = 8 * 1024 * 1024;
+io::forEachBinaryPlyVertex(
+    "large.ply", stream_options,
+    [](const char*, const io::PlyVertexPoint64& point, std::uint64_t index) {
+        processPoint(index, point.x, point.y, point.z);
+    });
 
 // XYZ I/O: strict by default, permissive for legacy files with bad rows.
 auto xyz_cloud = io::readXyz<float>("input.xyz");

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import platform
 import shlex
 import subprocess
@@ -13,6 +14,20 @@ import sys
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
+
+
+LEGACY_CSV_HEADER = ["benchmark", "points", "iterations", "best_ms"]
+STATISTICAL_CSV_HEADER = [
+    "benchmark",
+    "points",
+    "iterations",
+    "best_ms",
+    "median_ms",
+    "p95_ms",
+    "stddev_ms",
+    "cv",
+]
+DEFAULT_BENCHMARK_ITERATIONS = 7
 
 
 def repo_root() -> Path:
@@ -43,20 +58,32 @@ def resolve_user_path(path: Path, root: Path) -> Path:
 
 
 def find_benchmark_exe(root: Path) -> Path:
-    preferred = [
-        root / "build-abc-cuda" / "benchmarks" / "plapoint_benchmarks",
-        root / "build-abc-cpu" / "benchmarks" / "plapoint_benchmarks",
-        root / "build-cuda" / "benchmarks" / "plapoint_benchmarks",
-        root / "build-cpu" / "benchmarks" / "plapoint_benchmarks",
-        root / "build" / "benchmarks" / "plapoint_benchmarks",
+    executable_name = (
+        "plapoint_benchmarks.exe"
+        if platform.system() == "Windows"
+        else "plapoint_benchmarks"
+    )
+    preferred_directories = [
+        root / "build" / "cuda-benchmark" / "benchmarks",
+        root / "build" / "cpu-benchmark" / "benchmarks",
+        root / "build-abc-cuda" / "benchmarks",
+        root / "build-abc-cpu" / "benchmarks",
+        root / "build-cuda" / "benchmarks",
+        root / "build-cpu" / "benchmarks",
+        root / "build" / "benchmarks",
     ]
-    for candidate in preferred:
+    for directory in preferred_directories:
+        candidate = directory / executable_name
         if candidate.is_file():
             return candidate
 
-    for candidate in sorted(root.glob("build*/benchmarks/plapoint_benchmarks")):
-        if candidate.is_file():
-            return candidate
+    for pattern in (
+        f"build/*/benchmarks/{executable_name}",
+        f"build*/benchmarks/{executable_name}",
+    ):
+        for candidate in sorted(root.glob(pattern)):
+            if candidate.is_file():
+                return candidate
 
     raise FileNotFoundError(
         "could not find plapoint_benchmarks; build it first or pass --benchmark-exe"
@@ -70,18 +97,23 @@ def parse_benchmark_csv(stdout: str) -> list[dict[str, object]]:
     except StopIteration as exc:
         raise ValueError("benchmark produced no CSV output") from exc
 
-    expected_header = ["benchmark", "points", "iterations", "best_ms"]
-    if header != expected_header:
-        raise ValueError(f"unexpected CSV header {header!r}, expected {expected_header!r}")
+    if header not in (LEGACY_CSV_HEADER, STATISTICAL_CSV_HEADER):
+        raise ValueError(
+            f"unexpected CSV header {header!r}, expected {LEGACY_CSV_HEADER!r} "
+            f"or {STATISTICAL_CSV_HEADER!r}"
+        )
+    has_statistics = header == STATISTICAL_CSV_HEADER
 
     rows: list[dict[str, object]] = []
     for line_number, row in enumerate(reader, start=2):
         if not row:
             continue
-        if len(row) != 4:
-            raise ValueError(f"line {line_number}: expected 4 CSV columns, got {len(row)}")
+        if len(row) != len(header):
+            raise ValueError(
+                f"line {line_number}: expected {len(header)} CSV columns, got {len(row)}"
+            )
 
-        benchmark, points, iterations, best_ms = row
+        benchmark, points, iterations, best_ms = row[:4]
         if points == "skipped":
             rows.append(
                 {
@@ -92,13 +124,44 @@ def parse_benchmark_csv(stdout: str) -> list[dict[str, object]]:
             )
             continue
 
+        try:
+            parsed_points = int(points)
+            parsed_iterations = int(iterations)
+        except ValueError as exc:
+            raise ValueError(f"line {line_number}: points and iterations must be integers") from exc
+        if parsed_points <= 0 or parsed_iterations <= 0:
+            raise ValueError(f"line {line_number}: points and iterations must be positive")
+
+        timing_fields = {"best_ms": best_ms}
+        if has_statistics:
+            timing_fields.update(dict(zip(STATISTICAL_CSV_HEADER[4:], row[4:])))
+
+        parsed_timings: dict[str, float] = {}
+        for field, value in timing_fields.items():
+            try:
+                parsed_value = float(value)
+            except ValueError as exc:
+                raise ValueError(f"line {line_number}: {field} must be numeric") from exc
+            if not math.isfinite(parsed_value) or parsed_value < 0.0:
+                raise ValueError(f"line {line_number}: {field} must be finite and non-negative")
+            parsed_timings[field] = parsed_value
+
+        if has_statistics and not (
+            parsed_timings["best_ms"]
+            <= parsed_timings["median_ms"]
+            <= parsed_timings["p95_ms"]
+        ):
+            raise ValueError(
+                f"line {line_number}: expected best_ms <= median_ms <= p95_ms"
+            )
+
         rows.append(
             {
                 "benchmark": benchmark,
                 "status": "measured",
-                "points": int(points),
-                "iterations": int(iterations),
-                "best_ms": float(best_ms),
+                "points": parsed_points,
+                "iterations": parsed_iterations,
+                **parsed_timings,
             }
         )
     return rows
@@ -115,20 +178,38 @@ def write_markdown(path: Path, metadata: dict[str, object], rows: list[dict[str,
         f"- Generated UTC: `{metadata['generated_at_utc']}`",
         f"- Benchmark executable: `{metadata['benchmark_exe']}`",
         f"- Command: `{shlex.join(str(part) for part in command)}`",
-        "",
-        "| Benchmark | Status | Points | Iterations | Best ms | Reason |",
-        "| --- | --- | ---: | ---: | ---: | --- |",
+        f"- Primary comparison metric: `{metadata['primary_metric']}`",
     ]
+    if metadata["primary_metric"] == "median_ms":
+        lines.append(
+            "- Statistics: one untimed warmup; nearest-rank p95; population standard deviation and CV."
+        )
+    lines.extend(
+        [
+            "",
+            "| Benchmark | Status | Points | Iterations | Median ms | p95 ms | Best ms | Stddev ms | CV | Reason |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        ]
+    )
 
     for row in rows:
         if row["status"] == "skipped":
             lines.append(
-                f"| `{row['benchmark']}` | skipped |  |  |  | {row.get('reason', '')} |"
+                f"| `{row['benchmark']}` | skipped |  |  |  |  |  |  |  | {row.get('reason', '')} |"
             )
         else:
+            median = row.get("median_ms")
+            p95 = row.get("p95_ms")
+            stddev = row.get("stddev_ms")
+            cv = row.get("cv")
             lines.append(
                 f"| `{row['benchmark']}` | measured | {row['points']} | "
-                f"{row['iterations']} | {row['best_ms']:.6f} |  |"
+                f"{row['iterations']} | "
+                f"{'' if median is None else f'{median:.6f}'} | "
+                f"{'' if p95 is None else f'{p95:.6f}'} | "
+                f"{row['best_ms']:.6f} | "
+                f"{'' if stddev is None else f'{stddev:.6f}'} | "
+                f"{'' if cv is None else f'{cv:.6f}'} |  |"
             )
 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -149,7 +230,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for CSV/JSON/Markdown artifacts. Defaults to build/benchmark_baseline.",
     )
     parser.add_argument("--points", type=positive_int, default=1000)
-    parser.add_argument("--iterations", type=positive_int, default=1)
+    parser.add_argument(
+        "--iterations",
+        type=positive_int,
+        default=DEFAULT_BENCHMARK_ITERATIONS,
+        help=f"Measured repetitions per benchmark after warmup (default: {DEFAULT_BENCHMARK_ITERATIONS}).",
+    )
     parser.add_argument("--icp-points", type=positive_int, default=1000)
     parser.add_argument("--icp-max-iterations", type=positive_int, default=1)
     parser.add_argument("--skip-cpu-icp", action="store_true")
@@ -242,8 +328,12 @@ def main(argv: list[str]) -> int:
     except (TypeError, ValueError) as exc:
         parse_error = str(exc)
 
+    output_header = completed.stdout.splitlines()[0].split(",") if completed.stdout else []
+    uses_statistical_csv = output_header == STATISTICAL_CSV_HEADER
     metadata: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "csv_schema_version": 2 if uses_statistical_csv else 1,
+        "primary_metric": "median_ms" if uses_statistical_csv else "best_ms",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "repo_root": str(root),
         "benchmark_exe": str(benchmark_exe),
@@ -274,6 +364,13 @@ def main(argv: list[str]) -> int:
         "rows": rows,
         "stderr": completed.stderr,
     }
+    if uses_statistical_csv:
+        metadata["timing_statistics"] = {
+            "warmup_iterations": 1,
+            "p95_method": "nearest_rank",
+            "stddev_method": "population",
+            "cv_definition": "population_stddev / arithmetic_mean",
+        }
     if parse_error is not None:
         metadata["parse_error"] = parse_error
 

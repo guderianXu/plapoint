@@ -9,8 +9,7 @@ void synchronizeCudaBenchmarkDevice();
 class ScopedCudaBenchmarkSynchronization
 {
 public:
-    explicit ScopedCudaBenchmarkSynchronization(bool enabled)
-        : _previous(g_synchronize_cuda_after_benchmark_iteration)
+    explicit ScopedCudaBenchmarkSynchronization(bool enabled) : _previous(g_synchronize_cuda_after_benchmark_iteration)
     {
         g_synchronize_cuda_after_benchmark_iteration = enabled;
     }
@@ -28,7 +27,7 @@ private:
 struct Options
 {
     int points = 20000;
-    int iterations = 3;
+    int iterations = 7;
     int icp_points = 512;
     int icp_max_iterations = 3;
     int poisson_points = 8192;
@@ -38,6 +37,7 @@ struct Options
     bool search_features_only = false;
     bool mesh_only = false;
     bool self_test_benchmark_gpu_sync = false;
+    bool self_test_benchmark_statistics = false;
 };
 
 int parseIntegerOption(const std::string& option, const std::string& value, int minimum)
@@ -113,7 +113,7 @@ Options parseOptions(int argc, char** argv)
             if (options.poisson_depth > 8)
             {
                 throw std::invalid_argument("Invalid value for --poisson-depth: " +
-                    std::to_string(options.poisson_depth));
+                                            std::to_string(options.poisson_depth));
             }
         }
         else if (arg == "--skip-cpu-icp")
@@ -136,15 +136,19 @@ Options parseOptions(int argc, char** argv)
         {
             options.self_test_benchmark_gpu_sync = true;
         }
+        else if (arg == "--self-test-benchmark-statistics")
+        {
+            options.self_test_benchmark_statistics = true;
+        }
         else if (arg == "--help")
         {
-            std::cout
-                << "Usage: plapoint_benchmarks [--points N] [--iterations N]\n"
-                << "                           [--icp-points N] [--icp-max-iterations N]\n"
-                << "                           [--poisson-points N] [--poisson-depth 1..8]\n"
-                << "                           [--skip-cpu-icp] [--skip-icp-identity]\n"
-                << "                           [--search-features-only] [--mesh-only]\n"
-                << "                           [--self-test-benchmark-gpu-sync]\n";
+            std::cout << "Usage: plapoint_benchmarks [--points N] [--iterations N]\n"
+                      << "                           [--icp-points N] [--icp-max-iterations N]\n"
+                      << "                           [--poisson-points N] [--poisson-depth 1..8]\n"
+                      << "                           [--skip-cpu-icp] [--skip-icp-identity]\n"
+                      << "                           [--search-features-only] [--mesh-only]\n"
+                      << "                           [--self-test-benchmark-gpu-sync]\n"
+                      << "                           [--self-test-benchmark-statistics]\n";
             std::exit(0);
         }
         else
@@ -152,11 +156,25 @@ Options parseOptions(int argc, char** argv)
             throw std::invalid_argument("Unknown option: " + arg);
         }
     }
+
+    const bool runs_poisson_benchmark =
+        options.mesh_only && !options.self_test_benchmark_gpu_sync && !options.self_test_benchmark_statistics;
+    int minimum_poisson_points = 1;
+    for (int level = 0; level < options.poisson_depth; ++level)
+    {
+        minimum_poisson_points *= 4;
+    }
+    if (runs_poisson_benchmark && options.poisson_points < minimum_poisson_points)
+    {
+        throw std::invalid_argument("Poisson benchmark sampling is too sparse: --poisson-points " +
+                                    std::to_string(options.poisson_points) + " with --poisson-depth " +
+                                    std::to_string(options.poisson_depth) + "; use at least " +
+                                    std::to_string(minimum_poisson_points) + " points or reduce the depth");
+    }
     return options;
 }
 
-template <typename Scalar>
-plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeGridPoints(int count)
+template <typename Scalar> plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeGridPoints(int count)
 {
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(count, 3);
     for (int i = 0; i < count; ++i)
@@ -172,11 +190,8 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeGridPoints(int count)
 }
 
 template <typename Scalar>
-plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslatedGridPoints(
-    int count,
-    Scalar tx,
-    Scalar ty,
-    Scalar tz)
+plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>
+makeTranslatedGridPoints(int count, Scalar tx, Scalar ty, Scalar tz)
 {
     auto points = makeGridPoints<Scalar>(count);
     for (int i = 0; i < count; ++i)
@@ -189,11 +204,8 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslatedGridPoints(
 }
 
 template <typename Scalar>
-plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslatedPerturbedGridPoints(
-    int count,
-    Scalar tx,
-    Scalar ty,
-    Scalar tz)
+plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>
+makeTranslatedPerturbedGridPoints(int count, Scalar tx, Scalar ty, Scalar tz)
 {
     auto points = makeTranslatedGridPoints<Scalar>(count, tx, ty, tz);
     for (int i = 0; i < count; ++i)
@@ -205,8 +217,7 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslatedPerturbedGr
     return points;
 }
 
-template <typename Scalar>
-plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeBinaryGridPoints(int count)
+template <typename Scalar> plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeBinaryGridPoints(int count)
 {
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(count, 3);
     for (int i = 0; i < count; ++i)
@@ -248,11 +259,8 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeCompactNonCollinearGr
 }
 
 template <typename Scalar>
-plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslatedCompactNonCollinearGridPoints(
-    int count,
-    Scalar tx,
-    Scalar ty,
-    Scalar tz)
+plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>
+makeTranslatedCompactNonCollinearGridPoints(int count, Scalar tx, Scalar ty, Scalar tz)
 {
     auto points = makeCompactNonCollinearGridPoints<Scalar>(count);
     for (int i = 0; i < count; ++i)
@@ -265,11 +273,8 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslatedCompactNonC
 }
 
 template <typename Scalar>
-plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslatedPerturbedCompactNonCollinearGridPoints(
-    int count,
-    Scalar tx,
-    Scalar ty,
-    Scalar tz)
+plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>
+makeTranslatedPerturbedCompactNonCollinearGridPoints(int count, Scalar tx, Scalar ty, Scalar tz)
 {
     auto points = makeTranslatedCompactNonCollinearGridPoints<Scalar>(count, tx, ty, tz);
     for (int i = 0; i < count; ++i)
@@ -282,10 +287,7 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslatedPerturbedCo
 }
 
 template <typename Scalar>
-plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslationTransform(
-    Scalar tx,
-    Scalar ty,
-    Scalar tz)
+plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslationTransform(Scalar tx, Scalar ty, Scalar tz)
 {
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> transform(4, 4);
     transform.fill(Scalar(0));
@@ -299,8 +301,7 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslationTransform(
     return transform;
 }
 
-template <typename Scalar>
-plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeQueries(int count)
+template <typename Scalar> plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeQueries(int count)
 {
     plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(count, 3);
     for (int i = 0; i < count; ++i)
@@ -312,14 +313,81 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeQueries(int count)
     return queries;
 }
 
-template <typename Fn, typename SyncFn>
-double bestMilliseconds(int iterations, Fn&& fn, SyncFn&& sync)
+struct BenchmarkTimingStatistics
+{
+    double best_ms = 0.0;
+    double median_ms = 0.0;
+    double p95_ms = 0.0;
+    double stddev_ms = 0.0;
+    double cv = 0.0;
+};
+
+BenchmarkTimingStatistics g_last_benchmark_timing;
+bool g_has_last_benchmark_timing = false;
+
+BenchmarkTimingStatistics summarizeMilliseconds(std::vector<double> samples)
+{
+    if (samples.empty())
+    {
+        throw std::invalid_argument("Cannot summarize an empty benchmark sample set");
+    }
+
+    std::sort(samples.begin(), samples.end());
+    const std::size_t sample_count = samples.size();
+    const std::size_t middle = sample_count / 2;
+    const double median = sample_count % 2 == 0 ? (samples[middle - 1] + samples[middle]) * 0.5 : samples[middle];
+    const std::size_t p95_rank = static_cast<std::size_t>(std::ceil(0.95 * static_cast<double>(sample_count)));
+
+    double mean = 0.0;
+    for (const double sample : samples)
+    {
+        mean += sample;
+    }
+    mean /= static_cast<double>(sample_count);
+
+    double squared_deviation_sum = 0.0;
+    for (const double sample : samples)
+    {
+        const double deviation = sample - mean;
+        squared_deviation_sum += deviation * deviation;
+    }
+    const double stddev = std::sqrt(squared_deviation_sum / static_cast<double>(sample_count));
+
+    BenchmarkTimingStatistics result;
+    result.best_ms = samples.front();
+    result.median_ms = median;
+    result.p95_ms = samples[std::max<std::size_t>(1, p95_rank) - 1];
+    result.stddev_ms = stddev;
+    result.cv = mean > 0.0 ? stddev / mean : 0.0;
+    return result;
+}
+
+int runBenchmarkStatisticsSelfTest()
+{
+    const auto timing = summarizeMilliseconds({4.0, 1.0, 3.0, 2.0});
+    const double expected_stddev = std::sqrt(1.25);
+    const double expected_cv = expected_stddev / 2.5;
+    constexpr double tolerance = 1.0e-12;
+    if (std::abs(timing.best_ms - 1.0) > tolerance || std::abs(timing.median_ms - 2.5) > tolerance ||
+        std::abs(timing.p95_ms - 4.0) > tolerance || std::abs(timing.stddev_ms - expected_stddev) > tolerance ||
+        std::abs(timing.cv - expected_cv) > tolerance)
+    {
+        std::cerr << "benchmark_statistics_self_test failed\n";
+        return 1;
+    }
+
+    std::cout << "benchmark_statistics_self_test,passed\n";
+    return 0;
+}
+
+template <typename Fn, typename SyncFn> double bestMilliseconds(int iterations, Fn&& fn, SyncFn&& sync)
 {
     // Exclude one-time CUDA context, Thrust, and allocator startup from the measured loop.
     fn();
     sync();
 
-    double best = std::numeric_limits<double>::infinity();
+    std::vector<double> samples;
+    samples.reserve(static_cast<std::size_t>(iterations));
     for (int i = 0; i < iterations; ++i)
     {
         const auto start = Clock::now();
@@ -327,36 +395,49 @@ double bestMilliseconds(int iterations, Fn&& fn, SyncFn&& sync)
         sync();
         const auto end = Clock::now();
         const auto elapsed = std::chrono::duration<double, std::milli>(end - start).count();
-        best = std::min(best, elapsed);
+        samples.push_back(elapsed);
     }
-    return best;
+    g_last_benchmark_timing = summarizeMilliseconds(std::move(samples));
+    g_has_last_benchmark_timing = true;
+    return g_last_benchmark_timing.best_ms;
 }
 
-template <typename Fn>
-double bestMilliseconds(int iterations, Fn&& fn)
+template <typename Fn> double bestMilliseconds(int iterations, Fn&& fn)
 {
-    return bestMilliseconds(iterations, std::forward<Fn>(fn), [] {
+    return bestMilliseconds(iterations,
+                            std::forward<Fn>(fn),
+                            []
+                            {
 #ifdef PLAPOINT_WITH_CUDA
-        if (g_synchronize_cuda_after_benchmark_iteration)
-        {
-            synchronizeCudaBenchmarkDevice();
-        }
+                                if (g_synchronize_cuda_after_benchmark_iteration)
+                                {
+                                    synchronizeCudaBenchmarkDevice();
+                                }
 #endif
-    });
+                            });
 }
 
 void printResult(const std::string& name, int points, int iterations, double milliseconds)
 {
-    std::cout << name
-              << ',' << points
-              << ',' << iterations
-              << ',' << milliseconds
-              << '\n';
+    BenchmarkTimingStatistics timing;
+    if (g_has_last_benchmark_timing && g_last_benchmark_timing.best_ms == milliseconds)
+    {
+        timing = g_last_benchmark_timing;
+    }
+    else
+    {
+        timing.best_ms = milliseconds;
+        timing.median_ms = milliseconds;
+        timing.p95_ms = milliseconds;
+    }
+
+    std::cout << name << ',' << points << ',' << iterations << ',' << timing.best_ms << ',' << timing.median_ms << ','
+              << timing.p95_ms << ',' << timing.stddev_ms << ',' << timing.cv << '\n';
 }
 
 void printSkipped(const std::string& name, const std::string& reason)
 {
-    std::cout << name << ",skipped," << reason << ",\n";
+    std::cout << name << ",skipped," << reason << ",,,,,\n";
 }
 
 #ifdef PLAPOINT_WITH_CUDA
@@ -384,16 +465,16 @@ int runBenchmarkGpuSyncSelfTest()
 
     {
         const ScopedCudaBenchmarkSynchronization scoped_sync(true);
-        bestMilliseconds(iterations, [&] {
-            PLAPOINT_CHECK_CUDA(cudaLaunchHostFunc(0, benchmarkGpuSyncSelfTestCallback, &callback_count));
-        });
+        bestMilliseconds(
+            iterations,
+            [&] { PLAPOINT_CHECK_CUDA(cudaLaunchHostFunc(0, benchmarkGpuSyncSelfTestCallback, &callback_count)); });
     }
 
     const int expected_callbacks = iterations + 1;
     if (callback_count != expected_callbacks)
     {
-        std::cerr << "benchmark_gpu_sync_self_test expected "
-                  << expected_callbacks << " callbacks, got " << callback_count << '\n';
+        std::cerr << "benchmark_gpu_sync_self_test expected " << expected_callbacks << " callbacks, got "
+                  << callback_count << '\n';
         return 1;
     }
 
@@ -434,5 +515,4 @@ int runBenchmarkGpuSyncSelfTest()
 }
 #endif
 
-template <plamatrix::Device Dev>
-using Cloud = plapoint::PointCloud<float, Dev>;
+template <plamatrix::Device Dev> using Cloud = plapoint::PointCloud<float, Dev>;

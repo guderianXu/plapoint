@@ -326,6 +326,7 @@ public:
     using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
     using Vec3 = plamatrix::Vec3<Scalar>;
     using ScalarFunction = std::function<Scalar(Scalar, Scalar, Scalar)>;
+    using SampledField = std::vector<Scalar>;
 
     /// Set the axis-aligned extraction bounds.
     void setBounds(const Vec3& min_corner, const Vec3& max_corner)
@@ -339,7 +340,8 @@ public:
         {
             throw std::invalid_argument("MarchingCubes min bounds must be less than max bounds");
         }
-        _min = min_corner; _max = max_corner;
+        _min = min_corner;
+        _max = max_corner;
     }
 
     /// Set positive grid resolution along x, y, and z axes.
@@ -349,7 +351,9 @@ public:
         {
             throw std::invalid_argument("MarchingCubes resolution must be positive");
         }
-        _nx = nx; _ny = ny; _nz = nz;
+        _nx = nx;
+        _ny = ny;
+        _nz = nz;
     }
 
     /// Set the scalar isovalue to extract.
@@ -362,8 +366,8 @@ public:
         _iso = iso;
     }
 
-    /// Extract vertices and triangular faces from a non-empty scalar function.
-    std::tuple<Matrix, Matrix> extract(const ScalarFunction& fn) const
+    /// Sample a non-empty scalar function at every configured grid vertex.
+    SampledField sampleField(const ScalarFunction& fn) const
     {
         if (!fn)
         {
@@ -376,7 +380,7 @@ public:
 
         const std::size_t sample_count = checkedSampleCount(_nx, _ny, _nz);
         int vx_r = _nx + 1, vy_r = _ny + 1, vz_r = _nz + 1;
-        std::vector<Scalar> field(sample_count);
+        SampledField field(sample_count);
         for (int iz = 0; iz < vz_r; ++iz)
             for (int iy = 0; iy < vy_r; ++iy)
                 for (int ix = 0; ix < vx_r; ++ix)
@@ -389,14 +393,45 @@ public:
                     {
                         throw std::invalid_argument("MarchingCubes scalar samples must be finite");
                     }
-                    field[static_cast<std::size_t>(iz*vy_r*vx_r + iy*vx_r + ix)] = value;
+                    field[static_cast<std::size_t>(iz * vy_r * vx_r + iy * vx_r + ix)] = value;
                 }
+
+        return field;
+    }
+
+    /// Extract vertices and triangular faces from a non-empty scalar function.
+    std::tuple<Matrix, Matrix> extract(const ScalarFunction& fn) const
+    {
+        return extractSampledField(sampleField(fn));
+    }
+
+    /// Extract vertices and triangular faces from samples returned by sampleField().
+    std::tuple<Matrix, Matrix> extractSampledField(const SampledField& field) const
+    {
+        const std::size_t expected_count = checkedSampleCount(_nx, _ny, _nz);
+        if (field.size() != expected_count)
+        {
+            throw std::invalid_argument("MarchingCubes sampled field size does not match resolution");
+        }
+        for (Scalar value : field)
+        {
+            if (!std::isfinite(value))
+            {
+                throw std::invalid_argument("MarchingCubes scalar samples must be finite");
+            }
+        }
+
+        Scalar dx = (_max.x - _min.x) / Scalar(_nx);
+        Scalar dy = (_max.y - _min.y) / Scalar(_ny);
+        Scalar dz = (_max.z - _min.z) / Scalar(_nz);
+        int vx_r = _nx + 1, vy_r = _ny + 1;
 
         std::vector<Scalar> vx, vy, vz;
         std::vector<int> tri_idx;
 
-        int corners[8][3] = {{0,0,0},{1,0,0},{1,1,0},{0,1,0},{0,0,1},{1,0,1},{1,1,1},{0,1,1}};
-        int edge_pairs[12][2] = {{0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}};
+        int corners[8][3] = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}};
+        int edge_pairs[12][2] = {
+            {0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
 
         for (int iz = 0; iz < _nz; ++iz)
             for (int iy = 0; iy < _ny; ++iy)

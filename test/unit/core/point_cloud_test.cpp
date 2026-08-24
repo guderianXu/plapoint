@@ -111,6 +111,75 @@ TEST(PointCloudTest, PointRevisionTracksOnlyPositionMutations)
     EXPECT_FLOAT_EQ(std::as_const(cloud).points()(1, 2), 2.0f);
 }
 
+TEST(PointCloudTest, SetPointsCopyOwnsIndependentStorageAndAdvancesRevision)
+{
+    using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using Matrix = plamatrix::DenseMatrix<float, plamatrix::Device::CPU>;
+
+    Cloud cloud(2);
+    Matrix replacement(2, 3);
+    replacement(0, 0) = 1.0f;
+    replacement(1, 0) = 2.0f;
+    replacement(0, 1) = 3.0f;
+    replacement(1, 1) = 4.0f;
+    replacement(0, 2) = 5.0f;
+    replacement(1, 2) = 6.0f;
+
+    const auto revision = cloud.pointsRevision();
+    const auto identity = cloud.pointsIdentity();
+    cloud.setPoints(std::as_const(replacement));
+
+    const auto& stored = std::as_const(cloud).points();
+    EXPECT_GT(cloud.pointsRevision(), revision);
+    EXPECT_EQ(cloud.pointsIdentity(), identity);
+    EXPECT_NE(stored.data(), replacement.data());
+    EXPECT_FLOAT_EQ(stored(1, 2), 6.0f);
+
+    replacement(1, 2) = 99.0f;
+    EXPECT_FLOAT_EQ(std::as_const(cloud).points()(1, 2), 6.0f);
+}
+
+TEST(PointCloudTest, SetPointsCopyHandlesEmptyNx3Matrix)
+{
+    using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using Matrix = plamatrix::DenseMatrix<float, plamatrix::Device::CPU>;
+
+    Cloud cloud;
+    Matrix empty(0, 3);
+    const auto revision = cloud.pointsRevision();
+
+    cloud.setPoints(std::as_const(empty));
+
+    EXPECT_EQ(cloud.size(), 0U);
+    EXPECT_EQ(std::as_const(cloud).points().cols(), 3);
+    EXPECT_EQ(std::as_const(cloud).points().data(), nullptr);
+    EXPECT_GT(cloud.pointsRevision(), revision);
+}
+
+TEST(PointCloudTest, InvalidSetPointsCopyKeepsRevisionStorageAndReportsShape)
+{
+    using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using Matrix = plamatrix::DenseMatrix<float, plamatrix::Device::CPU>;
+
+    Cloud cloud(2);
+    Matrix invalid(2, 4);
+    const auto revision = cloud.pointsRevision();
+    const auto* const storage = std::as_const(cloud).points().data();
+
+    try
+    {
+        cloud.setPoints(std::as_const(invalid));
+        FAIL() << "Expected invalid copy replacement shape to be rejected";
+    }
+    catch (const std::runtime_error& ex)
+    {
+        EXPECT_NE(std::string(ex.what()).find("PointCloud requires Nx3 matrix"), std::string::npos);
+    }
+
+    EXPECT_EQ(cloud.pointsRevision(), revision);
+    EXPECT_EQ(std::as_const(cloud).points().data(), storage);
+}
+
 TEST(PointCloudTest, FailedPointReplacementKeepsRevisionAndStorage)
 {
     using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
@@ -197,6 +266,60 @@ TEST(PointCloudTest, GpuPointsCpuRefreshesAfterRetainedMutableAliasWrites)
 
     retained_points.setValue(1, 0, 9.0f);
     EXPECT_FLOAT_EQ(gpu_cloud.pointsCpu().getValue(1, 0), 9.0f);
+}
+
+TEST(PointCloudTest, GpuSetPointsCopyInvalidatesCpuMirrorAndOwnsDeviceStorage)
+{
+    if (!hasCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU point copy test";
+    }
+
+    using CpuMatrix = plamatrix::DenseMatrix<float, plamatrix::Device::CPU>;
+
+    plapoint::PointCloud<float, plamatrix::Device::CPU> initial(2);
+    auto gpu_cloud = initial.toGpu();
+    static_cast<void>(gpu_cloud.pointsCpu());
+
+    CpuMatrix replacement_cpu(2, 3);
+    replacement_cpu.setValue(0, 0, 1.0f);
+    replacement_cpu.setValue(1, 0, 2.0f);
+    replacement_cpu.setValue(0, 1, 3.0f);
+    replacement_cpu.setValue(1, 1, 4.0f);
+    replacement_cpu.setValue(0, 2, 5.0f);
+    replacement_cpu.setValue(1, 2, 6.0f);
+    auto replacement_gpu = replacement_cpu.toGpu();
+
+    const auto revision = gpu_cloud.pointsRevision();
+    gpu_cloud.setPoints(std::as_const(replacement_gpu));
+
+    EXPECT_GT(gpu_cloud.pointsRevision(), revision);
+    EXPECT_NE(std::as_const(gpu_cloud).points().data(), replacement_gpu.data());
+    EXPECT_FLOAT_EQ(gpu_cloud.pointsCpu().getValue(1, 2), 6.0f);
+
+    replacement_gpu.setValue(1, 2, 99.0f);
+    const auto stored_cpu = gpu_cloud.toCpu();
+    EXPECT_FLOAT_EQ(stored_cpu.points().getValue(1, 2), 6.0f);
+}
+
+TEST(PointCloudTest, GpuSetPointsCopyHandlesEmptyNx3Matrix)
+{
+    if (!hasCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping empty GPU point copy test";
+    }
+
+    plapoint::PointCloud<float, plamatrix::Device::CPU> empty_cpu;
+    auto cloud = empty_cpu.toGpu();
+    auto empty_gpu = std::as_const(empty_cpu).points().toGpu();
+    const auto revision = cloud.pointsRevision();
+
+    cloud.setPoints(std::as_const(empty_gpu));
+
+    EXPECT_EQ(cloud.size(), 0U);
+    EXPECT_EQ(std::as_const(cloud).points().cols(), 3);
+    EXPECT_EQ(std::as_const(cloud).points().data(), nullptr);
+    EXPECT_GT(cloud.pointsRevision(), revision);
 }
 #endif
 

@@ -183,27 +183,65 @@ TEST(PoissonReconstructionTest, RepeatedAssemblyIsBitwiseDeterministic)
     reconstruction.setInputCloud(makeSphereCloud(100));
     reconstruction.setDepth(4);
     reconstruction.setSolverIterations(30);
-    static_cast<void>(reconstruction.reconstruct());
+    auto [first_vertices, first_faces] = reconstruction.reconstruct();
     const auto& first = reconstruction.lastSystem();
-    const std::vector<plamatrix::Index> first_offsets(
-        first.matrix.rowOffsets(), first.matrix.rowOffsets() + first.matrix.rows() + 1);
-    const std::vector<plamatrix::Index> first_columns(
-        first.matrix.colIndices(), first.matrix.colIndices() + first.matrix.nnz());
-    const std::vector<float> first_values(
-        first.matrix.values(), first.matrix.values() + first.matrix.nnz());
-    const std::vector<float> first_rhs(
-        first.rhs.data(), first.rhs.data() + first.rhs.size());
+    const std::vector<float> first_vertex_values(first_vertices.data(), first_vertices.data() + first_vertices.size());
+    const std::vector<float> first_face_values(first_faces.data(), first_faces.data() + first_faces.size());
+    const std::vector<plamatrix::Index> first_offsets(first.matrix.rowOffsets(),
+                                                      first.matrix.rowOffsets() + first.matrix.rows() + 1);
+    const std::vector<plamatrix::Index> first_columns(first.matrix.colIndices(),
+                                                      first.matrix.colIndices() + first.matrix.nnz());
+    const std::vector<float> first_values(first.matrix.values(), first.matrix.values() + first.matrix.nnz());
+    const std::vector<float> first_rhs(first.rhs.data(), first.rhs.data() + first.rhs.size());
+
+    auto [second_vertices, second_faces] = reconstruction.reconstruct();
+    const auto& second = reconstruction.lastSystem();
+    EXPECT_EQ(first_vertex_values,
+              std::vector<float>(second_vertices.data(), second_vertices.data() + second_vertices.size()));
+    EXPECT_EQ(first_face_values, std::vector<float>(second_faces.data(), second_faces.data() + second_faces.size()));
+    EXPECT_EQ(first_offsets,
+              std::vector<plamatrix::Index>(second.matrix.rowOffsets(),
+                                            second.matrix.rowOffsets() + second.matrix.rows() + 1));
+    EXPECT_EQ(
+        first_columns,
+        std::vector<plamatrix::Index>(second.matrix.colIndices(), second.matrix.colIndices() + second.matrix.nnz()));
+    EXPECT_EQ(first_values, std::vector<float>(second.matrix.values(), second.matrix.values() + second.matrix.nnz()));
+    EXPECT_EQ(first_rhs, std::vector<float>(second.rhs.data(), second.rhs.data() + second.rhs.size()));
+}
+
+TEST(PoissonReconstructionTest, SparseOctreeIsCompletedAndTwoToOneBalanced)
+{
+    plapoint::mesh::PoissonReconstruction<float> reconstruction;
+    reconstruction.setInputCloud(makeSphereCloud(1));
+    reconstruction.setDepth(5);
+    reconstruction.setSolverIterations(1);
 
     static_cast<void>(reconstruction.reconstruct());
-    const auto& second = reconstruction.lastSystem();
-    EXPECT_EQ(first_offsets, std::vector<plamatrix::Index>(
-        second.matrix.rowOffsets(), second.matrix.rowOffsets() + second.matrix.rows() + 1));
-    EXPECT_EQ(first_columns, std::vector<plamatrix::Index>(
-        second.matrix.colIndices(), second.matrix.colIndices() + second.matrix.nnz()));
-    EXPECT_EQ(first_values, std::vector<float>(
-        second.matrix.values(), second.matrix.values() + second.matrix.nnz()));
-    EXPECT_EQ(first_rhs, std::vector<float>(
-        second.rhs.data(), second.rhs.data() + second.rhs.size()));
+
+    const auto& report = reconstruction.lastReport();
+    EXPECT_EQ(report.leafCount, 1u);
+    EXPECT_EQ(reconstruction.lastSystem().leafNodes.size(), 1u);
+    EXPECT_GT(report.octreeLeafCount, 1u);
+    EXPECT_LT(report.octreeLeafCount, 1u << 15);
+    EXPECT_LE(report.maximumLeafNeighborDepthDifference, 1);
+}
+
+TEST(PoissonReconstructionTest, SamplesExtractionGridOnceAndBuildsOneOrientationIndex)
+{
+    plapoint::mesh::PoissonReconstruction<float> reconstruction;
+    reconstruction.setInputCloud(makeSphereCloud(96));
+    reconstruction.setDepth(3);
+    reconstruction.setSolverIterations(30);
+
+    const auto [vertices, faces] = reconstruction.reconstruct();
+
+    ASSERT_GT(vertices.rows(), 0);
+    ASSERT_GT(faces.rows(), 0);
+    const auto& report = reconstruction.lastReport();
+    EXPECT_EQ(report.fieldGridSampleCount, 9u * 9u * 9u);
+    EXPECT_EQ(report.orientationIndexBuildCount, 1u);
+    EXPECT_GT(report.orientationQueryCount, 0u);
+    EXPECT_LE(report.orientationQueryCount, static_cast<std::size_t>(faces.rows()));
 }
 
 TEST(PoissonReconstructionTest, QualityFixtureConvergesAndProducesSurface)
