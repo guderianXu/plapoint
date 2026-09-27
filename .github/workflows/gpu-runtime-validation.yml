@@ -32,7 +32,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: guderianXu/plamatrix
-          ref: 0b07775b5ab35391c013b9dcc7a838747c865e87
+          ref: 22be5099d599396d2f7f78652c6875534fd0afba
           path: plamatrix
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y libboost-dev libeigen3-dev libgtest-dev ninja-build
