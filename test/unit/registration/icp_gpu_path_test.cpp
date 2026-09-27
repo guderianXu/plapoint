@@ -1,4 +1,8 @@
 #include "icp_gpu_path_test_support.h"
+#include <plamatrix/internal/core/backend.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/core/execution_context.h>
+#include <plamatrix/internal/device/device_matrix.h>
 
 #ifdef PLAPOINT_WITH_CUDA
 
@@ -8,35 +12,36 @@ TEST(ICPGpuPathTest, MultiplyTransform4x4UsesColumnMajorTransformComposition)
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> A(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> B(4, 4);
-    A.fill(0.0f);
-    B.fill(0.0f);
+    plamatrix::MatrixXf A(4, 4);
+    plamatrix::MatrixXf B(4, 4);
+    A.setConstant(0.0f);
+    B.setConstant(0.0f);
 
-    A.setValue(0, 0, 0.0f);  A.setValue(0, 1, -1.0f); A.setValue(0, 2, 0.0f); A.setValue(0, 3, 2.0f);
-    A.setValue(1, 0, 1.0f);  A.setValue(1, 1, 0.0f);  A.setValue(1, 2, 0.0f); A.setValue(1, 3, -1.0f);
-    A.setValue(2, 0, 0.0f);  A.setValue(2, 1, 0.0f);  A.setValue(2, 2, 1.0f); A.setValue(2, 3, 0.5f);
-    A.setValue(3, 0, 0.0f);  A.setValue(3, 1, 0.0f);  A.setValue(3, 2, 0.0f); A.setValue(3, 3, 1.0f);
+    A.operator()(0, 0) = 0.0f;  A.operator()(0, 1) = -1.0f; A.operator()(0, 2) = 0.0f; A.operator()(0, 3) = 2.0f;
+    A.operator()(1, 0) = 1.0f;  A.operator()(1, 1) = 0.0f;  A.operator()(1, 2) = 0.0f; A.operator()(1, 3) = -1.0f;
+    A.operator()(2, 0) = 0.0f;  A.operator()(2, 1) = 0.0f;  A.operator()(2, 2) = 1.0f; A.operator()(2, 3) = 0.5f;
+    A.operator()(3, 0) = 0.0f;  A.operator()(3, 1) = 0.0f;  A.operator()(3, 2) = 0.0f; A.operator()(3, 3) = 1.0f;
 
-    B.setValue(0, 0, 1.0f);  B.setValue(0, 1, 0.0f);  B.setValue(0, 2, 0.0f); B.setValue(0, 3, -3.0f);
-    B.setValue(1, 0, 0.0f);  B.setValue(1, 1, 1.0f);  B.setValue(1, 2, 0.0f); B.setValue(1, 3, 4.0f);
-    B.setValue(2, 0, 0.0f);  B.setValue(2, 1, 0.0f);  B.setValue(2, 2, 1.0f); B.setValue(2, 3, 1.5f);
-    B.setValue(3, 0, 0.0f);  B.setValue(3, 1, 0.0f);  B.setValue(3, 2, 0.0f); B.setValue(3, 3, 1.0f);
+    B.operator()(0, 0) = 1.0f;  B.operator()(0, 1) = 0.0f;  B.operator()(0, 2) = 0.0f; B.operator()(0, 3) = -3.0f;
+    B.operator()(1, 0) = 0.0f;  B.operator()(1, 1) = 1.0f;  B.operator()(1, 2) = 0.0f; B.operator()(1, 3) = 4.0f;
+    B.operator()(2, 0) = 0.0f;  B.operator()(2, 1) = 0.0f;  B.operator()(2, 2) = 1.0f; B.operator()(2, 3) = 1.5f;
+    B.operator()(3, 0) = 0.0f;  B.operator()(3, 1) = 0.0f;  B.operator()(3, 2) = 0.0f; B.operator()(3, 3) = 1.0f;
 
-    auto A_gpu = A.toGpu();
-    auto B_gpu = B.toGpu();
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> C_gpu(4, 4);
+    auto A_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(A, matrix_context);
+    auto B_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(B, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> C_gpu(4, 4, matrix_context);
 
     plapoint::gpu::multiplyTransform4x4(A_gpu.data(), B_gpu.data(), C_gpu.data());
-    auto C = C_gpu.toCpu();
+    auto C = C_gpu.toHostMatrix();
     auto expected = multiplyCpu4x4(A, B);
 
     for (int row = 0; row < 4; ++row)
     {
         for (int col = 0; col < 4; ++col)
         {
-            EXPECT_NEAR(C.getValue(row, col), expected.getValue(row, col), 1.0e-6f);
+            EXPECT_NEAR(C.operator()(row, col), expected.operator()(row, col), 1.0e-6f);
         }
     }
 }
@@ -47,25 +52,26 @@ TEST(ICPGpuPathTest, MultiplyTransform4x4AsyncUsesCallerStream)
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> A(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> B(4, 4);
-    A.fill(0.0f);
-    B.fill(0.0f);
+    plamatrix::MatrixXf A(4, 4);
+    plamatrix::MatrixXf B(4, 4);
+    A.setConstant(0.0f);
+    B.setConstant(0.0f);
 
-    A.setValue(0, 0, 1.0f); A.setValue(0, 3, 1.5f);
-    A.setValue(1, 1, 1.0f); A.setValue(1, 3, -2.0f);
-    A.setValue(2, 2, 1.0f); A.setValue(2, 3, 0.25f);
-    A.setValue(3, 3, 1.0f);
+    A.operator()(0, 0) = 1.0f; A.operator()(0, 3) = 1.5f;
+    A.operator()(1, 1) = 1.0f; A.operator()(1, 3) = -2.0f;
+    A.operator()(2, 2) = 1.0f; A.operator()(2, 3) = 0.25f;
+    A.operator()(3, 3) = 1.0f;
 
-    B.setValue(0, 0, 0.0f);  B.setValue(0, 1, -1.0f); B.setValue(0, 3, 3.0f);
-    B.setValue(1, 0, 1.0f);  B.setValue(1, 1, 0.0f);  B.setValue(1, 3, 4.0f);
-    B.setValue(2, 2, 1.0f);  B.setValue(2, 3, -1.0f);
-    B.setValue(3, 3, 1.0f);
+    B.operator()(0, 0) = 0.0f;  B.operator()(0, 1) = -1.0f; B.operator()(0, 3) = 3.0f;
+    B.operator()(1, 0) = 1.0f;  B.operator()(1, 1) = 0.0f;  B.operator()(1, 3) = 4.0f;
+    B.operator()(2, 2) = 1.0f;  B.operator()(2, 3) = -1.0f;
+    B.operator()(3, 3) = 1.0f;
 
-    auto A_gpu = A.toGpu();
-    auto B_gpu = B.toGpu();
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> C_gpu(4, 4);
+    auto A_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(A, matrix_context);
+    auto B_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(B, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> C_gpu(4, 4, matrix_context);
 
     cudaStream_t stream{};
     PLAPOINT_CHECK_CUDA(cudaStreamCreate(&stream));
@@ -73,14 +79,14 @@ TEST(ICPGpuPathTest, MultiplyTransform4x4AsyncUsesCallerStream)
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
     PLAPOINT_CHECK_CUDA(cudaStreamDestroy(stream));
 
-    auto C = C_gpu.toCpu();
+    auto C = C_gpu.toHostMatrix();
     auto expected = multiplyCpu4x4(A, B);
 
     for (int row = 0; row < 4; ++row)
     {
         for (int col = 0; col < 4; ++col)
         {
-            EXPECT_NEAR(C.getValue(row, col), expected.getValue(row, col), 1.0e-6f);
+            EXPECT_NEAR(C.operator()(row, col), expected.operator()(row, col), 1.0e-6f);
         }
     }
 }
@@ -91,17 +97,18 @@ TEST(ICPGpuPathTest, SetIdentityTransform4x4WritesColumnMajorIdentity)
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> identity_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> identity_gpu(4, 4, matrix_context);
     plapoint::gpu::setIdentityTransform4x4(identity_gpu.data());
-    auto identity = identity_gpu.toCpu();
+    auto identity = identity_gpu.toHostMatrix();
 
     for (int row = 0; row < 4; ++row)
     {
         for (int col = 0; col < 4; ++col)
         {
             const float expected = row == col ? 1.0f : 0.0f;
-            EXPECT_NEAR(identity.getValue(row, col), expected, 1.0e-6f);
+            EXPECT_NEAR(identity.operator()(row, col), expected, 1.0e-6f);
         }
     }
 }
@@ -112,30 +119,37 @@ TEST(ICPGpuPathTest, StepTransformFromStatsWritesDeviceTransform)
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto source = makeNonCollinearPoints();
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> expected(4, 4);
-    expected.fill(0.0f);
-    expected.setValue(0, 0, 0.0f);  expected.setValue(0, 1, -1.0f); expected.setValue(0, 2, 0.0f); expected.setValue(0, 3, 2.0f);
-    expected.setValue(1, 0, 1.0f);  expected.setValue(1, 1, 0.0f);  expected.setValue(1, 2, 0.0f); expected.setValue(1, 3, -1.0f);
-    expected.setValue(2, 0, 0.0f);  expected.setValue(2, 1, 0.0f);  expected.setValue(2, 2, 1.0f); expected.setValue(2, 3, 0.5f);
-    expected.setValue(3, 0, 0.0f);  expected.setValue(3, 1, 0.0f);  expected.setValue(3, 2, 0.0f); expected.setValue(3, 3, 1.0f);
+    plamatrix::MatrixXf expected(4, 4);
+    expected.setConstant(0.0f);
+    expected.operator()(0, 0) = 0.0f;
+    expected.operator()(0, 1) = -1.0f;
+    expected.operator()(0, 2) = 0.0f;
+    expected.operator()(0, 3) = 2.0f;
+    expected.operator()(1, 0) = 1.0f;
+    expected.operator()(1, 1) = 0.0f;
+    expected.operator()(1, 2) = 0.0f;
+    expected.operator()(1, 3) = -1.0f;
+    expected.operator()(2, 0) = 0.0f;  expected.operator()(2, 1) = 0.0f;  expected.operator()(2, 2) = 1.0f; expected.operator()(2, 3) = 0.5f;
+    expected.operator()(3, 0) = 0.0f;  expected.operator()(3, 1) = 0.0f;  expected.operator()(3, 2) = 0.0f; expected.operator()(3, 3) = 1.0f;
 
-    auto target = plamatrix::transformPoints(expected, source);
+    auto target = transformedPoints(expected, source);
     const auto stats = makeMatchedStats(source, target);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_gpu(4, 4, matrix_context);
 
     const auto result = plapoint::gpu::computeIcpStepTransformFromStats(stats, step_gpu.data());
-    auto step = step_gpu.toCpu();
+    auto step = step_gpu.toHostMatrix();
 
     float expected_delta = 0.0f;
     for (int row = 0; row < 3; ++row)
     {
         for (int col = 0; col < 3; ++col)
         {
-            expected_delta += std::abs(expected.getValue(row, col) - (row == col ? 1.0f : 0.0f));
+            expected_delta += std::abs(expected.operator()(row, col) - (row == col ? 1.0f : 0.0f));
         }
-        expected_delta += std::abs(expected.getValue(row, 3));
+        expected_delta += std::abs(expected.operator()(row, 3));
     }
 
     EXPECT_NEAR(result.delta, expected_delta, 1.0e-5f);
@@ -143,7 +157,7 @@ TEST(ICPGpuPathTest, StepTransformFromStatsWritesDeviceTransform)
     {
         for (int col = 0; col < 4; ++col)
         {
-            EXPECT_NEAR(step.getValue(row, col), expected.getValue(row, col), 1.0e-5f);
+            EXPECT_NEAR(step.operator()(row, col), expected.operator()(row, col), 1.0e-5f);
         }
     }
 }
@@ -214,15 +228,16 @@ TEST(ICPGpuPathTest, AlignmentStepCompactResultMatchesFullStatsStepResult)
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto source_cpu = makeNonCollinearPoints();
     auto target_cpu = makeTranslatedNonCollinearPoints(source_cpu, 0.1f, -0.05f, 0.025f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace full_stats_workspace;
     plapoint::gpu::IcpStepTransformWorkspace full_step_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> full_step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> full_step_gpu(4, 4, matrix_context);
     const auto full_result = plapoint::gpu::computeIcpStatsAndStepTransformColumnMajor(
         source_gpu.data(),
         static_cast<int>(source_gpu.rows()),
@@ -234,7 +249,7 @@ TEST(ICPGpuPathTest, AlignmentStepCompactResultMatchesFullStatsStepResult)
         full_step_workspace);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace compact_stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> compact_step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> compact_step_gpu(4, 4, matrix_context);
     const auto compact_result = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
         source_gpu.data(),
         static_cast<int>(source_gpu.rows()),
@@ -253,13 +268,13 @@ TEST(ICPGpuPathTest, AlignmentStepCompactResultMatchesFullStatsStepResult)
     EXPECT_EQ(compact_result.step_valid, full_result.step_valid);
     EXPECT_NEAR(compact_result.step.delta, full_result.step.delta, 1.0e-6f);
 
-    auto full_step = full_step_gpu.toCpu();
-    auto compact_step = compact_step_gpu.toCpu();
+    auto full_step = full_step_gpu.toHostMatrix();
+    auto compact_step = compact_step_gpu.toHostMatrix();
     for (int row = 0; row < 4; ++row)
     {
         for (int col = 0; col < 4; ++col)
         {
-            EXPECT_NEAR(compact_step.getValue(row, col), full_step.getValue(row, col), 1.0e-6f);
+            EXPECT_NEAR(compact_step.operator()(row, col), full_step.operator()(row, col), 1.0e-6f);
         }
     }
 }
@@ -270,15 +285,16 @@ TEST(ICPGpuPathTest, StatsAndStepTransformCopiesOneHostResult)
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto source_cpu = makeNonCollinearPoints();
     auto target_cpu = makeTranslatedNonCollinearPoints(source_cpu, 0.1f, -0.05f, 0.025f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
     plapoint::gpu::IcpStepTransformWorkspace step_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_gpu(4, 4, matrix_context);
 
     plapoint::gpu::resetIcpStatsStepHostResultCopyCountForTesting();
     const auto result = plapoint::gpu::computeIcpStatsAndStepTransformColumnMajor(
@@ -302,23 +318,24 @@ TEST(ICPGpuPathTest, StatsAndStepTransformReusesCachedSpatialGridAcrossCalls)
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeNonCollinearPoints();
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source_cpu(4, 3);
+    plamatrix::MatrixXf source_cpu(4, 3);
     for (int col = 0; col < 3; ++col)
     {
-        source_cpu.setValue(0, col, target_cpu.getValue(1, col));
-        source_cpu.setValue(1, col, target_cpu.getValue(2, col));
-        source_cpu.setValue(2, col, target_cpu.getValue(3, col));
-        source_cpu.setValue(3, col, target_cpu.getValue(0, col));
+        source_cpu.operator()(0, col) = target_cpu.operator()(1, col);
+        source_cpu.operator()(1, col) = target_cpu.operator()(2, col);
+        source_cpu.operator()(2, col) = target_cpu.operator()(3, col);
+        source_cpu.operator()(3, col) = target_cpu.operator()(0, col);
     }
     target_cpu = padTargetWithNonFiniteRows(target_cpu);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
     plapoint::gpu::IcpStepTransformWorkspace step_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_gpu(4, 4, matrix_context);
 
     plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
@@ -361,14 +378,15 @@ TEST(ICPGpuPathTest, AlignmentStepCopiesOneCompactHostResultPerCall)
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto source_cpu = makeNonCollinearPoints();
     auto target_cpu = makeTranslatedNonCollinearPoints(source_cpu, 0.1f, -0.05f, 0.025f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_gpu(4, 4, matrix_context);
 
     plapoint::gpu::resetIcpAlignmentStepCallCountForTesting();
     plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
@@ -399,14 +417,15 @@ TEST(ICPGpuPathTest, AlignmentStepSkipsTargetSpatialGridForSmallFiniteRadiusTarg
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeNonCollinearPoints();
     auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.1f, -0.05f, 0.025f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_gpu(4, 4, matrix_context);
 
     plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
@@ -433,14 +452,15 @@ TEST(ICPGpuPathTest, AlignmentStepSkipsTargetSpatialGridBelowTargetCountThreshol
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
     auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.01f, -0.005f, 0.0025f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_gpu(4, 4, matrix_context);
 
     plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
@@ -467,14 +487,15 @@ TEST(ICPGpuPathTest, AlignmentStepSkipsTargetTileBoundsForSmallFiniteRadiusTarge
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
     auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.01f, -0.005f, 0.0025f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_gpu(4, 4, matrix_context);
 
     plapoint::gpu::resetIcpTargetTileBoundsReserveCountForTesting();
     plapoint::gpu::resetIcpTargetTileBoundComputationCountForTesting();
@@ -505,14 +526,15 @@ TEST(ICPGpuPathTest, AlignmentStepUsesFusedSmallTargetKernelForFiniteRadiusTarge
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
     auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.01f, -0.005f, 0.0025f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_gpu(4, 4, matrix_context);
 
     plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
     plapoint::gpu::resetIcpFallbackTileBoundKernelLaunchCountForTesting();
@@ -543,15 +565,16 @@ TEST(ICPGpuPathTest, StatsAndStepUsesFusedSmallTargetKernelForFiniteRadiusTarget
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
     auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.01f, -0.005f, 0.0025f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
     plapoint::gpu::IcpStepTransformWorkspace step_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_gpu(4, 4, matrix_context);
 
     plapoint::gpu::resetIcpSmallStatsStepKernelLaunchCountForTesting();
     plapoint::gpu::resetIcpFallbackTileBoundKernelLaunchCountForTesting();
@@ -585,11 +608,12 @@ TEST(ICPGpuPathTest, ResidualStatsUsesFusedSmallTargetKernelForFiniteRadiusTarge
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
     auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.01f, -0.005f, 0.0025f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
 
@@ -619,14 +643,15 @@ TEST(ICPGpuPathTest, TransformResidualStatsUsesFusedSmallTargetKernelForFiniteRa
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
     auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.01f, -0.005f, 0.0025f);
     auto transform_cpu = makeTranslationTransform(-0.01f, 0.005f, -0.0025f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
-    auto transform_gpu = transform_cpu.toGpu();
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output_gpu(source_gpu.rows(), 3);
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
+    auto transform_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(transform_cpu, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> output_gpu(source_gpu.rows(), 3, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
 
@@ -664,17 +689,18 @@ TEST(ICPGpuPathTest, TerminalAlignmentResidualMatchesSeparateSmallTargetBaseline
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
     auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.01f, -0.005f, 0.0025f);
-    target_cpu.setValue(1, 0, target_cpu.getValue(1, 0) + 0.03f);
-    target_cpu.setValue(2, 1, target_cpu.getValue(2, 1) - 0.02f);
-    target_cpu.setValue(3, 2, target_cpu.getValue(3, 2) + 0.015f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    target_cpu.operator()(1, 0) = target_cpu.operator()(1, 0) + 0.03f;
+    target_cpu.operator()(2, 1) = target_cpu.operator()(2, 1) - 0.02f;
+    target_cpu.operator()(3, 2) = target_cpu.operator()(3, 2) + 0.015f;
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> first_step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> first_step_gpu(4, 4, matrix_context);
     const auto first_step = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
         source_gpu.data(),
         static_cast<int>(source_gpu.rows()),
@@ -685,9 +711,9 @@ TEST(ICPGpuPathTest, TerminalAlignmentResidualMatchesSeparateSmallTargetBaseline
         first_step_gpu.data());
     ASSERT_TRUE(first_step.step_valid);
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> fused_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> fused_accumulated_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> fused_output_gpu(source_gpu.rows(), 3);
+    plamatrix::internal::ResidentMatrix<float> fused_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> fused_accumulated_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> fused_output_gpu(source_gpu.rows(), 3, matrix_context);
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
     plapoint::gpu::resetIcpSmallResidualStatsKernelLaunchCountForTesting();
@@ -719,9 +745,9 @@ TEST(ICPGpuPathTest, TerminalAlignmentResidualMatchesSeparateSmallTargetBaseline
         plapoint::gpu::icpTransformResidualOutputPointWriteCountForTesting(),
         static_cast<unsigned long long>(source_gpu.rows()));
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_accumulated_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_output_gpu(source_gpu.rows(), 3);
+    plamatrix::internal::ResidentMatrix<float> baseline_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> baseline_accumulated_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> baseline_output_gpu(source_gpu.rows(), 3, matrix_context);
     const auto baseline_step =
         plapoint::gpu::detail::
             computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
@@ -754,8 +780,8 @@ TEST(ICPGpuPathTest, TerminalAlignmentResidualMatchesSeparateSmallTargetBaseline
     EXPECT_NEAR(fused_result.residual_stats.residual_sq_sum, baseline_residual.residual_sq_sum, 1.0e-9);
     EXPECT_GT(fused_result.residual_stats.residual_sq_sum, 0.0);
 
-    const auto fused_output_cpu = fused_output_gpu.toCpu();
-    const auto baseline_output_cpu = baseline_output_gpu.toCpu();
+    const auto fused_output_cpu = fused_output_gpu.toHostMatrix();
+    const auto baseline_output_cpu = baseline_output_gpu.toHostMatrix();
     ASSERT_EQ(fused_output_cpu.rows(), baseline_output_cpu.rows());
     ASSERT_EQ(fused_output_cpu.cols(), baseline_output_cpu.cols());
     for (plamatrix::Index row = 0; row < fused_output_cpu.rows(); ++row)
@@ -763,8 +789,8 @@ TEST(ICPGpuPathTest, TerminalAlignmentResidualMatchesSeparateSmallTargetBaseline
         for (plamatrix::Index col = 0; col < fused_output_cpu.cols(); ++col)
         {
             EXPECT_NEAR(
-                fused_output_cpu.getValue(row, col),
-                baseline_output_cpu.getValue(row, col),
+                fused_output_cpu.operator()(row, col),
+                baseline_output_cpu.operator()(row, col),
                 1.0e-6f);
         }
     }
@@ -776,18 +802,19 @@ TEST(ICPGpuPathTest, SmallTargetAlignmentStepAsyncLaunchDefersHostSynchronizatio
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
     auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.01f, -0.005f, 0.0025f);
-    target_cpu.setValue(1, 0, target_cpu.getValue(1, 0) + 0.03f);
-    target_cpu.setValue(2, 1, target_cpu.getValue(2, 1) - 0.02f);
-    target_cpu.setValue(3, 2, target_cpu.getValue(3, 2) + 0.015f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    target_cpu.operator()(1, 0) = target_cpu.operator()(1, 0) + 0.03f;
+    target_cpu.operator()(2, 1) = target_cpu.operator()(2, 1) - 0.02f;
+    target_cpu.operator()(3, 2) = target_cpu.operator()(3, 2) + 0.015f;
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace baseline_workspace;
     baseline_workspace.reserveFloatAlignmentStep(static_cast<int>(source_gpu.rows()));
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> baseline_step_gpu(4, 4, matrix_context);
     const auto baseline = plapoint::gpu::detail::computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
         source_gpu.data(),
         static_cast<int>(source_gpu.rows()),
@@ -799,7 +826,7 @@ TEST(ICPGpuPathTest, SmallTargetAlignmentStepAsyncLaunchDefersHostSynchronizatio
     ASSERT_TRUE(baseline.step_valid);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace async_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> async_step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> async_step_gpu(4, 4, matrix_context);
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
     plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
@@ -831,15 +858,15 @@ TEST(ICPGpuPathTest, SmallTargetAlignmentStepAsyncLaunchDefersHostSynchronizatio
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
 
-    const auto baseline_step_cpu = baseline_step_gpu.toCpu();
-    const auto async_step_cpu = async_step_gpu.toCpu();
+    const auto baseline_step_cpu = baseline_step_gpu.toHostMatrix();
+    const auto async_step_cpu = async_step_gpu.toHostMatrix();
     for (int row = 0; row < 4; ++row)
     {
         for (int col = 0; col < 4; ++col)
         {
             EXPECT_NEAR(
-                async_step_cpu.getValue(row, col),
-                baseline_step_cpu.getValue(row, col),
+                async_step_cpu.operator()(row, col),
+                baseline_step_cpu.operator()(row, col),
                 1.0e-5f);
         }
     }
@@ -851,15 +878,16 @@ TEST(ICPGpuPathTest, AlignmentStepAsyncLaunchUsesSpatialGridAndDefersHostSynchro
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto source_cpu = makeTranslatedPerturbedGridPoints(4096, 0.003f, -0.002f, 0.001f);
     auto target_cpu = makeGridPoints(4096);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace baseline_workspace;
     baseline_workspace.reserveFloatAlignmentStep(static_cast<int>(source_gpu.rows()));
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> baseline_step_gpu(4, 4, matrix_context);
     const auto baseline = plapoint::gpu::detail::computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
         source_gpu.data(),
         static_cast<int>(source_gpu.rows()),
@@ -871,7 +899,7 @@ TEST(ICPGpuPathTest, AlignmentStepAsyncLaunchUsesSpatialGridAndDefersHostSynchro
     ASSERT_TRUE(baseline.step_valid);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace async_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> async_step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> async_step_gpu(4, 4, matrix_context);
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
     plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
@@ -907,15 +935,15 @@ TEST(ICPGpuPathTest, AlignmentStepAsyncLaunchUsesSpatialGridAndDefersHostSynchro
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
 
-    const auto baseline_step_cpu = baseline_step_gpu.toCpu();
-    const auto async_step_cpu = async_step_gpu.toCpu();
+    const auto baseline_step_cpu = baseline_step_gpu.toHostMatrix();
+    const auto async_step_cpu = async_step_gpu.toHostMatrix();
     for (int row = 0; row < 4; ++row)
     {
         for (int col = 0; col < 4; ++col)
         {
             EXPECT_NEAR(
-                async_step_cpu.getValue(row, col),
-                baseline_step_cpu.getValue(row, col),
+                async_step_cpu.operator()(row, col),
+                baseline_step_cpu.operator()(row, col),
                 1.0e-5f);
         }
     }
@@ -927,13 +955,14 @@ TEST(ICPGpuPathTest, AlignmentStepAsyncLaunchRejectsHostGuidedFallbackRequests)
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto source_cpu = makeTranslatedPerturbedGridPoints(4096, 0.003f, -0.002f, 0.001f);
     auto target_cpu = makeGridPoints(4096);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
     plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_gpu(4, 4, matrix_context);
 
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
@@ -959,8 +988,8 @@ TEST(ICPGpuPathTest, AlignmentStepAsyncLaunchRejectsHostGuidedFallbackRequests)
 
     auto exact_source_cpu = makeGridPoints(4096);
     auto exact_target_cpu = makeGridPoints(4096);
-    auto exact_source_gpu = exact_source_cpu.toGpu();
-    auto exact_target_gpu = exact_target_cpu.toGpu();
+    auto exact_source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(exact_source_cpu, matrix_context);
+    auto exact_target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(exact_target_cpu, matrix_context);
 
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
@@ -992,17 +1021,18 @@ TEST(ICPGpuPathTest, TerminalAlignmentResidualAsyncLaunchDefersHostSynchronizati
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
     auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.01f, -0.005f, 0.0025f);
-    target_cpu.setValue(1, 0, target_cpu.getValue(1, 0) + 0.03f);
-    target_cpu.setValue(2, 1, target_cpu.getValue(2, 1) - 0.02f);
-    target_cpu.setValue(3, 2, target_cpu.getValue(3, 2) + 0.015f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    target_cpu.operator()(1, 0) = target_cpu.operator()(1, 0) + 0.03f;
+    target_cpu.operator()(2, 1) = target_cpu.operator()(2, 1) - 0.02f;
+    target_cpu.operator()(3, 2) = target_cpu.operator()(3, 2) + 0.015f;
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> first_step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> first_step_gpu(4, 4, matrix_context);
     const auto first_step = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
         source_gpu.data(),
         static_cast<int>(source_gpu.rows()),
@@ -1013,9 +1043,9 @@ TEST(ICPGpuPathTest, TerminalAlignmentResidualAsyncLaunchDefersHostSynchronizati
         first_step_gpu.data());
     ASSERT_TRUE(first_step.step_valid);
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> fused_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> fused_accumulated_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> fused_output_gpu(source_gpu.rows(), 3);
+    plamatrix::internal::ResidentMatrix<float> fused_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> fused_accumulated_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> fused_output_gpu(source_gpu.rows(), 3, matrix_context);
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
     plapoint::gpu::resetIcpSmallTerminalAlignmentResidualKernelLaunchCountForTesting();
@@ -1059,18 +1089,19 @@ TEST(ICPGpuPathTest, SmallTargetSingleStepTerminalAsyncLaunchCopiesResultWithOne
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
     auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.01f, -0.005f, 0.0025f);
-    target_cpu.setValue(1, 0, target_cpu.getValue(1, 0) + 0.03f);
-    target_cpu.setValue(2, 1, target_cpu.getValue(2, 1) - 0.02f);
-    target_cpu.setValue(3, 2, target_cpu.getValue(3, 2) + 0.015f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    target_cpu.operator()(1, 0) = target_cpu.operator()(1, 0) + 0.03f;
+    target_cpu.operator()(2, 1) = target_cpu.operator()(2, 1) - 0.02f;
+    target_cpu.operator()(3, 2) = target_cpu.operator()(3, 2) + 0.015f;
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace baseline_workspace;
     baseline_workspace.reserveFloatAlignmentStep(static_cast<int>(source_gpu.rows()));
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> baseline_step_gpu(4, 4, matrix_context);
     const auto baseline_step = plapoint::gpu::detail::computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
         source_gpu.data(),
         static_cast<int>(source_gpu.rows()),
@@ -1081,7 +1112,7 @@ TEST(ICPGpuPathTest, SmallTargetSingleStepTerminalAsyncLaunchCopiesResultWithOne
         baseline_step_gpu.data());
     ASSERT_TRUE(baseline_step.step_valid);
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_output_gpu(source_gpu.rows(), 3);
+    plamatrix::internal::ResidentMatrix<float> baseline_output_gpu(source_gpu.rows(), 3, matrix_context);
     const auto baseline_residual =
         plapoint::gpu::detail::transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
             baseline_step_gpu.data(),
@@ -1094,8 +1125,8 @@ TEST(ICPGpuPathTest, SmallTargetSingleStepTerminalAsyncLaunchCopiesResultWithOne
             baseline_workspace);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace async_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> async_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> async_output_gpu(source_gpu.rows(), 3);
+    plamatrix::internal::ResidentMatrix<float> async_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> async_output_gpu(source_gpu.rows(), 3, matrix_context);
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
     plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
@@ -1138,17 +1169,17 @@ TEST(ICPGpuPathTest, SmallTargetSingleStepTerminalAsyncLaunchCopiesResultWithOne
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
 
-    const auto baseline_step_cpu = baseline_step_gpu.toCpu();
-    const auto async_step_cpu = async_step_gpu.toCpu();
-    const auto baseline_output_cpu = baseline_output_gpu.toCpu();
-    const auto async_output_cpu = async_output_gpu.toCpu();
+    const auto baseline_step_cpu = baseline_step_gpu.toHostMatrix();
+    const auto async_step_cpu = async_step_gpu.toHostMatrix();
+    const auto baseline_output_cpu = baseline_output_gpu.toHostMatrix();
+    const auto async_output_cpu = async_output_gpu.toHostMatrix();
     for (int row = 0; row < 4; ++row)
     {
         for (int col = 0; col < 4; ++col)
         {
             EXPECT_NEAR(
-                async_step_cpu.getValue(row, col),
-                baseline_step_cpu.getValue(row, col),
+                async_step_cpu.operator()(row, col),
+                baseline_step_cpu.operator()(row, col),
                 1.0e-5f);
         }
     }
@@ -1157,8 +1188,8 @@ TEST(ICPGpuPathTest, SmallTargetSingleStepTerminalAsyncLaunchCopiesResultWithOne
         for (plamatrix::Index col = 0; col < async_output_cpu.cols(); ++col)
         {
             EXPECT_NEAR(
-                async_output_cpu.getValue(row, col),
-                baseline_output_cpu.getValue(row, col),
+                async_output_cpu.operator()(row, col),
+                baseline_output_cpu.operator()(row, col),
                 1.0e-6f);
         }
     }
@@ -1170,18 +1201,19 @@ TEST(ICPGpuPathTest, SmallTargetTwoStepTerminalAsyncLaunchCopiesResultsWithOneHo
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
     auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.01f, -0.005f, 0.0025f);
-    target_cpu.setValue(1, 0, target_cpu.getValue(1, 0) + 0.03f);
-    target_cpu.setValue(2, 1, target_cpu.getValue(2, 1) - 0.02f);
-    target_cpu.setValue(3, 2, target_cpu.getValue(3, 2) + 0.015f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    target_cpu.operator()(1, 0) = target_cpu.operator()(1, 0) + 0.03f;
+    target_cpu.operator()(2, 1) = target_cpu.operator()(2, 1) - 0.02f;
+    target_cpu.operator()(3, 2) = target_cpu.operator()(3, 2) + 0.015f;
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace baseline_first_workspace;
     baseline_first_workspace.reserveFloatAlignmentStep(static_cast<int>(source_gpu.rows()));
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_first_step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> baseline_first_step_gpu(4, 4, matrix_context);
     const auto baseline_first =
         plapoint::gpu::detail::computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
             source_gpu.data(),
@@ -1194,9 +1226,9 @@ TEST(ICPGpuPathTest, SmallTargetTwoStepTerminalAsyncLaunchCopiesResultsWithOneHo
     ASSERT_TRUE(baseline_first.step_valid);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace baseline_terminal_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_terminal_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_accumulated_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_output_gpu(source_gpu.rows(), 3);
+    plamatrix::internal::ResidentMatrix<float> baseline_terminal_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> baseline_accumulated_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> baseline_output_gpu(source_gpu.rows(), 3, matrix_context);
     const auto baseline_terminal =
         plapoint::gpu::detail::
             computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
@@ -1217,10 +1249,10 @@ TEST(ICPGpuPathTest, SmallTargetTwoStepTerminalAsyncLaunchCopiesResultsWithOneHo
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace async_first_workspace;
     plapoint::gpu::IcpCorrespondenceStatsWorkspace async_terminal_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> async_first_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> async_terminal_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> async_accumulated_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> async_output_gpu(source_gpu.rows(), 3);
+    plamatrix::internal::ResidentMatrix<float> async_first_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> async_terminal_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> async_accumulated_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> async_output_gpu(source_gpu.rows(), 3, matrix_context);
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
     plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
@@ -1281,17 +1313,17 @@ TEST(ICPGpuPathTest, SmallTargetTwoStepTerminalAsyncLaunchCopiesResultsWithOneHo
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
 
-    const auto baseline_accumulated_cpu = baseline_accumulated_gpu.toCpu();
-    const auto async_accumulated_cpu = async_accumulated_gpu.toCpu();
-    const auto baseline_output_cpu = baseline_output_gpu.toCpu();
-    const auto async_output_cpu = async_output_gpu.toCpu();
+    const auto baseline_accumulated_cpu = baseline_accumulated_gpu.toHostMatrix();
+    const auto async_accumulated_cpu = async_accumulated_gpu.toHostMatrix();
+    const auto baseline_output_cpu = baseline_output_gpu.toHostMatrix();
+    const auto async_output_cpu = async_output_gpu.toHostMatrix();
     for (int row = 0; row < 4; ++row)
     {
         for (int col = 0; col < 4; ++col)
         {
             EXPECT_NEAR(
-                async_accumulated_cpu.getValue(row, col),
-                baseline_accumulated_cpu.getValue(row, col),
+                async_accumulated_cpu.operator()(row, col),
+                baseline_accumulated_cpu.operator()(row, col),
                 1.0e-5f);
         }
     }
@@ -1300,8 +1332,8 @@ TEST(ICPGpuPathTest, SmallTargetTwoStepTerminalAsyncLaunchCopiesResultsWithOneHo
         for (plamatrix::Index col = 0; col < async_output_cpu.cols(); ++col)
         {
             EXPECT_NEAR(
-                async_output_cpu.getValue(row, col),
-                baseline_output_cpu.getValue(row, col),
+                async_output_cpu.operator()(row, col),
+                baseline_output_cpu.operator()(row, col),
                 1.0e-6f);
         }
     }
@@ -1313,25 +1345,32 @@ TEST(ICPGpuPathTest, SmallTargetTwoStepTerminalAsyncLaunchSkipsTerminalWhenFirst
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> target_cpu(4, 3);
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source_cpu(4, 3);
-    target_cpu.setValue(0, 0, 0.0f); target_cpu.setValue(0, 1, 0.0f); target_cpu.setValue(0, 2, 0.0f);
-    target_cpu.setValue(1, 0, 0.1f); target_cpu.setValue(1, 1, 0.0f); target_cpu.setValue(1, 2, 0.0f);
-    target_cpu.setValue(2, 0, 0.0f); target_cpu.setValue(2, 1, 0.1f); target_cpu.setValue(2, 2, 0.0f);
-    target_cpu.setValue(3, 0, 0.0f); target_cpu.setValue(3, 1, 0.0f); target_cpu.setValue(3, 2, 0.1f);
-    source_cpu.setValue(0, 0, 0.005f); source_cpu.setValue(0, 1, 0.0f); source_cpu.setValue(0, 2, 0.0f);
-    source_cpu.setValue(1, 0, 0.105f); source_cpu.setValue(1, 1, 0.0f); source_cpu.setValue(1, 2, 0.0f);
-    source_cpu.setValue(2, 0, 10.0f); source_cpu.setValue(2, 1, 10.0f); source_cpu.setValue(2, 2, 10.0f);
-    source_cpu.setValue(3, 0, 20.0f); source_cpu.setValue(3, 1, 20.0f); source_cpu.setValue(3, 2, 20.0f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    plamatrix::MatrixXf target_cpu(4, 3);
+    plamatrix::MatrixXf source_cpu(4, 3);
+    target_cpu.operator()(0, 0) = 0.0f;
+    target_cpu.operator()(0, 1) = 0.0f;
+    target_cpu.operator()(0, 2) = 0.0f;
+    target_cpu.operator()(1, 0) = 0.1f;
+    target_cpu.operator()(1, 1) = 0.0f;
+    target_cpu.operator()(1, 2) = 0.0f;
+    target_cpu.operator()(2, 0) = 0.0f;
+    target_cpu.operator()(2, 1) = 0.1f;
+    target_cpu.operator()(2, 2) = 0.0f;
+    target_cpu.operator()(3, 0) = 0.0f; target_cpu.operator()(3, 1) = 0.0f; target_cpu.operator()(3, 2) = 0.1f;
+    source_cpu.operator()(0, 0) = 0.005f; source_cpu.operator()(0, 1) = 0.0f; source_cpu.operator()(0, 2) = 0.0f;
+    source_cpu.operator()(1, 0) = 0.105f; source_cpu.operator()(1, 1) = 0.0f; source_cpu.operator()(1, 2) = 0.0f;
+    source_cpu.operator()(2, 0) = 10.0f; source_cpu.operator()(2, 1) = 10.0f; source_cpu.operator()(2, 2) = 10.0f;
+    source_cpu.operator()(3, 0) = 20.0f; source_cpu.operator()(3, 1) = 20.0f; source_cpu.operator()(3, 2) = 20.0f;
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace first_workspace;
     plapoint::gpu::IcpCorrespondenceStatsWorkspace terminal_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> first_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> terminal_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> accumulated_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> first_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> terminal_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> accumulated_gpu(4, 4, matrix_context);
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
     const bool launched =
@@ -1374,17 +1413,18 @@ TEST(ICPGpuPathTest, TransformedAccumulatedAlignmentStepAsyncLaunchDefersHostSyn
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
     auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.01f, -0.005f, 0.0025f);
-    target_cpu.setValue(1, 0, target_cpu.getValue(1, 0) + 0.03f);
-    target_cpu.setValue(2, 1, target_cpu.getValue(2, 1) - 0.02f);
-    target_cpu.setValue(3, 2, target_cpu.getValue(3, 2) + 0.015f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    target_cpu.operator()(1, 0) = target_cpu.operator()(1, 0) + 0.03f;
+    target_cpu.operator()(2, 1) = target_cpu.operator()(2, 1) - 0.02f;
+    target_cpu.operator()(3, 2) = target_cpu.operator()(3, 2) + 0.015f;
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace first_step_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> first_step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> first_step_gpu(4, 4, matrix_context);
     const auto first_step = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
         source_gpu.data(),
         static_cast<int>(source_gpu.rows()),
@@ -1397,8 +1437,8 @@ TEST(ICPGpuPathTest, TransformedAccumulatedAlignmentStepAsyncLaunchDefersHostSyn
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace baseline_workspace;
     baseline_workspace.reserveFloatAlignmentStep(static_cast<int>(source_gpu.rows()));
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_accumulated_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> baseline_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> baseline_accumulated_gpu(4, 4, matrix_context);
     const auto baseline =
         plapoint::gpu::detail::
             computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
@@ -1415,8 +1455,8 @@ TEST(ICPGpuPathTest, TransformedAccumulatedAlignmentStepAsyncLaunchDefersHostSyn
     ASSERT_TRUE(baseline.step_valid);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace async_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> async_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> async_accumulated_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> async_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> async_accumulated_gpu(4, 4, matrix_context);
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
     plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
@@ -1452,15 +1492,15 @@ TEST(ICPGpuPathTest, TransformedAccumulatedAlignmentStepAsyncLaunchDefersHostSyn
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
 
-    const auto baseline_accumulated_cpu = baseline_accumulated_gpu.toCpu();
-    const auto async_accumulated_cpu = async_accumulated_gpu.toCpu();
+    const auto baseline_accumulated_cpu = baseline_accumulated_gpu.toHostMatrix();
+    const auto async_accumulated_cpu = async_accumulated_gpu.toHostMatrix();
     for (int row = 0; row < 4; ++row)
     {
         for (int col = 0; col < 4; ++col)
         {
             EXPECT_NEAR(
-                async_accumulated_cpu.getValue(row, col),
-                baseline_accumulated_cpu.getValue(row, col),
+                async_accumulated_cpu.operator()(row, col),
+                baseline_accumulated_cpu.operator()(row, col),
                 1.0e-5f);
         }
     }
@@ -1472,14 +1512,15 @@ TEST(ICPGpuPathTest, TransformedAccumulatedAlignmentStepAsyncLaunchUsesSpatialGr
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto source_cpu = makeTranslatedPerturbedGridPoints(4096, 0.003f, -0.002f, 0.001f);
     auto target_cpu = makeGridPoints(4096);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace first_step_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> first_step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> first_step_gpu(4, 4, matrix_context);
     const auto first_step = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
         source_gpu.data(),
         static_cast<int>(source_gpu.rows()),
@@ -1492,8 +1533,8 @@ TEST(ICPGpuPathTest, TransformedAccumulatedAlignmentStepAsyncLaunchUsesSpatialGr
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace baseline_workspace;
     baseline_workspace.reserveFloatAlignmentStep(static_cast<int>(source_gpu.rows()));
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_accumulated_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> baseline_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> baseline_accumulated_gpu(4, 4, matrix_context);
     const auto baseline =
         plapoint::gpu::detail::
             computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
@@ -1510,8 +1551,8 @@ TEST(ICPGpuPathTest, TransformedAccumulatedAlignmentStepAsyncLaunchUsesSpatialGr
     ASSERT_TRUE(baseline.step_valid);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace async_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> async_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> async_accumulated_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> async_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> async_accumulated_gpu(4, 4, matrix_context);
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
     plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
@@ -1553,15 +1594,15 @@ TEST(ICPGpuPathTest, TransformedAccumulatedAlignmentStepAsyncLaunchUsesSpatialGr
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
 
-    const auto baseline_accumulated_cpu = baseline_accumulated_gpu.toCpu();
-    const auto async_accumulated_cpu = async_accumulated_gpu.toCpu();
+    const auto baseline_accumulated_cpu = baseline_accumulated_gpu.toHostMatrix();
+    const auto async_accumulated_cpu = async_accumulated_gpu.toHostMatrix();
     for (int row = 0; row < 4; ++row)
     {
         for (int col = 0; col < 4; ++col)
         {
             EXPECT_NEAR(
-                async_accumulated_cpu.getValue(row, col),
-                baseline_accumulated_cpu.getValue(row, col),
+                async_accumulated_cpu.operator()(row, col),
+                baseline_accumulated_cpu.operator()(row, col),
                 1.0e-5f);
         }
     }
@@ -1573,15 +1614,16 @@ TEST(ICPGpuPathTest, TwoStepAlignmentAsyncLaunchUsesSpatialGridAndCopiesResultsW
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto source_cpu = makeTranslatedPerturbedGridPoints(4096, 0.003f, -0.002f, 0.001f);
     auto target_cpu = makeGridPoints(4096);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace baseline_first_workspace;
     baseline_first_workspace.reserveFloatAlignmentStep(static_cast<int>(source_gpu.rows()));
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_first_step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> baseline_first_step_gpu(4, 4, matrix_context);
     const auto baseline_first = plapoint::gpu::detail::computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
         source_gpu.data(),
         static_cast<int>(source_gpu.rows()),
@@ -1594,8 +1636,8 @@ TEST(ICPGpuPathTest, TwoStepAlignmentAsyncLaunchUsesSpatialGridAndCopiesResultsW
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace baseline_second_workspace;
     baseline_second_workspace.reserveFloatAlignmentStep(static_cast<int>(source_gpu.rows()));
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_second_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> baseline_accumulated_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> baseline_second_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> baseline_accumulated_gpu(4, 4, matrix_context);
     const auto baseline_second =
         plapoint::gpu::detail::
             computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
@@ -1613,9 +1655,9 @@ TEST(ICPGpuPathTest, TwoStepAlignmentAsyncLaunchUsesSpatialGridAndCopiesResultsW
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace async_first_workspace;
     plapoint::gpu::IcpCorrespondenceStatsWorkspace async_second_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> async_first_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> async_second_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> async_accumulated_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> async_first_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> async_second_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> async_accumulated_gpu(4, 4, matrix_context);
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
     plapoint::gpu::resetIcpSmallAlignmentStepKernelLaunchCountForTesting();
@@ -1661,15 +1703,15 @@ TEST(ICPGpuPathTest, TwoStepAlignmentAsyncLaunchUsesSpatialGridAndCopiesResultsW
     EXPECT_EQ(plapoint::gpu::icpAlignmentStepHostResultCopyCountForTesting(), 2);
     EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
 
-    const auto baseline_accumulated_cpu = baseline_accumulated_gpu.toCpu();
-    const auto async_accumulated_cpu = async_accumulated_gpu.toCpu();
+    const auto baseline_accumulated_cpu = baseline_accumulated_gpu.toHostMatrix();
+    const auto async_accumulated_cpu = async_accumulated_gpu.toHostMatrix();
     for (int row = 0; row < 4; ++row)
     {
         for (int col = 0; col < 4; ++col)
         {
             EXPECT_NEAR(
-                async_accumulated_cpu.getValue(row, col),
-                baseline_accumulated_cpu.getValue(row, col),
+                async_accumulated_cpu.operator()(row, col),
+                baseline_accumulated_cpu.operator()(row, col),
                 1.0e-5f);
         }
     }
@@ -1681,23 +1723,24 @@ TEST(ICPGpuPathTest, TwoStepAlignmentAsyncLaunchWritesEmptySecondStepWhenFirstSt
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeGridPoints(4096);
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> source_cpu(2, 3);
+    plamatrix::MatrixXf source_cpu(2, 3);
     for (int row = 0; row < 2; ++row)
     {
-        source_cpu.setValue(row, 0, target_cpu.getValue(row, 0) + 0.003f);
-        source_cpu.setValue(row, 1, target_cpu.getValue(row, 1) - 0.002f);
-        source_cpu.setValue(row, 2, target_cpu.getValue(row, 2) + 0.001f);
+        source_cpu.operator()(row, 0) = target_cpu.operator()(row, 0) + 0.003f;
+        source_cpu.operator()(row, 1) = target_cpu.operator()(row, 1) - 0.002f;
+        source_cpu.operator()(row, 2) = target_cpu.operator()(row, 2) + 0.001f;
     }
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace first_workspace;
     plapoint::gpu::IcpCorrespondenceStatsWorkspace second_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> first_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> second_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> accumulated_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> first_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> second_step_gpu(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> accumulated_gpu(4, 4, matrix_context);
     plapoint::gpu::resetIcpHostSynchronizationCountForTesting();
     plapoint::gpu::resetIcpAlignmentStepHostResultCopyCountForTesting();
     const bool launched =
@@ -1741,8 +1784,8 @@ TEST(ICPGpuPathTest, AlignUsesFusedSmallTargetKernelForTransformedFiniteRadiusSt
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto target_cpu_points = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
     auto source_cpu_points = makeTranslatedNonCollinearPoints(target_cpu_points, 0.01f, -0.005f, 0.0025f);
@@ -1751,7 +1794,7 @@ TEST(ICPGpuPathTest, AlignUsesFusedSmallTargetKernelForTransformedFiniteRadiusSt
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.08f);
@@ -1782,21 +1825,21 @@ TEST(ICPGpuPathTest, AlignSmallFiniteRadiusFinalMetricsAvoidExtraHostSynchroniza
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto target_cpu_points = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
     auto source_cpu_points = makeTranslatedNonCollinearPoints(target_cpu_points, 0.01f, -0.005f, 0.0025f);
-    target_cpu_points.setValue(1, 0, target_cpu_points.getValue(1, 0) + 0.03f);
-    target_cpu_points.setValue(2, 1, target_cpu_points.getValue(2, 1) - 0.02f);
-    target_cpu_points.setValue(3, 2, target_cpu_points.getValue(3, 2) + 0.015f);
+    target_cpu_points.operator()(1, 0) = target_cpu_points.operator()(1, 0) + 0.03f;
+    target_cpu_points.operator()(2, 1) = target_cpu_points.operator()(2, 1) - 0.02f;
+    target_cpu_points.operator()(3, 2) = target_cpu_points.operator()(3, 2) + 0.015f;
 
     auto source_cpu = std::make_shared<CpuCloud>(std::move(source_cpu_points));
     auto target_cpu = std::make_shared<CpuCloud>(std::move(target_cpu_points));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.08f);
@@ -1832,21 +1875,21 @@ TEST(ICPGpuPathTest, AlignSmallFiniteRadiusFinalMetricsWithOutputAvoidExtraHostS
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto target_cpu_points = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
     auto source_cpu_points = makeTranslatedNonCollinearPoints(target_cpu_points, 0.01f, -0.005f, 0.0025f);
-    target_cpu_points.setValue(1, 0, target_cpu_points.getValue(1, 0) + 0.03f);
-    target_cpu_points.setValue(2, 1, target_cpu_points.getValue(2, 1) - 0.02f);
-    target_cpu_points.setValue(3, 2, target_cpu_points.getValue(3, 2) + 0.015f);
+    target_cpu_points.operator()(1, 0) = target_cpu_points.operator()(1, 0) + 0.03f;
+    target_cpu_points.operator()(2, 1) = target_cpu_points.operator()(2, 1) - 0.02f;
+    target_cpu_points.operator()(3, 2) = target_cpu_points.operator()(3, 2) + 0.015f;
 
     auto source_cpu = std::make_shared<CpuCloud>(std::move(source_cpu_points));
     auto target_cpu = std::make_shared<CpuCloud>(std::move(target_cpu_points));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.08f);
@@ -1880,7 +1923,7 @@ TEST(ICPGpuPathTest, AlignSmallFiniteRadiusFinalMetricsWithOutputAvoidExtraHostS
     {
         for (plamatrix::Index col = 0; col < output_cpu.points().cols(); ++col)
         {
-            EXPECT_TRUE(std::isfinite(output_cpu.points().getValue(row, col)));
+            EXPECT_TRUE(std::isfinite(output_cpu.points().operator()(row, col)));
         }
     }
 }
@@ -1892,14 +1935,14 @@ TEST(ICPGpuPathTest, AlignSmallFiniteRadiusFinalMetricsWithTargetAliasOutputAvoi
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto target_cpu_points = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting - 1);
     auto source_cpu_points = makeTranslatedNonCollinearPoints(target_cpu_points, 0.01f, -0.005f, 0.0025f);
-    target_cpu_points.setValue(1, 0, target_cpu_points.getValue(1, 0) + 0.03f);
-    target_cpu_points.setValue(2, 1, target_cpu_points.getValue(2, 1) - 0.02f);
-    target_cpu_points.setValue(3, 2, target_cpu_points.getValue(3, 2) + 0.015f);
+    target_cpu_points.operator()(1, 0) = target_cpu_points.operator()(1, 0) + 0.03f;
+    target_cpu_points.operator()(2, 1) = target_cpu_points.operator()(2, 1) - 0.02f;
+    target_cpu_points.operator()(3, 2) = target_cpu_points.operator()(3, 2) + 0.015f;
 
     auto source_cpu = std::make_shared<CpuCloud>(std::move(source_cpu_points));
     auto target_cpu = std::make_shared<CpuCloud>(std::move(target_cpu_points));
@@ -1907,7 +1950,7 @@ TEST(ICPGpuPathTest, AlignSmallFiniteRadiusFinalMetricsWithTargetAliasOutputAvoi
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
     const auto* target_points = target->points().data();
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.08f);
@@ -1946,7 +1989,7 @@ TEST(ICPGpuPathTest, AlignSmallFiniteRadiusFinalMetricsWithTargetAliasOutputAvoi
     {
         for (plamatrix::Index col = 0; col < output_cpu.points().cols(); ++col)
         {
-            EXPECT_TRUE(std::isfinite(output_cpu.points().getValue(row, col)));
+            EXPECT_TRUE(std::isfinite(output_cpu.points().operator()(row, col)));
         }
     }
 }
@@ -1957,14 +2000,15 @@ TEST(ICPGpuPathTest, AlignmentStepUsesFusedSmallTargetKernelAtTargetCountThresho
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeCompactNonCollinearGridPoints(kMinTargetSpatialGridRowsForTesting);
     auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.01f, -0.005f, 0.0025f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_gpu(4, 4, matrix_context);
 
     plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
@@ -1995,14 +2039,15 @@ TEST(ICPGpuPathTest, AlignmentStepUsesTargetSpatialGridForLargeFiniteRadiusTarge
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto source_cpu = makeTranslatedGridPoints(4096, 0.003f, -0.002f, 0.001f);
     auto target_cpu = makeGridPoints(4096);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_gpu(4, 4, matrix_context);
 
     plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
     plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
@@ -2031,15 +2076,16 @@ TEST(ICPGpuPathTest, StatsAndStepCanUseOrderedCorrespondencesForFiniteRadiusTran
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_cpu = makeNonCollinearPoints();
     auto source_cpu = makeTranslatedNonCollinearPoints(target_cpu, 0.1f, -0.05f, 0.025f);
-    auto source_gpu = source_cpu.toGpu();
-    auto target_gpu = target_cpu.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_cpu, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_cpu, matrix_context);
 
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
     plapoint::gpu::IcpStepTransformWorkspace step_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_gpu(4, 4, matrix_context);
 
     plapoint::gpu::resetIcpFullDistanceEvaluationCountForTesting();
     plapoint::gpu::resetIcpTargetCandidateVisitCountForTesting();
@@ -2066,10 +2112,10 @@ TEST(ICPGpuPathTest, StatsAndStepCanUseOrderedCorrespondencesForFiniteRadiusTran
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 0);
 
-    const auto step_cpu = step_gpu.toCpu();
-    EXPECT_NEAR(step_cpu.getValue(0, 3), -0.1f, 1.0e-5f);
-    EXPECT_NEAR(step_cpu.getValue(1, 3), 0.05f, 1.0e-5f);
-    EXPECT_NEAR(step_cpu.getValue(2, 3), -0.025f, 1.0e-5f);
+    const auto step_cpu = step_gpu.toHostMatrix();
+    EXPECT_NEAR(step_cpu.operator()(0, 3), -0.1f, 1.0e-5f);
+    EXPECT_NEAR(step_cpu.operator()(1, 3), 0.05f, 1.0e-5f);
+    EXPECT_NEAR(step_cpu.operator()(2, 3), -0.025f, 1.0e-5f);
 }
 
 TEST(ICPGpuPathTest, TransformPointsColumnMajorWritesCallerOwnedOutput)
@@ -2078,18 +2124,25 @@ TEST(ICPGpuPathTest, TransformPointsColumnMajorWritesCallerOwnedOutput)
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto points_cpu = makeNonCollinearPoints();
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> T(4, 4);
-    T.fill(0.0f);
-    T.setValue(0, 0, 0.0f);  T.setValue(0, 1, -1.0f); T.setValue(0, 2, 0.0f); T.setValue(0, 3, 2.0f);
-    T.setValue(1, 0, 1.0f);  T.setValue(1, 1, 0.0f);  T.setValue(1, 2, 0.0f); T.setValue(1, 3, -1.0f);
-    T.setValue(2, 0, 0.0f);  T.setValue(2, 1, 0.0f);  T.setValue(2, 2, 1.0f); T.setValue(2, 3, 0.5f);
-    T.setValue(3, 0, 0.0f);  T.setValue(3, 1, 0.0f);  T.setValue(3, 2, 0.0f); T.setValue(3, 3, 1.0f);
+    plamatrix::MatrixXf T(4, 4);
+    T.setConstant(0.0f);
+    T.operator()(0, 0) = 0.0f;
+    T.operator()(0, 1) = -1.0f;
+    T.operator()(0, 2) = 0.0f;
+    T.operator()(0, 3) = 2.0f;
+    T.operator()(1, 0) = 1.0f;
+    T.operator()(1, 1) = 0.0f;
+    T.operator()(1, 2) = 0.0f;
+    T.operator()(1, 3) = -1.0f;
+    T.operator()(2, 0) = 0.0f;  T.operator()(2, 1) = 0.0f;  T.operator()(2, 2) = 1.0f; T.operator()(2, 3) = 0.5f;
+    T.operator()(3, 0) = 0.0f;  T.operator()(3, 1) = 0.0f;  T.operator()(3, 2) = 0.0f; T.operator()(3, 3) = 1.0f;
 
-    auto points_gpu = points_cpu.toGpu();
-    auto T_gpu = T.toGpu();
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> transformed_gpu(points_cpu.rows(), 3);
+    auto points_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(points_cpu, matrix_context);
+    auto T_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(T, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> transformed_gpu(points_cpu.rows(), 3, matrix_context);
 
     plapoint::gpu::transformPointsColumnMajor(
         T_gpu.data(),
@@ -2097,13 +2150,13 @@ TEST(ICPGpuPathTest, TransformPointsColumnMajorWritesCallerOwnedOutput)
         static_cast<int>(points_cpu.rows()),
         transformed_gpu.data());
 
-    auto transformed = transformed_gpu.toCpu();
-    auto expected = plamatrix::transformPoints(T, points_cpu);
+    auto transformed = transformed_gpu.toHostMatrix();
+    auto expected = transformedPoints(T, points_cpu);
     for (plamatrix::Index row = 0; row < points_cpu.rows(); ++row)
     {
         for (int col = 0; col < 3; ++col)
         {
-            EXPECT_NEAR(transformed.getValue(row, col), expected.getValue(row, col), 1.0e-6f);
+            EXPECT_NEAR(transformed.operator()(row, col), expected.operator()(row, col), 1.0e-6f);
         }
     }
 }

@@ -3,14 +3,35 @@
 ## Uniform-grid index
 
 `gpu::GpuSpatialIndex<Scalar>` indexes finite points from one GPU cloud revision.
-Construction compacts finite source indices, generates checked 64-bit cell keys,
-radix-sorts `(key, sourceIndex)`, run-length encodes cells, and builds offsets. Expected
-construction cost is `O(n log n)` from sorting; radius work depends on intersected cells,
-and KNN work depends on expanded shells and occupancy.
+Construction uses PlaMatrix to compute the finite-row mask once and reuse it for column bounds,
+compact finite source indices, sort `(key, sourceIndex)`, run-length encode cells, reduce maximum
+occupancy, and build offsets. `buildAdaptive()` reuses those bounds when it selects a cell size
+instead of repeating the statistics pass. Expected construction cost is `O(n log n)` from sorting;
+radius work depends on intersected cells, and KNN work depends on expanded shells and occupancy.
 
 An index match requires the same point-storage identity and address, point count,
-`pointsRevision()`, and cell size. Requesting mutable `points()` invalidates cache reuse,
-even if the caller does not subsequently change a coordinate.
+`pointsRevision()`, and cell size. `editPoints()` invalidates caches at both entry and exit,
+then allows reuse again. Requesting legacy mutable `points()` exposes an unbounded alias and
+therefore disables GPU cache reuse for the lifetime of that cloud, even if the caller does not
+subsequently change a coordinate. CPU KdTree compatibility checks such aliases against its
+exact point snapshot and rebuilds only when the bytes differ.
+
+`GpuSpatialIndex` is the prepared-search object: `build()` or `buildAdaptive()` copies the
+finite indexed points into index-owned storage, and query calls do not read the source cloud.
+The source may therefore change after construction without changing the existing snapshot;
+use `matches()` when a cache needs to decide whether to rebuild. Reuse one immutable index
+with a separate `GpuSpatialQueryWorkspace` per overlapping stream.
+
+Finite-radius GPU ICP has a separate prepared target path because its kernels use a specialized
+column-major grid. `IterativeClosestPoint::prepareGpuTargetSpatialIndex()` builds that grid
+synchronously and returns `true` when the grid backend applies. A later `align()` on the same
+ICP object reuses it while the target and radius remain current.
+
+CUDA voxel grouping and ICP target-grid construction share PlaMatrix's full-range signed
+three-component key primitives: stable lexicographic sort, run-length encoding, and exclusive
+scan. Voxel-cluster bounds also use PlaMatrix finite-column statistics. PlaPoint still owns point
+quantization, invalid-point policy, centroid and attribute aggregation, ICP cell lookup,
+neighborhood traversal, correspondence selection, and pose estimation.
 
 ## Query contracts
 
@@ -84,6 +105,11 @@ algorithm workspace. Returned ordinary PlaMatrix allocations may outlive a works
 after the producing stream has synchronized. Destroy result allocations before
 destroying a stream that may still reference them.
 
+For asynchronous writes performed through a `PointCloud::PointEdit`, synchronize the writing
+stream before the editor is destroyed. Its destructor marks the end of the mutation window;
+ending that window while writes are still queued would make subsequent cache decisions race the
+producer stream.
+
 ## Local calibration
 
 Use the dedicated benchmark mode:
@@ -95,9 +121,9 @@ build-cuda\benchmarks\Release\plapoint_benchmarks.exe `
   --points 100000 --iterations 3 --search-features-only
 ```
 
-The suite reports separate brute-force and forced-index KNN rows plus radius count,
-normal estimation, normal smoothing, SOR, and RadiusOR. Forced-index rows intentionally
-bypass Auto geometry checks so pathological distributions remain measurable.
+The suite reports adaptive spatial-index construction, separate brute-force and forced-index
+KNN rows, radius count, normal estimation, normal smoothing, SOR, and RadiusOR. Forced-index
+rows intentionally bypass Auto geometry checks so pathological distributions remain measurable.
 
 On the RTX 5080 / CUDA 13.1 validation machine, the final three-iteration baseline was:
 

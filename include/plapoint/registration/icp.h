@@ -6,9 +6,10 @@
 #include <plapoint/gpu/icp.h>
 #endif
 #include <plapoint/search/kdtree.h>
-#include <plamatrix/dense/dense_matrix.h>
-#include <plamatrix/ops/point_cloud.h>
-#include <plamatrix/ops/small_matrix.h>
+#include <plamatrix/internal/device/device_matrix.h>
+#include <plamatrix/internal/ops/point_cloud.h>
+#include <plamatrix/internal/ops/small_matrix.h>
+#include <plamatrix/internal/core/device.h>
 #include <array>
 #include <algorithm>
 #include <cmath>
@@ -21,19 +22,19 @@
 
 namespace plapoint {
 
-template <typename Scalar, plamatrix::Device Dev>
-class IterativeClosestPoint
+template <typename Scalar, plamatrix::internal::Device Dev>
+class MatrixIterativeClosestPoint
 {
 public:
-    using PointCloudType = PointCloud<Scalar, Dev>;
-    using Matrix4 = plamatrix::DenseMatrix<Scalar, Dev>;
+    using PointCloudType = plapoint::internal::DeviceCloud<Scalar, Dev>;
+    using Matrix4 = plamatrix::Matrix<Scalar, 4, 4>;
 
     void setInputSource(const std::shared_ptr<const PointCloudType>& cloud) { _source = cloud; }
 
     void setInputTarget(const std::shared_ptr<const PointCloudType>& cloud)
     {
 #ifdef PLAPOINT_WITH_CUDA
-        if constexpr (Dev == plamatrix::Device::GPU)
+        if constexpr (Dev == plamatrix::internal::Device::GPU)
         {
             const bool same_target = _target == cloud;
             _target = cloud;
@@ -66,7 +67,8 @@ public:
     /// Set convergence tolerance on the incremental transform. Throws if eps is not finite and positive.
     void setTransformationEpsilon(Scalar eps)
     {
-        if (!std::isfinite(eps) || eps <= Scalar(0))
+        if (!std::isfinite(eps) || eps < Scalar(0)
+            || (eps == Scalar(0) && !_squared_convergence))
         {
             throw std::invalid_argument("ICP: transformation epsilon must be positive");
         }
@@ -82,6 +84,10 @@ public:
         }
         _rotation_eps = eps;
     }
+
+    /// Use PCL's squared-translation and rotation-cosine convergence contract.
+    /// Intended for the point-type public API; legacy scalar/device callers retain their thresholds.
+    void setSquaredConvergenceMode(bool enabled) { _squared_convergence = enabled; }
 
     /// Set an optional convergence tolerance on RMSE change between iterations. Zero disables it.
     void setEuclideanFitnessEpsilon(Scalar eps)
@@ -176,8 +182,8 @@ public:
 
     /// Preallocate reusable GPU ICP workspaces for the current source, target, and iteration settings.
     /// This moves allocation cost out of the first align() call without building target-grid contents.
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, void>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, void>
     reserveGpuWorkspace()
     {
         if (!_source)
@@ -216,6 +222,39 @@ public:
         }
         reserveGpuTargetSpatialGridWorkspace(target_count);
     }
+
+    /// Build the reusable finite-radius target spatial index before the first align() call.
+    /// Returns false when the configured radius or target size selects a different search path.
+    /// The target must not have an outstanding legacy mutable points() alias.
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
+    prepareGpuTargetSpatialIndex()
+    {
+        if (!_target)
+        {
+            throw std::runtime_error("ICP: target cloud not set");
+        }
+        _target->validate();
+        const int target_count = checkedInt(
+            _target->size(), "ICP: target point count exceeds int range");
+        if (target_count <= 0)
+        {
+            throw std::invalid_argument("ICP: target cloud must not be empty");
+        }
+        if (!_target->pointCachesReusable())
+        {
+            throw std::runtime_error(
+                "ICP: cannot prepare a reusable target index after mutable points() access; "
+                "use editPoints() for bounded mutations");
+        }
+
+        const Scalar* target_points = refreshGpuTargetWorkspaceCacheForCurrentTarget();
+        return gpu::detail::prepareIcpTargetSpatialGridColumnMajor(
+            target_points,
+            target_count,
+            _max_corr_dist,
+            _gpu_stats_workspace);
+    }
 #endif
 
     /// Align the source cloud to the target cloud and write the transformed source to output.
@@ -226,9 +265,8 @@ public:
     }
 
     /// Align with an initial source-to-target transform guess.
-    void align(
-        PointCloudType& output,
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& initial_guess)
+    void align(PointCloudType& output,
+               const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& initial_guess)
     {
         alignImpl(&output, &initial_guess);
     }
@@ -241,44 +279,67 @@ public:
     }
 
     /// Align with an initial source-to-target transform guess without materializing output.
-    void align(const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& initial_guess)
+    void align(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& initial_guess)
     {
         alignImpl(nullptr, &initial_guess);
     }
 
 private:
-    void alignImpl(
-        PointCloudType* output,
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>* initial_guess = nullptr)
+    static plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>
+    transformPoints(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& transform,
+                    const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& points)
     {
-        if (!_source) throw std::runtime_error("ICP: source cloud not set");
-        if (!_target) throw std::runtime_error("ICP: target cloud not set");
+        if (transform.rows() != 4 || transform.cols() != 4 || points.cols() != 3)
+        {
+            throw std::invalid_argument("ICP: transformation requires a 4x4 matrix and Nx3 points");
+        }
+        return (points * transform.template block<3, 3>(0, 0).transpose()).rowwise()
+             + transform.template block<3, 1>(0, 3).transpose();
+    }
+
+    void alignImpl(PointCloudType* output,
+                   const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>* initial_guess = nullptr)
+    {
+        if (!_source)
+            throw std::runtime_error("ICP: source cloud not set");
+        if (!_target)
+            throw std::runtime_error("ICP: target cloud not set");
         if (_source->size() == 0) throw std::invalid_argument("ICP: source cloud must not be empty");
         if (_target->size() == 0) throw std::invalid_argument("ICP: target cloud must not be empty");
 
-        if constexpr (Dev == plamatrix::Device::GPU)
+        if constexpr (Dev == plamatrix::internal::Device::GPU)
         {
 #ifndef PLAPOINT_WITH_CUDA
             throw std::runtime_error("PlaPoint was built without CUDA support");
 #else
+            const auto& source_context = _source->executionContext();
+            const auto& target_context = _target->executionContext();
+            if (source_context->device().index != target_context->device().index)
+            {
+                throw std::invalid_argument("ICP: source and target must be on the same CUDA device");
+            }
+            PLAPOINT_CHECK_CUDA(cudaSetDevice(static_cast<int>(source_context->device().index)));
             if (initial_guess || gpuRequiresCpuStagedAlignment())
             {
                 alignGpuViaCpu(output, initial_guess);
                 return;
             }
             alignGpu(output);
+            // align() is synchronous, including terminal output kernels when final metrics are disabled.
+            // Resident output may be read on a different, nonblocking context stream immediately afterward.
+            PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(nullptr));
             return;
 #endif
         }
 
         // Build KD-tree on target
-        auto tree = std::make_shared<search::KdTree<Scalar, Dev>>();
+        auto tree = std::make_shared<search::internal::DeviceKdTree<Scalar, Dev>>();
         tree->setInputCloud(_target);
         tree->build();
 
         int n = checkedInt(_source->size(), "ICP: source point count exceeds int range");
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> src = copyCpuMatrix(_source->pointsCpu());
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> tgt = copyCpuMatrix(_target->pointsCpu());
+        plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> src = copyCpuMatrix(_source->pointsCpu());
+        plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> tgt = copyCpuMatrix(_target->pointsCpu());
         validateFinitePointMatrix(src, "ICP: source cloud contains non-finite point");
         if (initial_guess)
         {
@@ -286,17 +347,13 @@ private:
         }
 
         // Accumulate transform as 4x4 identity
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> T_acc =
+        plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> T_acc =
             initial_guess ? copyCpuMatrix(*initial_guess) : identity4x4();
 
-        // Copy src into cur (DenseMatrix is move-only)
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> cur(src.rows(), src.cols());
-        for (plamatrix::Index r = 0; r < src.rows(); ++r)
-            for (int c = 0; c < 3; ++c)
-                cur(r, c) = src(r, c);
+        plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> cur = src;
         if (initial_guess)
         {
-            cur = plamatrix::transformPoints(*initial_guess, cur);
+            cur = transformPoints(*initial_guess, cur);
             validateFinitePointMatrix(cur, "ICP: initial guess produced non-finite source point");
         }
 
@@ -313,7 +370,7 @@ private:
             std::vector<int> active_indices;
             active_indices.reserve(static_cast<std::size_t>(n));
             std::shared_ptr<PointCloudType> reciprocal_source_cloud;
-            std::shared_ptr<search::KdTree<Scalar, Dev>> reciprocal_tree;
+            std::shared_ptr<search::internal::DeviceKdTree<Scalar, Dev>> reciprocal_tree;
             prepareReciprocalSearchTree(cur, reciprocal_source_cloud, reciprocal_tree);
             collectCorrespondences(cur, tgt, *tree, reciprocal_tree.get(), corr, active_indices);
 
@@ -337,7 +394,7 @@ private:
             }
             const int active_n = static_cast<int>(active_indices.size());
             updateResidualMetrics(cur, tgt, corr, active_indices, n);
-            if (std::isfinite(_final_rmse) && _final_rmse <= _eps)
+            if (!_squared_convergence && std::isfinite(_final_rmse) && _final_rmse <= _eps)
             {
                 _converged = active_indices.size() >= 3 && _fitness_score >= _min_fitness_score;
                 break;
@@ -392,7 +449,7 @@ private:
             std::array<Scalar, 9> u{};
             std::array<Scalar, 3> singular_values{};
             std::array<Scalar, 9> vt{};
-            plamatrix::svd3x3(h, &u, &singular_values, &vt);
+            plamatrix::internal::svd3x3(h, &u, &singular_values, &vt);
             const auto U = [&u](int row, int column)
             {
                 return u[static_cast<std::size_t>(row * 3 + column)];
@@ -443,15 +500,21 @@ private:
             Scalar tz = finiteScalarFromDouble(tz_d, "ICP: transform step is not representable");
 
             // Build step transform 4x4
-            plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> T_step(4, 4);
-            T_step.fill(0);
-            T_step.setValue(0, 0, r00); T_step.setValue(0, 1, r01); T_step.setValue(0, 2, r02); T_step.setValue(0, 3, tx);
-            T_step.setValue(1, 0, r10); T_step.setValue(1, 1, r11); T_step.setValue(1, 2, r12); T_step.setValue(1, 3, ty);
-            T_step.setValue(2, 0, r20); T_step.setValue(2, 1, r21); T_step.setValue(2, 2, r22); T_step.setValue(2, 3, tz);
-            T_step.setValue(3, 0, 0);   T_step.setValue(3, 1, 0);   T_step.setValue(3, 2, 0);   T_step.setValue(3, 3, 1);
+            plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> T_step(4, 4);
+            T_step.setZero();
+            T_step.operator()(0, 0) = r00;
+            T_step.operator()(0, 1) = r01;
+            T_step.operator()(0, 2) = r02;
+            T_step.operator()(0, 3) = tx;
+            T_step.operator()(1, 0) = r10;
+            T_step.operator()(1, 1) = r11;
+            T_step.operator()(1, 2) = r12;
+            T_step.operator()(1, 3) = ty;
+            T_step.operator()(2, 0) = r20; T_step.operator()(2, 1) = r21; T_step.operator()(2, 2) = r22; T_step.operator()(2, 3) = tz;
+            T_step.operator()(3, 0) = 0;   T_step.operator()(3, 1) = 0;   T_step.operator()(3, 2) = 0;   T_step.operator()(3, 3) = 1;
 
             T_acc = multiply4x4(T_step, T_acc);
-            cur = plamatrix::transformPoints(T_step, cur);
+            cur = transformPoints(T_step, cur);
             validateFinitePointMatrix(cur, "ICP: transformed source contains non-finite point");
             std::size_t convergence_active_count = active_indices.size();
             if (_compute_final_metrics)
@@ -460,7 +523,7 @@ private:
                 std::vector<int> final_active_indices;
                 final_active_indices.reserve(static_cast<std::size_t>(n));
                 std::shared_ptr<PointCloudType> final_reciprocal_source_cloud;
-                std::shared_ptr<search::KdTree<Scalar, Dev>> final_reciprocal_tree;
+                std::shared_ptr<search::internal::DeviceKdTree<Scalar, Dev>> final_reciprocal_tree;
                 prepareReciprocalSearchTree(cur, final_reciprocal_source_cloud, final_reciprocal_tree);
                 collectCorrespondences(cur, tgt, *tree, final_reciprocal_tree.get(), final_corr, final_active_indices);
                 convergence_active_count = final_active_indices.size();
@@ -481,13 +544,26 @@ private:
                          + std::abs(r12) + std::abs(r20) + std::abs(r21)
                          + std::abs(tx) + std::abs(ty) + std::abs(tz);
             const Scalar rotation_delta = rotationAngleFromMatrix(r00, r11, r22);
-            const bool transform_converged = delta < _eps ||
+            bool transform_converged = delta < _eps ||
                 (_rotation_eps > Scalar(0) && rotation_delta <= _rotation_eps);
+            if (_squared_convergence)
+            {
+                const double translation_squared = static_cast<double>(tx) * tx
+                    + static_cast<double>(ty) * ty + static_cast<double>(tz) * tz;
+                const double rotation_cosine = std::clamp(
+                    (static_cast<double>(r00) + r11 + r22 - 1.0) * 0.5, -1.0, 1.0);
+                transform_converged = translation_squared <= static_cast<double>(_eps)
+                    && rotation_cosine >= static_cast<double>(_rotation_eps);
+            }
             const bool fitness_converged =
                 _euclidean_fitness_eps > Scalar(0) &&
                 std::isfinite(previous_rmse) &&
                 std::isfinite(_final_rmse) &&
-                std::abs(_final_rmse - previous_rmse) <= _euclidean_fitness_eps;
+                (_squared_convergence
+                     ? std::abs(static_cast<double>(_final_rmse) * _final_rmse
+                                - static_cast<double>(previous_rmse) * previous_rmse)
+                         <= _euclidean_fitness_eps
+                     : std::abs(_final_rmse - previous_rmse) <= _euclidean_fitness_eps);
             previous_rmse = _final_rmse;
             if (transform_converged || fitness_converged)
             {
@@ -500,25 +576,27 @@ private:
         _final_T_cpu_valid = true;
         if (output)
         {
-            auto aligned = plamatrix::transformPoints(_final_T, src);
+            auto aligned = transformPoints(_final_T, src);
             validateFinitePointMatrix(aligned, "ICP: aligned output contains non-finite point");
-            if constexpr (Dev == plamatrix::Device::CPU)
+            if constexpr (Dev == plamatrix::internal::Device::CPU)
             {
                 *output = PointCloudType(std::move(aligned));
             }
             else
             {
-                *output = PointCloudType(aligned.toGpu());
+                *output =
+                    PointCloudType(plamatrix::internal::ResidentMatrix<Scalar>::copyFrom(aligned, _source->executionContext()),
+                                   _source->executionContext());
             }
         }
     }
 
 public:
     /// Return the final 4x4 source-to-target transform on CPU.
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& getFinalTransformation() const
+    const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& getFinalTransformation() const
     {
 #ifdef PLAPOINT_WITH_CUDA
-        if constexpr (Dev == plamatrix::Device::GPU)
+        if constexpr (Dev == plamatrix::internal::Device::GPU)
         {
             if (!_final_T_cpu_valid)
             {
@@ -526,7 +604,7 @@ public:
                 {
                     throw std::runtime_error("ICP: final transformation is not available");
                 }
-                _final_T = _gpu_T_acc->toCpu();
+                _final_T = _gpu_T_acc->toHostMatrix();
                 _final_T_cpu_valid = true;
             }
         }
@@ -537,8 +615,8 @@ public:
 #ifdef PLAPOINT_WITH_CUDA
     /// Return the final 4x4 source-to-target transform on GPU after GPU align().
     /// Throws if align() has not populated a GPU final transform.
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, const plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>&>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, const plamatrix::internal::ResidentMatrix<Scalar>&>
     getFinalTransformationDevice() const
     {
         if (!_final_T_gpu_valid || !_gpu_T_acc)
@@ -569,17 +647,16 @@ private:
                _rotation_eps > Scalar(0);
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, void>
-    alignGpuViaCpu(
-        PointCloudType* output,
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>* initial_guess)
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, void>
+    alignGpuViaCpu(PointCloudType* output,
+                   const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>* initial_guess)
     {
-        using CpuCloud = PointCloud<Scalar, plamatrix::Device::CPU>;
+        using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
         auto cpu_source = std::make_shared<CpuCloud>(_source->toCpu());
         auto cpu_target = std::make_shared<CpuCloud>(_target->toCpu());
 
-        IterativeClosestPoint<Scalar, plamatrix::Device::CPU> cpu_icp;
+        MatrixIterativeClosestPoint<Scalar, plamatrix::internal::Device::CPU> cpu_icp;
         cpu_icp.setInputSource(cpu_source);
         cpu_icp.setInputTarget(cpu_target);
         cpu_icp.setMaxIterations(_max_iter);
@@ -604,7 +681,7 @@ private:
             {
                 cpu_icp.align(cpu_output);
             }
-            *output = cpu_output.toGpu();
+            *output = cpu_output.toGpu(_source->executionContext());
         }
         else if (initial_guess)
         {
@@ -620,12 +697,13 @@ private:
         _final_rmse = cpu_icp.getFinalRmse();
         _final_T = copyCpuMatrix(cpu_icp.getFinalTransformation());
         _final_T_cpu_valid = true;
-        _gpu_T_acc = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(_final_T.toGpu());
+        _gpu_T_acc = std::make_unique<plamatrix::internal::ResidentMatrix<Scalar>>(
+            plamatrix::internal::ResidentMatrix<Scalar>::copyFrom(_final_T, _source->executionContext()));
         _final_T_gpu_valid = true;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, void>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, void>
     alignGpu(PointCloudType* output)
     {
         const int source_count = checkedInt(_source->size(), "ICP: source point count exceeds int range");
@@ -847,7 +925,7 @@ private:
                         {
                             // The small-target terminal kernel loads the whole target tile into shared memory before
                             // writing output, so an already-sized target buffer can be overwritten safely.
-                            candidate_output_points = output->points().data();
+                            candidate_output_points = output->pointsForInternalWrite().data();
                         }
                         else
                         {
@@ -1532,8 +1610,8 @@ private:
         }
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     tryAlignGpuSingleStepFinalMetrics(
         PointCloudType* output,
         int source_count,
@@ -1697,8 +1775,8 @@ private:
         return true;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     tryAlignGpuSmallTargetTwoStepTransformOnly(
         PointCloudType* output,
         int source_count,
@@ -1774,8 +1852,8 @@ private:
             output_aliases_target);
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     tryAlignGpuTwoStepTransformOnly(
         PointCloudType* output,
         int source_count,
@@ -1851,8 +1929,8 @@ private:
             output_aliases_target);
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     finishGpuTwoStepTransformOnlyAlignment(
         const gpu::IcpTwoStepAlignmentResult<Scalar>& two_step_result,
         PointCloudType* output,
@@ -1958,8 +2036,8 @@ private:
         return true;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     tryAlignGpuThreeStepTransformOnly(
         PointCloudType* output,
         int source_count,
@@ -2113,8 +2191,8 @@ private:
         return true;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     tryAlignGpuBatchedTransformOnly(
         PointCloudType* output,
         int source_count,
@@ -2351,8 +2429,8 @@ private:
         return false;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     tryAlignGpuTwoStepFinalMetrics(
         PointCloudType* output,
         int source_count,
@@ -2609,8 +2687,8 @@ private:
         return true;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     tryAlignGpuThreeStepFinalMetrics(
         PointCloudType* output,
         int source_count,
@@ -2797,8 +2875,8 @@ private:
         return true;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     tryAlignGpuFourStepFinalMetrics(
         PointCloudType* output,
         int source_count,
@@ -3035,8 +3113,8 @@ private:
         return true;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     tryAlignGpuFiveStepFinalMetrics(
         PointCloudType* output,
         int source_count,
@@ -3315,8 +3393,8 @@ private:
         return true;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     tryAlignGpuSixStepFinalMetrics(
         PointCloudType* output,
         int source_count,
@@ -3645,8 +3723,8 @@ private:
         return true;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     tryAlignGpuSevenStepFinalMetrics(
         PointCloudType* output,
         int source_count,
@@ -3928,8 +4006,8 @@ private:
         return true;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     tryAlignGpuSmallTargetSingleStepTerminal(
         PointCloudType* output,
         int source_count,
@@ -3975,7 +4053,7 @@ private:
         if (output)
         {
             output_points = output_aliases_target
-                ? output->points().data()
+                ? output->pointsForInternalWrite().data()
                 : prepareGpuOutputPointBuffer(*output, source_count);
         }
 
@@ -4074,8 +4152,8 @@ private:
         return true;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     tryAlignGpuSmallTargetTwoStepTerminal(
         PointCloudType* output,
         int source_count,
@@ -4242,8 +4320,8 @@ private:
         }
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, void>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, void>
     finishGpuSingleStepTerminalMetrics(
         const gpu::IcpAlignmentStepResult<Scalar>& step,
         int source_count,
@@ -4307,8 +4385,8 @@ private:
             output_aliases_target);
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, void>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, void>
     writeGpuFinalTransformOutputIfRequested(
         PointCloudType* output,
         int source_count,
@@ -4354,7 +4432,8 @@ private:
         const auto& target_points = _target->points();
         const Scalar* target_points_data = target_points.data();
         const std::uint64_t target_points_version = _target->pointsVersion();
-        if (_gpu_target_cache_points != target_points_data ||
+        if (!_target->pointCachesReusable() ||
+            _gpu_target_cache_points != target_points_data ||
             _gpu_target_cache_points_version != target_points_version)
         {
             _gpu_stats_workspace.invalidateTargetSpatialGridCache();
@@ -4388,8 +4467,8 @@ private:
         return output_address == _target.get();
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     canReuseGpuOutputPointBuffer(const PointCloudType& output, int point_count) const
     {
         const auto& output_points = output.points();
@@ -4406,20 +4485,20 @@ private:
                output.textureImageFile().empty();
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, Scalar*>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, Scalar*>
     prepareGpuOutputPointBuffer(PointCloudType& output, int point_count)
     {
         if (!canReuseGpuOutputPointBuffer(output, point_count))
         {
-            plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> points(point_count, 3);
-            output = PointCloudType(std::move(points));
+            plamatrix::internal::ResidentMatrix<Scalar> points(point_count, 3, _source->executionContext());
+            output = PointCloudType(std::move(points), _source->executionContext());
         }
-        return output.points().data();
+        return output.pointsForInternalWrite().data();
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     gpuFinalMetricsCanUseCachedTargetSpatialGridSnapshot(
         const Scalar* target_points,
         int target_count) const
@@ -4434,8 +4513,8 @@ private:
                _gpu_stats_workspace.targetSpatialGridCellCount() > 0;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     gpuOutputAlreadyContainsCurrentPoints(
         const PointCloudType& output,
         int point_count,
@@ -4445,8 +4524,8 @@ private:
                output.points().data() == current_points;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     tryReuseGpuSameBufferIdentityResult(
         PointCloudType* output,
         int source_count,
@@ -4470,8 +4549,8 @@ private:
         return true;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     tryReuseGpuExactIdentityResult(
         PointCloudType* output,
         int source_count,
@@ -4497,8 +4576,8 @@ private:
         return true;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     tryReuseGpuFullCoverageTransformResult(
         PointCloudType* output,
         int source_count,
@@ -4530,8 +4609,8 @@ private:
         return true;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     canCacheGpuSameBufferIdentityResult(
         int source_count,
         const Scalar* source_points,
@@ -4544,8 +4623,8 @@ private:
                source_points == target_points;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     canCacheGpuExactIdentityResult(
         int source_count,
         int target_count,
@@ -4591,8 +4670,8 @@ private:
         }
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     canCacheGpuFullCoverageTransformResult(
         int source_count,
         int target_count,
@@ -4626,11 +4705,12 @@ private:
                std::isfinite(_final_rmse);
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     gpuSameBufferIdentityResultCacheMatches(int source_count, const Scalar* source_points) const
     {
-        return _gpu_same_buffer_identity_result_cache_cloud == _source.get() &&
+        return _source->pointCachesReusable() &&
+               _gpu_same_buffer_identity_result_cache_cloud == _source.get() &&
                _source.get() == _target.get() &&
                _gpu_same_buffer_identity_result_cache_point_count == source_count &&
                _gpu_same_buffer_identity_result_cache_points == source_points &&
@@ -4638,15 +4718,17 @@ private:
                _gpu_T_acc != nullptr;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     gpuExactIdentityResultCacheMatches(
         int source_count,
         int target_count,
         const Scalar* source_points,
         const Scalar* target_points) const
     {
-        return _gpu_exact_identity_result_cache_source == _source.get() &&
+        return _source->pointCachesReusable() &&
+               _target->pointCachesReusable() &&
+               _gpu_exact_identity_result_cache_source == _source.get() &&
                _gpu_exact_identity_result_cache_target == _target.get() &&
                _gpu_exact_identity_result_cache_source_points == source_points &&
                _gpu_exact_identity_result_cache_target_points == target_points &&
@@ -4657,15 +4739,17 @@ private:
                _gpu_T_acc != nullptr;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     gpuFullCoverageTransformResultCacheMatches(
         int source_count,
         int target_count,
         const Scalar* source_points,
         const Scalar* target_points) const
     {
-        return _gpu_full_coverage_transform_result_cache_source == _source.get() &&
+        return _source->pointCachesReusable() &&
+               _target->pointCachesReusable() &&
+               _gpu_full_coverage_transform_result_cache_source == _source.get() &&
                _gpu_full_coverage_transform_result_cache_target == _target.get() &&
                _gpu_full_coverage_transform_result_cache_source_points == source_points &&
                _gpu_full_coverage_transform_result_cache_target_points == target_points &&
@@ -4689,8 +4773,8 @@ private:
                _gpu_T_acc != nullptr;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, void>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, void>
     markGpuSameBufferIdentityResultCache(int source_count, const Scalar* source_points)
     {
         _gpu_same_buffer_identity_result_cache_cloud = _source.get();
@@ -4699,8 +4783,8 @@ private:
         _gpu_same_buffer_identity_result_cache_point_count = source_count;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, void>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, void>
     markGpuExactIdentityResultCache(
         int source_count,
         int target_count,
@@ -4717,8 +4801,8 @@ private:
         _gpu_exact_identity_result_cache_target_count = target_count;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, void>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, void>
     markGpuFullCoverageTransformResultCache(
         int source_count,
         int target_count,
@@ -4797,8 +4881,8 @@ private:
         invalidateGpuFullCoverageTransformOutputCache();
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, void>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, void>
     writeGpuIdentitySourceOutput(
         PointCloudType& output,
         int source_count,
@@ -4835,8 +4919,8 @@ private:
         markGpuIdentityOutputCache(output, source_count, source_points);
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, void>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, void>
     writeGpuFullCoverageTransformOutput(
         PointCloudType& output,
         int source_count,
@@ -4877,14 +4961,16 @@ private:
         }
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     gpuOutputAlreadyContainsIdentitySource(
         const PointCloudType& output,
         int point_count,
         const Scalar* source_points) const
     {
-        return canReuseGpuOutputPointBuffer(output, point_count) &&
+        return _source->pointCachesReusable() &&
+               output.pointCachesReusable() &&
+               canReuseGpuOutputPointBuffer(output, point_count) &&
                _gpu_identity_output_cache_output == &output &&
                _gpu_identity_output_cache_point_count == point_count &&
                _gpu_identity_output_cache_source_points == source_points &&
@@ -4893,8 +4979,8 @@ private:
                _gpu_identity_output_cache_output_points_version == output.pointsVersion();
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, void>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, void>
     markGpuIdentityOutputCache(
         const PointCloudType& output,
         int point_count,
@@ -4908,8 +4994,8 @@ private:
         _gpu_identity_output_cache_point_count = point_count;
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, bool>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, bool>
     gpuFullCoverageTransformOutputCacheMatches(
         const PointCloudType& output,
         int point_count,
@@ -4917,7 +5003,10 @@ private:
         const Scalar* source_points,
         const Scalar* target_points) const
     {
-        return canReuseGpuOutputPointBuffer(output, point_count) &&
+        return _source->pointCachesReusable() &&
+               _target->pointCachesReusable() &&
+               output.pointCachesReusable() &&
+               canReuseGpuOutputPointBuffer(output, point_count) &&
                _gpu_full_coverage_transform_output_cache_output == &output &&
                _gpu_full_coverage_transform_output_cache_output_points == output.points().data() &&
                _gpu_full_coverage_transform_output_cache_output_points_version == output.pointsVersion() &&
@@ -4931,8 +5020,8 @@ private:
                gpuFullCoverageTransformResultCacheMatches(point_count, target_count, source_points, target_points);
     }
 
-    template <plamatrix::Device D = Dev>
-    std::enable_if_t<D == plamatrix::Device::GPU, void>
+    template <plamatrix::internal::Device D = Dev>
+    std::enable_if_t<D == plamatrix::internal::Device::GPU, void>
     markGpuFullCoverageTransformOutputCache(
         const PointCloudType& output,
         int point_count,
@@ -4975,24 +5064,20 @@ private:
         _gpu_identity_output_cache_point_count = 0;
     }
 
-    void reserveGpuPointBuffer(
-        int point_count,
-        std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>& buffer)
+    void reserveGpuPointBuffer(int point_count, std::unique_ptr<plamatrix::internal::ResidentMatrix<Scalar>>& buffer)
     {
 #ifdef PLAPOINT_ENABLE_TESTING
         ++_gpu_point_scratch_reserve_check_count;
 #endif
         if (!buffer || buffer->rows() != point_count || buffer->cols() != 3)
         {
-            buffer =
-                std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(point_count, 3);
+            buffer = std::make_unique<plamatrix::internal::ResidentMatrix<Scalar>>(point_count, 3, _source->executionContext());
         }
     }
 
-    void reserveGpuPointScratchBuffer(
-        int point_count,
-        std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>& buffer,
-        int& reserved_point_capacity)
+    void reserveGpuPointScratchBuffer(int point_count,
+                                      std::unique_ptr<plamatrix::internal::ResidentMatrix<Scalar>>& buffer,
+                                      int& reserved_point_capacity)
     {
         if (!buffer ||
             buffer->cols() != 3 ||
@@ -5018,7 +5103,7 @@ private:
 #ifdef PLAPOINT_ENABLE_TESTING
         ++_gpu_step_transform_reserve_check_count;
 #endif
-        _gpu_T_step = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
+        _gpu_T_step = std::make_unique<plamatrix::internal::ResidentMatrix<Scalar>>(4, 4, _source->executionContext());
     }
 
     bool gpuAlignmentStepWorkspaceReservationMatches(int source_count) const
@@ -5094,7 +5179,7 @@ private:
 #ifdef PLAPOINT_ENABLE_TESTING
         ++_gpu_accumulated_transform_reserve_check_count;
 #endif
-        _gpu_T_acc = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
+        _gpu_T_acc = std::make_unique<plamatrix::internal::ResidentMatrix<Scalar>>(4, 4, _source->executionContext());
     }
 
     void reserveGpuNextTransformBuffer()
@@ -5106,7 +5191,7 @@ private:
 #ifdef PLAPOINT_ENABLE_TESTING
         ++_gpu_next_transform_reserve_check_count;
 #endif
-        _gpu_next_T_acc = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>>(4, 4);
+        _gpu_next_T_acc = std::make_unique<plamatrix::internal::ResidentMatrix<Scalar>>(4, 4, _source->executionContext());
     }
 
     template <typename GpuStats>
@@ -5178,30 +5263,33 @@ private:
 
 #endif
 
-    static plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> identity4x4()
+    static plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> identity4x4()
     {
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> I(4, 4);
-        I.fill(0);
-        I(0, 0) = 1; I(1, 1) = 1; I(2, 2) = 1; I(3, 3) = 1;
+        plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> I(4, 4);
+        I.setZero();
+        I(0, 0) = 1;
+        I(1, 1) = 1;
+        I(2, 2) = 1;
+        I(3, 3) = 1;
         return I;
     }
 
-    static plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> copyCpuMatrix(
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& matrix)
+    static plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>
+    copyCpuMatrix(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& matrix)
     {
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> copy(matrix.rows(), matrix.cols());
+        plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> copy(matrix.rows(), matrix.cols());
         for (plamatrix::Index i = 0; i < matrix.rows(); ++i)
             for (plamatrix::Index j = 0; j < matrix.cols(); ++j)
                 copy(i, j) = matrix(i, j);
         return copy;
     }
 
-    static plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> multiply4x4(
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& A,
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& B)
+    static plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>
+    multiply4x4(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& A,
+                const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& B)
     {
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> C(4, 4);
-        C.fill(0);
+        plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> C(4, 4);
+        C.setZero();
         for (int i = 0; i < 4; ++i)
         {
             for (int j = 0; j < 4; ++j)
@@ -5217,9 +5305,9 @@ private:
         return C;
     }
 
-    static void validateFinitePointMatrix(
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& points,
-        const char* message)
+    static void
+    validateFinitePointMatrix(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& points,
+                              const char* message)
     {
         for (plamatrix::Index r = 0; r < points.rows(); ++r)
         {
@@ -5233,9 +5321,9 @@ private:
         }
     }
 
-    static void validateTransformMatrix(
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& transform,
-        const char* message)
+    static void
+    validateTransformMatrix(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& transform,
+                            const char* message)
     {
         if (transform.rows() != 4 || transform.cols() != 4)
         {
@@ -5262,9 +5350,8 @@ private:
         return static_cast<Scalar>(std::acos(cos_angle));
     }
 
-    static bool hasNonCollinearGeometry(
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& points,
-        const std::vector<int>& active_indices)
+    static bool hasNonCollinearGeometry(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& points,
+                                        const std::vector<int>& active_indices)
     {
         if (active_indices.size() < 3)
         {
@@ -5351,16 +5438,15 @@ private:
         double distance = 0.0;
     };
 
-    void collectCorrespondences(
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& source_points,
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& target_points,
-        const search::KdTree<Scalar, Dev>& tree,
-        const search::KdTree<Scalar, Dev>* reciprocal_tree,
-        std::vector<int>& corr,
-        std::vector<int>& active_indices) const
+    void collectCorrespondences(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& source_points,
+                                const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& target_points,
+                                const search::internal::DeviceKdTree<Scalar, Dev>& tree,
+                                const search::internal::DeviceKdTree<Scalar, Dev>* reciprocal_tree,
+                                std::vector<int>& corr,
+                                std::vector<int>& active_indices) const
     {
         const int n = static_cast<int>(source_points.rows());
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(n, 3);
+        plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> queries(n, 3);
         for (int i = 0; i < n; ++i)
             for (int c = 0; c < 3; ++c)
                 queries(i, c) = source_points(i, c);
@@ -5412,10 +5498,10 @@ private:
         }
     }
 
-    void prepareReciprocalSearchTree(
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& source_points,
-        std::shared_ptr<PointCloudType>& source_cloud,
-        std::shared_ptr<search::KdTree<Scalar, Dev>>& source_tree) const
+    void
+    prepareReciprocalSearchTree(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& source_points,
+                                std::shared_ptr<PointCloudType>& source_cloud,
+                                std::shared_ptr<search::internal::DeviceKdTree<Scalar, Dev>>& source_tree) const
     {
         if (!_use_reciprocal_correspondences)
         {
@@ -5423,28 +5509,30 @@ private:
         }
 
         auto source_points_copy = copyCpuMatrix(source_points);
-        if constexpr (Dev == plamatrix::Device::CPU)
+        if constexpr (Dev == plamatrix::internal::Device::CPU)
         {
             source_cloud = std::make_shared<PointCloudType>(std::move(source_points_copy));
         }
         else
         {
-            source_cloud = std::make_shared<PointCloudType>(source_points_copy.toGpu());
+            source_cloud = std::make_shared<PointCloudType>(
+                plamatrix::internal::ResidentMatrix<Scalar>::copyFrom(source_points_copy, _source->executionContext()),
+                _source->executionContext());
         }
-        source_tree = std::make_shared<search::KdTree<Scalar, Dev>>();
+        source_tree = std::make_shared<search::internal::DeviceKdTree<Scalar, Dev>>();
         source_tree->setInputCloud(source_cloud);
         source_tree->build();
     }
 
-    bool isReciprocalCorrespondence(
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& source_points,
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& target_points,
-        const search::KdTree<Scalar, Dev>& reciprocal_tree,
-        int source_index,
-        int target_index) const
+    bool
+    isReciprocalCorrespondence(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& source_points,
+                               const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& target_points,
+                               const search::internal::DeviceKdTree<Scalar, Dev>& reciprocal_tree,
+                               int source_index,
+                               int target_index) const
     {
         (void)source_points;
-        plamatrix::Vec3<Scalar> target_query{
+        plamatrix::Matrix<Scalar, 3, 1> target_query{
             target_points(target_index, 0),
             target_points(target_index, 1),
             target_points(target_index, 2)
@@ -5495,12 +5583,11 @@ private:
         candidates.resize(keep_count);
     }
 
-    void updateResidualMetrics(
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& source_points,
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& target_points,
-        const std::vector<int>& corr,
-        const std::vector<int>& active_indices,
-        int source_count)
+    void updateResidualMetrics(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& source_points,
+                               const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& target_points,
+                               const std::vector<int>& corr,
+                               const std::vector<int>& active_indices,
+                               int source_count)
     {
         double scale = 0.0;
         double scaled_sq_sum = 0.0;
@@ -5587,6 +5674,7 @@ private:
     Scalar _eps = Scalar(1e-6);
     Scalar _rotation_eps = Scalar(0);
     Scalar _euclidean_fitness_eps = Scalar(0);
+    bool _squared_convergence = false;
     Scalar _max_corr_dist = std::numeric_limits<Scalar>::infinity();
     Scalar _min_fitness_score = Scalar(0);
     bool _use_reciprocal_correspondences = false;
@@ -5595,17 +5683,17 @@ private:
     bool _compute_final_metrics = true;
     Scalar _fitness_score = Scalar(0);
     Scalar _final_rmse = std::numeric_limits<Scalar>::infinity();
-    mutable plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> _final_T;
+    mutable plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> _final_T;
     mutable bool _final_T_cpu_valid = false;
 #ifdef PLAPOINT_WITH_CUDA
     gpu::IcpCorrespondenceStatsWorkspace _gpu_stats_workspace;
     gpu::IcpCorrespondenceStatsWorkspace _gpu_terminal_stats_workspace;
     gpu::IcpCorrespondenceStatsWorkspace _gpu_final_stats_workspace;
-    std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_T_acc;
-    std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_next_T_acc;
-    std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_T_step;
-    std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_points_a;
-    std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>> _gpu_points_b;
+    std::unique_ptr<plamatrix::internal::ResidentMatrix<Scalar>> _gpu_T_acc;
+    std::unique_ptr<plamatrix::internal::ResidentMatrix<Scalar>> _gpu_next_T_acc;
+    std::unique_ptr<plamatrix::internal::ResidentMatrix<Scalar>> _gpu_T_step;
+    std::unique_ptr<plamatrix::internal::ResidentMatrix<Scalar>> _gpu_points_a;
+    std::unique_ptr<plamatrix::internal::ResidentMatrix<Scalar>> _gpu_points_b;
     int _gpu_points_a_point_capacity = 0;
     int _gpu_points_b_point_capacity = 0;
     int _gpu_alignment_step_workspace_source_capacity = 0;
@@ -5680,3 +5768,5 @@ private:
 };
 
 } // namespace plapoint
+
+#include <plapoint/registration/point_cloud_icp.h>

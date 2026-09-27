@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.21)
 project(plapoint
     VERSION 0.1.0
     DESCRIPTION "Point cloud processing library built on plamatrix"
@@ -14,6 +14,8 @@ if(DEFINED PLAPOINT_BUILD_TESTS)
 endif()
 option(PLAPOINT_BUILD_TESTS "Build PlaPoint unit tests" OFF)
 option(PLAPOINT_BUILD_BENCHMARKS "Build PlaPoint benchmark executable" OFF)
+option(PLAPOINT_REQUIRE_CUDA_TEST_DEVICE
+    "Fail the test suite when a usable CUDA device is unavailable" OFF)
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR
         AND DEFINED BUILD_TESTS
         AND NOT _PLAPOINT_BUILD_TESTS_USER_DEFINED)
@@ -26,6 +28,47 @@ if(DEFINED PLAPOINT_WITH_CUDA)
 endif()
 option(PLAPOINT_WITH_CUDA "Build with CUDA GPU acceleration" ON)
 
+# Resolve the CUDA compiler before loading a CUDA-enabled PlaMatrix package. This keeps
+# FindCUDAToolkit tied to the same installation as nvcc instead of selecting an unrelated
+# system toolkit first.
+if(PLAPOINT_WITH_CUDA)
+    include(CheckLanguage)
+    check_language(CUDA)
+    if(NOT CMAKE_CUDA_COMPILER)
+        if(_PLAPOINT_WITH_CUDA_USER_DEFINED)
+            message(FATAL_ERROR "PLAPOINT_WITH_CUDA=ON but no CUDA compiler was found. "
+                                "Set CMAKE_CUDA_COMPILER to nvcc or disable CUDA.")
+        endif()
+        message(STATUS "PlaPoint CUDA disabled because no CUDA compiler was found")
+        set(PLAPOINT_WITH_CUDA OFF CACHE BOOL "Build with CUDA GPU acceleration" FORCE)
+    else()
+        enable_language(CUDA)
+        find_package(CUDAToolkit REQUIRED)
+        string(REGEX MATCH "^[0-9]+\\.[0-9]+" _PLAPOINT_CUDA_COMPILER_SERIES
+            "${CMAKE_CUDA_COMPILER_VERSION}")
+        string(REGEX MATCH "^[0-9]+\\.[0-9]+" _PLAPOINT_CUDA_TOOLKIT_SERIES
+            "${CUDAToolkit_VERSION}")
+        if(_PLAPOINT_CUDA_COMPILER_SERIES AND _PLAPOINT_CUDA_TOOLKIT_SERIES
+                AND NOT _PLAPOINT_CUDA_COMPILER_SERIES STREQUAL _PLAPOINT_CUDA_TOOLKIT_SERIES)
+            message(FATAL_ERROR
+                "CUDA compiler ${CMAKE_CUDA_COMPILER} reports ${CMAKE_CUDA_COMPILER_VERSION}, "
+                "but FindCUDAToolkit selected ${CUDAToolkit_VERSION} at "
+                "${CUDAToolkit_LIBRARY_ROOT}. Select one coherent CUDA installation.")
+        endif()
+        set(CMAKE_CUDA_STANDARD 17)
+        set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+        if(NOT DEFINED PLAPOINT_CUDA_ARCHITECTURES)
+            if(DEFINED CMAKE_CUDA_ARCHITECTURES AND CMAKE_CUDA_ARCHITECTURES)
+                set(PLAPOINT_CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}"
+                    CACHE STRING "CUDA architectures for PlaPoint")
+            else()
+                set(PLAPOINT_CUDA_ARCHITECTURES "75;86;89"
+                    CACHE STRING "CUDA architectures for PlaPoint")
+            endif()
+        endif()
+    endif()
+endif()
+
 set(_PLAPOINT_WITH_OPENCL_USER_DEFINED OFF)
 if(DEFINED PLAPOINT_WITH_OPENCL)
     set(_PLAPOINT_WITH_OPENCL_USER_DEFINED ON)
@@ -34,6 +77,8 @@ option(PLAPOINT_WITH_OPENCL "Build CPU-owned OpenCL processing backends" ON)
 
 # OpenMP (required by plamatrix)
 find_package(OpenMP REQUIRED)
+find_package(Eigen3 CONFIG REQUIRED)
+find_package(Boost REQUIRED)
 
 # Find plamatrix (or reuse target when included as submodule)
 if(NOT TARGET plamatrix::plamatrix)
@@ -55,8 +100,7 @@ foreach(_PLAPOINT_DEF IN LISTS _PLAPOINT_PLAMATRIX_DEFS)
     endif()
 endforeach()
 
-# Detect CUDA. PlaPoint CUDA kernels require a CUDA-enabled PlaMatrix target.
-find_package(CUDAToolkit QUIET)
+# PlaPoint CUDA kernels require a CUDA-enabled PlaMatrix target.
 if(PLAPOINT_WITH_CUDA AND NOT _PLAPOINT_PLAMATRIX_WITH_CUDA)
     if(_PLAPOINT_WITH_CUDA_USER_DEFINED)
         message(FATAL_ERROR "PLAPOINT_WITH_CUDA=ON requires plamatrix::plamatrix built with CUDA. "
@@ -64,23 +108,6 @@ if(PLAPOINT_WITH_CUDA AND NOT _PLAPOINT_PLAMATRIX_WITH_CUDA)
     endif()
     message(STATUS "PlaPoint CUDA disabled because plamatrix::plamatrix is CPU-only")
     set(PLAPOINT_WITH_CUDA OFF CACHE BOOL "Build with CUDA GPU acceleration" FORCE)
-endif()
-
-if(PLAPOINT_WITH_CUDA AND CUDAToolkit_FOUND)
-    enable_language(CUDA)
-    set(CMAKE_CUDA_STANDARD 17)
-    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-    if(NOT DEFINED PLAPOINT_CUDA_ARCHITECTURES)
-        if(DEFINED CMAKE_CUDA_ARCHITECTURES AND CMAKE_CUDA_ARCHITECTURES)
-            set(PLAPOINT_CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}"
-                CACHE STRING "CUDA architectures for PlaPoint")
-        else()
-            set(PLAPOINT_CUDA_ARCHITECTURES "75;86;89"
-                CACHE STRING "CUDA architectures for PlaPoint")
-        endif()
-    endif()
-else()
-    set(PLAPOINT_WITH_CUDA OFF)
 endif()
 
 # PlaPoint OpenCL kernels use PlaMatrix's OpenCL runtime and buffer resources.
@@ -92,6 +119,17 @@ if(PLAPOINT_WITH_OPENCL AND NOT _PLAPOINT_PLAMATRIX_WITH_OPENCL)
     endif()
     message(STATUS "PlaPoint OpenCL disabled because plamatrix::plamatrix has no OpenCL backend")
     set(PLAPOINT_WITH_OPENCL OFF CACHE BOOL "Build CPU-owned OpenCL processing backends" FORCE)
+endif()
+
+if(PLAPOINT_REQUIRE_CUDA_TEST_DEVICE)
+    if(NOT PLAPOINT_BUILD_TESTS)
+        message(FATAL_ERROR
+            "PLAPOINT_REQUIRE_CUDA_TEST_DEVICE=ON requires PLAPOINT_BUILD_TESTS=ON")
+    endif()
+    if(NOT PLAPOINT_WITH_CUDA)
+        message(FATAL_ERROR
+            "PLAPOINT_REQUIRE_CUDA_TEST_DEVICE=ON requires PLAPOINT_WITH_CUDA=ON")
+    endif()
 endif()
 
 # plapoint library (compiled, not header-only)
@@ -124,7 +162,7 @@ target_include_directories(plapoint
 )
 
 target_link_libraries(plapoint
-    PUBLIC plamatrix::plamatrix
+    PUBLIC plamatrix::plamatrix Eigen3::Eigen Boost::headers
 )
 
 if(PLAPOINT_WITH_CUDA)
@@ -209,3 +247,6 @@ endif()
 message(STATUS "  OpenCL support: ${PLAPOINT_WITH_OPENCL}")
 message(STATUS "  Build tests:  ${PLAPOINT_BUILD_TESTS}")
 message(STATUS "  Benchmarks:   ${PLAPOINT_BUILD_BENCHMARKS}")
+if(PLAPOINT_BUILD_TESTS AND PLAPOINT_WITH_CUDA)
+    message(STATUS "  Require CUDA test device: ${PLAPOINT_REQUIRE_CUDA_TEST_DEVICE}")
+endif()

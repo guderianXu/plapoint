@@ -8,6 +8,9 @@
 #include <stdexcept>
 
 #include <plapoint/gpu/cuda_check.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/device/device_matrix.h>
+#include <plamatrix/internal/ops/small_matrix.h>
 
 namespace plapoint
 {
@@ -135,10 +138,10 @@ __global__ void extractNormalsKernel(
 
 template <typename Scalar>
 void estimateNormalsAsync(
-    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
     const GpuSpatialIndex<Scalar>& index,
     int k,
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& normals,
+    plamatrix::internal::ResidentMatrix<Scalar>& normals,
     NormalEstimationGpuWorkspace<Scalar>& workspace,
     cudaStream_t stream)
 {
@@ -156,13 +159,13 @@ void estimateNormalsAsync(
     }
 
     const auto point_count = static_cast<plamatrix::Index>(cloud.size());
-    workspace.bindStream(stream);
-    workspace.resize(point_count);
+    normals.validateContext(*cloud.executionContext());
     if (normals.rows() != point_count || normals.cols() != 3)
     {
-        normals = plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>
-            ::uninitialized(point_count, 3);
+        throw std::invalid_argument("estimateNormalsAsync requires an N x 3 output in the cloud context");
     }
+    workspace.bindStream(stream);
+    workspace.resize(point_count, cloud.executionContext());
     auto neighbors = index.knnSearchAsync(
         cloud.points(), k, workspace._queryWorkspace, stream);
     if (point_count == 0)
@@ -174,30 +177,32 @@ void estimateNormalsAsync(
     const int grid_size = static_cast<int>((point_count + block_size - 1) / block_size);
     accumulateCovariancesKernel<<<grid_size, block_size, 0, stream>>>(
         cloud.points().data(), point_count, neighbors.indices.data(), k,
-        workspace._covariances.data());
+        workspace._covariances->data());
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    plamatrix::symmetricEigh3x3BatchedAsync(
-        workspace._covariances, workspace._eigenvalues, workspace._eigenvectors,
+    plamatrix::internal::symmetricEigh3x3BatchedAsync(
+        workspace._covariances->template view<plamatrix::internal::Device::GPU>().asConst(),
+        workspace._eigenvalues->template view<plamatrix::internal::Device::GPU>(),
+        workspace._eigenvectors->template view<plamatrix::internal::Device::GPU>(),
         workspace._eigenWorkspace, stream);
     extractNormalsKernel<<<grid_size, block_size, 0, stream>>>(
-        workspace._eigenvalues.data(), workspace._eigenvectors.data(), point_count,
+        workspace._eigenvalues->data(), workspace._eigenvectors->data(), point_count,
         normals.data());
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 }
 
 template void estimateNormalsAsync<float>(
-    const PointCloud<float, plamatrix::Device::GPU>&,
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>&,
     const GpuSpatialIndex<float>&,
     int,
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU>&,
+    plamatrix::internal::ResidentMatrix<float>&,
     NormalEstimationGpuWorkspace<float>&,
     cudaStream_t);
 template void estimateNormalsAsync<double>(
-    const PointCloud<double, plamatrix::Device::GPU>&,
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::GPU>&,
     const GpuSpatialIndex<double>&,
     int,
-    plamatrix::DenseMatrix<double, plamatrix::Device::GPU>&,
+    plamatrix::internal::ResidentMatrix<double>&,
     NormalEstimationGpuWorkspace<double>&,
     cudaStream_t);
 

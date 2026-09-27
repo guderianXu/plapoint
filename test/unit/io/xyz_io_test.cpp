@@ -3,24 +3,26 @@
 #include <plapoint/io/xyz_io.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
+#include <plamatrix/internal/core/device.h>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
 TEST(XyzIOTest, Roundtrip)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<Scalar>;
+    using Matrix = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>;
 
     Matrix pts(4, 3);
     for (int i = 0; i < 4; ++i)
     {
-        pts.setValue(i, 0, Scalar(i));
-        pts.setValue(i, 1, Scalar(i*2));
-        pts.setValue(i, 2, Scalar(i*3));
+        pts.operator()(i, 0) = Scalar(i);
+        pts.operator()(i, 1) = Scalar(i*2);
+        pts.operator()(i, 2) = Scalar(i*3);
     }
     Cloud cloud(std::move(pts));
 
@@ -30,7 +32,7 @@ TEST(XyzIOTest, Roundtrip)
 
     auto loaded = plapoint::io::readXyz<Scalar>(path);
     EXPECT_EQ(loaded->size(), 4u);
-    EXPECT_FLOAT_EQ(loaded->points().getValue(2, 1), 4.0f);
+    EXPECT_FLOAT_EQ(loaded->points().operator()(2, 1), 4.0f);
 
     std::remove(path.c_str());
 }
@@ -38,16 +40,16 @@ TEST(XyzIOTest, Roundtrip)
 TEST(XyzIOTest, RoundtripPreservesDoubleLargeCoordinateDeltas)
 {
     using Scalar = double;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<Scalar>;
+    using Matrix = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>;
 
     Matrix pts(2, 3);
-    pts.setValue(0, 0, 100000000.01);
-    pts.setValue(0, 1, -100000000.02);
-    pts.setValue(0, 2, 123456789.125);
-    pts.setValue(1, 0, 100000000.02);
-    pts.setValue(1, 1, -100000000.03);
-    pts.setValue(1, 2, 123456789.25);
+    pts.operator()(0, 0) = 100000000.01;
+    pts.operator()(0, 1) = -100000000.02;
+    pts.operator()(0, 2) = 123456789.125;
+    pts.operator()(1, 0) = 100000000.02;
+    pts.operator()(1, 1) = -100000000.03;
+    pts.operator()(1, 2) = 123456789.25;
     Cloud cloud(std::move(pts));
 
     const plapoint::test::TempFile temp_file(".xyz");
@@ -57,12 +59,12 @@ TEST(XyzIOTest, RoundtripPreservesDoubleLargeCoordinateDeltas)
     auto loaded = plapoint::io::readXyz<Scalar>(path);
 
     ASSERT_EQ(loaded->size(), 2u);
-    EXPECT_DOUBLE_EQ(loaded->points().getValue(0, 0), 100000000.01);
-    EXPECT_DOUBLE_EQ(loaded->points().getValue(0, 1), -100000000.02);
-    EXPECT_DOUBLE_EQ(loaded->points().getValue(0, 2), 123456789.125);
-    EXPECT_DOUBLE_EQ(loaded->points().getValue(1, 0), 100000000.02);
-    EXPECT_DOUBLE_EQ(loaded->points().getValue(1, 1), -100000000.03);
-    EXPECT_DOUBLE_EQ(loaded->points().getValue(1, 2), 123456789.25);
+    EXPECT_DOUBLE_EQ(loaded->points().operator()(0, 0), 100000000.01);
+    EXPECT_DOUBLE_EQ(loaded->points().operator()(0, 1), -100000000.02);
+    EXPECT_DOUBLE_EQ(loaded->points().operator()(0, 2), 123456789.125);
+    EXPECT_DOUBLE_EQ(loaded->points().operator()(1, 0), 100000000.02);
+    EXPECT_DOUBLE_EQ(loaded->points().operator()(1, 1), -100000000.03);
+    EXPECT_DOUBLE_EQ(loaded->points().operator()(1, 2), 123456789.25);
 
     std::remove(path.c_str());
 }
@@ -70,25 +72,25 @@ TEST(XyzIOTest, RoundtripPreservesDoubleLargeCoordinateDeltas)
 TEST(XyzIOTest, RoundtripPreservesOptionalRgbColumns)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<Scalar>;
+    using Matrix = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>;
 
     Matrix pts(2, 3);
-    pts.setValue(0, 0, 1.0f);
-    pts.setValue(0, 1, 2.0f);
-    pts.setValue(0, 2, 3.0f);
-    pts.setValue(1, 0, 4.0f);
-    pts.setValue(1, 1, 5.0f);
-    pts.setValue(1, 2, 6.0f);
+    pts.operator()(0, 0) = 1.0f;
+    pts.operator()(0, 1) = 2.0f;
+    pts.operator()(0, 2) = 3.0f;
+    pts.operator()(1, 0) = 4.0f;
+    pts.operator()(1, 1) = 5.0f;
+    pts.operator()(1, 2) = 6.0f;
     Cloud cloud(std::move(pts));
 
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(2, 3);
-    colors.setValue(0, 0, 10);
-    colors.setValue(0, 1, 20);
-    colors.setValue(0, 2, 30);
-    colors.setValue(1, 0, 40);
-    colors.setValue(1, 1, 50);
-    colors.setValue(1, 2, 60);
+    plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(2, 3);
+    colors.operator()(0, 0) = 10;
+    colors.operator()(0, 1) = 20;
+    colors.operator()(0, 2) = 30;
+    colors.operator()(1, 0) = 40;
+    colors.operator()(1, 1) = 50;
+    colors.operator()(1, 2) = 60;
     cloud.setColors(std::move(colors));
 
     const plapoint::test::TempFile temp_file(".xyz");
@@ -99,12 +101,12 @@ TEST(XyzIOTest, RoundtripPreservesOptionalRgbColumns)
 
     ASSERT_EQ(loaded->size(), 2u);
     ASSERT_TRUE(loaded->hasColors());
-    EXPECT_EQ(loaded->colors()->getValue(0, 0), 10);
-    EXPECT_EQ(loaded->colors()->getValue(0, 1), 20);
-    EXPECT_EQ(loaded->colors()->getValue(0, 2), 30);
-    EXPECT_EQ(loaded->colors()->getValue(1, 0), 40);
-    EXPECT_EQ(loaded->colors()->getValue(1, 1), 50);
-    EXPECT_EQ(loaded->colors()->getValue(1, 2), 60);
+    EXPECT_EQ(loaded->colors()->operator()(0, 0), 10);
+    EXPECT_EQ(loaded->colors()->operator()(0, 1), 20);
+    EXPECT_EQ(loaded->colors()->operator()(0, 2), 30);
+    EXPECT_EQ(loaded->colors()->operator()(1, 0), 40);
+    EXPECT_EQ(loaded->colors()->operator()(1, 1), 50);
+    EXPECT_EQ(loaded->colors()->operator()(1, 2), 60);
 
     std::remove(path.c_str());
 }
@@ -205,12 +207,12 @@ TEST(XyzIOTest, PermissiveReadIgnoresMalformedRows)
     auto loaded = plapoint::io::readXyz<float>(path, plapoint::io::XyzReadMode::Permissive);
 
     ASSERT_EQ(loaded->size(), 2u);
-    EXPECT_FLOAT_EQ(loaded->points().getValue(0, 0), 1.0f);
-    EXPECT_FLOAT_EQ(loaded->points().getValue(0, 1), 2.0f);
-    EXPECT_FLOAT_EQ(loaded->points().getValue(0, 2), 3.0f);
-    EXPECT_FLOAT_EQ(loaded->points().getValue(1, 0), 6.5f);
-    EXPECT_FLOAT_EQ(loaded->points().getValue(1, 1), 7.5f);
-    EXPECT_FLOAT_EQ(loaded->points().getValue(1, 2), 8.5f);
+    EXPECT_FLOAT_EQ(loaded->points().operator()(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(loaded->points().operator()(0, 1), 2.0f);
+    EXPECT_FLOAT_EQ(loaded->points().operator()(0, 2), 3.0f);
+    EXPECT_FLOAT_EQ(loaded->points().operator()(1, 0), 6.5f);
+    EXPECT_FLOAT_EQ(loaded->points().operator()(1, 1), 7.5f);
+    EXPECT_FLOAT_EQ(loaded->points().operator()(1, 2), 8.5f);
 
     std::filesystem::remove(path);
 }
@@ -222,4 +224,35 @@ TEST(XyzIOTest, ReadNonExistentFileThrows)
     std::filesystem::remove(path);
 
     EXPECT_THROW((void)plapoint::io::readXyz<float>(path), std::runtime_error);
+}
+
+TEST(XyzIOTest, WriteRejectsNonFiniteCoordinates)
+{
+    const plapoint::test::TempFile temp_file(".xyz");
+    plapoint::GeometryCloud<double> cloud(1);
+    cloud.points().operator()(0, 0) = std::numeric_limits<double>::infinity();
+
+    EXPECT_THROW(plapoint::io::writeXyz(temp_file.string(), cloud), std::invalid_argument);
+}
+
+TEST(XyzIOTest, WriteRejectsInvalidMutableAttributeShape)
+{
+    const plapoint::test::TempFile temp_file(".xyz");
+    using ColorMatrix = plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic>;
+    plapoint::GeometryCloud<float> cloud(2);
+    cloud.setColors(ColorMatrix(2, 3));
+    *cloud.colors() = ColorMatrix(1, 3);
+
+    EXPECT_THROW(plapoint::io::writeXyz(temp_file.string(), cloud), std::runtime_error);
+}
+
+TEST(XyzIOTest, WriteReportsLateDeviceFailures)
+{
+    if (!std::filesystem::exists("/dev/full"))
+    {
+        GTEST_SKIP() << "/dev/full is unavailable on this platform";
+    }
+
+    plapoint::GeometryCloud<float> cloud(1);
+    EXPECT_THROW(plapoint::io::writeXyz("/dev/full", cloud), std::runtime_error);
 }

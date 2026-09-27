@@ -16,6 +16,8 @@
 #include <cuda_runtime.h>
 
 #include <plamatrix/plamatrix.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/device/device_matrix.h>
 
 #include <plapoint/core/point_cloud.h>
 #include <plapoint/features/normal_refinement.h>
@@ -28,10 +30,10 @@ namespace
 {
 
 template <typename Scalar>
-using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
 template <typename Scalar>
-using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
 void CUDART_CB brieflyHoldStream(void*)
 {
@@ -39,19 +41,18 @@ void CUDART_CB brieflyHoldStream(void*)
 }
 
 template <typename Scalar>
-CpuCloud<Scalar> makeCloud(
-    const std::vector<std::array<Scalar, 3>>& points,
-    const std::vector<std::array<Scalar, 3>>& normals)
+CpuCloud<Scalar> makeCloud(const std::vector<std::array<Scalar, 3>>& points,
+                           const std::vector<std::array<Scalar, 3>>& normals)
 {
     CpuCloud<Scalar> cloud(points.size());
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normal_matrix(
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> normal_matrix(
         static_cast<plamatrix::Index>(normals.size()), 3);
     for (plamatrix::Index row = 0; row < static_cast<plamatrix::Index>(points.size()); ++row)
     {
         for (int column = 0; column < 3; ++column)
         {
-            cloud.points().setValue(row, column, points[static_cast<std::size_t>(row)][column]);
-            normal_matrix.setValue(row, column, normals[static_cast<std::size_t>(row)][column]);
+            cloud.points().operator()(row, column) = points[static_cast<std::size_t>(row)][column];
+            normal_matrix.operator()(row, column) = normals[static_cast<std::size_t>(row)][column];
         }
     }
     cloud.setNormals(std::move(normal_matrix));
@@ -59,17 +60,17 @@ CpuCloud<Scalar> makeCloud(
 }
 
 template <typename Scalar>
-plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> smoothDirect(
-    const GpuCloud<Scalar>& cloud,
-    const plapoint::gpu::GpuSpatialIndex<Scalar>& index,
-    int k,
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& output,
-    plapoint::gpu::NormalRefinementGpuWorkspace<Scalar>& workspace,
-    cudaStream_t stream)
+plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>
+smoothDirect(const GpuCloud<Scalar>& cloud,
+             const plapoint::gpu::GpuSpatialIndex<Scalar>& index,
+             int k,
+             plamatrix::internal::ResidentMatrix<Scalar>& output,
+             plapoint::gpu::NormalRefinementGpuWorkspace<Scalar>& workspace,
+             cudaStream_t stream)
 {
     plapoint::gpu::smoothNormalsAsync(cloud, index, k, output, workspace, stream);
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-    return output.toCpu();
+    return output.toHostMatrix();
 }
 
 template <typename Scalar>
@@ -99,7 +100,8 @@ TYPED_TEST(NormalRefinementGpuTest, AveragesKNearestNormals)
     plapoint::gpu::GpuSpatialIndex<Scalar> index;
     index.buildAdaptive(gpu_cloud);
     plapoint::gpu::NormalRefinementGpuWorkspace<Scalar> workspace;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> output;
+    plamatrix::internal::ResidentMatrix<Scalar> output(
+        static_cast<plamatrix::Index>(gpu_cloud.size()), 3, gpu_cloud.executionContext());
 
     const auto actual = smoothDirect(gpu_cloud, index, 2, output, workspace, nullptr);
     const Scalar inverse_sqrt_two = Scalar(1) / std::sqrt(Scalar(2));
@@ -129,7 +131,8 @@ TYPED_TEST(NormalRefinementGpuTest, PreservesSourceNormalWhenNeighborSumIsZero)
     plapoint::gpu::GpuSpatialIndex<Scalar> index;
     index.buildAdaptive(gpu_cloud);
     plapoint::gpu::NormalRefinementGpuWorkspace<Scalar> workspace;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> output;
+    plamatrix::internal::ResidentMatrix<Scalar> output(
+        static_cast<plamatrix::Index>(gpu_cloud.size()), 3, gpu_cloud.executionContext());
 
     const auto actual = smoothDirect(gpu_cloud, index, 2, output, workspace, nullptr);
     EXPECT_EQ(actual(0, 0), Scalar(1));
@@ -155,7 +158,8 @@ TYPED_TEST(NormalRefinementGpuTest, UsesAllAvailableNeighborsWhenKExceedsPointCo
     plapoint::gpu::GpuSpatialIndex<Scalar> index;
     index.buildAdaptive(gpu_cloud);
     plapoint::gpu::NormalRefinementGpuWorkspace<Scalar> workspace;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> output;
+    plamatrix::internal::ResidentMatrix<Scalar> output(
+        static_cast<plamatrix::Index>(gpu_cloud.size()), 3, gpu_cloud.executionContext());
 
     const auto actual = smoothDirect(gpu_cloud, index, 8, output, workspace, nullptr);
     const Scalar inverse_sqrt_two = Scalar(1) / std::sqrt(Scalar(2));
@@ -225,7 +229,8 @@ TEST(NormalRefinementGpuDirectTest, PreservesSourceWhenSelectedNeighborNormalIsN
     plapoint::gpu::GpuSpatialIndex<float> index;
     index.buildAdaptive(gpu_cloud);
     plapoint::gpu::NormalRefinementGpuWorkspace<float> workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output;
+    plamatrix::internal::ResidentMatrix<float> output(
+        static_cast<plamatrix::Index>(gpu_cloud.size()), 3, gpu_cloud.executionContext());
 
     const auto actual = smoothDirect(gpu_cloud, index, 2, output, workspace, nullptr);
     EXPECT_EQ(actual(0, 0), 2.0F);
@@ -251,9 +256,9 @@ TEST(NormalRefinementGpuDirectTest, OrientsInPlaceAndSkipsNonFiniteRows)
     auto gpu_cloud = cpu_cloud.toGpu();
 
     plapoint::gpu::orientNormalsTowardViewpointAsync(
-        gpu_cloud, {-10.0F, 0.0F, 0.0F}, nullptr);
+        gpu_cloud, plamatrix::Matrix<float, 3, 1>(-10.0F, 0.0F, 0.0F), nullptr);
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(nullptr));
-    const auto actual = gpu_cloud.normals()->toCpu();
+    const auto actual = gpu_cloud.normals()->toHostMatrix();
     EXPECT_EQ(actual(0, 0), -1.0F);
     EXPECT_EQ(actual(1, 0), -1.0F);
     EXPECT_EQ(actual(2, 0), 1.0F);
@@ -267,24 +272,23 @@ TEST(NormalRefinementGpuDirectTest, HighLevelUpdatesOnlyNormalsAndPreservesPoint
     }
 
     using Scalar = float;
-    auto cpu_cloud = makeCloud<Scalar>(
-        {{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F}},
-        {{1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}, {0.0F, 0.0F, 1.0F}});
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(3, 3);
-    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(3, 1);
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> fields(3, 2);
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> texture_coords(3, 2);
+    auto cpu_cloud = makeCloud<Scalar>({{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F}},
+                                       {{1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}, {0.0F, 0.0F, 1.0F}});
+    plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(3, 3);
+    plamatrix::Matrix<std::uint16_t, plamatrix::Dynamic, plamatrix::Dynamic> intensities(3, 1);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> fields(3, 2);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> texture_coords(3, 2);
     for (plamatrix::Index row = 0; row < 3; ++row)
     {
         for (int column = 0; column < 3; ++column)
         {
-            colors.setValue(row, column, static_cast<std::uint8_t>(10 * row + column));
+            colors.operator()(row, column) = static_cast<std::uint8_t>(10 * row + column);
         }
-        intensities.setValue(row, 0, static_cast<std::uint16_t>(100 + row));
-        fields.setValue(row, 0, Scalar(row) + 0.25F);
-        fields.setValue(row, 1, Scalar(row) + 0.75F);
-        texture_coords.setValue(row, 0, Scalar(row) * 0.1F);
-        texture_coords.setValue(row, 1, Scalar(row) * 0.2F);
+        intensities.operator()(row, 0) = static_cast<std::uint16_t>(100 + row);
+        fields.operator()(row, 0) = Scalar(row) + 0.25F;
+        fields.operator()(row, 1) = Scalar(row) + 0.75F;
+        texture_coords.operator()(row, 0) = Scalar(row) * 0.1F;
+        texture_coords.operator()(row, 1) = Scalar(row) * 0.2F;
     }
     cpu_cloud.setColors(std::move(colors));
     cpu_cloud.setIntensities(std::move(intensities));
@@ -292,15 +296,15 @@ TEST(NormalRefinementGpuDirectTest, HighLevelUpdatesOnlyNormalsAndPreservesPoint
     cpu_cloud.setTextureCoords(std::move(texture_coords));
     auto gpu_cloud = std::make_shared<GpuCloud<Scalar>>(cpu_cloud.toGpu());
     auto tree = std::make_shared<
-        plapoint::search::KdTree<Scalar, plamatrix::Device::GPU>>();
+        plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::GPU>>();
     tree->setInputCloud(gpu_cloud);
     tree->build();
-    plapoint::NormalRefinement<Scalar, plamatrix::Device::GPU> refinement;
+    plapoint::NormalRefinement<Scalar, plamatrix::internal::Device::GPU> refinement;
     refinement.setInputCloud(gpu_cloud);
     refinement.setSearchMethod(tree);
 
     refinement.smooth(3);
-    refinement.orientConsistently({0.0F, 0.0F, 10.0F});
+    refinement.orientConsistently(plamatrix::Matrix<float, 3, 1>(0.0F, 0.0F, 10.0F));
 
     const auto actual = gpu_cloud->toCpu();
     ASSERT_EQ(actual.scalarFieldNames(), cpu_cloud.scalarFieldNames());
@@ -334,7 +338,8 @@ TEST(NormalRefinementGpuDirectTest, ReusesOutputAndWorkspaceOnNonDefaultStream)
     plapoint::gpu::GpuSpatialIndex<float> index;
     index.buildAdaptive(gpu_cloud);
     plapoint::gpu::NormalRefinementGpuWorkspace<float> workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output;
+    plamatrix::internal::ResidentMatrix<float> output(
+        static_cast<plamatrix::Index>(gpu_cloud.size()), 3, gpu_cloud.executionContext());
     cudaStream_t stream = nullptr;
     PLAPOINT_CHECK_CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
@@ -366,7 +371,8 @@ TEST(NormalRefinementGpuDirectTest, RejectsCrossStreamReuseUntilReset)
     plapoint::gpu::GpuSpatialIndex<float> index;
     index.buildAdaptive(gpu_cloud);
     plapoint::gpu::NormalRefinementGpuWorkspace<float> workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output;
+    plamatrix::internal::ResidentMatrix<float> output(
+        static_cast<plamatrix::Index>(gpu_cloud.size()), 3, gpu_cloud.executionContext());
     cudaStream_t first_stream = nullptr;
     cudaStream_t second_stream = nullptr;
     PLAPOINT_CHECK_CUDA(cudaStreamCreateWithFlags(&first_stream, cudaStreamNonBlocking));
@@ -403,7 +409,8 @@ TEST(NormalRefinementGpuDirectTest, ResetStreamRejectsPendingWork)
     plapoint::gpu::GpuSpatialIndex<float> index;
     index.buildAdaptive(gpu_cloud);
     plapoint::gpu::NormalRefinementGpuWorkspace<float> workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output;
+    plamatrix::internal::ResidentMatrix<float> output(
+        static_cast<plamatrix::Index>(gpu_cloud.size()), 3, gpu_cloud.executionContext());
     cudaStream_t stream = nullptr;
     PLAPOINT_CHECK_CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
@@ -434,7 +441,8 @@ TEST(NormalRefinementGpuDirectTest, OrdinaryOutputSurvivesDestroyedStreamAndCanB
     plapoint::gpu::GpuSpatialIndex<float> index;
     index.buildAdaptive(gpu_cloud);
     plapoint::gpu::NormalRefinementGpuWorkspace<float> workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output;
+    plamatrix::internal::ResidentMatrix<float> output(
+        static_cast<plamatrix::Index>(gpu_cloud.size()), 3, gpu_cloud.executionContext());
     cudaStream_t first_stream = nullptr;
     PLAPOINT_CHECK_CUDA(cudaStreamCreateWithFlags(&first_stream, cudaStreamNonBlocking));
     smoothDirect(gpu_cloud, index, 2, output, workspace, first_stream);
@@ -464,15 +472,15 @@ TEST(NormalRefinementGpuDirectTest, HighLevelKGreaterThanThirtyTwoKeepsHostCompa
     auto cpu_cloud = std::make_shared<CpuCloud<float>>(std::move(cpu_value));
     auto gpu_cloud = std::make_shared<GpuCloud<float>>(cpu_cloud->toGpu());
     auto cpu_tree = std::make_shared<
-        plapoint::search::KdTree<float, plamatrix::Device::CPU>>();
+        plapoint::search::internal::DeviceKdTree<float, plamatrix::internal::Device::CPU>>();
     auto gpu_tree = std::make_shared<
-        plapoint::search::KdTree<float, plamatrix::Device::GPU>>();
+        plapoint::search::internal::DeviceKdTree<float, plamatrix::internal::Device::GPU>>();
     cpu_tree->setInputCloud(cpu_cloud);
     gpu_tree->setInputCloud(gpu_cloud);
     cpu_tree->build();
     gpu_tree->build();
-    plapoint::NormalRefinement<float, plamatrix::Device::CPU> cpu_refinement;
-    plapoint::NormalRefinement<float, plamatrix::Device::GPU> gpu_refinement;
+    plapoint::NormalRefinement<float, plamatrix::internal::Device::CPU> cpu_refinement;
+    plapoint::NormalRefinement<float, plamatrix::internal::Device::GPU> gpu_refinement;
     cpu_refinement.setInputCloud(cpu_cloud);
     cpu_refinement.setSearchMethod(cpu_tree);
     gpu_refinement.setInputCloud(gpu_cloud);
@@ -481,7 +489,7 @@ TEST(NormalRefinementGpuDirectTest, HighLevelKGreaterThanThirtyTwoKeepsHostCompa
     cpu_refinement.smooth(33);
     gpu_refinement.smooth(33);
 
-    const auto actual = gpu_cloud->normals()->toCpu();
+    const auto actual = gpu_cloud->normals()->toHostMatrix();
     for (plamatrix::Index row = 0; row < actual.rows(); ++row)
     {
         for (int column = 0; column < 3; ++column)

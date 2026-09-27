@@ -2,15 +2,21 @@
 
 #ifdef PLAPOINT_WITH_CUDA
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
-#include <cub/cub.cuh>
-
-#include <plamatrix/ops/indexing.h>
-#include <plamatrix/ops/reduction.h>
+#include <plamatrix/internal/ops/grouping.h>
+#include <plamatrix/internal/ops/indexing.h>
+#include <plamatrix/internal/ops/statistics.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/core/execution_context.h>
+#include <plamatrix/internal/dense/matrix_view.h>
+#include <plamatrix/internal/device/device_matrix.h>
+#include <plamatrix/internal/ops/reduction.h>
 
 namespace plapoint
 {
@@ -23,21 +29,58 @@ constexpr std::uint64_t kCellAxisLimit = std::uint64_t{1} << 21;
 constexpr double kInt64CellLimit = 9223372036854775808.0;
 
 template <typename Scalar>
-__global__ void markFinitePointsKernel(
-    const Scalar* points,
-    plamatrix::Index point_count,
-    std::uint8_t* finite_mask)
+struct FiniteStatistics
 {
-    const auto row = static_cast<plamatrix::Index>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (row >= point_count)
-    {
-        return;
-    }
+    plamatrix::internal::ResidentMatrix<std::uint8_t> rowMask;
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> minimum;
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> maximum;
+    int validCount;
+};
 
-    const Scalar x = points[row];
-    const Scalar y = points[point_count + row];
-    const Scalar z = points[2 * point_count + row];
-    finite_mask[row] = static_cast<std::uint8_t>(isfinite(x) && isfinite(y) && isfinite(z));
+struct GroupingHostMetadata
+{
+    plamatrix::Index segmentOffsets[2];
+    plamatrix::Index cellCount;
+    plamatrix::Index maximumCellCount;
+    int keyError;
+};
+
+template <typename Scalar>
+FiniteStatistics<Scalar> computeFiniteStatistics(
+    const plamatrix::internal::ResidentMatrix<Scalar>& points,
+    const std::shared_ptr<plamatrix::internal::ExecutionContext>& context,
+    cudaStream_t stream)
+{
+    plamatrix::internal::ResidentMatrix<std::uint8_t> row_mask(points.rows(), 1, context);
+    plamatrix::internal::ResidentMatrix<Scalar> minimum(1, points.cols(), context);
+    plamatrix::internal::ResidentMatrix<Scalar> maximum(1, points.cols(), context);
+    plamatrix::internal::ResidentMatrix<plamatrix::Index> valid_count(1, 1, context);
+    plamatrix::internal::ReductionWorkspace workspace;
+    plamatrix::internal::finiteColumnBoundsWithMaskAsync(
+        points.template view<plamatrix::internal::Device::GPU>(),
+        row_mask.template view<plamatrix::internal::Device::GPU>(),
+        minimum.template view<plamatrix::internal::Device::GPU>(),
+        maximum.template view<plamatrix::internal::Device::GPU>(),
+        valid_count.template view<plamatrix::internal::Device::GPU>(), workspace, stream);
+
+    workspace.closeAsyncAllocation();
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    auto host_minimum = minimum.toHostMatrix();
+    auto host_maximum = maximum.toHostMatrix();
+    auto host_valid_count = valid_count.toHostMatrix();
+
+    const auto finite_count = host_valid_count(0, 0);
+    if (finite_count < 0 || finite_count > points.rows()
+        || finite_count > static_cast<plamatrix::Index>(std::numeric_limits<int>::max()))
+    {
+        throw std::runtime_error(
+            "GpuSpatialIndex: PlaMatrix returned an invalid finite point count");
+    }
+    return {
+        std::move(row_mask),
+        std::move(host_minimum),
+        std::move(host_maximum),
+        static_cast<int>(finite_count)};
 }
 
 template <typename Scalar>
@@ -116,8 +159,8 @@ void checkAxisSpan(std::int64_t minimum, std::int64_t maximum)
 
 template <typename Scalar>
 Scalar adaptiveCellSize(
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& minima,
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& maxima,
+    const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& minima,
+    const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& maxima,
     int finite_count)
 {
     if (finite_count == 0)
@@ -160,11 +203,22 @@ Scalar adaptiveCellSize(
 
 template <typename Scalar>
 void GpuSpatialIndex<Scalar>::build(
-    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
     Scalar cell_size,
     cudaStream_t stream)
 {
-    if (!std::isfinite(cell_size) || cell_size <= Scalar(0))
+    buildImpl(cloud, cell_size, false, stream);
+}
+
+template <typename Scalar>
+void GpuSpatialIndex<Scalar>::buildImpl(
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
+    Scalar cell_size,
+    bool adaptive_cell_size,
+    cudaStream_t stream)
+{
+    cloud.validate();
+    if (!adaptive_cell_size && (!std::isfinite(cell_size) || cell_size <= Scalar(0)))
     {
         throw std::invalid_argument("GpuSpatialIndex cell_size must be finite and positive");
     }
@@ -174,17 +228,17 @@ void GpuSpatialIndex<Scalar>::build(
     }
 
     GpuSpatialIndex replacement;
+    replacement._context = cloud.executionContext();
     replacement._sourceData = cloud.points().data();
     replacement._sourceIdentity = cloud.pointsIdentity();
     replacement._pointCount = cloud.points().rows();
     replacement._cloudRevision = cloud.pointsRevision();
-    replacement._cellSize = cell_size;
-    replacement._points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>
-        ::uninitialized(replacement._pointCount, 3);
+    replacement._cellSize = adaptive_cell_size ? Scalar(1) : cell_size;
+    replacement._points.emplace(replacement._pointCount, 3, replacement._context);
     if (replacement._pointCount != 0)
     {
         PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
-            replacement._points.data(), cloud.points().data(),
+            replacement._points->data(), cloud.points().data(),
             static_cast<std::size_t>(replacement._pointCount) * 3 * sizeof(Scalar),
             cudaMemcpyDeviceToDevice, stream));
     }
@@ -192,36 +246,47 @@ void GpuSpatialIndex<Scalar>::build(
     if (replacement._pointCount != 0)
     {
         const int block_size = 256;
-        const int grid_size = static_cast<int>((replacement._pointCount + block_size - 1) / block_size);
-        auto finite_mask = plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>
-            ::uninitialized(replacement._pointCount, 1);
-        markFinitePointsKernel<<<grid_size, block_size, 0, stream>>>(
-            replacement._points.data(), replacement._pointCount, finite_mask.data());
-        PLAPOINT_CHECK_CUDA(cudaGetLastError());
-
-        plamatrix::IndexingWorkspace compact_workspace;
-        auto compacted = plamatrix::compactRows(
-            replacement._points, finite_mask, compact_workspace, stream);
-        replacement._finitePointCount = static_cast<int>(compacted.values.rows());
+        auto statistics = computeFiniteStatistics(*replacement._points, replacement._context, stream);
+        replacement._finitePointCount = statistics.validCount;
+        if (adaptive_cell_size && replacement._finitePointCount != 0)
+        {
+            cell_size = adaptiveCellSize(
+                statistics.minimum, statistics.maximum, statistics.validCount);
+            replacement._cellSize = cell_size;
+        }
 
         if (replacement._finitePointCount != 0)
         {
-            plamatrix::ReductionWorkspace reduction_workspace;
-            auto minima_gpu = plamatrix::min(
-                compacted.values, plamatrix::ReductionAxis::Columns, reduction_workspace, stream);
-            auto maxima_gpu = plamatrix::max(
-                compacted.values, plamatrix::ReductionAxis::Columns, reduction_workspace, stream);
+            plamatrix::internal::IndexingWorkspace compact_workspace;
+            plamatrix::internal::ResidentMatrix<Scalar> compacted_points(
+                replacement._pointCount, 3, replacement._context);
+            plamatrix::internal::ResidentMatrix<plamatrix::Index> compacted_indices(
+                replacement._pointCount, 1, replacement._context);
+            plamatrix::internal::ResidentMatrix<plamatrix::Index> compacted_count(1, 1, replacement._context);
+            plamatrix::internal::compactRowsAsync(
+                replacement._points->template view<plamatrix::internal::Device::GPU>().asConst(),
+                statistics.rowMask.template view<plamatrix::internal::Device::GPU>().asConst(),
+                compacted_points.template view<plamatrix::internal::Device::GPU>(),
+                compacted_indices.template view<plamatrix::internal::Device::GPU>(),
+                compacted_count.template view<plamatrix::internal::Device::GPU>(),
+                compact_workspace, stream);
             PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-            auto minima = minima_gpu.toCpu();
-            auto maxima = maxima_gpu.toCpu();
+            compact_workspace.checkStatus("GpuSpatialIndex finite point compaction");
+            compact_workspace.closeAsyncAllocation();
+            PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+            if (compacted_count.toHostMatrix()(0, 0) != replacement._finitePointCount)
+            {
+                throw std::runtime_error(
+                    "GpuSpatialIndex: inconsistent PlaMatrix finite point count");
+            }
 
             const double cell = static_cast<double>(cell_size);
-            const auto min_x = checkedCellCoordinate(static_cast<double>(minima(0, 0)), cell);
-            const auto min_y = checkedCellCoordinate(static_cast<double>(minima(0, 1)), cell);
-            const auto min_z = checkedCellCoordinate(static_cast<double>(minima(0, 2)), cell);
-            const auto max_x = checkedCellCoordinate(static_cast<double>(maxima(0, 0)), cell);
-            const auto max_y = checkedCellCoordinate(static_cast<double>(maxima(0, 1)), cell);
-            const auto max_z = checkedCellCoordinate(static_cast<double>(maxima(0, 2)), cell);
+            const auto min_x = checkedCellCoordinate(static_cast<double>(statistics.minimum(0, 0)), cell);
+            const auto min_y = checkedCellCoordinate(static_cast<double>(statistics.minimum(0, 1)), cell);
+            const auto min_z = checkedCellCoordinate(static_cast<double>(statistics.minimum(0, 2)), cell);
+            const auto max_x = checkedCellCoordinate(static_cast<double>(statistics.maximum(0, 0)), cell);
+            const auto max_y = checkedCellCoordinate(static_cast<double>(statistics.maximum(0, 1)), cell);
+            const auto max_z = checkedCellCoordinate(static_cast<double>(statistics.maximum(0, 2)), cell);
             checkAxisSpan(min_x, max_x);
             checkAxisSpan(min_y, max_y);
             checkAxisSpan(min_z, max_z);
@@ -235,9 +300,20 @@ void GpuSpatialIndex<Scalar>::build(
             replacement._axisSpanZ = static_cast<std::uint64_t>(max_z)
                 - static_cast<std::uint64_t>(min_z);
 
-            const auto count = static_cast<std::size_t>(replacement._finitePointCount);
-            DeviceBuffer<std::uint64_t> unsorted_keys(count);
+            const auto matrix_count = static_cast<plamatrix::Index>(replacement._finitePointCount);
+            const auto count = static_cast<std::size_t>(matrix_count);
+            plamatrix::internal::ResidentMatrix<Scalar> finite_points(matrix_count, 3, replacement._context);
+            PLAPOINT_CHECK_CUDA(cudaMemcpy2DAsync(
+                finite_points.data(), count * sizeof(Scalar),
+                compacted_points.data(), static_cast<std::size_t>(replacement._pointCount) * sizeof(Scalar),
+                count * sizeof(Scalar), 3, cudaMemcpyDeviceToDevice, stream));
+            plamatrix::internal::ResidentMatrix<std::uint64_t> unsorted_keys(
+                matrix_count, 1, replacement._context);
             DeviceBuffer<int> key_error(1);
+            HostPinnedBuffer<GroupingHostMetadata> host_metadata(1);
+            auto* metadata = host_metadata.get();
+            metadata->segmentOffsets[0] = 0;
+            metadata->segmentOffsets[1] = matrix_count;
             PLAPOINT_CHECK_CUDA(cudaMemsetAsync(key_error.get(), 0, sizeof(int), stream));
             makeCellKeysKernel<<<
                 static_cast<int>((static_cast<std::int64_t>(replacement._finitePointCount)
@@ -245,136 +321,104 @@ void GpuSpatialIndex<Scalar>::build(
                 block_size,
                 0,
                 stream>>>(
-                compacted.values.data(), compacted.values.rows(), cell_size,
-                min_x, min_y, min_z, unsorted_keys.get(), key_error.get());
+                finite_points.data(), matrix_count, cell_size,
+                min_x, min_y, min_z, unsorted_keys.data(), key_error.get());
             PLAPOINT_CHECK_CUDA(cudaGetLastError());
-            int host_key_error = 0;
             PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
-                &host_key_error, key_error.get(), sizeof(int), cudaMemcpyDeviceToHost, stream));
+                &metadata->keyError, key_error.get(), sizeof(int), cudaMemcpyDeviceToHost, stream));
+
+            replacement._sortedCellKeys.emplace(matrix_count, 1, replacement._context);
+            replacement._sortedPointIndices.emplace(matrix_count, 1, replacement._context);
+            plamatrix::internal::GroupingWorkspace grouping_workspace;
+            plamatrix::internal::sortByKeyAsync(
+                unsorted_keys.template view<plamatrix::internal::Device::GPU>().asConst(),
+                plamatrix::internal::ConstMatrixView<plamatrix::Index, plamatrix::internal::Device::GPU>(
+                    compacted_indices.data(), matrix_count, 1, 1, matrix_count),
+                replacement._sortedCellKeys->template view<plamatrix::internal::Device::GPU>(),
+                replacement._sortedPointIndices->template view<plamatrix::internal::Device::GPU>(),
+                grouping_workspace,
+                stream);
+
+            replacement._uniqueCellKeys.emplace(matrix_count, 1, replacement._context);
+            replacement._cellCounts.emplace(matrix_count, 1, replacement._context);
+            replacement._cellOffsets.emplace(matrix_count, 1, replacement._context);
+            PLAPOINT_CHECK_CUDA(cudaMemsetAsync(
+                replacement._cellCounts->data(), 0, count * sizeof(plamatrix::Index), stream));
+            plamatrix::internal::ResidentMatrix<plamatrix::Index> run_count(1, 1, replacement._context);
+            plamatrix::internal::runLengthEncodeAsync(
+                replacement._sortedCellKeys->template view<plamatrix::internal::Device::GPU>().asConst(),
+                replacement._uniqueCellKeys->template view<plamatrix::internal::Device::GPU>(),
+                replacement._cellCounts->template view<plamatrix::internal::Device::GPU>(),
+                run_count.template view<plamatrix::internal::Device::GPU>(),
+                grouping_workspace,
+                stream);
+
+            plamatrix::internal::ResidentMatrix<plamatrix::Index> maximum_count(1, 1, replacement._context);
+            plamatrix::internal::ResidentMatrix<plamatrix::Index> device_segment_offsets(2, 1, replacement._context);
+            PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+                device_segment_offsets.data(), metadata->segmentOffsets,
+                sizeof(metadata->segmentOffsets), cudaMemcpyHostToDevice, stream));
+            plamatrix::internal::segmentedReduceAsync(
+                replacement._cellCounts->template view<plamatrix::internal::Device::GPU>().asConst(),
+                device_segment_offsets.template view<plamatrix::internal::Device::GPU>().asConst(),
+                plamatrix::internal::GroupReduction::Maximum,
+                maximum_count.template view<plamatrix::internal::Device::GPU>(),
+                grouping_workspace,
+                stream);
+
+            plamatrix::internal::IndexingWorkspace scan_workspace;
+            plamatrix::internal::exclusiveScanAsync(
+                replacement._cellCounts->template view<plamatrix::internal::Device::GPU>().asConst(),
+                replacement._cellOffsets->template view<plamatrix::internal::Device::GPU>(),
+                scan_workspace, stream);
+
+            PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+                &metadata->cellCount, run_count.data(), sizeof(plamatrix::Index),
+                cudaMemcpyDeviceToHost, stream));
+            PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
+                &metadata->maximumCellCount, maximum_count.data(), sizeof(plamatrix::Index),
+                cudaMemcpyDeviceToHost, stream));
+            grouping_workspace.closeAsyncAllocation();
             PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-            if (host_key_error != 0)
+            scan_workspace.checkStatus("GpuSpatialIndex cell offsets");
+            scan_workspace.closeAsyncAllocation();
+
+            if (metadata->keyError != 0)
             {
                 throw std::overflow_error("GpuSpatialIndex device cell quantization overflowed");
             }
-
-            replacement._sortedCellKeys.allocate(count);
-            replacement._sortedPointIndices =
-                plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU>
-                    ::uninitialized(static_cast<plamatrix::Index>(count), 1);
-            std::size_t sort_bytes = 0;
-            PLAPOINT_CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
-                nullptr, sort_bytes, unsorted_keys.get(), replacement._sortedCellKeys.get(),
-                compacted.sourceIndices.data(), replacement._sortedPointIndices.data(),
-                replacement._finitePointCount, 0, 64, stream));
-            DeviceBuffer<std::uint8_t> sort_storage(sort_bytes);
-            PLAPOINT_CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
-                sort_storage.get(), sort_bytes, unsorted_keys.get(), replacement._sortedCellKeys.get(),
-                compacted.sourceIndices.data(), replacement._sortedPointIndices.data(),
-                replacement._finitePointCount, 0, 64, stream));
-
-            replacement._uniqueCellKeys.allocate(count);
-            replacement._cellCounts =
-                plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU>
-                    ::uninitialized(static_cast<plamatrix::Index>(count), 1);
-            replacement._cellOffsets =
-                plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU>
-                    ::uninitialized(static_cast<plamatrix::Index>(count), 1);
-            PLAPOINT_CHECK_CUDA(cudaMemsetAsync(
-                replacement._cellCounts.data(), 0, count * sizeof(plamatrix::Index), stream));
-            DeviceBuffer<int> run_count(1);
-            std::size_t encode_bytes = 0;
-            PLAPOINT_CHECK_CUDA(cub::DeviceRunLengthEncode::Encode(
-                nullptr, encode_bytes, replacement._sortedCellKeys.get(),
-                replacement._uniqueCellKeys.get(), replacement._cellCounts.data(),
-                run_count.get(), replacement._finitePointCount, stream));
-            DeviceBuffer<std::uint8_t> encode_storage(encode_bytes);
-            PLAPOINT_CHECK_CUDA(cub::DeviceRunLengthEncode::Encode(
-                encode_storage.get(), encode_bytes, replacement._sortedCellKeys.get(),
-                replacement._uniqueCellKeys.get(), replacement._cellCounts.data(),
-                run_count.get(), replacement._finitePointCount, stream));
-            PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
-                &replacement._cellCount, run_count.get(), sizeof(int),
-                cudaMemcpyDeviceToHost, stream));
-            PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-
-            DeviceBuffer<plamatrix::Index> maximum_count(1);
-            std::size_t reduce_bytes = 0;
-            PLAPOINT_CHECK_CUDA(cub::DeviceReduce::Max(
-                nullptr, reduce_bytes, replacement._cellCounts.data(), maximum_count.get(),
-                replacement._cellCount, stream));
-            DeviceBuffer<std::uint8_t> reduce_storage(reduce_bytes);
-            PLAPOINT_CHECK_CUDA(cub::DeviceReduce::Max(
-                reduce_storage.get(), reduce_bytes, replacement._cellCounts.data(), maximum_count.get(),
-                replacement._cellCount, stream));
-            plamatrix::Index host_maximum_count = 0;
-            PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
-                &host_maximum_count, maximum_count.get(), sizeof(plamatrix::Index),
-                cudaMemcpyDeviceToHost, stream));
-            PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-            replacement._maxCellOccupancy = static_cast<int>(host_maximum_count);
-
-            plamatrix::IndexingWorkspace scan_workspace;
-            plamatrix::exclusiveScan(
-                replacement._cellCounts, replacement._cellOffsets, scan_workspace, stream);
+            const auto encoded_cell_count = metadata->cellCount;
+            const auto maximum_cell_count = metadata->maximumCellCount;
+            if (encoded_cell_count <= 0 || encoded_cell_count > matrix_count
+                || maximum_cell_count <= 0
+                || maximum_cell_count > matrix_count)
+            {
+                throw std::runtime_error("GpuSpatialIndex: PlaMatrix returned invalid grouping metadata");
+            }
+            replacement._cellCount = static_cast<int>(encoded_cell_count);
+            replacement._maxCellOccupancy = static_cast<int>(maximum_cell_count);
         }
     }
 
-    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
     *this = std::move(replacement);
 }
 
 template <typename Scalar>
 void GpuSpatialIndex<Scalar>::buildAdaptive(
-    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
     cudaStream_t stream)
 {
-    if (cloud.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-    {
-        throw std::overflow_error("GpuSpatialIndex point count exceeds int range");
-    }
-    const auto point_count = cloud.points().rows();
-    if (point_count == 0)
-    {
-        build(cloud, Scalar(1), stream);
-        return;
-    }
-
-    auto finite_mask = plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>
-        ::uninitialized(point_count, 1);
-    constexpr int block_size = 256;
-    const int grid_size = static_cast<int>((point_count + block_size - 1) / block_size);
-    markFinitePointsKernel<<<grid_size, block_size, 0, stream>>>(
-        cloud.points().data(), point_count, finite_mask.data());
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
-    plamatrix::IndexingWorkspace compact_workspace;
-    auto compacted = plamatrix::compactRows(
-        cloud.points(), finite_mask, compact_workspace, stream);
-    const int finite_count = static_cast<int>(compacted.values.rows());
-    if (finite_count == 0)
-    {
-        build(cloud, Scalar(1), stream);
-        return;
-    }
-
-    plamatrix::ReductionWorkspace reduction_workspace;
-    auto minima_gpu = plamatrix::min(
-        compacted.values, plamatrix::ReductionAxis::Columns, reduction_workspace, stream);
-    auto maxima_gpu = plamatrix::max(
-        compacted.values, plamatrix::ReductionAxis::Columns, reduction_workspace, stream);
-    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-    const auto minima = minima_gpu.toCpu();
-    const auto maxima = maxima_gpu.toCpu();
-    build(cloud, adaptiveCellSize(minima, maxima, finite_count), stream);
+    buildImpl(cloud, Scalar(1), true, stream);
 }
 
 template void GpuSpatialIndex<float>::build(
-    const PointCloud<float, plamatrix::Device::GPU>&, float, cudaStream_t);
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>&, float, cudaStream_t);
 template void GpuSpatialIndex<double>::build(
-    const PointCloud<double, plamatrix::Device::GPU>&, double, cudaStream_t);
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::GPU>&, double, cudaStream_t);
 template void GpuSpatialIndex<float>::buildAdaptive(
-    const PointCloud<float, plamatrix::Device::GPU>&, cudaStream_t);
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>&, cudaStream_t);
 template void GpuSpatialIndex<double>::buildAdaptive(
-    const PointCloud<double, plamatrix::Device::GPU>&, cudaStream_t);
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::GPU>&, cudaStream_t);
 
 } // namespace gpu
 } // namespace plapoint

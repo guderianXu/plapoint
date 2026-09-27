@@ -4,6 +4,7 @@
 #include <plapoint/filters/preprocessing.h>
 
 #include <plamatrix/plamatrix.h>
+#include <plamatrix/internal/core/device.h>
 
 #include <cstdint>
 #include <stdexcept>
@@ -15,47 +16,59 @@
 namespace
 {
 
-plapoint::PointCloud<float, plamatrix::Device::CPU> makeClusterWithOutlier()
-{
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> points(5, 3);
-    for (int i = 0; i < 4; ++i)
+    plapoint::GeometryCloud<float> makeClusterWithOutlier()
     {
-        points.setValue(i, 0, static_cast<float>(i) * 0.02f);
-        points.setValue(i, 1, 0.0f);
-        points.setValue(i, 2, 0.0f);
-    }
-    points.setValue(4, 0, 10.0f);
-    points.setValue(4, 1, 0.0f);
-    points.setValue(4, 2, 0.0f);
+        plamatrix::MatrixXf points(5, 3);
+        for (int i = 0; i < 4; ++i)
+        {
+            points.operator()(i, 0) = static_cast<float>(i) * 0.02f;
+            points.operator()(i, 1) = 0.0f;
+            points.operator()(i, 2) = 0.0f;
+        }
+        points.operator()(4, 0) = 10.0f;
+        points.operator()(4, 1) = 0.0f;
+        points.operator()(4, 2) = 0.0f;
 
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(5, 3);
-    for (int i = 0; i < 5; ++i)
-    {
-        colors.setValue(i, 0, static_cast<std::uint8_t>(10 + i));
-        colors.setValue(i, 1, static_cast<std::uint8_t>(20 + i));
-        colors.setValue(i, 2, static_cast<std::uint8_t>(30 + i));
-    }
+        plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(5, 3);
+        for (int i = 0; i < 5; ++i)
+        {
+            colors.operator()(i, 0) = static_cast<std::uint8_t>(10 + i);
+            colors.operator()(i, 1) = static_cast<std::uint8_t>(20 + i);
+            colors.operator()(i, 2) = static_cast<std::uint8_t>(30 + i);
+        }
 
-    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(std::move(points));
-    cloud.setColors(std::move(colors));
-    return cloud;
-}
+        plapoint::GeometryCloud<float> cloud(std::move(points));
+        cloud.setColors(std::move(colors));
+        return cloud;
+    }
 
 } // namespace
 
 TEST(PreprocessingApiTest, VoxelDownsampleCpuInputPreservesAveragedColors)
 {
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> points(3, 3);
-    points.setValue(0, 0, 0.0f); points.setValue(0, 1, 0.0f); points.setValue(0, 2, 0.0f);
-    points.setValue(1, 0, 0.2f); points.setValue(1, 1, 0.0f); points.setValue(1, 2, 0.0f);
-    points.setValue(2, 0, 2.0f); points.setValue(2, 1, 0.0f); points.setValue(2, 2, 0.0f);
+    plamatrix::MatrixXf points(3, 3);
+    points.operator()(0, 0) = 0.0f;
+    points.operator()(0, 1) = 0.0f;
+    points.operator()(0, 2) = 0.0f;
+    points.operator()(1, 0) = 0.2f;
+    points.operator()(1, 1) = 0.0f;
+    points.operator()(1, 2) = 0.0f;
+    points.operator()(2, 0) = 2.0f;
+    points.operator()(2, 1) = 0.0f;
+    points.operator()(2, 2) = 0.0f;
 
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(3, 3);
-    colors.setValue(0, 0, 40); colors.setValue(0, 1, 50); colors.setValue(0, 2, 60);
-    colors.setValue(1, 0, 44); colors.setValue(1, 1, 54); colors.setValue(1, 2, 64);
-    colors.setValue(2, 0, 100); colors.setValue(2, 1, 110); colors.setValue(2, 2, 120);
+    plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(3, 3);
+    colors.operator()(0, 0) = 40;
+    colors.operator()(0, 1) = 50;
+    colors.operator()(0, 2) = 60;
+    colors.operator()(1, 0) = 44;
+    colors.operator()(1, 1) = 54;
+    colors.operator()(1, 2) = 64;
+    colors.operator()(2, 0) = 100;
+    colors.operator()(2, 1) = 110;
+    colors.operator()(2, 2) = 120;
 
-    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(std::move(points));
+    plapoint::GeometryCloud<float> cloud(std::move(points));
     cloud.setColors(std::move(colors));
 
     plapoint::ProcessingReport report;
@@ -69,9 +82,9 @@ TEST(PreprocessingApiTest, VoxelDownsampleCpuInputPreservesAveragedColors)
     EXPECT_EQ(report.usedDevice, plapoint::ProcessingDevice::CPU);
     EXPECT_EQ(report.neighborBackend, plapoint::ProcessingNeighborBackend::None);
     EXPECT_FALSE(report.usedFallback);
-    EXPECT_EQ(output.colors()->getValue(0, 0), 42);
-    EXPECT_EQ(output.colors()->getValue(0, 2), 62);
-    EXPECT_EQ(output.colors()->getValue(1, 0), 100);
+    EXPECT_EQ(output.colors()->operator()(0, 0), 42);
+    EXPECT_EQ(output.colors()->operator()(0, 2), 62);
+    EXPECT_EQ(output.colors()->operator()(1, 0), 100);
 }
 
 TEST(PreprocessingApiTest, AutoPolicyUsesLinearAndNeighborhoodWorkThresholds)
@@ -137,18 +150,18 @@ TEST(PreprocessingApiTest, AutoSmallAttributedVoxelUsesCpuWithoutTransfer)
 TEST(PreprocessingApiTest, AutoLargeAttributedVoxelSkipsPartialOpenClOffload)
 {
     constexpr std::size_t point_count = plapoint::ProcessingPolicy::autoGpuPointThreshold;
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> points(point_count, 3);
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(point_count, 3);
+    plamatrix::MatrixXf points(point_count, 3);
+    plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(point_count, 3);
     for (std::size_t row = 0; row < point_count; ++row)
     {
-        points.setValue(row, 0, static_cast<float>(row) * 0.01f);
-        points.setValue(row, 1, 0.0f);
-        points.setValue(row, 2, 0.0f);
-        colors.setValue(row, 0, 10);
-        colors.setValue(row, 1, 20);
-        colors.setValue(row, 2, 30);
+        points.operator()(row, 0) = static_cast<float>(row) * 0.01f;
+        points.operator()(row, 1) = 0.0f;
+        points.operator()(row, 2) = 0.0f;
+        colors.operator()(row, 0) = 10;
+        colors.operator()(row, 1) = 20;
+        colors.operator()(row, 2) = 30;
     }
-    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(std::move(points));
+    plapoint::GeometryCloud<float> cloud(std::move(points));
     cloud.setColors(std::move(colors));
     plapoint::ProcessingReport report;
 
@@ -197,8 +210,8 @@ TEST(PreprocessingApiTest, StatisticalOutlierRemovalBuildsSearchInternally)
     ASSERT_EQ(removed.size(), 1u);
     EXPECT_EQ(removed.front(), 4);
     ASSERT_TRUE(output.hasColors());
-    EXPECT_EQ(output.colors()->getValue(0, 0), 10);
-    EXPECT_EQ(output.colors()->getValue(3, 2), 33);
+    EXPECT_EQ(output.colors()->operator()(0, 0), 10);
+    EXPECT_EQ(output.colors()->operator()(3, 2), 33);
 }
 
 TEST(PreprocessingApiTest, RadiusOutlierRemovalBuildsFilterInternally)
@@ -213,7 +226,7 @@ TEST(PreprocessingApiTest, RadiusOutlierRemovalBuildsFilterInternally)
     ASSERT_EQ(removed.size(), 1u);
     EXPECT_EQ(removed.front(), 4);
     ASSERT_TRUE(output.hasColors());
-    EXPECT_EQ(output.colors()->getValue(3, 0), 13);
+    EXPECT_EQ(output.colors()->operator()(3, 0), 13);
 }
 
 #ifdef PLAPOINT_WITH_CUDA
@@ -270,14 +283,14 @@ TEST(PreprocessingApiTest, AutoLargeRadiusFilterReportsUniformGridBackend)
     }
 
     constexpr auto point_count = plapoint::ProcessingPolicy::autoGpuPointThreshold;
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> points(point_count, 3);
+    plamatrix::MatrixXf points(point_count, 3);
     for (std::size_t row = 0; row < point_count; ++row)
     {
-        points.setValue(row, 0, static_cast<float>(row) * 0.001f);
-        points.setValue(row, 1, 0.0f);
-        points.setValue(row, 2, 0.0f);
+        points.operator()(row, 0) = static_cast<float>(row) * 0.001f;
+        points.operator()(row, 1) = 0.0f;
+        points.operator()(row, 2) = 0.0f;
     }
-    const plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(std::move(points));
+    const plapoint::GeometryCloud<float> cloud(std::move(points));
     plapoint::ProcessingReport report;
 
     const auto output = plapoint::radiusOutlierRemoval(

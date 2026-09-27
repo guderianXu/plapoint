@@ -1,8 +1,15 @@
 // Included once by plapoint_benchmarks.cpp inside its anonymous namespace.
 #ifdef PLAPOINT_WITH_CUDA
+std::shared_ptr<plamatrix::internal::ExecutionContext> gpuBenchmarkContext()
+{
+    static auto context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
+    return context;
+}
+
 void benchmarkGpuSearchFeatures(int points, int iterations)
 {
     const std::vector<std::string> row_names = {
+        "gpu_spatial_index_build_adaptive",
         "gpu_knn_brute_force_k8",
         "gpu_knn_indexed_k8",
         "gpu_radius_count",
@@ -21,82 +28,87 @@ void benchmarkGpuSearchFeatures(int points, int iterations)
 
     const int query_count = std::min(points, 512);
     const int k = std::min(points, 8);
-    auto cpu_cloud = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(points));
-    auto gpu_cloud = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_cloud->toGpu());
-    auto gpu_queries = makeQueries<float>(query_count).toGpu();
-    plamatrix::DenseMatrix<int, plamatrix::Device::GPU> brute_indices(query_count, k);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> brute_distances(query_count, k);
+    auto cpu_cloud = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(points));
+    auto gpu_cloud = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_cloud->toGpu());
+    auto gpu_queries = plamatrix::internal::ResidentMatrix<float>::copyFrom(
+        makeQueries<float>(query_count), gpu_cloud->executionContext());
+    plamatrix::internal::ResidentMatrix<int> brute_indices(query_count, k, gpu_cloud->executionContext());
+    plamatrix::internal::ResidentMatrix<float> brute_distances(query_count, k, gpu_cloud->executionContext());
 
+    plapoint::gpu::GpuSpatialIndex<float> index;
     double elapsed = bestMilliseconds(iterations, [&] {
-        plapoint::gpu::batchKnnDevice(
-            gpu_queries, std::as_const(*gpu_cloud).points(), k, brute_indices, brute_distances);
+        index.buildAdaptive(*gpu_cloud);
     });
     printResult(row_names[0], points, iterations, elapsed);
 
-    plapoint::gpu::GpuSpatialIndex<float> index;
-    index.buildAdaptive(*gpu_cloud);
-    plapoint::gpu::GpuSpatialQueryWorkspace<float> query_workspace;
-    plapoint::gpu::GpuKnnSearchResult<float> indexed_result;
     elapsed = bestMilliseconds(iterations, [&] {
-        indexed_result = index.knnSearchAsync(gpu_queries, k, query_workspace, nullptr);
+        plapoint::gpu::batchKnnDevice(
+            gpu_queries, std::as_const(*gpu_cloud).points(), k, brute_indices, brute_distances);
     });
     printResult(row_names[1], points, iterations, elapsed);
 
-    plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU> radius_counts;
+    plapoint::gpu::GpuSpatialQueryWorkspace<float> query_workspace;
+    std::optional<plapoint::gpu::GpuKnnSearchResult<float>> indexed_result;
+    elapsed = bestMilliseconds(iterations, [&] {
+        indexed_result = index.knnSearchAsync(gpu_queries, k, query_workspace, nullptr);
+    });
+    printResult(row_names[2], points, iterations, elapsed);
+
+    std::optional<plamatrix::internal::ResidentMatrix<plamatrix::Index>> radius_counts;
     elapsed = bestMilliseconds(iterations, [&] {
         radius_counts = index.radiusCountAsync(
             gpu_queries, 0.011f, 16, query_workspace, nullptr);
     });
-    printResult(row_names[2], points, iterations, elapsed);
+    printResult(row_names[3], points, iterations, elapsed);
 
-    auto tree = std::make_shared<plapoint::search::KdTree<float, plamatrix::Device::GPU>>();
+    auto tree = std::make_shared<plapoint::search::internal::DeviceKdTree<float, plamatrix::internal::Device::GPU>>();
     tree->setInputCloud(gpu_cloud);
     tree->build();
     if (k >= 3)
     {
-        plapoint::NormalEstimation<float, plamatrix::Device::GPU> estimator;
+        plapoint::MatrixNormalEstimation<float, plamatrix::internal::Device::GPU> estimator;
         estimator.setInputCloud(gpu_cloud);
         estimator.setSearchMethod(tree);
         estimator.setKSearch(k);
-        plamatrix::DenseMatrix<float, plamatrix::Device::GPU> estimated_normals;
+        std::optional<plamatrix::internal::ResidentMatrix<float>> estimated_normals;
         elapsed = bestMilliseconds(iterations, [&] {
             estimated_normals = estimator.compute();
         });
-        printResult(row_names[3], points, iterations, elapsed);
+        printResult(row_names[4], points, iterations, elapsed);
 
-        gpu_cloud->setNormals(std::move(estimated_normals));
-        plapoint::NormalRefinement<float, plamatrix::Device::GPU> refinement;
+        gpu_cloud->setNormals(std::move(*estimated_normals));
+        plapoint::NormalRefinement<float, plamatrix::internal::Device::GPU> refinement;
         refinement.setInputCloud(gpu_cloud);
         refinement.setSearchMethod(tree);
         elapsed = bestMilliseconds(iterations, [&] {
             refinement.smooth(k);
         });
-        printResult(row_names[4], points, iterations, elapsed);
+        printResult(row_names[5], points, iterations, elapsed);
     }
     else
     {
-        printSkipped(row_names[3], "requires_at_least_3_points");
         printSkipped(row_names[4], "requires_at_least_3_points");
+        printSkipped(row_names[5], "requires_at_least_3_points");
     }
 
-    plapoint::StatisticalOutlierRemoval<float, plamatrix::Device::GPU> sor;
+    plapoint::StatisticalOutlierRemoval<float, plamatrix::internal::Device::GPU> sor;
     sor.setInputCloud(gpu_cloud);
     sor.setMeanK(std::max(1, k - 1));
-    Cloud<plamatrix::Device::GPU> sor_output;
+    Cloud<plamatrix::internal::Device::GPU> sor_output;
     elapsed = bestMilliseconds(iterations, [&] {
         sor.filter(sor_output);
     });
-    printResult(row_names[5], points, iterations, elapsed);
+    printResult(row_names[6], points, iterations, elapsed);
 
-    plapoint::RadiusOutlierRemoval<float, plamatrix::Device::GPU> radius_filter;
+    plapoint::RadiusOutlierRemoval<float, plamatrix::internal::Device::GPU> radius_filter;
     radius_filter.setInputCloud(gpu_cloud);
     radius_filter.setRadius(0.011f);
     radius_filter.setMinNeighbors(1);
-    Cloud<plamatrix::Device::GPU> radius_output;
+    Cloud<plamatrix::internal::Device::GPU> radius_output;
     elapsed = bestMilliseconds(iterations, [&] {
         radius_filter.filter(radius_output);
     });
-    printResult(row_names[6], points, iterations, elapsed);
+    printResult(row_names[7], points, iterations, elapsed);
 }
 
 void benchmarkGpuKnn(int points, int iterations)
@@ -107,9 +119,9 @@ void benchmarkGpuKnn(int points, int iterations)
         return;
     }
 
-    auto cpu_cloud = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(points));
-    auto gpu_cloud = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_cloud->toGpu());
-    plapoint::search::KdTree<float, plamatrix::Device::GPU> tree;
+    auto cpu_cloud = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(points));
+    auto gpu_cloud = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_cloud->toGpu());
+    plapoint::search::internal::DeviceKdTree<float, plamatrix::internal::Device::GPU> tree;
     tree.setInputCloud(gpu_cloud);
     tree.build();
     auto queries = makeQueries<float>(std::min(points, 512));
@@ -137,14 +149,14 @@ void benchmarkGpuVoxelGrid(int points, int iterations)
         return;
     }
 
-    auto cpu_cloud = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(points));
-    auto gpu_cloud = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_cloud->toGpu());
+    auto cpu_cloud = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(points));
+    auto gpu_cloud = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_cloud->toGpu());
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
-        plapoint::VoxelGrid<float, plamatrix::Device::GPU> voxel;
+        plapoint::VoxelGrid<float, plamatrix::internal::Device::GPU> voxel;
         voxel.setInputCloud(gpu_cloud);
         voxel.setLeafSize(0.1f, 0.1f, 0.1f);
-        Cloud<plamatrix::Device::GPU> output;
+        Cloud<plamatrix::internal::Device::GPU> output;
         voxel.filter(output);
         sink += output.size();
     });
@@ -163,17 +175,17 @@ void benchmarkGpuIcp(int icp_points, int icp_max_iterations, int iterations)
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
-        plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+        plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxIterations(icp_max_iterations);
-        Cloud<plamatrix::Device::GPU> output;
+        Cloud<plamatrix::internal::Device::GPU> output;
         icp.align(output);
         sink += output.size();
     });
@@ -192,14 +204,14 @@ void benchmarkGpuIcpIdentitySameBufferReuseOutput(int icp_points, int icp_max_it
         return;
     }
 
-    auto cpu_cloud = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto cloud = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_cloud->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto cpu_cloud = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto cloud = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_cloud->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(cloud);
     icp.setInputTarget(cloud);
     icp.setMaxIterations(icp_max_iterations);
 
-    Cloud<plamatrix::Device::GPU> output;
+    Cloud<plamatrix::internal::Device::GPU> output;
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         icp.align(output);
@@ -220,18 +232,18 @@ void benchmarkGpuIcpFiniteRadius(int icp_points, int icp_max_iterations, int ite
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
-        plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+        plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxCorrespondenceDistance(0.02f);
         icp.setMaxIterations(icp_max_iterations);
-        Cloud<plamatrix::Device::GPU> output;
+        Cloud<plamatrix::internal::Device::GPU> output;
         icp.align(output);
         sink += output.size();
     });
@@ -255,11 +267,11 @@ void benchmarkGpuIcpFiniteRadiusIdentityReuseOutput(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -269,7 +281,7 @@ void benchmarkGpuIcpFiniteRadiusIdentityReuseOutput(
         icp.setGpuProbeExactPointwiseOnFiniteRadius(true);
     }
 
-    Cloud<plamatrix::Device::GPU> output;
+    Cloud<plamatrix::internal::Device::GPU> output;
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         icp.align(output);
@@ -290,19 +302,19 @@ void benchmarkGpuIcpFiniteRadiusTranslation(int icp_points, int icp_max_iteratio
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
-        plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+        plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxCorrespondenceDistance(0.02f);
         icp.setMaxIterations(icp_max_iterations);
-        Cloud<plamatrix::Device::GPU> output;
+        Cloud<plamatrix::internal::Device::GPU> output;
         icp.align(output);
         sink += output.size();
     });
@@ -321,12 +333,12 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuse(int icp_points, int icp_max_ite
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -334,7 +346,7 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuse(int icp_points, int icp_max_ite
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
-        Cloud<plamatrix::Device::GPU> output;
+        Cloud<plamatrix::internal::Device::GPU> output;
         icp.align(output);
         sink += output.size();
     });
@@ -356,22 +368,22 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuseShrinking(int icp_points, int ic
     // The shrunken grid must span more than one x-row; otherwise ICP sees collinear geometry.
     const int large_points = std::max(600, icp_points);
     const int small_points = large_points / 2;
-    auto cpu_large_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_large_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(large_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_large_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(large_points));
-    auto cpu_small_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_large_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(large_points));
+    auto cpu_small_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(small_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_small_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(small_points));
-    auto large_source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_large_source->toGpu());
-    auto large_target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_large_target->toGpu());
-    auto small_source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_small_source->toGpu());
-    auto small_target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_small_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto cpu_small_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(small_points));
+    auto large_source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_large_source->toGpu());
+    auto large_target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_large_target->toGpu());
+    auto small_source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_small_source->toGpu());
+    auto small_target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_small_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setMaxCorrespondenceDistance(0.02f);
     icp.setMaxIterations(icp_max_iterations);
 
-    Cloud<plamatrix::Device::GPU> large_output;
-    Cloud<plamatrix::Device::GPU> small_output;
+    Cloud<plamatrix::internal::Device::GPU> large_output;
+    Cloud<plamatrix::internal::Device::GPU> small_output;
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         icp.setInputSource(large_source);
@@ -403,18 +415,18 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuseOutput(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
     icp.setMaxIterations(icp_max_iterations);
 
-    Cloud<plamatrix::Device::GPU> output;
+    Cloud<plamatrix::internal::Device::GPU> output;
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         icp.align(output);
@@ -437,15 +449,15 @@ void benchmarkGpuIcpFiniteRadiusTranslationNoOutputOneIteration(int icp_points, 
     }
 
     const int target_points = icp_points + std::max(1, icp_points / 4);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
 
     double sink = 0.0;
     const double elapsed = bestMilliseconds(iterations, [&] {
-        plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+        plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxCorrespondenceDistance(0.02f);
@@ -470,22 +482,22 @@ void benchmarkGpuIcpFiniteRadiusTranslationTargetOutputOneIteration(int icp_poin
     }
 
     const int target_points = icp_points + std::max(1, icp_points / 4);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    std::vector<std::shared_ptr<Cloud<plamatrix::Device::GPU>>> targets;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    std::vector<std::shared_ptr<Cloud<plamatrix::internal::Device::GPU>>> targets;
     targets.reserve(static_cast<std::size_t>(iterations) + 1u);
     for (int i = 0; i < iterations + 1; ++i)
     {
-        targets.push_back(std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu()));
+        targets.push_back(std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu()));
     }
 
     std::size_t target_index = 0;
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         auto& target = targets[target_index++];
-        plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+        plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxCorrespondenceDistance(0.02f);
@@ -510,22 +522,22 @@ void benchmarkGpuIcpFiniteRadiusTranslationSourceOutputOneIteration(int icp_poin
     }
 
     const int target_points = icp_points + std::max(1, icp_points / 4);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(target_points));
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    std::vector<std::shared_ptr<Cloud<plamatrix::Device::GPU>>> sources;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(target_points));
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    std::vector<std::shared_ptr<Cloud<plamatrix::internal::Device::GPU>>> sources;
     sources.reserve(static_cast<std::size_t>(iterations) + 1u);
     for (int i = 0; i < iterations + 1; ++i)
     {
-        sources.push_back(std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu()));
+        sources.push_back(std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu()));
     }
 
     std::size_t source_index = 0;
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         auto& source = sources[source_index++];
-        plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+        plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxCorrespondenceDistance(0.02f);
@@ -551,19 +563,19 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuseOutputSkipFinalMetrics(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
     icp.setMaxIterations(icp_max_iterations);
     icp.setComputeFinalMetrics(false);
 
-    Cloud<plamatrix::Device::GPU> output;
+    Cloud<plamatrix::internal::Device::GPU> output;
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         icp.align(output);
@@ -592,19 +604,19 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuseOutputSkipFinalMetricsOneIterati
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
     icp.setMaxIterations(1);
     icp.setComputeFinalMetrics(false);
 
-    Cloud<plamatrix::Device::GPU> output;
+    Cloud<plamatrix::internal::Device::GPU> output;
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         icp.align(output);
@@ -636,12 +648,12 @@ void benchmarkGpuIcpFiniteRadiusTranslationOrderedOutput(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -652,7 +664,7 @@ void benchmarkGpuIcpFiniteRadiusTranslationOrderedOutput(
     }
     icp.setGpuAssumeOrderedCorrespondences(true);
 
-    Cloud<plamatrix::Device::GPU> output;
+    Cloud<plamatrix::internal::Device::GPU> output;
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         icp.align(output);
@@ -675,19 +687,19 @@ void benchmarkGpuIcpFiniteRadiusOrderedLowResidualOutputOneIteration(int icp_poi
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedPerturbedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.2f);
     icp.setMaxIterations(1);
     icp.setGpuAssumeOrderedCorrespondences(true);
 
-    Cloud<plamatrix::Device::GPU> output;
+    Cloud<plamatrix::internal::Device::GPU> output;
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         icp.align(output);
@@ -714,18 +726,18 @@ void benchmarkGpuIcpOrderedInfiniteRadiusOutputOneIteration(int icp_points, int 
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedPerturbedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxIterations(1);
     icp.setGpuAssumeOrderedCorrespondences(true);
 
-    Cloud<plamatrix::Device::GPU> output;
+    Cloud<plamatrix::internal::Device::GPU> output;
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         icp.align(output);
@@ -751,12 +763,12 @@ void benchmarkGpuIcpFiniteRadiusTranslationOrderedReuseTargetOutput(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -793,12 +805,12 @@ void benchmarkGpuIcpFiniteRadiusTranslationTransformOnlySkipFinalMetrics(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -829,12 +841,12 @@ void benchmarkGpuIcpFiniteRadiusTranslationOrderedTransformOnly(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -870,12 +882,12 @@ void benchmarkGpuIcpFiniteRadiusBinaryTranslationTransformOnly(
     constexpr float source_tz = 0.0078125f;
     auto target_points_cpu = makeBinaryGridPoints<float>(icp_points);
     auto target_to_source_cpu = makeTranslationTransform<float>(source_tx, source_ty, source_tz);
-    auto source_points_cpu = plamatrix::transformPoints(target_to_source_cpu, target_points_cpu);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(source_points_cpu));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(target_points_cpu));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto source_points_cpu = translatedBenchmarkPoints(target_points_cpu, target_to_source_cpu);
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(source_points_cpu));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(target_points_cpu));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.0625f);
@@ -917,12 +929,12 @@ void benchmarkGpuIcpFiniteRadiusBinaryTranslationReuseOutput(
     constexpr float source_tz = 0.0078125f;
     auto target_points_cpu = makeBinaryGridPoints<float>(icp_points);
     auto target_to_source_cpu = makeTranslationTransform<float>(source_tx, source_ty, source_tz);
-    auto source_points_cpu = plamatrix::transformPoints(target_to_source_cpu, target_points_cpu);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(source_points_cpu));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(target_points_cpu));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto source_points_cpu = translatedBenchmarkPoints(target_points_cpu, target_to_source_cpu);
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(source_points_cpu));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(target_points_cpu));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.0625f);
@@ -933,7 +945,7 @@ void benchmarkGpuIcpFiniteRadiusBinaryTranslationReuseOutput(
         icp.setGpuProbeTransformedExactPointwiseOnCacheHit(true);
     }
 
-    Cloud<plamatrix::Device::GPU> output;
+    Cloud<plamatrix::internal::Device::GPU> output;
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         icp.align(output);
@@ -963,12 +975,12 @@ void benchmarkGpuIcpFiniteRadiusNonRigidTransformOnly(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedPerturbedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -1027,19 +1039,19 @@ void benchmarkGpuIcpFiniteRadiusNonRigidFinalMetricsOutput(
     const int target_points = target_alias_output
         ? icp_points
         : (same_size_output ? icp_points : icp_points + std::max(1, icp_points / 4));
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedPerturbedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
     icp.setMaxIterations(2);
     icp.setTransformationEpsilon(1.0e-12f);
 
-    Cloud<plamatrix::Device::GPU> output;
+    Cloud<plamatrix::internal::Device::GPU> output;
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         if (target_alias_output)
@@ -1070,18 +1082,18 @@ void benchmarkGpuIcpFiniteRadiusNonRigidTargetAliasTransformOnlyTwoIterations(in
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedPerturbedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    std::vector<std::shared_ptr<Cloud<plamatrix::Device::GPU>>> targets;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    std::vector<std::shared_ptr<Cloud<plamatrix::internal::Device::GPU>>> targets;
     targets.reserve(static_cast<std::size_t>(iterations) + 1u);
     for (int i = 0; i < iterations + 1; ++i)
     {
-        targets.push_back(std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu()));
+        targets.push_back(std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu()));
     }
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setMaxCorrespondenceDistance(0.02f);
     icp.setMaxIterations(2);
@@ -1116,12 +1128,12 @@ void benchmarkGpuIcpFiniteRadiusNonRigidOutputTransformOnlyTwoIterations(
     }
 
     const int target_points = same_size_output ? icp_points : icp_points + std::max(1, icp_points / 4);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedPerturbedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -1129,7 +1141,7 @@ void benchmarkGpuIcpFiniteRadiusNonRigidOutputTransformOnlyTwoIterations(
     icp.setTransformationEpsilon(1.0e-12f);
     icp.setComputeFinalMetrics(false);
 
-    Cloud<plamatrix::Device::GPU> output;
+    Cloud<plamatrix::internal::Device::GPU> output;
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         icp.align(output);
@@ -1153,25 +1165,25 @@ void benchmarkGpuIcpFiniteRadiusNonRigidOutputTransformOnlyFreshTargetTwoIterati
     }
 
     const int target_points = icp_points + std::max(1, icp_points / 4);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedPerturbedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    std::vector<std::shared_ptr<Cloud<plamatrix::Device::GPU>>> targets;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    std::vector<std::shared_ptr<Cloud<plamatrix::internal::Device::GPU>>> targets;
     targets.reserve(static_cast<std::size_t>(iterations) + 1u);
     for (int i = 0; i < iterations + 1; ++i)
     {
-        targets.push_back(std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu()));
+        targets.push_back(std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu()));
     }
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setMaxCorrespondenceDistance(0.02f);
     icp.setMaxIterations(2);
     icp.setTransformationEpsilon(1.0e-12f);
     icp.setComputeFinalMetrics(false);
 
-    Cloud<plamatrix::Device::GPU> output;
+    Cloud<plamatrix::internal::Device::GPU> output;
     std::size_t target_index = 0;
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -1198,18 +1210,18 @@ void benchmarkGpuIcpFiniteRadiusTranslationSourceAliasFinalMetricsTwoIterations(
     }
 
     const int target_points = icp_points + std::max(1, icp_points / 4);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(target_points));
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    std::vector<std::shared_ptr<Cloud<plamatrix::Device::GPU>>> sources;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(target_points));
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    std::vector<std::shared_ptr<Cloud<plamatrix::internal::Device::GPU>>> sources;
     sources.reserve(static_cast<std::size_t>(iterations) + 1u);
     for (int i = 0; i < iterations + 1; ++i)
     {
-        sources.push_back(std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu()));
+        sources.push_back(std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu()));
     }
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
     icp.setMaxIterations(2);
@@ -1241,18 +1253,18 @@ void benchmarkGpuIcpFiniteRadiusTranslationSourceAliasTransformOnlyTwoIterations
     }
 
     const int target_points = icp_points + std::max(1, icp_points / 4);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(target_points));
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    std::vector<std::shared_ptr<Cloud<plamatrix::Device::GPU>>> sources;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(target_points));
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    std::vector<std::shared_ptr<Cloud<plamatrix::internal::Device::GPU>>> sources;
     sources.reserve(static_cast<std::size_t>(iterations) + 1u);
     for (int i = 0; i < iterations + 1; ++i)
     {
-        sources.push_back(std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu()));
+        sources.push_back(std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu()));
     }
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
     icp.setMaxIterations(2);
@@ -1287,12 +1299,12 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuseTargetOutput(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -1328,12 +1340,12 @@ void benchmarkGpuIcpFiniteRadiusTranslationReuseTargetOutputSkipFinalMetrics(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -1365,17 +1377,17 @@ void benchmarkGpuIcpStatsStepFiniteRadiusTranslationNewWorkspace(int icp_points,
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
         plapoint::gpu::IcpStepTransformWorkspace step_workspace;
-        plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+        plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
         const auto result = plapoint::gpu::computeIcpStatsAndStepTransformColumnMajor(
             source->points().data(),
             static_cast<int>(source->size()),
@@ -1402,14 +1414,14 @@ void benchmarkGpuIcpStatsStepFiniteRadiusTranslationCachedGrid(int icp_points, i
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
     plapoint::gpu::IcpStepTransformWorkspace step_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -1439,14 +1451,14 @@ void benchmarkGpuIcpStatsStepFiniteRadiusTranslationOrdered(int icp_points, int 
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
     plapoint::gpu::IcpStepTransformWorkspace step_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -1480,16 +1492,16 @@ void benchmarkGpuIcpAlignmentStepFiniteRadiusTranslationNewWorkspace(int icp_poi
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-        plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+        plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
         const auto result = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
             source->points().data(),
             static_cast<int>(source->size()),
@@ -1517,16 +1529,16 @@ void benchmarkGpuIcpAlignmentStepFiniteRadiusTranslationNewWorkspaceOneSource(in
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(1, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-        plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+        plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
         const auto result = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
             source->points().data(),
             static_cast<int>(source->size()),
@@ -1554,13 +1566,13 @@ void benchmarkGpuIcpAlignmentStepFiniteRadiusTranslationRebuildReservedGrid(int 
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
     stats_workspace.reserveAlignmentStep(static_cast<int>(source->size()));
     stats_workspace.reserveTargetSpatialGridForScalar<float>(static_cast<int>(target->size()));
 
@@ -1594,13 +1606,13 @@ void benchmarkGpuIcpAlignmentStepFiniteRadiusTranslationCachedGrid(int icp_point
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -1633,13 +1645,13 @@ void benchmarkGpuIcpAlignmentStepFiniteRadiusTranslationCachedGridReservedWorksp
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
     stats_workspace.reserveAlignmentStep(static_cast<int>(source->size()));
 
     std::size_t sink = 0;
@@ -1680,13 +1692,13 @@ void benchmarkGpuIcpAlignmentStepFiniteRadiusTranslationAsyncLaunchCachedGrid(
     }
     const ScopedCudaBenchmarkSynchronization scoped_launch_only(false);
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
     stats_workspace.reserveAlignmentStep(static_cast<int>(source->size()));
 
     std::size_t sink = 0;
@@ -1736,13 +1748,13 @@ void benchmarkGpuIcpAlignmentStepTransformedAccumulatedAsyncLaunchCachedGrid(
     }
     const ScopedCudaBenchmarkSynchronization scoped_launch_only(false);
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> first_step_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> first_step_transform(4, 4, gpuBenchmarkContext());
     const auto first_step = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
         source->points().data(),
         static_cast<int>(source->size()),
@@ -1759,8 +1771,8 @@ void benchmarkGpuIcpAlignmentStepTransformedAccumulatedAsyncLaunchCachedGrid(
         return;
     }
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> accumulated_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
+    plamatrix::internal::ResidentMatrix<float> accumulated_transform(4, 4, gpuBenchmarkContext());
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         const bool launched =
@@ -1812,18 +1824,18 @@ void benchmarkGpuIcpAlignmentStepTwoStepAsyncLaunchSeparateWorkspaces(
     }
     const ScopedCudaBenchmarkSynchronization scoped_launch_only(false);
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedPerturbedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace first_step_workspace;
     plapoint::gpu::IcpCorrespondenceStatsWorkspace second_step_workspace;
     first_step_workspace.reserveAlignmentStep(static_cast<int>(source->size()));
     second_step_workspace.reserveAlignmentStep(static_cast<int>(source->size()));
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> first_step_transform(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> second_step_transform(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> accumulated_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> first_step_transform(4, 4, gpuBenchmarkContext());
+    plamatrix::internal::ResidentMatrix<float> second_step_transform(4, 4, gpuBenchmarkContext());
+    plamatrix::internal::ResidentMatrix<float> accumulated_transform(4, 4, gpuBenchmarkContext());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -1868,10 +1880,10 @@ void benchmarkGpuIcpAlignmentStepExactPointwiseSameBuffer(int icp_points, int it
         return;
     }
 
-    auto cpu_points = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto points = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_points->toGpu());
+    auto cpu_points = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto points = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_points->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -1902,10 +1914,10 @@ void benchmarkGpuIcpAlignmentStepExactPointwiseSameBufferReservedWorkspace(int i
         return;
     }
 
-    auto cpu_points = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto points = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_points->toGpu());
+    auto cpu_points = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto points = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_points->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
     stats_workspace.reserveAlignmentStep(static_cast<int>(points->size()));
 
     std::size_t sink = 0;
@@ -1943,10 +1955,10 @@ void benchmarkGpuIcpAlignmentStepOrderedSameBufferFiniteRadius(int icp_points, i
         return;
     }
 
-    auto cpu_points = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto points = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_points->toGpu());
+    auto cpu_points = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto points = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_points->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
     stats_workspace.reserveAlignmentStep(static_cast<int>(points->size()));
 
     std::size_t sink = 0;
@@ -1992,14 +2004,14 @@ void benchmarkGpuIcpAlignmentStepTransformedExactPointwiseCachedGrid(int icp_poi
     auto target_points_cpu = makeBinaryGridPoints<float>(icp_points);
     auto source_to_target_cpu = makeTranslationTransform<float>(-source_tx, -source_ty, -source_tz);
     auto target_to_source_cpu = makeTranslationTransform<float>(source_tx, source_ty, source_tz);
-    auto source_points_cpu = plamatrix::transformPoints(target_to_source_cpu, target_points_cpu);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(source_points_cpu));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(target_points_cpu));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    auto source_to_target_gpu = source_to_target_cpu.toGpu();
+    auto source_points_cpu = translatedBenchmarkPoints(target_points_cpu, target_to_source_cpu);
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(source_points_cpu));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(target_points_cpu));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    auto source_to_target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_to_target_cpu, gpuBenchmarkContext());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
     stats_workspace.reserveFloatAlignmentStep(static_cast<int>(source->size()));
 
     std::size_t sink = 0;
@@ -2045,14 +2057,14 @@ void benchmarkGpuIcpAlignmentStepTransformedExactPointwiseCacheHit(int icp_point
     auto target_points_cpu = makeBinaryGridPoints<float>(icp_points);
     auto source_to_target_cpu = makeTranslationTransform<float>(-source_tx, -source_ty, -source_tz);
     auto target_to_source_cpu = makeTranslationTransform<float>(source_tx, source_ty, source_tz);
-    auto source_points_cpu = plamatrix::transformPoints(target_to_source_cpu, target_points_cpu);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(source_points_cpu));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(target_points_cpu));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    auto source_to_target_gpu = source_to_target_cpu.toGpu();
+    auto source_points_cpu = translatedBenchmarkPoints(target_points_cpu, target_to_source_cpu);
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(source_points_cpu));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(target_points_cpu));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    auto source_to_target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_to_target_cpu, gpuBenchmarkContext());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
     stats_workspace.reserveFloatAlignmentStep(static_cast<int>(source->size()));
 
     (void)plapoint::gpu::detail::computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
@@ -2107,14 +2119,14 @@ void benchmarkGpuIcpAlignmentStepTransformedExactPointwiseCacheHitPreflight(int 
     auto target_points_cpu = makeBinaryGridPoints<float>(icp_points);
     auto source_to_target_cpu = makeTranslationTransform<float>(-source_tx, -source_ty, -source_tz);
     auto target_to_source_cpu = makeTranslationTransform<float>(source_tx, source_ty, source_tz);
-    auto source_points_cpu = plamatrix::transformPoints(target_to_source_cpu, target_points_cpu);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(source_points_cpu));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(target_points_cpu));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    auto source_to_target_gpu = source_to_target_cpu.toGpu();
+    auto source_points_cpu = translatedBenchmarkPoints(target_points_cpu, target_to_source_cpu);
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(source_points_cpu));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(target_points_cpu));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    auto source_to_target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_to_target_cpu, gpuBenchmarkContext());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
     stats_workspace.reserveFloatAlignmentStep(static_cast<int>(source->size()));
 
     (void)plapoint::gpu::detail::computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
@@ -2164,11 +2176,11 @@ void benchmarkGpuIcpStatsFiniteRadiusTranslationCachedGrid(int icp_points, int i
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
 
     std::size_t sink = 0;
@@ -2198,11 +2210,11 @@ void benchmarkGpuIcpResidualStatsFiniteRadiusTranslationNewWorkspace(int icp_poi
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -2231,11 +2243,11 @@ void benchmarkGpuIcpResidualStatsFiniteRadiusTranslationCachedGrid(int icp_point
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
 
     std::size_t sink = 0;
@@ -2268,11 +2280,11 @@ void benchmarkGpuIcpResidualStatsFiniteRadiusTranslationCachedGridReservedWorksp
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
     stats_workspace.reserveResidualStats(static_cast<int>(source->size()));
 
@@ -2308,11 +2320,11 @@ void benchmarkGpuIcpResidualStatsFiniteRadiusTranslationOrdered(int icp_points, 
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
 
     std::size_t sink = 0;
@@ -2344,14 +2356,14 @@ void benchmarkGpuIcpTransformResidualStatsFiniteRadiusTranslationNewWorkspace(in
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> transform(4, 4);
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plamatrix::internal::ResidentMatrix<float> transform(4, 4, gpuBenchmarkContext());
     plapoint::gpu::setIdentityTransform4x4(transform.data());
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output(icp_points, 3);
+    plamatrix::internal::ResidentMatrix<float> output(icp_points, 3, gpuBenchmarkContext());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -2388,14 +2400,14 @@ void benchmarkGpuIcpTransformResidualStatsFiniteRadiusTranslationCachedGrid(int 
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> transform(4, 4);
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plamatrix::internal::ResidentMatrix<float> transform(4, 4, gpuBenchmarkContext());
     plapoint::gpu::setIdentityTransform4x4(transform.data());
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output(icp_points, 3);
+    plamatrix::internal::ResidentMatrix<float> output(icp_points, 3, gpuBenchmarkContext());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
 
     std::size_t sink = 0;
@@ -2437,13 +2449,13 @@ void benchmarkGpuIcpTransformResidualStatsTransformedExactPointwiseNewWorkspace(
 
     auto source_points = makeBinaryGridPoints<float>(icp_points);
     auto transform_cpu = makeTranslationTransform<float>(0.125f, -0.25f, 0.375f);
-    auto target_points = plamatrix::transformPoints(transform_cpu, source_points);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(source_points));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    auto transform = transform_cpu.toGpu();
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output(icp_points, 3);
+    auto target_points = translatedBenchmarkPoints(source_points, transform_cpu);
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(source_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    auto transform = plamatrix::internal::ResidentMatrix<float>::copyFrom(transform_cpu, gpuBenchmarkContext());
+    plamatrix::internal::ResidentMatrix<float> output(icp_points, 3, gpuBenchmarkContext());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -2481,10 +2493,10 @@ void benchmarkGpuIcpStatsFallbackTileBoundsNewWorkspace(int icp_points, int iter
     }
 
     const int fallback_points = std::min(icp_points, 4096);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(fallback_points));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(fallback_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(fallback_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(fallback_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -2515,10 +2527,10 @@ void benchmarkGpuIcpStatsFallbackTileBoundsCachedBounds(int icp_points, int iter
     }
 
     const int fallback_points = std::min(icp_points, 4096);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(fallback_points));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(fallback_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(fallback_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(fallback_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
 
     std::size_t sink = 0;
@@ -2549,16 +2561,16 @@ void benchmarkGpuIcpStatsStepFallbackTileBoundsNewWorkspace(int icp_points, int 
     }
 
     const int fallback_points = std::min(icp_points, 4096);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(fallback_points));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(fallback_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(fallback_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(fallback_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
         plapoint::gpu::IcpStepTransformWorkspace step_workspace;
-        plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+        plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
         const auto result = plapoint::gpu::computeIcpStatsAndStepTransformColumnMajor(
             source->points().data(),
             static_cast<int>(source->size()),
@@ -2586,13 +2598,13 @@ void benchmarkGpuIcpStatsStepFallbackTileBoundsCachedBounds(int icp_points, int 
     }
 
     const int fallback_points = std::min(icp_points, 4096);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(fallback_points));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(fallback_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(fallback_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(fallback_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
     plapoint::gpu::IcpStepTransformWorkspace step_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -2623,15 +2635,15 @@ void benchmarkGpuIcpAlignmentStepFallbackTileBoundsNewWorkspace(int icp_points, 
     }
 
     const int fallback_points = std::min(icp_points, 4096);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(fallback_points));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(fallback_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(fallback_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(fallback_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-        plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+        plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
         const auto result = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
             source->points().data(),
             static_cast<int>(source->size()),
@@ -2658,12 +2670,12 @@ void benchmarkGpuIcpAlignmentStepFallbackTileBoundsCachedBounds(int icp_points, 
     }
 
     const int fallback_points = std::min(icp_points, 4096);
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(fallback_points));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(fallback_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(fallback_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(fallback_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -2695,17 +2707,17 @@ void benchmarkGpuIcpAlignmentStepSmallFiniteRadiusTarget(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedCompactNonCollinearGridPoints<float>(target_points, 0.01f, -0.005f, 0.0025f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeCompactNonCollinearGridPoints<float>(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-        plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+        plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
         const auto result = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
             source->points().data(),
             static_cast<int>(source->size()),
@@ -2735,14 +2747,14 @@ void benchmarkGpuIcpAlignmentStepSmallFiniteRadiusTargetAsyncLaunch(
     }
     const ScopedCudaBenchmarkSynchronization scoped_launch_only(false);
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedCompactNonCollinearGridPoints<float>(target_points, 0.01f, -0.005f, 0.0025f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeCompactNonCollinearGridPoints<float>(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -2777,18 +2789,18 @@ void benchmarkGpuIcpStatsStepSmallFiniteRadiusTarget(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedCompactNonCollinearGridPoints<float>(target_points, 0.01f, -0.005f, 0.0025f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeCompactNonCollinearGridPoints<float>(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
         plapoint::gpu::IcpStepTransformWorkspace step_workspace;
-        plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+        plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, gpuBenchmarkContext());
         const auto result = plapoint::gpu::computeIcpStatsAndStepTransformColumnMajor(
             source->points().data(),
             static_cast<int>(source->size()),
@@ -2818,12 +2830,12 @@ void benchmarkGpuIcpResidualStatsSmallFiniteRadiusTarget(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedCompactNonCollinearGridPoints<float>(target_points, 0.01f, -0.005f, 0.0025f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeCompactNonCollinearGridPoints<float>(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -2855,15 +2867,15 @@ void benchmarkGpuIcpTransformResidualStatsSmallFiniteRadiusTarget(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedCompactNonCollinearGridPoints<float>(target_points, 0.01f, -0.005f, 0.0025f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeCompactNonCollinearGridPoints<float>(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> transform(4, 4);
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    plamatrix::internal::ResidentMatrix<float> transform(4, 4, gpuBenchmarkContext());
     plapoint::gpu::setIdentityTransform4x4(transform.data());
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output(target_points, 3);
+    plamatrix::internal::ResidentMatrix<float> output(target_points, 3, gpuBenchmarkContext());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -2897,14 +2909,14 @@ void benchmarkGpuIcpSmallFiniteRadiusTransformOnlyTwoIterations(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedPerturbedCompactNonCollinearGridPoints<float>(target_points, 0.01f, -0.005f, 0.0025f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeCompactNonCollinearGridPoints<float>(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.08f);
@@ -2936,14 +2948,14 @@ void benchmarkGpuIcpSmallFiniteRadiusOutputTransformOnlyTwoIterations(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedPerturbedCompactNonCollinearGridPoints<float>(target_points, 0.01f, -0.005f, 0.0025f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeCompactNonCollinearGridPoints<float>(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.08f);
@@ -2951,7 +2963,7 @@ void benchmarkGpuIcpSmallFiniteRadiusOutputTransformOnlyTwoIterations(
     icp.setTransformationEpsilon(1.0e-12f);
     icp.setComputeFinalMetrics(false);
 
-    Cloud<plamatrix::Device::GPU> output;
+    Cloud<plamatrix::internal::Device::GPU> output;
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         (void)source->points();
@@ -2976,15 +2988,16 @@ void benchmarkGpuIcpSmallFiniteRadiusTargetAliasTransformOnlyTwoIterations(
         return;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedPerturbedCompactNonCollinearGridPoints<float>(target_points, 0.01f, -0.005f, 0.0025f));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeCompactNonCollinearGridPoints<float>(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
-    const auto target_snapshot = cpu_target->points().toGpu();
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
+    const auto target_snapshot = plamatrix::internal::ResidentMatrix<float>::copyFrom(
+        cpu_target->points(), gpuBenchmarkContext());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.08f);
@@ -3034,15 +3047,15 @@ void benchmarkGpuIcpSmallFiniteRadiusFinalMetricsTwoIterations(
         target_points(3, 2) += 0.015f;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(source_points));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(source_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
 
     std::size_t sink = 0;
     double rmse_sink = 0.0;
     const double elapsed = bestMilliseconds(iterations, [&] {
-        plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+        plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxCorrespondenceDistance(0.08f);
@@ -3080,12 +3093,12 @@ void benchmarkGpuIcpSmallFiniteRadiusReuseFinalMetricsTwoIterations(
         target_points(3, 2) += 0.015f;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(source_points));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(source_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.08f);
@@ -3128,21 +3141,21 @@ void benchmarkGpuIcpSmallFiniteRadiusOutputFinalMetricsTwoIterations(
         target_points(3, 2) += 0.015f;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(source_points));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    auto target = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu());
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(source_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu());
 
     std::size_t sink = 0;
     double rmse_sink = 0.0;
     const double elapsed = bestMilliseconds(iterations, [&] {
-        plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+        plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxCorrespondenceDistance(0.08f);
         icp.setMaxIterations(2);
         icp.setTransformationEpsilon(1.0e-12f);
-        Cloud<plamatrix::Device::GPU> output;
+        Cloud<plamatrix::internal::Device::GPU> output;
         icp.align(output);
         rmse_sink += static_cast<double>(icp.getFinalRmse());
         sink += output.size();
@@ -3175,14 +3188,14 @@ void benchmarkGpuIcpSmallFiniteRadiusTargetAliasFinalMetricsTwoIterations(
         target_points(3, 2) += 0.015f;
     }
 
-    auto cpu_source = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(source_points));
-    auto cpu_target = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(target_points));
-    auto source = std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_source->toGpu());
-    std::vector<std::shared_ptr<Cloud<plamatrix::Device::GPU>>> targets;
+    auto cpu_source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(source_points));
+    auto cpu_target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(std::move(target_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_source->toGpu());
+    std::vector<std::shared_ptr<Cloud<plamatrix::internal::Device::GPU>>> targets;
     targets.reserve(static_cast<std::size_t>(iterations) + 1u);
     for (int i = 0; i <= iterations; ++i)
     {
-        targets.push_back(std::make_shared<Cloud<plamatrix::Device::GPU>>(cpu_target->toGpu()));
+        targets.push_back(std::make_shared<Cloud<plamatrix::internal::Device::GPU>>(cpu_target->toGpu()));
     }
 
     std::size_t target_index = 0;
@@ -3190,7 +3203,7 @@ void benchmarkGpuIcpSmallFiniteRadiusTargetAliasFinalMetricsTwoIterations(
     double rmse_sink = 0.0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         auto& target = targets[target_index++ % targets.size()];
-        plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+        plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxCorrespondenceDistance(0.08f);
@@ -3229,10 +3242,10 @@ void benchmarkGpuIcpSmallFiniteRadiusTransformedAccumulatedAsyncLaunch(
         target_points(3, 2) += 0.015f;
     }
 
-    auto source_gpu = source_points.toGpu();
-    auto target_gpu = target_points.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_points, gpuBenchmarkContext());
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_points, gpuBenchmarkContext());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> first_step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> first_step_gpu(4, 4, gpuBenchmarkContext());
     const auto first_step = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
         source_gpu.data(),
         static_cast<int>(source_gpu.rows()),
@@ -3247,8 +3260,8 @@ void benchmarkGpuIcpSmallFiniteRadiusTransformedAccumulatedAsyncLaunch(
         return;
     }
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> accumulated_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> step_gpu(4, 4, gpuBenchmarkContext());
+    plamatrix::internal::ResidentMatrix<float> accumulated_gpu(4, 4, gpuBenchmarkContext());
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         const bool launched =
@@ -3297,10 +3310,10 @@ void benchmarkGpuIcpSmallFiniteRadiusTerminalAsyncLaunch(
         target_points(3, 2) += 0.015f;
     }
 
-    auto source_gpu = source_points.toGpu();
-    auto target_gpu = target_points.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_points, gpuBenchmarkContext());
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_points, gpuBenchmarkContext());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace stats_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> first_step_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> first_step_gpu(4, 4, gpuBenchmarkContext());
     const auto first_step = plapoint::gpu::computeIcpAlignmentStepColumnMajor(
         source_gpu.data(),
         static_cast<int>(source_gpu.rows()),
@@ -3315,9 +3328,9 @@ void benchmarkGpuIcpSmallFiniteRadiusTerminalAsyncLaunch(
         return;
     }
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> terminal_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> accumulated_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output_gpu(source_gpu.rows(), 3);
+    plamatrix::internal::ResidentMatrix<float> terminal_step_gpu(4, 4, gpuBenchmarkContext());
+    plamatrix::internal::ResidentMatrix<float> accumulated_gpu(4, 4, gpuBenchmarkContext());
+    plamatrix::internal::ResidentMatrix<float> output_gpu(source_gpu.rows(), 3, gpuBenchmarkContext());
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
         const bool launched =
@@ -3367,14 +3380,14 @@ void benchmarkGpuIcpSmallFiniteRadiusTwoStepTerminalAsyncLaunch(
         target_points(3, 2) += 0.015f;
     }
 
-    auto source_gpu = source_points.toGpu();
-    auto target_gpu = target_points.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_points, gpuBenchmarkContext());
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_points, gpuBenchmarkContext());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace first_step_workspace;
     plapoint::gpu::IcpCorrespondenceStatsWorkspace terminal_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> first_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> terminal_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> accumulated_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> output_gpu(source_gpu.rows(), 3);
+    plamatrix::internal::ResidentMatrix<float> first_step_gpu(4, 4, gpuBenchmarkContext());
+    plamatrix::internal::ResidentMatrix<float> terminal_step_gpu(4, 4, gpuBenchmarkContext());
+    plamatrix::internal::ResidentMatrix<float> accumulated_gpu(4, 4, gpuBenchmarkContext());
+    plamatrix::internal::ResidentMatrix<float> output_gpu(source_gpu.rows(), 3, gpuBenchmarkContext());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -3425,13 +3438,13 @@ void benchmarkGpuIcpSmallFiniteRadiusTwoStepTransformOnlyAsyncLaunch(
         target_points(3, 2) += 0.015f;
     }
 
-    auto source_gpu = source_points.toGpu();
-    auto target_gpu = target_points.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_points, gpuBenchmarkContext());
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_points, gpuBenchmarkContext());
     plapoint::gpu::IcpCorrespondenceStatsWorkspace first_step_workspace;
     plapoint::gpu::IcpCorrespondenceStatsWorkspace second_step_workspace;
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> first_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> second_step_gpu(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> accumulated_gpu(4, 4);
+    plamatrix::internal::ResidentMatrix<float> first_step_gpu(4, 4, gpuBenchmarkContext());
+    plamatrix::internal::ResidentMatrix<float> second_step_gpu(4, 4, gpuBenchmarkContext());
+    plamatrix::internal::ResidentMatrix<float> accumulated_gpu(4, 4, gpuBenchmarkContext());
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
@@ -3458,4 +3471,3 @@ void benchmarkGpuIcpSmallFiniteRadiusTwoStepTransformOnlyAsyncLaunch(
     }
 }
 #endif
-

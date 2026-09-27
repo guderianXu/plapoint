@@ -3,7 +3,7 @@
 #ifdef PLAPOINT_WITH_CUDA
 
 #include <cuda_runtime.h>
-#include <plamatrix/core/error_check.h>
+#include <plamatrix/internal/core/error_check.h>
 
 #include <cstddef>
 #include <limits>

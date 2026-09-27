@@ -6,10 +6,13 @@
 #include <plapoint/search/kdtree.h>
 
 #include <plamatrix/plamatrix.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/device/device_matrix.h>
 
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -26,6 +29,15 @@ bool hasCudaDeviceForFilterIndices()
     return plapoint::gpu::hasUsableCudaDevice();
 }
 
+template <typename Scalar>
+void writeDevicePoint(plamatrix::internal::ResidentMatrix<Scalar>& points,
+                      plamatrix::Index row, int column, Scalar value)
+{
+    auto host_points = points.toHostMatrix();
+    host_points(row, column) = value;
+    points.copyFromHost(host_points.data(), host_points.size());
+}
+
 template <typename T>
 void expectVectorEq(const std::vector<T>& actual, const std::vector<T>& expected)
 {
@@ -37,22 +49,22 @@ void expectVectorEq(const std::vector<T>& actual, const std::vector<T>& expected
 }
 
 template <typename Scalar>
-std::shared_ptr<plapoint::PointCloud<Scalar, plamatrix::Device::CPU>> makeRadiusCloudWithAttributes()
+std::shared_ptr<plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>> makeRadiusCloudWithAttributes()
 {
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(4, 3);
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(4, 3);
-    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(4, 1);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> points(4, 3);
+    plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(4, 3);
+    plamatrix::Matrix<std::uint16_t, plamatrix::Dynamic, plamatrix::Dynamic> intensities(4, 1);
     for (int i = 0; i < 4; ++i)
     {
-        points.setValue(i, 0, i < 3 ? Scalar(i) * Scalar(0.1) : Scalar(10));
-        points.setValue(i, 1, Scalar(0));
-        points.setValue(i, 2, Scalar(0));
-        colors.setValue(i, 0, static_cast<std::uint8_t>(10 + i));
-        colors.setValue(i, 1, static_cast<std::uint8_t>(20 + i));
-        colors.setValue(i, 2, static_cast<std::uint8_t>(30 + i));
-        intensities.setValue(i, 0, static_cast<std::uint16_t>(100 + i));
+        points.operator()(i, 0) = i < 3 ? Scalar(i) * Scalar(0.1) : Scalar(10);
+        points.operator()(i, 1) = Scalar(0);
+        points.operator()(i, 2) = Scalar(0);
+        colors.operator()(i, 0) = static_cast<std::uint8_t>(10 + i);
+        colors.operator()(i, 1) = static_cast<std::uint8_t>(20 + i);
+        colors.operator()(i, 2) = static_cast<std::uint8_t>(30 + i);
+        intensities.operator()(i, 0) = static_cast<std::uint16_t>(100 + i);
     }
 
     auto cloud = std::make_shared<CpuCloud>(std::move(points));
@@ -62,28 +74,28 @@ std::shared_ptr<plapoint::PointCloud<Scalar, plamatrix::Device::CPU>> makeRadius
 }
 
 template <typename Scalar>
-std::shared_ptr<plapoint::PointCloud<Scalar, plamatrix::Device::CPU>> makeSorCloudWithAttributes()
+std::shared_ptr<plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>> makeSorCloudWithAttributes()
 {
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(5, 3);
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(5, 3);
-    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(5, 1);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> points(5, 3);
+    plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(5, 3);
+    plamatrix::Matrix<std::uint16_t, plamatrix::Dynamic, plamatrix::Dynamic> intensities(5, 1);
     for (int i = 0; i < 4; ++i)
     {
-        points.setValue(i, 0, Scalar(i) * Scalar(0.01));
-        points.setValue(i, 1, Scalar(0));
-        points.setValue(i, 2, Scalar(0));
+        points.operator()(i, 0) = Scalar(i) * Scalar(0.01);
+        points.operator()(i, 1) = Scalar(0);
+        points.operator()(i, 2) = Scalar(0);
     }
-    points.setValue(4, 0, Scalar(100));
-    points.setValue(4, 1, Scalar(0));
-    points.setValue(4, 2, Scalar(0));
+    points.operator()(4, 0) = Scalar(100);
+    points.operator()(4, 1) = Scalar(0);
+    points.operator()(4, 2) = Scalar(0);
     for (int i = 0; i < 5; ++i)
     {
-        colors.setValue(i, 0, static_cast<std::uint8_t>(40 + i));
-        colors.setValue(i, 1, static_cast<std::uint8_t>(50 + i));
-        colors.setValue(i, 2, static_cast<std::uint8_t>(60 + i));
-        intensities.setValue(i, 0, static_cast<std::uint16_t>(200 + i));
+        colors.operator()(i, 0) = static_cast<std::uint8_t>(40 + i);
+        colors.operator()(i, 1) = static_cast<std::uint8_t>(50 + i);
+        colors.operator()(i, 2) = static_cast<std::uint8_t>(60 + i);
+        intensities.operator()(i, 0) = static_cast<std::uint16_t>(200 + i);
     }
 
     auto cloud = std::make_shared<CpuCloud>(std::move(points));
@@ -93,35 +105,34 @@ std::shared_ptr<plapoint::PointCloud<Scalar, plamatrix::Device::CPU>> makeSorClo
 }
 
 template <typename Scalar>
-plapoint::PointCloud<Scalar, plamatrix::Device::CPU> makeCompleteAttributeCloud()
+plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU> makeCompleteAttributeCloud()
 {
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
     constexpr int count = 6;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(count, 3);
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(count, 3);
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(count, 3);
-    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(count, 1);
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> scalar_fields(count, 2);
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> texture_coords(count, 2);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> points(count, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> normals(count, 3);
+    plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(count, 3);
+    plamatrix::Matrix<std::uint16_t, plamatrix::Dynamic, plamatrix::Dynamic> intensities(count, 1);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> scalar_fields(count, 2);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> texture_coords(count, 2);
     const Scalar x[count] = {
-        Scalar(0), Scalar(0), Scalar(1), Scalar(2), Scalar(10),
-        std::numeric_limits<Scalar>::quiet_NaN()};
+        Scalar(0), Scalar(0), Scalar(1), Scalar(2), Scalar(10), std::numeric_limits<Scalar>::quiet_NaN()};
     for (int i = 0; i < count; ++i)
     {
-        points.setValue(i, 0, x[i]);
-        points.setValue(i, 1, Scalar(0));
-        points.setValue(i, 2, Scalar(0));
-        normals.setValue(i, 0, Scalar(100 + i));
-        normals.setValue(i, 1, Scalar(200 + i));
-        normals.setValue(i, 2, Scalar(300 + i));
-        colors.setValue(i, 0, static_cast<std::uint8_t>(10 + i));
-        colors.setValue(i, 1, static_cast<std::uint8_t>(20 + i));
-        colors.setValue(i, 2, static_cast<std::uint8_t>(30 + i));
-        intensities.setValue(i, 0, static_cast<std::uint16_t>(1000 + i));
-        scalar_fields.setValue(i, 0, Scalar(i) + Scalar(0.25));
-        scalar_fields.setValue(i, 1, Scalar(500 + i));
-        texture_coords.setValue(i, 0, Scalar(i) + Scalar(0.1));
-        texture_coords.setValue(i, 1, Scalar(i) + Scalar(0.2));
+        points.operator()(i, 0) = x[i];
+        points.operator()(i, 1) = Scalar(0);
+        points.operator()(i, 2) = Scalar(0);
+        normals.operator()(i, 0) = Scalar(100 + i);
+        normals.operator()(i, 1) = Scalar(200 + i);
+        normals.operator()(i, 2) = Scalar(300 + i);
+        colors.operator()(i, 0) = static_cast<std::uint8_t>(10 + i);
+        colors.operator()(i, 1) = static_cast<std::uint8_t>(20 + i);
+        colors.operator()(i, 2) = static_cast<std::uint8_t>(30 + i);
+        intensities.operator()(i, 0) = static_cast<std::uint16_t>(1000 + i);
+        scalar_fields.operator()(i, 0) = Scalar(i) + Scalar(0.25);
+        scalar_fields.operator()(i, 1) = Scalar(500 + i);
+        texture_coords.operator()(i, 0) = Scalar(i) + Scalar(0.1);
+        texture_coords.operator()(i, 1) = Scalar(i) + Scalar(0.2);
     }
     CpuCloud cloud(std::move(points));
     cloud.setNormals(std::move(normals));
@@ -142,13 +153,13 @@ TEST(FilterIndicesGpuTest, RadiusMaskAndRemovedIndicesMatchCpuAndCopyAttributes)
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
     auto cpu_cloud = makeRadiusCloudWithAttributes<Scalar>();
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud->toGpu());
 
-    plapoint::RadiusOutlierRemoval<Scalar, plamatrix::Device::CPU> cpu_ror;
+    plapoint::RadiusOutlierRemoval<Scalar, plamatrix::internal::Device::CPU> cpu_ror;
     cpu_ror.setInputCloud(cpu_cloud);
     cpu_ror.setRadius(Scalar(0.25));
     cpu_ror.setMinNeighbors(2);
@@ -161,7 +172,7 @@ TEST(FilterIndicesGpuTest, RadiusMaskAndRemovedIndicesMatchCpuAndCopyAttributes)
     expectVectorEq<std::uint8_t>(keep_mask, {1, 1, 1, 0});
     expectVectorEq(plapoint::gpu::removedIndicesFromKeepMask(keep_mask), cpu_removed);
 
-    plapoint::RadiusOutlierRemoval<Scalar, plamatrix::Device::GPU> gpu_ror;
+    plapoint::RadiusOutlierRemoval<Scalar, plamatrix::internal::Device::GPU> gpu_ror;
     gpu_ror.setInputCloud(gpu_cloud);
     gpu_ror.setRadius(Scalar(0.25));
     gpu_ror.setMinNeighbors(2);
@@ -174,9 +185,25 @@ TEST(FilterIndicesGpuTest, RadiusMaskAndRemovedIndicesMatchCpuAndCopyAttributes)
     ASSERT_EQ(gpu_output_cpu.size(), cpu_output.size());
     ASSERT_TRUE(gpu_output_cpu.hasColors());
     ASSERT_TRUE(gpu_output_cpu.hasIntensities());
-    EXPECT_EQ(gpu_output_cpu.colors()->getValue(2, 0), 12);
-    EXPECT_EQ(gpu_output_cpu.colors()->getValue(2, 2), 32);
-    EXPECT_EQ(gpu_output_cpu.intensities()->getValue(2, 0), 102);
+    EXPECT_EQ(gpu_output_cpu.colors()->operator()(2, 0), 12);
+    EXPECT_EQ(gpu_output_cpu.colors()->operator()(2, 2), 32);
+    EXPECT_EQ(gpu_output_cpu.intensities()->operator()(2, 0), 102);
+}
+
+TEST(FilterIndicesGpuTest, GatherRejectsMalformedAttributeShapeBeforeLaunchingKernels)
+{
+    if (!hasCudaDeviceForFilterIndices())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU filter-index test";
+    }
+
+    auto cloud = makeCompleteAttributeCloud<float>().toGpu();
+    *cloud.colors() = plamatrix::internal::ResidentMatrix<std::uint8_t>(
+        cloud.size() - 1, 3, cloud.executionContext());
+
+    EXPECT_THROW(
+        (void)plapoint::gpu::gatherPointCloudByIndices(cloud, {0}),
+        std::runtime_error);
 }
 
 TEST(FilterIndicesGpuTest, RadiusKeepMaskCanStayInPlaMatrixGpuStorage)
@@ -187,22 +214,22 @@ TEST(FilterIndicesGpuTest, RadiusKeepMaskCanStayInPlaMatrixGpuStorage)
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
     auto cpu_cloud = makeRadiusCloudWithAttributes<Scalar>();
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud->toGpu());
 
     const auto keep_mask = plapoint::gpu::radiusOutlierRemovalKeepMaskDevice(
         gpu_cloud->points(), Scalar(0.25), 2);
-    const auto keep_mask_cpu = keep_mask.toCpu();
+    const auto keep_mask_cpu = keep_mask.toHostMatrix();
 
     ASSERT_EQ(keep_mask_cpu.rows(), 4);
     ASSERT_EQ(keep_mask_cpu.cols(), 1);
-    EXPECT_EQ(keep_mask_cpu.getValue(0, 0), 1);
-    EXPECT_EQ(keep_mask_cpu.getValue(1, 0), 1);
-    EXPECT_EQ(keep_mask_cpu.getValue(2, 0), 1);
-    EXPECT_EQ(keep_mask_cpu.getValue(3, 0), 0);
+    EXPECT_EQ(keep_mask_cpu.operator()(0, 0), 1);
+    EXPECT_EQ(keep_mask_cpu.operator()(1, 0), 1);
+    EXPECT_EQ(keep_mask_cpu.operator()(2, 0), 1);
+    EXPECT_EQ(keep_mask_cpu.operator()(3, 0), 0);
 }
 
 TEST(FilterIndicesGpuTest, SorMaskAndRemovedIndicesMatchCpuAndCopyAttributes)
@@ -213,16 +240,16 @@ TEST(FilterIndicesGpuTest, SorMaskAndRemovedIndicesMatchCpuAndCopyAttributes)
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
     auto cpu_cloud = makeSorCloudWithAttributes<Scalar>();
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud->toGpu());
 
-    auto cpu_tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    auto cpu_tree = std::make_shared<plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::CPU>>();
     cpu_tree->setInputCloud(cpu_cloud);
     cpu_tree->build();
-    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::CPU> cpu_sor;
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::internal::Device::CPU> cpu_sor;
     cpu_sor.setInputCloud(cpu_cloud);
     cpu_sor.setSearchMethod(cpu_tree);
     cpu_sor.setMeanK(2);
@@ -236,10 +263,10 @@ TEST(FilterIndicesGpuTest, SorMaskAndRemovedIndicesMatchCpuAndCopyAttributes)
     expectVectorEq<std::uint8_t>(keep_mask, {1, 1, 1, 1, 0});
     expectVectorEq(plapoint::gpu::removedIndicesFromKeepMask(keep_mask), cpu_removed);
 
-    auto gpu_tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::GPU>>();
+    auto gpu_tree = std::make_shared<plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::GPU>>();
     gpu_tree->setInputCloud(gpu_cloud);
     gpu_tree->build();
-    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::GPU> gpu_sor;
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::internal::Device::GPU> gpu_sor;
     gpu_sor.setInputCloud(gpu_cloud);
     gpu_sor.setSearchMethod(gpu_tree);
     gpu_sor.setMeanK(2);
@@ -253,9 +280,9 @@ TEST(FilterIndicesGpuTest, SorMaskAndRemovedIndicesMatchCpuAndCopyAttributes)
     ASSERT_EQ(gpu_output_cpu.size(), cpu_output.size());
     ASSERT_TRUE(gpu_output_cpu.hasColors());
     ASSERT_TRUE(gpu_output_cpu.hasIntensities());
-    EXPECT_EQ(gpu_output_cpu.colors()->getValue(3, 0), 43);
-    EXPECT_EQ(gpu_output_cpu.colors()->getValue(3, 2), 63);
-    EXPECT_EQ(gpu_output_cpu.intensities()->getValue(3, 0), 203);
+    EXPECT_EQ(gpu_output_cpu.colors()->operator()(3, 0), 43);
+    EXPECT_EQ(gpu_output_cpu.colors()->operator()(3, 2), 63);
+    EXPECT_EQ(gpu_output_cpu.intensities()->operator()(3, 0), 203);
 }
 
 TEST(FilterIndicesGpuTest, SorKeepMaskCanStayInPlaMatrixGpuStorage)
@@ -266,23 +293,23 @@ TEST(FilterIndicesGpuTest, SorKeepMaskCanStayInPlaMatrixGpuStorage)
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
     auto cpu_cloud = makeSorCloudWithAttributes<Scalar>();
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud->toGpu());
 
     const auto keep_mask = plapoint::gpu::statisticalOutlierRemovalKeepMaskDevice(
         gpu_cloud->points(), 2, Scalar(0.5));
-    const auto keep_mask_cpu = keep_mask.toCpu();
+    const auto keep_mask_cpu = keep_mask.toHostMatrix();
 
     ASSERT_EQ(keep_mask_cpu.rows(), 5);
     ASSERT_EQ(keep_mask_cpu.cols(), 1);
-    EXPECT_EQ(keep_mask_cpu.getValue(0, 0), 1);
-    EXPECT_EQ(keep_mask_cpu.getValue(1, 0), 1);
-    EXPECT_EQ(keep_mask_cpu.getValue(2, 0), 1);
-    EXPECT_EQ(keep_mask_cpu.getValue(3, 0), 1);
-    EXPECT_EQ(keep_mask_cpu.getValue(4, 0), 0);
+    EXPECT_EQ(keep_mask_cpu.operator()(0, 0), 1);
+    EXPECT_EQ(keep_mask_cpu.operator()(1, 0), 1);
+    EXPECT_EQ(keep_mask_cpu.operator()(2, 0), 1);
+    EXPECT_EQ(keep_mask_cpu.operator()(3, 0), 1);
+    EXPECT_EQ(keep_mask_cpu.operator()(4, 0), 0);
 }
 
 TEST(FilterIndicesGpuTest, RadiusIndexedWorkspaceReusesMatchingRevisionWithoutHostPointStaging)
@@ -312,7 +339,7 @@ TEST(FilterIndicesGpuTest, RadiusIndexedWorkspaceReusesMatchingRevisionWithoutHo
         plapoint::gpu::keepMaskToHost(second), {1, 1, 1, 1, 0, 0});
     EXPECT_EQ(workspace.indexBuildCount(), 1u);
 
-    gpu_cloud.points().setValue(4, 0, Scalar(2));
+    writeDevicePoint(gpu_cloud.points(), 4, 0, Scalar(2));
     auto rebuilt = plapoint::gpu::radiusOutlierRemovalKeepMaskDevice(
         gpu_cloud, Scalar(1), 2, workspace);
     expectVectorEq<std::uint8_t>(
@@ -328,11 +355,11 @@ TEST(FilterIndicesGpuTest, IndexedMasksOutliveWorkspaceAndOwningStream)
     }
 
     using Scalar = float;
-    using Mask = plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using Mask = plamatrix::internal::ResidentMatrix<std::uint8_t>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
     const auto gpu_cloud = makeCompleteAttributeCloud<Scalar>().toGpu();
-    Mask radius_mask;
-    Mask sor_mask;
+    std::optional<Mask> radius_mask;
+    std::optional<Mask> sor_mask;
     GpuCloud compacted_cloud;
     cudaStream_t stream = nullptr;
     ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
@@ -341,7 +368,7 @@ TEST(FilterIndicesGpuTest, IndexedMasksOutliveWorkspaceAndOwningStream)
         radius_mask = plapoint::gpu::radiusOutlierRemovalKeepMaskDevice(
             gpu_cloud, Scalar(1), 2, workspace, stream);
         compacted_cloud = plapoint::gpu::compactPointCloudByKeepMask(
-            gpu_cloud, radius_mask, stream);
+            gpu_cloud, *radius_mask, stream);
         EXPECT_EQ(workspace.indexBuildCount(), 1u);
     }
     {
@@ -353,12 +380,31 @@ TEST(FilterIndicesGpuTest, IndexedMasksOutliveWorkspaceAndOwningStream)
     ASSERT_EQ(cudaStreamDestroy(stream), cudaSuccess);
 
     expectVectorEq<std::uint8_t>(
-        plapoint::gpu::keepMaskToHost(radius_mask), {1, 1, 1, 1, 0, 0});
-    EXPECT_EQ(plapoint::gpu::keepMaskToHost(sor_mask).size(), gpu_cloud.size());
+        plapoint::gpu::keepMaskToHost(*radius_mask), {1, 1, 1, 1, 0, 0});
+    EXPECT_EQ(plapoint::gpu::keepMaskToHost(*sor_mask).size(), gpu_cloud.size());
     const auto compacted_cpu = compacted_cloud.toCpu();
     EXPECT_EQ(compacted_cpu.size(), 4u);
     EXPECT_TRUE(compacted_cpu.hasScalarFields());
     EXPECT_TRUE(compacted_cpu.hasTextureCoords());
+}
+
+TEST(FilterIndicesGpuTest, IndexedMaskRetainsContextAfterInputCloudDestruction)
+{
+    if (!hasCudaDeviceForFilterIndices())
+    {
+        GTEST_SKIP() << "No CUDA device, skipping GPU context lifetime test";
+    }
+
+    std::optional<plamatrix::internal::ResidentMatrix<std::uint8_t>> mask;
+    {
+        auto cloud = makeCompleteAttributeCloud<float>().toGpu();
+        plapoint::gpu::OutlierRemovalGpuWorkspace<float> workspace;
+        mask = plapoint::gpu::radiusOutlierRemovalKeepMaskDevice(
+            cloud, 1.0f, 2, workspace);
+    }
+
+    expectVectorEq<std::uint8_t>(
+        plapoint::gpu::keepMaskToHost(*mask), {1, 1, 1, 1, 0, 0});
 }
 
 TEST(FilterIndicesGpuTest, SorIndexedWorkspaceReusesMatchingRevision)
@@ -382,7 +428,7 @@ TEST(FilterIndicesGpuTest, SorIndexedWorkspaceReusesMatchingRevision)
     EXPECT_EQ(plapoint::gpu::keepMaskToHost(reused), first_mask);
     EXPECT_EQ(workspace.indexBuildCount(), 1u);
 
-    gpu_cloud.points().setValue(4, 0, Scalar(2));
+    writeDevicePoint(gpu_cloud.points(), 4, 0, Scalar(2));
     const auto rebuilt = plapoint::gpu::statisticalOutlierRemovalKeepMaskDevice(
         gpu_cloud, 2, Scalar(0.5), workspace);
     EXPECT_EQ(plapoint::gpu::keepMaskToHost(rebuilt).size(), gpu_cloud.size());
@@ -420,18 +466,18 @@ TEST(FilterIndicesGpuTest, SorDoubleDistanceOverflowMatchesCpuRejection)
     }
 
     using Scalar = double;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(3, 3);
-    points.fill(Scalar(0));
-    points.setValue(0, 0, -std::numeric_limits<Scalar>::max());
-    points.setValue(1, 0, std::numeric_limits<Scalar>::max());
-    points.setValue(2, 0, std::numeric_limits<Scalar>::max() / Scalar(2));
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> points(3, 3);
+    points.setConstant(Scalar(0));
+    points.operator()(0, 0) = -std::numeric_limits<Scalar>::max();
+    points.operator()(1, 0) = std::numeric_limits<Scalar>::max();
+    points.operator()(2, 0) = std::numeric_limits<Scalar>::max() / Scalar(2);
     auto cpu_cloud = std::make_shared<CpuCloud>(std::move(points));
 
-    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    auto tree = std::make_shared<plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::CPU>>();
     tree->setInputCloud(cpu_cloud);
     tree->build();
-    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::CPU> cpu_filter;
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::internal::Device::CPU> cpu_filter;
     cpu_filter.setInputCloud(cpu_cloud);
     cpu_filter.setSearchMethod(tree);
     cpu_filter.setMeanK(1);
@@ -457,21 +503,21 @@ TEST(FilterIndicesGpuTest, SorRepeatedDoubleDistanceOverflowMatchesCpuRejection)
     }
 
     using Scalar = double;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(5, 3);
-    points.fill(Scalar(0));
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> points(5, 3);
+    points.setConstant(Scalar(0));
     const Scalar maximum = std::numeric_limits<Scalar>::max();
-    points.setValue(0, 0, -maximum);
-    points.setValue(1, 0, Scalar(0.5) * maximum);
-    points.setValue(2, 0, Scalar(0.6) * maximum);
-    points.setValue(3, 0, Scalar(0.7) * maximum);
-    points.setValue(4, 0, Scalar(0.8) * maximum);
+    points.operator()(0, 0) = -maximum;
+    points.operator()(1, 0) = Scalar(0.5) * maximum;
+    points.operator()(2, 0) = Scalar(0.6) * maximum;
+    points.operator()(3, 0) = Scalar(0.7) * maximum;
+    points.operator()(4, 0) = Scalar(0.8) * maximum;
     auto cpu_cloud = std::make_shared<CpuCloud>(std::move(points));
 
-    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    auto tree = std::make_shared<plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::CPU>>();
     tree->setInputCloud(cpu_cloud);
     tree->build();
-    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::CPU> cpu_filter;
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::internal::Device::CPU> cpu_filter;
     cpu_filter.setInputCloud(cpu_cloud);
     cpu_filter.setSearchMethod(tree);
     cpu_filter.setMeanK(3);
@@ -497,20 +543,20 @@ TEST(FilterIndicesGpuTest, SorDoubleGlobalStatisticsRemainFiniteAfterScaling)
     }
 
     using Scalar = double;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(4, 3);
-    points.fill(Scalar(0));
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> points(4, 3);
+    points.setConstant(Scalar(0));
     const Scalar maximum = std::numeric_limits<Scalar>::max();
-    points.setValue(0, 0, Scalar(-0.75) * maximum);
-    points.setValue(1, 0, Scalar(-0.25) * maximum);
-    points.setValue(2, 0, Scalar(0.25) * maximum);
-    points.setValue(3, 0, Scalar(0.75) * maximum);
+    points.operator()(0, 0) = Scalar(-0.75) * maximum;
+    points.operator()(1, 0) = Scalar(-0.25) * maximum;
+    points.operator()(2, 0) = Scalar(0.25) * maximum;
+    points.operator()(3, 0) = Scalar(0.75) * maximum;
     auto cpu_cloud = std::make_shared<CpuCloud>(std::move(points));
 
-    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    auto tree = std::make_shared<plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::CPU>>();
     tree->setInputCloud(cpu_cloud);
     tree->build();
-    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::Device::CPU> cpu_filter;
+    plapoint::StatisticalOutlierRemoval<Scalar, plamatrix::internal::Device::CPU> cpu_filter;
     cpu_filter.setInputCloud(cpu_cloud);
     cpu_filter.setSearchMethod(tree);
     cpu_filter.setMeanK(1);
@@ -551,14 +597,14 @@ TEST(FilterIndicesGpuTest, DeviceMaskCompactionPreservesEveryPointAttributeInSta
     EXPECT_EQ(compacted.scalarFieldNames(), (std::vector<std::string>{"quality", "source_id"}));
     for (int i = 0; i < 4; ++i)
     {
-        EXPECT_FLOAT_EQ(compacted.points().getValue(i, 0), i < 2 ? 0.0f : float(i - 1));
-        EXPECT_FLOAT_EQ(compacted.normals()->getValue(i, 2), float(300 + i));
-        EXPECT_EQ(compacted.colors()->getValue(i, 1), 20 + i);
-        EXPECT_EQ(compacted.intensities()->getValue(i, 0), 1000 + i);
-        EXPECT_FLOAT_EQ(compacted.scalarFields()->getValue(i, 0), float(i) + 0.25f);
-        EXPECT_FLOAT_EQ(compacted.scalarFields()->getValue(i, 1), float(500 + i));
-        EXPECT_FLOAT_EQ(compacted.textureCoords()->getValue(i, 0), float(i) + 0.1f);
-        EXPECT_FLOAT_EQ(compacted.textureCoords()->getValue(i, 1), float(i) + 0.2f);
+        EXPECT_FLOAT_EQ(compacted.points().operator()(i, 0), i < 2 ? 0.0f : float(i - 1));
+        EXPECT_FLOAT_EQ(compacted.normals()->operator()(i, 2), float(300 + i));
+        EXPECT_EQ(compacted.colors()->operator()(i, 1), 20 + i);
+        EXPECT_EQ(compacted.intensities()->operator()(i, 0), 1000 + i);
+        EXPECT_FLOAT_EQ(compacted.scalarFields()->operator()(i, 0), float(i) + 0.25f);
+        EXPECT_FLOAT_EQ(compacted.scalarFields()->operator()(i, 1), float(500 + i));
+        EXPECT_FLOAT_EQ(compacted.textureCoords()->operator()(i, 0), float(i) + 0.1f);
+        EXPECT_FLOAT_EQ(compacted.textureCoords()->operator()(i, 1), float(i) + 0.2f);
     }
 }
 
@@ -571,12 +617,12 @@ TEST(FilterIndicesGpuTest, DeviceMaskCompactionPreservesPointAlignedFaceTextureD
 
     using Scalar = float;
     auto cpu_cloud = makeCompleteAttributeCloud<Scalar>();
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(1, 3);
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> faces(1, 3);
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> face_texture_indices(1, 3);
     for (int col = 0; col < 3; ++col)
     {
-        faces.setValue(0, col, col);
-        face_texture_indices.setValue(0, col, col);
+        faces.operator()(0, col) = col;
+        face_texture_indices.operator()(0, col) = col;
     }
     cpu_cloud.setFaces(std::move(faces));
     cpu_cloud.setFaceTextureIndices(std::move(face_texture_indices));
@@ -591,7 +637,7 @@ TEST(FilterIndicesGpuTest, DeviceMaskCompactionPreservesPointAlignedFaceTextureD
 
     ASSERT_TRUE(compacted.hasTextureCoords());
     EXPECT_EQ(compacted.textureCoords()->rows(), 4);
-    EXPECT_FLOAT_EQ(compacted.textureCoords()->getValue(2, 0), 2.1f);
+    EXPECT_FLOAT_EQ(compacted.textureCoords()->toHostMatrix()(2, 0), 2.1f);
     EXPECT_FALSE(compacted.hasFaces());
     EXPECT_FALSE(compacted.hasFaceTextureIndices());
     EXPECT_EQ(compacted.materialLibraryFile(), "surface.mtl");
@@ -607,14 +653,14 @@ TEST(FilterIndicesGpuTest, DeviceMaskCompactionDropsNonPointAlignedFaceTextureDa
 
     using Scalar = float;
     auto cpu_cloud = makeCompleteAttributeCloud<Scalar>();
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(1, 3);
-    faces.setValue(0, 0, 0);
-    faces.setValue(0, 1, 1);
-    faces.setValue(0, 2, 2);
-    face_texture_indices.setValue(0, 0, 2);
-    face_texture_indices.setValue(0, 1, 1);
-    face_texture_indices.setValue(0, 2, 0);
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> faces(1, 3);
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> face_texture_indices(1, 3);
+    faces.operator()(0, 0) = 0;
+    faces.operator()(0, 1) = 1;
+    faces.operator()(0, 2) = 2;
+    face_texture_indices.operator()(0, 0) = 2;
+    face_texture_indices.operator()(0, 1) = 1;
+    face_texture_indices.operator()(0, 2) = 0;
     cpu_cloud.setFaces(std::move(faces));
     cpu_cloud.setFaceTextureIndices(std::move(face_texture_indices));
     cpu_cloud.setMaterialLibraryFile("surface.mtl");
@@ -641,8 +687,8 @@ TEST(FilterIndicesGpuTest, RadiusBoundaryCases)
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
     auto empty_cpu = std::make_shared<CpuCloud>(0);
     auto empty_gpu = std::make_shared<GpuCloud>(empty_cpu->toGpu());
@@ -650,7 +696,7 @@ TEST(FilterIndicesGpuTest, RadiusBoundaryCases)
         empty_gpu->points().data(), 0, Scalar(1), 1);
     EXPECT_TRUE(empty_mask.empty());
 
-    plapoint::RadiusOutlierRemoval<Scalar, plamatrix::Device::GPU> empty_ror;
+    plapoint::RadiusOutlierRemoval<Scalar, plamatrix::internal::Device::GPU> empty_ror;
     empty_ror.setInputCloud(empty_gpu);
     empty_ror.setRadius(Scalar(1));
     empty_ror.setMinNeighbors(1);
@@ -660,12 +706,12 @@ TEST(FilterIndicesGpuTest, RadiusBoundaryCases)
     EXPECT_EQ(empty_output.size(), 0u);
     EXPECT_TRUE(empty_removed.empty());
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> kept_points(3, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> kept_points(3, 3);
     for (int i = 0; i < 3; ++i)
     {
-        kept_points.setValue(i, 0, Scalar(i) * Scalar(0.1));
-        kept_points.setValue(i, 1, Scalar(0));
-        kept_points.setValue(i, 2, Scalar(0));
+        kept_points.operator()(i, 0) = Scalar(i) * Scalar(0.1);
+        kept_points.operator()(i, 1) = Scalar(0);
+        kept_points.operator()(i, 2) = Scalar(0);
     }
     auto kept_cpu = std::make_shared<CpuCloud>(std::move(kept_points));
     auto kept_gpu = std::make_shared<GpuCloud>(kept_cpu->toGpu());
@@ -674,12 +720,12 @@ TEST(FilterIndicesGpuTest, RadiusBoundaryCases)
     expectVectorEq<std::uint8_t>(no_outlier_mask, {1, 1, 1});
     EXPECT_TRUE(plapoint::gpu::removedIndicesFromKeepMask(no_outlier_mask).empty());
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> isolated_points(3, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> isolated_points(3, 3);
     for (int i = 0; i < 3; ++i)
     {
-        isolated_points.setValue(i, 0, Scalar(i) * Scalar(10));
-        isolated_points.setValue(i, 1, Scalar(0));
-        isolated_points.setValue(i, 2, Scalar(0));
+        isolated_points.operator()(i, 0) = Scalar(i) * Scalar(10);
+        isolated_points.operator()(i, 1) = Scalar(0);
+        isolated_points.operator()(i, 2) = Scalar(0);
     }
     auto isolated_cpu = std::make_shared<CpuCloud>(std::move(isolated_points));
     auto isolated_gpu = std::make_shared<GpuCloud>(isolated_cpu->toGpu());
@@ -697,21 +743,21 @@ TEST(FilterIndicesGpuTest, SorBoundaryCases)
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
     auto empty_cpu = std::make_shared<CpuCloud>(0);
     auto empty_gpu = std::make_shared<GpuCloud>(empty_cpu->toGpu());
-    const auto empty_mask = plapoint::gpu::statisticalOutlierRemovalKeepMaskDeviceColumnMajor(
-        empty_gpu->points().data(), 0, 2, Scalar(1));
+    const auto empty_mask =
+        plapoint::gpu::statisticalOutlierRemovalKeepMaskDeviceColumnMajor(empty_gpu->points().data(), 0, 2, Scalar(1));
     EXPECT_TRUE(empty_mask.empty());
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> repeated_points(3, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> repeated_points(3, 3);
     for (int i = 0; i < 3; ++i)
     {
-        repeated_points.setValue(i, 0, Scalar(2));
-        repeated_points.setValue(i, 1, Scalar(-1));
-        repeated_points.setValue(i, 2, Scalar(0.5));
+        repeated_points.operator()(i, 0) = Scalar(2);
+        repeated_points.operator()(i, 1) = Scalar(-1);
+        repeated_points.operator()(i, 2) = Scalar(0.5);
     }
     auto repeated_cpu = std::make_shared<CpuCloud>(std::move(repeated_points));
     auto repeated_gpu = std::make_shared<GpuCloud>(repeated_cpu->toGpu());
@@ -720,19 +766,22 @@ TEST(FilterIndicesGpuTest, SorBoundaryCases)
     expectVectorEq<std::uint8_t>(no_outlier_mask, {1, 1, 1});
     EXPECT_TRUE(plapoint::gpu::removedIndicesFromKeepMask(no_outlier_mask).empty());
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> non_finite_points(2, 3);
-    non_finite_points.setValue(0, 0, std::numeric_limits<Scalar>::quiet_NaN());
-    non_finite_points.setValue(0, 1, Scalar(0));
-    non_finite_points.setValue(0, 2, Scalar(0));
-    non_finite_points.setValue(1, 0, std::numeric_limits<Scalar>::infinity());
-    non_finite_points.setValue(1, 1, Scalar(0));
-    non_finite_points.setValue(1, 2, Scalar(0));
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> non_finite_points(2, 3);
+    non_finite_points.operator()(0, 0) = std::numeric_limits<Scalar>::quiet_NaN();
+    non_finite_points.operator()(0, 1) = Scalar(0);
+    non_finite_points.operator()(0, 2) = Scalar(0);
+    non_finite_points.operator()(1, 0) = std::numeric_limits<Scalar>::infinity();
+    non_finite_points.operator()(1, 1) = Scalar(0);
+    non_finite_points.operator()(1, 2) = Scalar(0);
     auto non_finite_cpu = std::make_shared<CpuCloud>(std::move(non_finite_points));
     auto non_finite_gpu = std::make_shared<GpuCloud>(non_finite_cpu->toGpu());
-    const auto all_outlier_mask = plapoint::gpu::statisticalOutlierRemovalKeepMaskDeviceColumnMajor(
-        non_finite_gpu->points().data(), static_cast<int>(non_finite_gpu->size()), 1, Scalar(1));
-    expectVectorEq<std::uint8_t>(all_outlier_mask, {0, 0});
-    expectVectorEq(plapoint::gpu::removedIndicesFromKeepMask(all_outlier_mask), {0, 1});
+    for (int iteration = 0; iteration < 16; ++iteration)
+    {
+        const auto all_outlier_mask = plapoint::gpu::statisticalOutlierRemovalKeepMaskDeviceColumnMajor(
+            non_finite_gpu->points().data(), static_cast<int>(non_finite_gpu->size()), 1, Scalar(1));
+        expectVectorEq<std::uint8_t>(all_outlier_mask, {0, 0});
+        expectVectorEq(plapoint::gpu::removedIndicesFromKeepMask(all_outlier_mask), {0, 1});
+    }
 }
 
 TEST(FilterIndicesGpuTest, GatherPointCloudByIndicesCopiesDeviceAttributes)
@@ -743,31 +792,31 @@ TEST(FilterIndicesGpuTest, GatherPointCloudByIndicesCopiesDeviceAttributes)
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(4, 3);
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(4, 3);
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(4, 3);
-    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(4, 1);
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> scalar_fields(4, 2);
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> texture_coords(4, 2);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> points(4, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> normals(4, 3);
+    plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(4, 3);
+    plamatrix::Matrix<std::uint16_t, plamatrix::Dynamic, plamatrix::Dynamic> intensities(4, 1);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> scalar_fields(4, 2);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> texture_coords(4, 2);
     for (int i = 0; i < 4; ++i)
     {
-        points.setValue(i, 0, Scalar(10 + i));
-        points.setValue(i, 1, Scalar(20 + i));
-        points.setValue(i, 2, Scalar(30 + i));
-        normals.setValue(i, 0, Scalar(1 + i));
-        normals.setValue(i, 1, Scalar(2 + i));
-        normals.setValue(i, 2, Scalar(3 + i));
-        colors.setValue(i, 0, static_cast<std::uint8_t>(40 + i));
-        colors.setValue(i, 1, static_cast<std::uint8_t>(50 + i));
-        colors.setValue(i, 2, static_cast<std::uint8_t>(60 + i));
-        intensities.setValue(i, 0, static_cast<std::uint16_t>(700 + i));
-        scalar_fields.setValue(i, 0, Scalar(0.25f * i));
-        scalar_fields.setValue(i, 1, Scalar(100 + i));
-        texture_coords.setValue(i, 0, Scalar(i) + Scalar(0.1));
-        texture_coords.setValue(i, 1, Scalar(i) + Scalar(0.2));
+        points.operator()(i, 0) = Scalar(10 + i);
+        points.operator()(i, 1) = Scalar(20 + i);
+        points.operator()(i, 2) = Scalar(30 + i);
+        normals.operator()(i, 0) = Scalar(1 + i);
+        normals.operator()(i, 1) = Scalar(2 + i);
+        normals.operator()(i, 2) = Scalar(3 + i);
+        colors.operator()(i, 0) = static_cast<std::uint8_t>(40 + i);
+        colors.operator()(i, 1) = static_cast<std::uint8_t>(50 + i);
+        colors.operator()(i, 2) = static_cast<std::uint8_t>(60 + i);
+        intensities.operator()(i, 0) = static_cast<std::uint16_t>(700 + i);
+        scalar_fields.operator()(i, 0) = Scalar(0.25f * i);
+        scalar_fields.operator()(i, 1) = Scalar(100 + i);
+        texture_coords.operator()(i, 0) = Scalar(i) + Scalar(0.1);
+        texture_coords.operator()(i, 1) = Scalar(i) + Scalar(0.2);
     }
     CpuCloud cpu_cloud(std::move(points));
     cpu_cloud.setNormals(std::move(normals));
@@ -787,19 +836,19 @@ TEST(FilterIndicesGpuTest, GatherPointCloudByIndicesCopiesDeviceAttributes)
     ASSERT_TRUE(gathered.hasScalarFields());
     ASSERT_TRUE(gathered.hasTextureCoords());
     EXPECT_EQ(gathered.scalarFieldNames(), (std::vector<std::string>{"error", "confidence"}));
-    EXPECT_FLOAT_EQ(gathered.points().getValue(0, 0), 13.0f);
-    EXPECT_FLOAT_EQ(gathered.points().getValue(0, 2), 33.0f);
-    EXPECT_FLOAT_EQ(gathered.points().getValue(1, 0), 11.0f);
-    EXPECT_FLOAT_EQ(gathered.normals()->getValue(0, 1), 5.0f);
-    EXPECT_EQ(gathered.colors()->getValue(0, 2), 63);
-    EXPECT_EQ(gathered.colors()->getValue(1, 0), 41);
-    EXPECT_EQ(gathered.intensities()->getValue(0, 0), 703);
-    EXPECT_EQ(gathered.intensities()->getValue(1, 0), 701);
-    EXPECT_FLOAT_EQ(gathered.scalarFields()->getValue(0, 0), 0.75f);
-    EXPECT_FLOAT_EQ(gathered.scalarFields()->getValue(1, 0), 0.25f);
-    EXPECT_FLOAT_EQ(gathered.scalarFields()->getValue(0, 1), 103.0f);
-    EXPECT_FLOAT_EQ(gathered.textureCoords()->getValue(0, 0), 3.1f);
-    EXPECT_FLOAT_EQ(gathered.textureCoords()->getValue(1, 1), 1.2f);
+    EXPECT_FLOAT_EQ(gathered.points().operator()(0, 0), 13.0f);
+    EXPECT_FLOAT_EQ(gathered.points().operator()(0, 2), 33.0f);
+    EXPECT_FLOAT_EQ(gathered.points().operator()(1, 0), 11.0f);
+    EXPECT_FLOAT_EQ(gathered.normals()->operator()(0, 1), 5.0f);
+    EXPECT_EQ(gathered.colors()->operator()(0, 2), 63);
+    EXPECT_EQ(gathered.colors()->operator()(1, 0), 41);
+    EXPECT_EQ(gathered.intensities()->operator()(0, 0), 703);
+    EXPECT_EQ(gathered.intensities()->operator()(1, 0), 701);
+    EXPECT_FLOAT_EQ(gathered.scalarFields()->operator()(0, 0), 0.75f);
+    EXPECT_FLOAT_EQ(gathered.scalarFields()->operator()(1, 0), 0.25f);
+    EXPECT_FLOAT_EQ(gathered.scalarFields()->operator()(0, 1), 103.0f);
+    EXPECT_FLOAT_EQ(gathered.textureCoords()->operator()(0, 0), 3.1f);
+    EXPECT_FLOAT_EQ(gathered.textureCoords()->operator()(1, 1), 1.2f);
 }
 
 TEST(FilterIndicesGpuTest, GatherPointCloudByIndicesRejectsInvalidIndex)
@@ -810,7 +859,7 @@ TEST(FilterIndicesGpuTest, GatherPointCloudByIndicesRejectsInvalidIndex)
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
     auto cloud = CpuCloud(2).toGpu();
 

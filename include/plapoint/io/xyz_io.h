@@ -1,7 +1,9 @@
 #pragma once
 
 #include <plapoint/core/point_cloud.h>
-#include <plamatrix/dense/dense_matrix.h>
+#include <plapoint/geometry_cloud.h>
+#include <plamatrix/dense/matrix.h>
+#include <plamatrix/internal/core/device.h>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -85,7 +87,7 @@ inline bool parseFiniteNumberToken(const std::string& token, Number& value)
 
 /// Read XYZ file (one point per line: x y z)
 template <typename Scalar>
-std::shared_ptr<PointCloud<Scalar, plamatrix::Device::CPU>>
+std::shared_ptr<GeometryCloud<Scalar>>
 readXyz(const std::string& path, XyzReadMode mode = XyzReadMode::Strict)
 {
     std::ifstream f(path);
@@ -160,7 +162,7 @@ readXyz(const std::string& path, XyzReadMode mode = XyzReadMode::Strict)
     }
 
     int n = static_cast<int>(buf.size()) / 3;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(n, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> pts(n, 3);
     for (int i = 0; i < n; ++i)
     {
         pts(i, 0) = buf[static_cast<std::size_t>(i * 3)];
@@ -168,11 +170,10 @@ readXyz(const std::string& path, XyzReadMode mode = XyzReadMode::Strict)
         pts(i, 2) = buf[static_cast<std::size_t>(i * 3 + 2)];
     }
 
-    auto cloud = std::make_shared<PointCloud<Scalar, plamatrix::Device::CPU>>(std::move(pts));
-    if (saw_color && !saw_uncolored &&
-        color_buf.size() == static_cast<std::size_t>(n * 3))
+    auto cloud = std::make_shared<GeometryCloud<Scalar>>(std::move(pts));
+    if (saw_color && !saw_uncolored && color_buf.size() == static_cast<std::size_t>(n * 3))
     {
-        plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(n, 3);
+        plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(n, 3);
         for (int i = 0; i < n; ++i)
         {
             colors(i, 0) = color_buf[static_cast<std::size_t>(i * 3)];
@@ -188,8 +189,21 @@ readXyz(const std::string& path, XyzReadMode mode = XyzReadMode::Strict)
 /// Write XYZ file
 template <typename Scalar>
 void writeXyz(const std::string& path,
-              const PointCloud<Scalar, plamatrix::Device::CPU>& cloud)
+              const GeometryCloud<Scalar>& cloud)
 {
+    cloud.validate();
+    for (std::size_t i = 0; i < cloud.size(); ++i)
+    {
+        for (int coordinate = 0; coordinate < 3; ++coordinate)
+        {
+            if (!std::isfinite(static_cast<double>(
+                    cloud.points().operator()(static_cast<plamatrix::Index>(i), coordinate))))
+            {
+                throw std::invalid_argument("XYZ coordinates must be finite");
+            }
+        }
+    }
+
     std::ofstream f(path);
     if (!f) throw std::runtime_error("Cannot write XYZ file: " + path);
     f << std::setprecision(std::numeric_limits<Scalar>::max_digits10);
@@ -197,17 +211,22 @@ void writeXyz(const std::string& path,
 
     for (std::size_t i = 0; i < cloud.size(); ++i)
     {
-        f << cloud.points().getValue(static_cast<plamatrix::Index>(i), 0) << " "
-          << cloud.points().getValue(static_cast<plamatrix::Index>(i), 1) << " "
-          << cloud.points().getValue(static_cast<plamatrix::Index>(i), 2);
+        f << cloud.points().operator()(static_cast<plamatrix::Index>(i), 0) << " "
+          << cloud.points().operator()(static_cast<plamatrix::Index>(i), 1) << " "
+          << cloud.points().operator()(static_cast<plamatrix::Index>(i), 2);
         if (with_colors)
         {
             const auto* colors = cloud.colors();
-            f << " " << static_cast<int>(colors->getValue(static_cast<plamatrix::Index>(i), 0))
-              << " " << static_cast<int>(colors->getValue(static_cast<plamatrix::Index>(i), 1))
-              << " " << static_cast<int>(colors->getValue(static_cast<plamatrix::Index>(i), 2));
+            f << " " << static_cast<int>(colors->operator()(static_cast<plamatrix::Index>(i), 0))
+              << " " << static_cast<int>(colors->operator()(static_cast<plamatrix::Index>(i), 1))
+              << " " << static_cast<int>(colors->operator()(static_cast<plamatrix::Index>(i), 2));
         }
         f << "\n";
+    }
+    f.close();
+    if (!f)
+    {
+        throw std::runtime_error("Failed to write XYZ file: " + path);
     }
 }
 

@@ -3,10 +3,12 @@
 #include <plapoint/core/point_cloud.h>
 #include <plapoint/opencl/opencl_runtime.h>
 #include <plamatrix/plamatrix.h>
+#include <plamatrix/internal/core/device.h>
 #include <cmath>
 #include <limits>
 #include <map>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 
@@ -15,86 +17,101 @@
 namespace
 {
 
-using FloatCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-using FloatMatrix = plamatrix::DenseMatrix<float, plamatrix::Device::CPU>;
+    using FloatCloud = plapoint::GeometryCloud<float>;
+    using FloatMatrix = plamatrix::MatrixXf;
 
-std::shared_ptr<FloatCloud> makeSphereCloud(int count)
-{
-    FloatMatrix points(count, 3);
-    FloatMatrix normals(count, 3);
-    constexpr float pi = 3.14159265358979323846f;
-    for (int i = 0; i < count; ++i)
+    template <typename SparseMatrix> auto sparseEntries(const SparseMatrix& matrix)
     {
-        const float theta = static_cast<float>(i) * 2.0f * pi / static_cast<float>(count);
-        const float phi = static_cast<float>(i) * pi / static_cast<float>(count);
-        const float x = std::sin(phi) * std::cos(theta);
-        const float y = std::sin(phi) * std::sin(theta);
-        const float z = std::cos(phi);
-        points.setValue(i, 0, x); points.setValue(i, 1, y); points.setValue(i, 2, z);
-        normals.setValue(i, 0, x); normals.setValue(i, 1, y); normals.setValue(i, 2, z);
-    }
-    auto cloud = std::make_shared<FloatCloud>(std::move(points));
-    cloud->setNormals(std::move(normals));
-    return cloud;
-}
-
-std::shared_ptr<FloatCloud> makeRegularSphereCloud(int rings, int segments)
-{
-    const int count = rings * segments;
-    FloatMatrix points(count, 3);
-    FloatMatrix normals(count, 3);
-    constexpr float pi = 3.14159265358979323846f;
-    int row = 0;
-    for (int ring = 0; ring < rings; ++ring)
-    {
-        const float phi = static_cast<float>(ring + 1) * pi /
-            static_cast<float>(rings + 1);
-        for (int segment = 0; segment < segments; ++segment)
+        std::vector<std::tuple<plamatrix::Index, plamatrix::Index, typename SparseMatrix::Scalar>> result;
+        result.reserve(static_cast<std::size_t>(matrix.nonZeros()));
+        for (plamatrix::Index outer = 0; outer < matrix.outerSize(); ++outer)
         {
-            const float theta = static_cast<float>(segment) * 2.0f * pi /
-                static_cast<float>(segments);
+            for (typename SparseMatrix::InnerIterator entry(matrix, outer); entry; ++entry)
+            {
+                result.emplace_back(entry.row(), entry.col(), entry.value());
+            }
+        }
+        return result;
+    }
+
+    std::shared_ptr<FloatCloud> makeSphereCloud(int count)
+    {
+        FloatMatrix points(count, 3);
+        FloatMatrix normals(count, 3);
+        constexpr float pi = 3.14159265358979323846f;
+        for (int i = 0; i < count; ++i)
+        {
+            const float theta = static_cast<float>(i) * 2.0f * pi / static_cast<float>(count);
+            const float phi = static_cast<float>(i) * pi / static_cast<float>(count);
             const float x = std::sin(phi) * std::cos(theta);
             const float y = std::sin(phi) * std::sin(theta);
             const float z = std::cos(phi);
-            points.setValue(row, 0, 2.0f * x);
-            points.setValue(row, 1, 2.0f * y);
-            points.setValue(row, 2, 2.0f * z);
-            normals.setValue(row, 0, x);
-            normals.setValue(row, 1, y);
-            normals.setValue(row, 2, z);
-            ++row;
+            points.operator()(i, 0) = x;
+            points.operator()(i, 1) = y;
+            points.operator()(i, 2) = z;
+            normals.operator()(i, 0) = x;
+            normals.operator()(i, 1) = y;
+            normals.operator()(i, 2) = z;
+        }
+        auto cloud = std::make_shared<FloatCloud>(std::move(points));
+        cloud->setNormals(std::move(normals));
+        return cloud;
+    }
+
+    std::shared_ptr<FloatCloud> makeRegularSphereCloud(int rings, int segments)
+    {
+        const int count = rings * segments;
+        FloatMatrix points(count, 3);
+        FloatMatrix normals(count, 3);
+        constexpr float pi = 3.14159265358979323846f;
+        int row = 0;
+        for (int ring = 0; ring < rings; ++ring)
+        {
+            const float phi = static_cast<float>(ring + 1) * pi / static_cast<float>(rings + 1);
+            for (int segment = 0; segment < segments; ++segment)
+            {
+                const float theta = static_cast<float>(segment) * 2.0f * pi / static_cast<float>(segments);
+                const float x = std::sin(phi) * std::cos(theta);
+                const float y = std::sin(phi) * std::sin(theta);
+                const float z = std::cos(phi);
+                points.operator()(row, 0) = 2.0f * x;
+                points.operator()(row, 1) = 2.0f * y;
+                points.operator()(row, 2) = 2.0f * z;
+                normals.operator()(row, 0) = x;
+                normals.operator()(row, 1) = y;
+                normals.operator()(row, 2) = z;
+                ++row;
+            }
+        }
+        auto cloud = std::make_shared<FloatCloud>(std::move(points));
+        cloud->setNormals(std::move(normals));
+        return cloud;
+    }
+
+    static_assert(std::is_copy_constructible_v<plapoint::mesh::PoissonReconstruction<float>>);
+    static_assert(std::is_copy_assignable_v<plapoint::mesh::PoissonReconstruction<float>>);
+
+    template <typename Fn> void expectInvalidArgumentContaining(Fn&& fn, const std::string& expected_message)
+    {
+        try
+        {
+            fn();
+            FAIL() << "Expected invalid_argument containing: " << expected_message;
+        }
+        catch (const std::invalid_argument& e)
+        {
+            EXPECT_NE(std::string(e.what()).find(expected_message), std::string::npos)
+                << "Actual exception: " << e.what();
         }
     }
-    auto cloud = std::make_shared<FloatCloud>(std::move(points));
-    cloud->setNormals(std::move(normals));
-    return cloud;
-}
-
-static_assert(std::is_copy_constructible_v<plapoint::mesh::PoissonReconstruction<float>>);
-static_assert(std::is_copy_assignable_v<plapoint::mesh::PoissonReconstruction<float>>);
-
-template <typename Fn>
-void expectInvalidArgumentContaining(Fn&& fn, const std::string& expected_message)
-{
-    try
-    {
-        fn();
-        FAIL() << "Expected invalid_argument containing: " << expected_message;
-    }
-    catch (const std::invalid_argument& e)
-    {
-        EXPECT_NE(std::string(e.what()).find(expected_message), std::string::npos)
-            << "Actual exception: " << e.what();
-    }
-}
 
 } // namespace
 
 TEST(PoissonReconstructionTest, SphereReconstructsMesh)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<Scalar>;
+    using Matrix = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>;
 
     int n_pts = 100;
     Matrix pts(n_pts, 3);
@@ -106,9 +123,9 @@ TEST(PoissonReconstructionTest, SphereReconstructsMesh)
         Scalar x = Scalar(2) * std::sin(phi) * std::cos(theta);
         Scalar y = Scalar(2) * std::sin(phi) * std::sin(theta);
         Scalar z = Scalar(2) * std::cos(phi);
-        pts.setValue(i, 0, x); pts.setValue(i, 1, y); pts.setValue(i, 2, z);
+        pts.operator()(i, 0) = x; pts.operator()(i, 1) = y; pts.operator()(i, 2) = z;
         Scalar r = std::sqrt(x*x + y*y + z*z);
-        nrm.setValue(i, 0, x/r); nrm.setValue(i, 1, y/r); nrm.setValue(i, 2, z/r);
+        nrm.operator()(i, 0) = x/r; nrm.operator()(i, 1) = y/r; nrm.operator()(i, 2) = z/r;
     }
     auto cloud = std::make_shared<Cloud>(std::move(pts));
     cloud->setNormals(std::move(nrm));
@@ -125,6 +142,7 @@ TEST(PoissonReconstructionTest, SphereReconstructsMesh)
 
     const auto& system = pr.lastSystem();
     const auto& matrix = system.matrix;
+    using Sparse = std::decay_t<decltype(matrix)>;
     ASSERT_EQ(matrix.rows(), static_cast<plamatrix::Index>(system.leafNodes.size()));
     ASSERT_EQ(matrix.cols(), matrix.rows());
     ASSERT_EQ(system.rhs.rows(), matrix.rows());
@@ -133,16 +151,15 @@ TEST(PoissonReconstructionTest, SphereReconstructsMesh)
     {
         Scalar diagonal = Scalar(0);
         plamatrix::Index previous_column = -1;
-        for (plamatrix::Index offset = matrix.rowOffsets()[row];
-             offset < matrix.rowOffsets()[row + 1]; ++offset)
+        for (Sparse::InnerIterator entry(matrix, row); entry; ++entry)
         {
-            const auto column = matrix.colIndices()[offset];
+            const auto column = entry.col();
             EXPECT_GT(column, previous_column);
             previous_column = column;
-            entries[{row, column}] = matrix.values()[offset];
+            entries[{row, column}] = entry.value();
             if (column == row)
             {
-                diagonal = matrix.values()[offset];
+                diagonal = entry.value();
             }
         }
         EXPECT_GT(diagonal, Scalar(0));
@@ -159,12 +176,11 @@ TEST(PoissonReconstructionTest, SphereReconstructsMesh)
     for (plamatrix::Index row = 0; row < matrix.rows(); ++row)
     {
         const long double x_row = static_cast<long double>((row % 7) - 3);
-        for (plamatrix::Index offset = matrix.rowOffsets()[row];
-             offset < matrix.rowOffsets()[row + 1]; ++offset)
+        for (Sparse::InnerIterator entry(matrix, row); entry; ++entry)
         {
-            const auto column = matrix.colIndices()[offset];
+            const auto column = entry.col();
             const long double x_column = static_cast<long double>((column % 7) - 3);
-            quadratic += x_row * static_cast<long double>(matrix.values()[offset]) * x_column;
+            quadratic += x_row * static_cast<long double>(entry.value()) * x_column;
         }
     }
     EXPECT_GT(quadratic, 0.0L);
@@ -187,11 +203,7 @@ TEST(PoissonReconstructionTest, RepeatedAssemblyIsBitwiseDeterministic)
     const auto& first = reconstruction.lastSystem();
     const std::vector<float> first_vertex_values(first_vertices.data(), first_vertices.data() + first_vertices.size());
     const std::vector<float> first_face_values(first_faces.data(), first_faces.data() + first_faces.size());
-    const std::vector<plamatrix::Index> first_offsets(first.matrix.rowOffsets(),
-                                                      first.matrix.rowOffsets() + first.matrix.rows() + 1);
-    const std::vector<plamatrix::Index> first_columns(first.matrix.colIndices(),
-                                                      first.matrix.colIndices() + first.matrix.nnz());
-    const std::vector<float> first_values(first.matrix.values(), first.matrix.values() + first.matrix.nnz());
+    const auto first_entries = sparseEntries(first.matrix);
     const std::vector<float> first_rhs(first.rhs.data(), first.rhs.data() + first.rhs.size());
 
     auto [second_vertices, second_faces] = reconstruction.reconstruct();
@@ -199,13 +211,7 @@ TEST(PoissonReconstructionTest, RepeatedAssemblyIsBitwiseDeterministic)
     EXPECT_EQ(first_vertex_values,
               std::vector<float>(second_vertices.data(), second_vertices.data() + second_vertices.size()));
     EXPECT_EQ(first_face_values, std::vector<float>(second_faces.data(), second_faces.data() + second_faces.size()));
-    EXPECT_EQ(first_offsets,
-              std::vector<plamatrix::Index>(second.matrix.rowOffsets(),
-                                            second.matrix.rowOffsets() + second.matrix.rows() + 1));
-    EXPECT_EQ(
-        first_columns,
-        std::vector<plamatrix::Index>(second.matrix.colIndices(), second.matrix.colIndices() + second.matrix.nnz()));
-    EXPECT_EQ(first_values, std::vector<float>(second.matrix.values(), second.matrix.values() + second.matrix.nnz()));
+    EXPECT_EQ(first_entries, sparseEntries(second.matrix));
     EXPECT_EQ(first_rhs, std::vector<float>(second.rhs.data(), second.rhs.data() + second.rhs.size()));
 }
 
@@ -273,8 +279,8 @@ TEST(PoissonReconstructionTest, QualityFixtureConvergesAndProducesSurface)
 TEST(PoissonReconstructionTest, LargeCoordinatesDoNotUseSentinelBounds)
 {
     using Scalar = double;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<Scalar>;
+    using Matrix = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>;
 
     constexpr int n_pts = 100;
     constexpr Scalar center = 1.0e12;
@@ -289,12 +295,12 @@ TEST(PoissonReconstructionTest, LargeCoordinatesDoNotUseSentinelBounds)
         Scalar nx = std::sin(phi) * std::cos(theta);
         Scalar ny = std::sin(phi) * std::sin(theta);
         Scalar nz = std::cos(phi);
-        pts.setValue(i, 0, center + radius * nx);
-        pts.setValue(i, 1, center + radius * ny);
-        pts.setValue(i, 2, center + radius * nz);
-        nrm.setValue(i, 0, nx);
-        nrm.setValue(i, 1, ny);
-        nrm.setValue(i, 2, nz);
+        pts.operator()(i, 0) = center + radius * nx;
+        pts.operator()(i, 1) = center + radius * ny;
+        pts.operator()(i, 2) = center + radius * nz;
+        nrm.operator()(i, 0) = nx;
+        nrm.operator()(i, 1) = ny;
+        nrm.operator()(i, 2) = nz;
     }
 
     auto cloud = std::make_shared<Cloud>(std::move(pts));
@@ -313,7 +319,7 @@ TEST(PoissonReconstructionTest, LargeCoordinatesDoNotUseSentinelBounds)
     {
         for (int c = 0; c < 3; ++c)
         {
-            const Scalar value = verts.getValue(r, c);
+            const Scalar value = verts.operator()(r, c);
             EXPECT_TRUE(std::isfinite(value));
             EXPECT_GT(value, center - Scalar(10));
             EXPECT_LT(value, center + Scalar(10));
@@ -370,8 +376,8 @@ TEST(PoissonReconstructionTest, ExplicitOpenClRejectsDisabledBackendWithoutFallb
 TEST(PoissonReconstructionTest, ExplicitGpuUsesPlaMatrixPcg)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<Scalar>;
+    using Matrix = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>;
     constexpr int count = 48;
     Matrix points(count, 3);
     Matrix normals(count, 3);
@@ -382,8 +388,8 @@ TEST(PoissonReconstructionTest, ExplicitGpuUsesPlaMatrixPcg)
         const Scalar x = std::sin(phi) * std::cos(theta);
         const Scalar y = std::sin(phi) * std::sin(theta);
         const Scalar z = std::cos(phi);
-        points.setValue(i, 0, x); points.setValue(i, 1, y); points.setValue(i, 2, z);
-        normals.setValue(i, 0, x); normals.setValue(i, 1, y); normals.setValue(i, 2, z);
+        points.operator()(i, 0) = x; points.operator()(i, 1) = y; points.operator()(i, 2) = z;
+        normals.operator()(i, 0) = x; normals.operator()(i, 1) = y; normals.operator()(i, 2) = z;
     }
     auto cloud = std::make_shared<Cloud>(std::move(points));
     cloud->setNormals(std::move(normals));
@@ -496,9 +502,9 @@ TEST(PoissonReconstructionTest, CpuAndGpuProduceComparableSphereGeometry)
         double sum = 0.0;
         for (plamatrix::Index row = 0; row < vertices.rows(); ++row)
         {
-            const double x = vertices.getValue(row, 0);
-            const double y = vertices.getValue(row, 1);
-            const double z = vertices.getValue(row, 2);
+            const double x = vertices.operator()(row, 0);
+            const double y = vertices.operator()(row, 1);
+            const double z = vertices.operator()(row, 2);
             sum += std::abs(std::sqrt(x * x + y * y + z * z) - 1.0);
         }
         return sum / static_cast<double>(vertices.rows());
@@ -529,12 +535,12 @@ TEST(PoissonReconstructionTest, RejectsUnsetInputCloud)
 TEST(PoissonReconstructionTest, RejectsCloudWithoutNormals)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<Scalar>;
 
-    auto points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(1, 3);
-    points.setValue(0, 0, 0);
-    points.setValue(0, 1, 0);
-    points.setValue(0, 2, 0);
+    auto points = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(1, 3);
+    points.operator()(0, 0) = 0;
+    points.operator()(0, 1) = 0;
+    points.operator()(0, 2) = 0;
     auto cloud = std::make_shared<Cloud>(std::move(points));
 
     plapoint::mesh::PoissonReconstruction<Scalar> pr;
@@ -546,10 +552,10 @@ TEST(PoissonReconstructionTest, RejectsCloudWithoutNormals)
 TEST(PoissonReconstructionTest, RejectsEmptyInputCloud)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<Scalar>;
 
     auto cloud = std::make_shared<Cloud>(0);
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(0, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> normals(0, 3);
     cloud->setNormals(std::move(normals));
 
     plapoint::mesh::PoissonReconstruction<Scalar> pr;
@@ -561,18 +567,18 @@ TEST(PoissonReconstructionTest, RejectsEmptyInputCloud)
 TEST(PoissonReconstructionTest, SinglePointWithNormalProducesEmptyDegenerateMesh)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<Scalar>;
 
-    auto points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(1, 3);
-    points.setValue(0, 0, 0);
-    points.setValue(0, 1, 0);
-    points.setValue(0, 2, 0);
+    auto points = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(1, 3);
+    points.operator()(0, 0) = 0;
+    points.operator()(0, 1) = 0;
+    points.operator()(0, 2) = 0;
     auto cloud = std::make_shared<Cloud>(std::move(points));
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(1, 3);
-    normals.setValue(0, 0, 0);
-    normals.setValue(0, 1, 0);
-    normals.setValue(0, 2, 1);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> normals(1, 3);
+    normals.operator()(0, 0) = 0;
+    normals.operator()(0, 1) = 0;
+    normals.operator()(0, 2) = 1;
     cloud->setNormals(std::move(normals));
 
     plapoint::mesh::PoissonReconstruction<Scalar> pr;
@@ -591,30 +597,30 @@ TEST(PoissonReconstructionTest, SinglePointWithNormalProducesEmptyDegenerateMesh
 TEST(PoissonReconstructionTest, RejectsNonFinitePointsAndNormals)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<Scalar>;
 
-    auto points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
-    points.fill(0);
-    points.setValue(1, 0, std::numeric_limits<Scalar>::quiet_NaN());
+    auto points = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(2, 3);
+    points.setConstant(0);
+    points.operator()(1, 0) = std::numeric_limits<Scalar>::quiet_NaN();
     auto cloud = std::make_shared<Cloud>(std::move(points));
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(2, 3);
-    normals.fill(0);
-    normals.setValue(0, 2, 1);
-    normals.setValue(1, 2, 1);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> normals(2, 3);
+    normals.setConstant(0);
+    normals.operator()(0, 2) = 1;
+    normals.operator()(1, 2) = 1;
     cloud->setNormals(std::move(normals));
 
     plapoint::mesh::PoissonReconstruction<Scalar> pr;
     pr.setInputCloud(cloud);
     EXPECT_THROW((void)pr.reconstruct(), std::invalid_argument);
 
-    auto finite_points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
-    finite_points.fill(0);
+    auto finite_points = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(2, 3);
+    finite_points.setConstant(0);
     auto cloud_with_bad_normals = std::make_shared<Cloud>(std::move(finite_points));
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> bad_normals(2, 3);
-    bad_normals.fill(0);
-    bad_normals.setValue(0, 2, 1);
-    bad_normals.setValue(1, 2, std::numeric_limits<Scalar>::infinity());
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> bad_normals(2, 3);
+    bad_normals.setConstant(0);
+    bad_normals.operator()(0, 2) = 1;
+    bad_normals.operator()(1, 2) = std::numeric_limits<Scalar>::infinity();
     cloud_with_bad_normals->setNormals(std::move(bad_normals));
 
     pr.setInputCloud(cloud_with_bad_normals);
@@ -624,16 +630,16 @@ TEST(PoissonReconstructionTest, RejectsNonFinitePointsAndNormals)
 TEST(PoissonReconstructionTest, RejectsZeroLengthNormals)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<Scalar>;
 
-    auto points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
-    points.fill(0);
-    points.setValue(1, 0, 1);
+    auto points = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(2, 3);
+    points.setConstant(0);
+    points.operator()(1, 0) = 1;
     auto cloud = std::make_shared<Cloud>(std::move(points));
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(2, 3);
-    normals.fill(0);
-    normals.setValue(0, 2, 1);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> normals(2, 3);
+    normals.setConstant(0);
+    normals.operator()(0, 2) = 1;
     cloud->setNormals(std::move(normals));
 
     plapoint::mesh::PoissonReconstruction<Scalar> pr;
@@ -645,19 +651,19 @@ TEST(PoissonReconstructionTest, RejectsZeroLengthNormals)
 TEST(PoissonReconstructionTest, RejectsNormalsWhoseLengthIsNotFinite)
 {
     using Scalar = double;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<Scalar>;
 
-    auto points = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
-    points.fill(0);
-    points.setValue(1, 0, 1);
+    auto points = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(2, 3);
+    points.setConstant(0);
+    points.operator()(1, 0) = 1;
     auto cloud = std::make_shared<Cloud>(std::move(points));
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(2, 3);
-    normals.fill(0);
-    normals.setValue(0, 0, std::numeric_limits<Scalar>::max());
-    normals.setValue(0, 1, std::numeric_limits<Scalar>::max());
-    normals.setValue(0, 2, std::numeric_limits<Scalar>::max());
-    normals.setValue(1, 2, 1);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> normals(2, 3);
+    normals.setConstant(0);
+    normals.operator()(0, 0) = std::numeric_limits<Scalar>::max();
+    normals.operator()(0, 1) = std::numeric_limits<Scalar>::max();
+    normals.operator()(0, 2) = std::numeric_limits<Scalar>::max();
+    normals.operator()(1, 2) = 1;
     cloud->setNormals(std::move(normals));
 
     plapoint::mesh::PoissonReconstruction<Scalar> pr;

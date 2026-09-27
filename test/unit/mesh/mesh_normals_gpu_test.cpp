@@ -8,8 +8,11 @@
 #include <vector>
 
 #include <plamatrix/plamatrix.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/core/execution_context.h>
 
 #include <plapoint/core/point_cloud.h>
+#include <plapoint/filters/detail/geometry_bridge.h>
 #include <plapoint/gpu/cuda_check.h>
 #include <plapoint/gpu/mesh_normals.h>
 #include <plapoint/mesh/mesh_processing.h>
@@ -17,107 +20,146 @@
 namespace
 {
 
-using CpuFloatCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-using FloatMatrix = plamatrix::DenseMatrix<float, plamatrix::Device::CPU>;
-using IntMatrix = plamatrix::DenseMatrix<int, plamatrix::Device::CPU>;
+    using CpuFloatCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using FloatMatrix = plamatrix::MatrixXf;
+    using IntMatrix = plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic>;
 
-bool hasCudaDevice()
-{
-    return plapoint::gpu::hasUsableCudaDevice();
-}
+    bool hasCudaDevice()
+    {
+        return plapoint::gpu::hasUsableCudaDevice();
+    }
 
-#define SKIP_IF_NO_GPU() \
-    do { \
-        if (!hasCudaDevice()) { \
-            GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU mesh test"; \
-        } \
+#define SKIP_IF_NO_GPU()                                                                                               \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if (!hasCudaDevice())                                                                                          \
+        {                                                                                                              \
+            GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU mesh test";                                 \
+        }                                                                                                              \
     } while (0)
 
-CpuFloatCloud makeCloud(FloatMatrix&& points, IntMatrix&& faces)
-{
-    CpuFloatCloud cloud(std::move(points));
-    cloud.setFaces(std::move(faces));
-    return cloud;
-}
-
-CpuFloatCloud makeRaisedFanMesh()
-{
-    FloatMatrix points(5, 3);
-    points.setValue(0, 0, 0.0f); points.setValue(0, 1, 0.0f); points.setValue(0, 2, 1.0f);
-    points.setValue(1, 0, -1.0f); points.setValue(1, 1, 0.0f); points.setValue(1, 2, 0.0f);
-    points.setValue(2, 0, 0.0f); points.setValue(2, 1, -1.0f); points.setValue(2, 2, 0.0f);
-    points.setValue(3, 0, 1.0f); points.setValue(3, 1, 0.0f); points.setValue(3, 2, 0.0f);
-    points.setValue(4, 0, 0.0f); points.setValue(4, 1, 1.0f); points.setValue(4, 2, 0.0f);
-
-    IntMatrix faces(4, 3);
-    faces.setValue(0, 0, 0); faces.setValue(0, 1, 1); faces.setValue(0, 2, 2);
-    faces.setValue(1, 0, 0); faces.setValue(1, 1, 2); faces.setValue(1, 2, 3);
-    faces.setValue(2, 0, 0); faces.setValue(2, 1, 3); faces.setValue(2, 2, 4);
-    faces.setValue(3, 0, 0); faces.setValue(3, 1, 4); faces.setValue(3, 2, 1);
-
-    return makeCloud(std::move(points), std::move(faces));
-}
-
-CpuFloatCloud makeTetrahedronWithInwardNormals()
-{
-    FloatMatrix points(4, 3);
-    points.setValue(0, 0, 1.0f); points.setValue(0, 1, 1.0f); points.setValue(0, 2, 1.0f);
-    points.setValue(1, 0, -1.0f); points.setValue(1, 1, -1.0f); points.setValue(1, 2, 1.0f);
-    points.setValue(2, 0, -1.0f); points.setValue(2, 1, 1.0f); points.setValue(2, 2, -1.0f);
-    points.setValue(3, 0, 1.0f); points.setValue(3, 1, -1.0f); points.setValue(3, 2, -1.0f);
-
-    IntMatrix faces(4, 3);
-    faces.setValue(0, 0, 0); faces.setValue(0, 1, 2); faces.setValue(0, 2, 1);
-    faces.setValue(1, 0, 0); faces.setValue(1, 1, 1); faces.setValue(1, 2, 3);
-    faces.setValue(2, 0, 0); faces.setValue(2, 1, 3); faces.setValue(2, 2, 2);
-    faces.setValue(3, 0, 1); faces.setValue(3, 1, 2); faces.setValue(3, 2, 3);
-
-    auto outward = plapoint::mesh::recomputeVertexNormals(makeCloud(std::move(points), std::move(faces)));
-
-    FloatMatrix inward(static_cast<plamatrix::Index>(outward.size()), 3);
-    for (plamatrix::Index row = 0; row < inward.rows(); ++row)
+    CpuFloatCloud makeCloud(FloatMatrix&& points, IntMatrix&& faces)
     {
-        for (int col = 0; col < 3; ++col)
+        CpuFloatCloud cloud(std::move(points));
+        cloud.setFaces(std::move(faces));
+        return cloud;
+    }
+
+    CpuFloatCloud makeRaisedFanMesh()
+    {
+        FloatMatrix points(5, 3);
+        points.operator()(0, 0) = 0.0f;
+        points.operator()(0, 1) = 0.0f;
+        points.operator()(0, 2) = 1.0f;
+        points.operator()(1, 0) = -1.0f;
+        points.operator()(1, 1) = 0.0f;
+        points.operator()(1, 2) = 0.0f;
+        points.operator()(2, 0) = 0.0f;
+        points.operator()(2, 1) = -1.0f;
+        points.operator()(2, 2) = 0.0f;
+        points.operator()(3, 0) = 1.0f;
+        points.operator()(3, 1) = 0.0f;
+        points.operator()(3, 2) = 0.0f;
+        points.operator()(4, 0) = 0.0f;
+        points.operator()(4, 1) = 1.0f;
+        points.operator()(4, 2) = 0.0f;
+
+        IntMatrix faces(4, 3);
+        faces.operator()(0, 0) = 0;
+        faces.operator()(0, 1) = 1;
+        faces.operator()(0, 2) = 2;
+        faces.operator()(1, 0) = 0;
+        faces.operator()(1, 1) = 2;
+        faces.operator()(1, 2) = 3;
+        faces.operator()(2, 0) = 0;
+        faces.operator()(2, 1) = 3;
+        faces.operator()(2, 2) = 4;
+        faces.operator()(3, 0) = 0;
+        faces.operator()(3, 1) = 4;
+        faces.operator()(3, 2) = 1;
+
+        return makeCloud(std::move(points), std::move(faces));
+    }
+
+    CpuFloatCloud makeTetrahedronWithInwardNormals()
+    {
+        FloatMatrix points(4, 3);
+        points.operator()(0, 0) = 1.0f;
+        points.operator()(0, 1) = 1.0f;
+        points.operator()(0, 2) = 1.0f;
+        points.operator()(1, 0) = -1.0f;
+        points.operator()(1, 1) = -1.0f;
+        points.operator()(1, 2) = 1.0f;
+        points.operator()(2, 0) = -1.0f;
+        points.operator()(2, 1) = 1.0f;
+        points.operator()(2, 2) = -1.0f;
+        points.operator()(3, 0) = 1.0f;
+        points.operator()(3, 1) = -1.0f;
+        points.operator()(3, 2) = -1.0f;
+
+        IntMatrix faces(4, 3);
+        faces.operator()(0, 0) = 0;
+        faces.operator()(0, 1) = 2;
+        faces.operator()(0, 2) = 1;
+        faces.operator()(1, 0) = 0;
+        faces.operator()(1, 1) = 1;
+        faces.operator()(1, 2) = 3;
+        faces.operator()(2, 0) = 0;
+        faces.operator()(2, 1) = 3;
+        faces.operator()(2, 2) = 2;
+        faces.operator()(3, 0) = 1;
+        faces.operator()(3, 1) = 2;
+        faces.operator()(3, 2) = 3;
+
+        auto outward = plapoint::mesh::recomputeVertexNormals(
+            plapoint::detail::fromDeviceCloud(makeCloud(std::move(points), std::move(faces))));
+
+        FloatMatrix inward(static_cast<plamatrix::Index>(outward.size()), 3);
+        for (plamatrix::Index row = 0; row < inward.rows(); ++row)
         {
-            inward.setValue(row, col, -outward.normals()->getValue(row, col));
+            for (int col = 0; col < 3; ++col)
+            {
+                inward.operator()(row, col) = -outward.normals()->operator()(row, col);
+            }
+        }
+        outward.setNormals(std::move(inward));
+        return plapoint::detail::toDeviceCloud(outward);
+    }
+
+    template <typename ActualCloud, typename ExpectedCloud>
+    void expectCloudPointsNear(const ActualCloud& actual, const ExpectedCloud& expected, float tolerance)
+    {
+        ASSERT_EQ(actual.size(), expected.size());
+        for (plamatrix::Index row = 0; row < static_cast<plamatrix::Index>(actual.size()); ++row)
+        {
+            for (int col = 0; col < 3; ++col)
+            {
+                EXPECT_NEAR(actual.points().operator()(row, col), expected.points().operator()(row, col), tolerance)
+                    << "row=" << row << " col=" << col;
+            }
         }
     }
-    outward.setNormals(std::move(inward));
-    return outward;
-}
 
-void expectCloudPointsNear(const CpuFloatCloud& actual, const CpuFloatCloud& expected, float tolerance)
-{
-    ASSERT_EQ(actual.size(), expected.size());
-    for (plamatrix::Index row = 0; row < static_cast<plamatrix::Index>(actual.size()); ++row)
+    template <typename ActualCloud, typename ExpectedCloud>
+    void expectNormalsAligned(const ActualCloud& actual, const ExpectedCloud& expected)
     {
-        for (int col = 0; col < 3; ++col)
+        ASSERT_TRUE(actual.hasNormals());
+        ASSERT_TRUE(expected.hasNormals());
+        ASSERT_EQ(actual.normals()->rows(), expected.normals()->rows());
+
+        for (plamatrix::Index row = 0; row < actual.normals()->rows(); ++row)
         {
-            EXPECT_NEAR(actual.points().getValue(row, col), expected.points().getValue(row, col), tolerance)
-                << "row=" << row << " col=" << col;
+            float dot = 0.0f;
+            for (int col = 0; col < 3; ++col)
+            {
+                const float actual_value = actual.normals()->operator()(row, col);
+                const float expected_value = expected.normals()->operator()(row, col);
+                dot += actual_value * expected_value;
+                EXPECT_NEAR(actual_value, expected_value, 2.0e-5f) << "row=" << row << " col=" << col;
+            }
+            EXPECT_GT(dot, 0.999f) << "row=" << row;
         }
     }
-}
-
-void expectNormalsAligned(const CpuFloatCloud& actual, const CpuFloatCloud& expected)
-{
-    ASSERT_TRUE(actual.hasNormals());
-    ASSERT_TRUE(expected.hasNormals());
-    ASSERT_EQ(actual.normals()->rows(), expected.normals()->rows());
-
-    for (plamatrix::Index row = 0; row < actual.normals()->rows(); ++row)
-    {
-        float dot = 0.0f;
-        for (int col = 0; col < 3; ++col)
-        {
-            const float actual_value = actual.normals()->getValue(row, col);
-            const float expected_value = expected.normals()->getValue(row, col);
-            dot += actual_value * expected_value;
-            EXPECT_NEAR(actual_value, expected_value, 2.0e-5f) << "row=" << row << " col=" << col;
-        }
-        EXPECT_GT(dot, 0.999f) << "row=" << row;
-    }
-}
 
 } // namespace
 
@@ -126,7 +168,7 @@ TEST(MeshNormalsGpuTest, RecomputeVertexNormalsMatchesCpuDirections)
     SKIP_IF_NO_GPU();
 
     auto mesh = makeRaisedFanMesh();
-    const auto expected = plapoint::mesh::recomputeVertexNormals(mesh);
+    const auto expected = plapoint::mesh::recomputeVertexNormals(plapoint::detail::fromDeviceCloud(mesh));
 
     const auto actual_gpu = plapoint::mesh::recomputeVertexNormals(mesh.toGpu());
     const auto actual = actual_gpu.toCpu();
@@ -142,7 +184,8 @@ TEST(MeshNormalsGpuTest, OrientNormalsOutwardFromCentroidFlipsSimpleClosedMesh)
     SKIP_IF_NO_GPU();
 
     auto mesh = makeTetrahedronWithInwardNormals();
-    const auto expected = plapoint::mesh::orientNormalsOutwardFromCentroid(mesh);
+    const auto expected = plapoint::mesh::orientNormalsOutwardFromCentroid(
+        plapoint::detail::fromDeviceCloud(mesh));
 
     const auto actual_gpu = plapoint::mesh::orientNormalsOutwardFromCentroid(mesh.toGpu());
     const auto actual = actual_gpu.toCpu();
@@ -153,9 +196,9 @@ TEST(MeshNormalsGpuTest, OrientNormalsOutwardFromCentroidFlipsSimpleClosedMesh)
     ASSERT_EQ(actual.faces()->rows(), expected.faces()->rows());
     for (plamatrix::Index row = 0; row < actual.faces()->rows(); ++row)
     {
-        EXPECT_EQ(actual.faces()->getValue(row, 0), expected.faces()->getValue(row, 0));
-        EXPECT_EQ(actual.faces()->getValue(row, 1), expected.faces()->getValue(row, 1));
-        EXPECT_EQ(actual.faces()->getValue(row, 2), expected.faces()->getValue(row, 2));
+        EXPECT_EQ(actual.faces()->operator()(row, 0), expected.faces()->operator()(row, 0));
+        EXPECT_EQ(actual.faces()->operator()(row, 1), expected.faces()->operator()(row, 1));
+        EXPECT_EQ(actual.faces()->operator()(row, 2), expected.faces()->operator()(row, 2));
     }
 }
 
@@ -164,7 +207,7 @@ TEST(MeshNormalsGpuTest, TaubinSmoothMatchesCpuForDefaultBoundaryBehavior)
     SKIP_IF_NO_GPU();
 
     auto mesh = makeRaisedFanMesh();
-    const auto expected = plapoint::mesh::taubinSmooth(mesh, 2, 0.5f, -0.53f);
+    const auto expected = plapoint::mesh::taubinSmooth(plapoint::detail::fromDeviceCloud(mesh), 2, 0.5f, -0.53f);
 
     const auto actual_gpu = plapoint::mesh::taubinSmooth(mesh.toGpu(), 2, 0.5f, -0.53f);
     const auto actual = actual_gpu.toCpu();
@@ -184,12 +227,12 @@ TEST(MeshNormalsGpuTest, TaubinSmoothCanKeepBoundaryVerticesFixed)
     const auto actual_gpu = plapoint::mesh::taubinSmooth(mesh.toGpu(), 1, 0.5f, 0.0f, true);
     const auto actual = actual_gpu.toCpu();
 
-    EXPECT_LT(actual.points().getValue(0, 2), mesh.points().getValue(0, 2));
+    EXPECT_LT(actual.points().operator()(0, 2), mesh.points().operator()(0, 2));
     for (plamatrix::Index row = 1; row < static_cast<plamatrix::Index>(mesh.size()); ++row)
     {
         for (int col = 0; col < 3; ++col)
         {
-            EXPECT_NEAR(actual.points().getValue(row, col), mesh.points().getValue(row, col), 1.0e-6f)
+            EXPECT_NEAR(actual.points().operator()(row, col), mesh.points().operator()(row, col), 1.0e-6f)
                 << "boundary row=" << row << " col=" << col;
         }
     }
@@ -202,7 +245,7 @@ TEST(MeshNormalsGpuTest, TaubinSmoothHandlesEmptyMeshLikeCpu)
     FloatMatrix points(0, 3);
     IntMatrix faces(0, 3);
     auto mesh = makeCloud(std::move(points), std::move(faces));
-    const auto expected = plapoint::mesh::taubinSmooth(mesh, 3, 0.5f, -0.53f);
+    const auto expected = plapoint::mesh::taubinSmooth(plapoint::detail::fromDeviceCloud(mesh), 3, 0.5f, -0.53f);
 
     const auto actual_gpu = plapoint::mesh::taubinSmooth(mesh.toGpu(), 3, 0.5f, -0.53f);
     const auto actual = actual_gpu.toCpu();
@@ -221,12 +264,48 @@ TEST(MeshNormalsGpuTest, TaubinSmoothRejectsDegenerateParametersLikeCpu)
     auto gpu_mesh = mesh.toGpu();
 
     EXPECT_THROW(plapoint::mesh::taubinSmooth(gpu_mesh, -1, 0.5f, -0.53f), std::invalid_argument);
-    EXPECT_THROW(
-        plapoint::mesh::taubinSmooth(gpu_mesh, 1, std::numeric_limits<float>::infinity(), -0.53f),
-        std::invalid_argument);
-    EXPECT_THROW(
-        plapoint::mesh::taubinSmooth(gpu_mesh, 1, 0.5f, std::numeric_limits<float>::quiet_NaN()),
-        std::invalid_argument);
+    EXPECT_THROW(plapoint::mesh::taubinSmooth(gpu_mesh, 1, std::numeric_limits<float>::infinity(), -0.53f),
+                 std::invalid_argument);
+    EXPECT_THROW(plapoint::mesh::taubinSmooth(gpu_mesh, 1, 0.5f, std::numeric_limits<float>::quiet_NaN()),
+                 std::invalid_argument);
+}
+
+TEST(MeshNormalsGpuTest, ResidentResultRetainsContextAndWaitsForInputStream)
+{
+    SKIP_IF_NO_GPU();
+    auto expected = makeRaisedFanMesh();
+    FloatMatrix updated = expected.points();
+    updated(0, 2) = 2.0f;
+    expected.setPoints(updated);
+    std::weak_ptr<plamatrix::internal::ExecutionContext> owner;
+    const auto result = [&]()
+    {
+        auto input = makeRaisedFanMesh().toGpu();
+        owner = input.executionContext();
+        cudaStream_t stream = nullptr;
+        PLAPOINT_CHECK_CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+        try
+        {
+            PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(input.points().data(),
+                                                updated.data(),
+                                                static_cast<std::size_t>(updated.size()) * sizeof(float),
+                                                cudaMemcpyHostToDevice,
+                                                stream));
+            auto output = plapoint::mesh::recomputeVertexNormals(input, stream);
+            EXPECT_EQ(output.executionContext(), input.executionContext());
+            PLAPOINT_CHECK_CUDA(cudaStreamDestroy(stream));
+            return output;
+        }
+        catch (...)
+        {
+            cudaStreamDestroy(stream);
+            throw;
+        }
+    }();
+    EXPECT_FALSE(owner.expired());
+    const auto host = result.toCpu();
+    expectCloudPointsNear(host, expected, 0.0f);
+    expectNormalsAligned(host, plapoint::mesh::recomputeVertexNormals(plapoint::detail::fromDeviceCloud(expected)));
 }
 
 #endif // PLAPOINT_WITH_CUDA

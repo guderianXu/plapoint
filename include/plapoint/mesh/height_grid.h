@@ -11,6 +11,9 @@
 #include <vector>
 
 #include <plapoint/core/point_cloud.h>
+#include <plapoint/geometry_cloud.h>
+#include <plapoint/core/processing_policy.h>
+#include <plamatrix/internal/core/device.h>
 
 namespace plapoint::mesh
 {
@@ -228,7 +231,7 @@ bool triangleReliable(
 
 template <typename Scalar>
 int nearestSourcePointIndex(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& source,
+    const GeometryCloud<Scalar>& source,
     Scalar x,
     Scalar y,
     Scalar z)
@@ -241,9 +244,9 @@ int nearestSourcePointIndex(
     int best_index = 0;
     for (std::size_t i = 0; i < source.size(); ++i)
     {
-        const long double dx = static_cast<long double>(source.points().getValue(static_cast<plamatrix::Index>(i), 0) - x);
-        const long double dy = static_cast<long double>(source.points().getValue(static_cast<plamatrix::Index>(i), 1) - y);
-        const long double dz = static_cast<long double>(source.points().getValue(static_cast<plamatrix::Index>(i), 2) - z);
+        const long double dx = static_cast<long double>(source.points().operator()(static_cast<plamatrix::Index>(i), 0) - x);
+        const long double dy = static_cast<long double>(source.points().operator()(static_cast<plamatrix::Index>(i), 1) - y);
+        const long double dz = static_cast<long double>(source.points().operator()(static_cast<plamatrix::Index>(i), 2) - z);
         const long double d2 = dx * dx + dy * dy + dz * dz;
         if (d2 < best)
         {
@@ -257,8 +260,8 @@ int nearestSourcePointIndex(
 } // namespace detail
 
 template <typename Scalar>
-HeightGrid<Scalar> buildHeightGrid(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& cloud,
+HeightGrid<Scalar> buildHeightGridCpu(
+    const GeometryCloud<Scalar>& cloud,
     const HeightGridOptions<Scalar>& options = {})
 {
     HeightGrid<Scalar> grid;
@@ -279,9 +282,9 @@ HeightGrid<Scalar> buildHeightGrid(
     for (std::size_t i = 0; i < cloud.size(); ++i)
     {
         const auto row = static_cast<plamatrix::Index>(i);
-        const Scalar x = cloud.points().getValue(row, 0);
-        const Scalar y = cloud.points().getValue(row, 1);
-        const Scalar z = cloud.points().getValue(row, 2);
+        const Scalar x = cloud.points().operator()(row, 0);
+        const Scalar y = cloud.points().operator()(row, 1);
+        const Scalar z = cloud.points().operator()(row, 2);
         if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
         {
             if (options.skipNonFinite)
@@ -415,7 +418,7 @@ HeightGrid<Scalar> buildHeightGrid(
             for (int channel = 0; channel < 3; ++channel)
             {
                 color_sums[cell * 3 + static_cast<std::size_t>(channel)] +=
-                    static_cast<long double>(source_colors->getValue(
+                    static_cast<long double>(source_colors->operator()(
                         static_cast<plamatrix::Index>(source_index), channel)) * color_weight;
             }
         }
@@ -424,9 +427,9 @@ HeightGrid<Scalar> buildHeightGrid(
     for (std::size_t i = 0; i < cloud.size(); ++i)
     {
         const auto row = static_cast<plamatrix::Index>(i);
-        const Scalar x = cloud.points().getValue(row, 0);
-        const Scalar y = cloud.points().getValue(row, 1);
-        const Scalar z = cloud.points().getValue(row, 2);
+        const Scalar x = cloud.points().operator()(row, 0);
+        const Scalar y = cloud.points().operator()(row, 1);
+        const Scalar z = cloud.points().operator()(row, 2);
         if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
         {
             if (options.skipNonFinite)
@@ -492,6 +495,15 @@ HeightGrid<Scalar> buildHeightGrid(
     }
     return grid;
 }
+
+/// Build a CPU-readable height grid from an owning geometry cloud.
+/// Explicit accelerator requests fail if the backend is unavailable; Auto may fall back to CPU.
+template <typename Scalar>
+HeightGrid<Scalar> buildHeightGrid(
+    const GeometryCloud<Scalar>& cloud,
+    const HeightGridOptions<Scalar>& options = {},
+    ProcessingDevice device = ProcessingDevice::Auto,
+    ProcessingReport* report = nullptr);
 
 template <typename Scalar>
 void fillHoles(HeightGrid<Scalar>& grid,
@@ -620,7 +632,7 @@ void fillHoles(HeightGrid<Scalar>& grid,
 }
 
 template <typename Scalar>
-PointCloud<Scalar, plamatrix::Device::CPU> heightGridToPointCloud(
+GeometryCloud<Scalar> heightGridToPointCloud(
     const HeightGrid<Scalar>& grid)
 {
     std::vector<std::pair<int, int>> cells;
@@ -636,30 +648,30 @@ PointCloud<Scalar, plamatrix::Device::CPU> heightGridToPointCloud(
         }
     }
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> points(
         static_cast<plamatrix::Index>(cells.size()), 3);
-    std::unique_ptr<plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>> colors;
+    std::unique_ptr<plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic>> colors;
     if (grid.hasColors())
     {
-        colors = std::make_unique<plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>>(
+        colors = std::make_unique<plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic>>(
             static_cast<plamatrix::Index>(cells.size()), 3);
     }
 
     for (std::size_t i = 0; i < cells.size(); ++i)
     {
         const auto [x, y] = cells[i];
-        points.setValue(static_cast<plamatrix::Index>(i), 0, grid.minX + Scalar(x) * grid.stepX);
-        points.setValue(static_cast<plamatrix::Index>(i), 1, grid.minY + Scalar(y) * grid.stepY);
-        points.setValue(static_cast<plamatrix::Index>(i), 2, grid.at(x, y));
+        points.operator()(static_cast<plamatrix::Index>(i), 0) = grid.minX + Scalar(x) * grid.stepX;
+        points.operator()(static_cast<plamatrix::Index>(i), 1) = grid.minY + Scalar(y) * grid.stepY;
+        points.operator()(static_cast<plamatrix::Index>(i), 2) = grid.at(x, y);
         if (colors)
         {
-            colors->setValue(static_cast<plamatrix::Index>(i), 0, grid.colorAt(x, y, 0));
-            colors->setValue(static_cast<plamatrix::Index>(i), 1, grid.colorAt(x, y, 1));
-            colors->setValue(static_cast<plamatrix::Index>(i), 2, grid.colorAt(x, y, 2));
+            colors->operator()(static_cast<plamatrix::Index>(i), 0) = grid.colorAt(x, y, 0);
+            colors->operator()(static_cast<plamatrix::Index>(i), 1) = grid.colorAt(x, y, 1);
+            colors->operator()(static_cast<plamatrix::Index>(i), 2) = grid.colorAt(x, y, 2);
         }
     }
 
-    PointCloud<Scalar, plamatrix::Device::CPU> cloud(std::move(points));
+    GeometryCloud<Scalar> cloud(std::move(points));
     if (colors)
     {
         cloud.setColors(std::move(*colors));
@@ -668,15 +680,15 @@ PointCloud<Scalar, plamatrix::Device::CPU> heightGridToPointCloud(
 }
 
 template <typename Scalar>
-PointCloud<Scalar, plamatrix::Device::CPU> heightGridToMesh(
+GeometryCloud<Scalar> heightGridToMesh(
     const HeightGrid<Scalar>& grid,
-    const PointCloud<Scalar, plamatrix::Device::CPU>& source_cloud,
+    const GeometryCloud<Scalar>& source_cloud,
     const HeightGridOptions<Scalar>& options = {})
 {
     if (grid.width < 2 || grid.height < 2)
     {
-        PointCloud<Scalar, plamatrix::Device::CPU> empty(0);
-        plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(0, 3);
+        GeometryCloud<Scalar> empty(0);
+        plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> faces(0, 3);
         empty.setFaces(std::move(faces));
         return empty;
     }
@@ -697,18 +709,18 @@ PointCloud<Scalar, plamatrix::Device::CPU> heightGridToMesh(
         }
     }
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> points(
         static_cast<plamatrix::Index>(vertex_cells.size()), 3);
-    std::unique_ptr<plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>> colors;
+    std::unique_ptr<plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic>> colors;
     if (grid.hasColors() || source_cloud.hasColors())
     {
-        colors = std::make_unique<plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>>(
+        colors = std::make_unique<plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic>>(
             static_cast<plamatrix::Index>(vertex_cells.size()), 3);
     }
-    std::unique_ptr<plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU>> intensities;
+    std::unique_ptr<plamatrix::Matrix<std::uint16_t, plamatrix::Dynamic, plamatrix::Dynamic>> intensities;
     if (source_cloud.hasIntensities())
     {
-        intensities = std::make_unique<plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU>>(
+        intensities = std::make_unique<plamatrix::Matrix<std::uint16_t, plamatrix::Dynamic, plamatrix::Dynamic>>(
             static_cast<plamatrix::Index>(vertex_cells.size()), 1);
     }
 
@@ -718,9 +730,9 @@ PointCloud<Scalar, plamatrix::Device::CPU> heightGridToMesh(
         const Scalar px = grid.minX + Scalar(x) * grid.stepX;
         const Scalar py = grid.minY + Scalar(y) * grid.stepY;
         const Scalar pz = grid.at(x, y);
-        points.setValue(static_cast<plamatrix::Index>(i), 0, px);
-        points.setValue(static_cast<plamatrix::Index>(i), 1, py);
-        points.setValue(static_cast<plamatrix::Index>(i), 2, pz);
+        points.operator()(static_cast<plamatrix::Index>(i), 0) = px;
+        points.operator()(static_cast<plamatrix::Index>(i), 1) = py;
+        points.operator()(static_cast<plamatrix::Index>(i), 2) = pz;
         const int nearest = ((colors && !grid.hasColors()) || intensities)
             ? detail::nearestSourcePointIndex(source_cloud, px, py, pz)
             : -1;
@@ -728,25 +740,22 @@ PointCloud<Scalar, plamatrix::Device::CPU> heightGridToMesh(
         {
             if (grid.hasColors())
             {
-                colors->setValue(static_cast<plamatrix::Index>(i), 0, grid.colorAt(x, y, 0));
-                colors->setValue(static_cast<plamatrix::Index>(i), 1, grid.colorAt(x, y, 1));
-                colors->setValue(static_cast<plamatrix::Index>(i), 2, grid.colorAt(x, y, 2));
+                colors->operator()(static_cast<plamatrix::Index>(i), 0) = grid.colorAt(x, y, 0);
+                colors->operator()(static_cast<plamatrix::Index>(i), 1) = grid.colorAt(x, y, 1);
+                colors->operator()(static_cast<plamatrix::Index>(i), 2) = grid.colorAt(x, y, 2);
             }
             else if (nearest >= 0)
             {
-                colors->setValue(static_cast<plamatrix::Index>(i), 0, source_cloud.colors()->getValue(nearest, 0));
-                colors->setValue(static_cast<plamatrix::Index>(i), 1, source_cloud.colors()->getValue(nearest, 1));
-                colors->setValue(static_cast<plamatrix::Index>(i), 2, source_cloud.colors()->getValue(nearest, 2));
+                colors->operator()(static_cast<plamatrix::Index>(i), 0) = source_cloud.colors()->operator()(nearest, 0);
+                colors->operator()(static_cast<plamatrix::Index>(i), 1) = source_cloud.colors()->operator()(nearest, 1);
+                colors->operator()(static_cast<plamatrix::Index>(i), 2) = source_cloud.colors()->operator()(nearest, 2);
             }
         }
         if (intensities)
         {
             if (nearest >= 0)
             {
-                intensities->setValue(
-                    static_cast<plamatrix::Index>(i),
-                    0,
-                    source_cloud.intensities()->getValue(nearest, 0));
+                intensities->operator()(static_cast<plamatrix::Index>(i), 0) = source_cloud.intensities()->operator()(nearest, 0);
             }
         }
     }
@@ -816,16 +825,16 @@ PointCloud<Scalar, plamatrix::Device::CPU> heightGridToMesh(
         faces.insert(faces.end(), row_faces.begin(), row_faces.end());
     }
 
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_matrix(
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> face_matrix(
         static_cast<plamatrix::Index>(faces.size()), 3);
     for (std::size_t r = 0; r < faces.size(); ++r)
     {
-        face_matrix.setValue(static_cast<plamatrix::Index>(r), 0, faces[r][0]);
-        face_matrix.setValue(static_cast<plamatrix::Index>(r), 1, faces[r][1]);
-        face_matrix.setValue(static_cast<plamatrix::Index>(r), 2, faces[r][2]);
+        face_matrix.operator()(static_cast<plamatrix::Index>(r), 0) = faces[r][0];
+        face_matrix.operator()(static_cast<plamatrix::Index>(r), 1) = faces[r][1];
+        face_matrix.operator()(static_cast<plamatrix::Index>(r), 2) = faces[r][2];
     }
 
-    PointCloud<Scalar, plamatrix::Device::CPU> mesh(std::move(points));
+    GeometryCloud<Scalar> mesh(std::move(points));
     if (colors)
     {
         mesh.setColors(std::move(*colors));

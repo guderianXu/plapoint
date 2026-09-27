@@ -3,10 +3,12 @@
 #include <plapoint/io/obj_io.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
+#include <plamatrix/internal/core/device.h>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <cstdio>
@@ -33,12 +35,18 @@ void expectThrowsMessageContaining(Fn&& fn, const std::string& expected_message)
 
 TEST(ObjIoTest, WriteAndReadBackVertexOnly)
 {
-    using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> pts(4, 3);
-    pts.setValue(0, 0, 0.0f); pts.setValue(0, 1, 0.0f); pts.setValue(0, 2, 0.0f);
-    pts.setValue(1, 0, 1.0f); pts.setValue(1, 1, 0.0f); pts.setValue(1, 2, 0.0f);
-    pts.setValue(2, 0, 0.5f); pts.setValue(2, 1, 1.0f); pts.setValue(2, 2, 0.0f);
-    pts.setValue(3, 0, 0.5f); pts.setValue(3, 1, 0.5f); pts.setValue(3, 2, 1.0f);
+    using Cloud = plapoint::GeometryCloud<float>;
+    plamatrix::MatrixXf pts(4, 3);
+    pts.operator()(0, 0) = 0.0f;
+    pts.operator()(0, 1) = 0.0f;
+    pts.operator()(0, 2) = 0.0f;
+    pts.operator()(1, 0) = 1.0f;
+    pts.operator()(1, 1) = 0.0f;
+    pts.operator()(1, 2) = 0.0f;
+    pts.operator()(2, 0) = 0.5f;
+    pts.operator()(2, 1) = 1.0f;
+    pts.operator()(2, 2) = 0.0f;
+    pts.operator()(3, 0) = 0.5f; pts.operator()(3, 1) = 0.5f; pts.operator()(3, 2) = 1.0f;
 
     Cloud cloud(std::move(pts));
 
@@ -49,59 +57,59 @@ TEST(ObjIoTest, WriteAndReadBackVertexOnly)
     auto read_back = plapoint::io::readObj<float>(path);
     ASSERT_NE(read_back, nullptr);
     EXPECT_EQ(read_back->size(), 4);
-    EXPECT_FLOAT_EQ(read_back->points().getValue(0, 0), 0.0f);
-    EXPECT_FLOAT_EQ(read_back->points().getValue(3, 2), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->points().operator()(0, 0), 0.0f);
+    EXPECT_FLOAT_EQ(read_back->points().operator()(3, 2), 1.0f);
 
     std::remove(path.c_str());
 }
 
 TEST(ObjIoTest, RoundtripPreservesDoublePrecisionForGeometryNormalsAndTextureCoords)
 {
-    using Cloud = plapoint::PointCloud<double, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<double>;
 
-    plamatrix::DenseMatrix<double, plamatrix::Device::CPU> pts(3, 3);
-    pts.setValue(0, 0, 100000000.01);
-    pts.setValue(0, 1, -100000000.02);
-    pts.setValue(0, 2, 123456789.125);
-    pts.setValue(1, 0, 100000000.02);
-    pts.setValue(1, 1, -100000000.03);
-    pts.setValue(1, 2, 123456789.25);
-    pts.setValue(2, 0, 100000000.03);
-    pts.setValue(2, 1, -100000000.04);
-    pts.setValue(2, 2, 123456789.375);
+    plamatrix::MatrixXd pts(3, 3);
+    pts.operator()(0, 0) = 100000000.01;
+    pts.operator()(0, 1) = -100000000.02;
+    pts.operator()(0, 2) = 123456789.125;
+    pts.operator()(1, 0) = 100000000.02;
+    pts.operator()(1, 1) = -100000000.03;
+    pts.operator()(1, 2) = 123456789.25;
+    pts.operator()(2, 0) = 100000000.03;
+    pts.operator()(2, 1) = -100000000.04;
+    pts.operator()(2, 2) = 123456789.375;
     Cloud cloud(std::move(pts));
 
-    plamatrix::DenseMatrix<double, plamatrix::Device::CPU> normals(3, 3);
-    normals.setValue(0, 0, 0.123456789012345);
-    normals.setValue(0, 1, 0.234567890123456);
-    normals.setValue(0, 2, 0.345678901234567);
-    normals.setValue(1, 0, 0.456789012345678);
-    normals.setValue(1, 1, 0.567890123456789);
-    normals.setValue(1, 2, 0.678901234567890);
-    normals.setValue(2, 0, 0.789012345678901);
-    normals.setValue(2, 1, 0.890123456789012);
-    normals.setValue(2, 2, 0.901234567890123);
+    plamatrix::MatrixXd normals(3, 3);
+    normals.operator()(0, 0) = 0.123456789012345;
+    normals.operator()(0, 1) = 0.234567890123456;
+    normals.operator()(0, 2) = 0.345678901234567;
+    normals.operator()(1, 0) = 0.456789012345678;
+    normals.operator()(1, 1) = 0.567890123456789;
+    normals.operator()(1, 2) = 0.678901234567890;
+    normals.operator()(2, 0) = 0.789012345678901;
+    normals.operator()(2, 1) = 0.890123456789012;
+    normals.operator()(2, 2) = 0.901234567890123;
     cloud.setNormals(std::move(normals));
 
-    plamatrix::DenseMatrix<double, plamatrix::Device::CPU> texture_coords(3, 2);
-    texture_coords.setValue(0, 0, 0.123456789012345);
-    texture_coords.setValue(0, 1, 0.987654321098765);
-    texture_coords.setValue(1, 0, 0.234567890123456);
-    texture_coords.setValue(1, 1, 0.876543210987654);
-    texture_coords.setValue(2, 0, 0.345678901234567);
-    texture_coords.setValue(2, 1, 0.765432109876543);
+    plamatrix::MatrixXd texture_coords(3, 2);
+    texture_coords.operator()(0, 0) = 0.123456789012345;
+    texture_coords.operator()(0, 1) = 0.987654321098765;
+    texture_coords.operator()(1, 0) = 0.234567890123456;
+    texture_coords.operator()(1, 1) = 0.876543210987654;
+    texture_coords.operator()(2, 0) = 0.345678901234567;
+    texture_coords.operator()(2, 1) = 0.765432109876543;
     cloud.setTextureCoords(std::move(texture_coords));
 
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
-    faces.setValue(0, 0, 0);
-    faces.setValue(0, 1, 1);
-    faces.setValue(0, 2, 2);
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> faces(1, 3);
+    faces.operator()(0, 0) = 0;
+    faces.operator()(0, 1) = 1;
+    faces.operator()(0, 2) = 2;
     cloud.setFaces(std::move(faces));
 
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(1, 3);
-    face_texture_indices.setValue(0, 0, 0);
-    face_texture_indices.setValue(0, 1, 1);
-    face_texture_indices.setValue(0, 2, 2);
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> face_texture_indices(1, 3);
+    face_texture_indices.operator()(0, 0) = 0;
+    face_texture_indices.operator()(0, 1) = 1;
+    face_texture_indices.operator()(0, 2) = 2;
     cloud.setFaceTextureIndices(std::move(face_texture_indices));
 
     const plapoint::test::TempFile temp_file(".obj");
@@ -111,26 +119,30 @@ TEST(ObjIoTest, RoundtripPreservesDoublePrecisionForGeometryNormalsAndTextureCoo
     auto read_back = plapoint::io::readObj<double>(path);
 
     ASSERT_NE(read_back, nullptr);
-    EXPECT_DOUBLE_EQ(read_back->points().getValue(0, 0), 100000000.01);
-    EXPECT_DOUBLE_EQ(read_back->points().getValue(1, 1), -100000000.03);
-    EXPECT_DOUBLE_EQ(read_back->points().getValue(2, 2), 123456789.375);
+    EXPECT_DOUBLE_EQ(read_back->points().operator()(0, 0), 100000000.01);
+    EXPECT_DOUBLE_EQ(read_back->points().operator()(1, 1), -100000000.03);
+    EXPECT_DOUBLE_EQ(read_back->points().operator()(2, 2), 123456789.375);
     ASSERT_TRUE(read_back->hasNormals());
-    EXPECT_DOUBLE_EQ(read_back->normals()->getValue(0, 0), 0.123456789012345);
-    EXPECT_DOUBLE_EQ(read_back->normals()->getValue(2, 2), 0.901234567890123);
+    EXPECT_DOUBLE_EQ(read_back->normals()->operator()(0, 0), 0.123456789012345);
+    EXPECT_DOUBLE_EQ(read_back->normals()->operator()(2, 2), 0.901234567890123);
     ASSERT_TRUE(read_back->hasTextureCoords());
-    EXPECT_DOUBLE_EQ(read_back->textureCoords()->getValue(0, 1), 0.987654321098765);
-    EXPECT_DOUBLE_EQ(read_back->textureCoords()->getValue(2, 0), 0.345678901234567);
+    EXPECT_DOUBLE_EQ(read_back->textureCoords()->operator()(0, 1), 0.987654321098765);
+    EXPECT_DOUBLE_EQ(read_back->textureCoords()->operator()(2, 0), 0.345678901234567);
 
     std::remove(path.c_str());
 }
 
 TEST(ObjIoTest, WriteAndReadBackWithFaces)
 {
-    using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<float>;
     Cloud cloud(6);
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(2, 3);
-    faces.setValue(0, 0, 0); faces.setValue(0, 1, 1); faces.setValue(0, 2, 2);
-    faces.setValue(1, 0, 3); faces.setValue(1, 1, 4); faces.setValue(1, 2, 5);
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> faces(2, 3);
+    faces.operator()(0, 0) = 0;
+    faces.operator()(0, 1) = 1;
+    faces.operator()(0, 2) = 2;
+    faces.operator()(1, 0) = 3;
+    faces.operator()(1, 1) = 4;
+    faces.operator()(1, 2) = 5;
     cloud.setFaces(std::move(faces));
 
     const plapoint::test::TempFile temp_file(".obj");
@@ -142,19 +154,19 @@ TEST(ObjIoTest, WriteAndReadBackWithFaces)
     EXPECT_EQ(read_back->size(), 6);
     ASSERT_TRUE(read_back->hasFaces());
     EXPECT_EQ(read_back->faces()->rows(), 2);
-    EXPECT_EQ(read_back->faces()->getValue(0, 0), 0);
+    EXPECT_EQ(read_back->faces()->operator()(0, 0), 0);
 
     std::remove(path.c_str());
 }
 
 TEST(ObjIoTest, WriteObjReferencesMaterialWhenTextureIsPresent)
 {
-    using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<float>;
     Cloud cloud(3);
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
-    faces.setValue(0, 0, 0);
-    faces.setValue(0, 1, 1);
-    faces.setValue(0, 2, 2);
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> faces(1, 3);
+    faces.operator()(0, 0) = 0;
+    faces.operator()(0, 1) = 1;
+    faces.operator()(0, 2) = 2;
     cloud.setFaces(std::move(faces));
     cloud.setMaterialLibraryFile("mesh.mtl");
     cloud.setTextureImageFile("texture.png");
@@ -182,12 +194,18 @@ TEST(ObjIoTest, WriteObjReferencesMaterialWhenTextureIsPresent)
 
 TEST(ObjIoTest, WriteAndReadBackWithNormals)
 {
-    using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<float>;
     Cloud cloud(3);
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> normals(3, 3);
-    normals.setValue(0, 0, 0.0f); normals.setValue(0, 1, 0.0f); normals.setValue(0, 2, 1.0f);
-    normals.setValue(1, 0, 1.0f); normals.setValue(1, 1, 0.0f); normals.setValue(1, 2, 0.0f);
-    normals.setValue(2, 0, 0.0f); normals.setValue(2, 1, 1.0f); normals.setValue(2, 2, 0.0f);
+    plamatrix::MatrixXf normals(3, 3);
+    normals.operator()(0, 0) = 0.0f;
+    normals.operator()(0, 1) = 0.0f;
+    normals.operator()(0, 2) = 1.0f;
+    normals.operator()(1, 0) = 1.0f;
+    normals.operator()(1, 1) = 0.0f;
+    normals.operator()(1, 2) = 0.0f;
+    normals.operator()(2, 0) = 0.0f;
+    normals.operator()(2, 1) = 1.0f;
+    normals.operator()(2, 2) = 0.0f;
     cloud.setNormals(std::move(normals));
 
     const plapoint::test::TempFile temp_file(".obj");
@@ -198,7 +216,7 @@ TEST(ObjIoTest, WriteAndReadBackWithNormals)
     ASSERT_NE(read_back, nullptr);
     EXPECT_EQ(read_back->size(), 3);
     ASSERT_TRUE(read_back->hasNormals());
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(0, 2), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(0, 2), 1.0f);
 
     std::remove(path.c_str());
 }
@@ -222,10 +240,10 @@ TEST(ObjIoTest, ReadsFaceNormalIndicesIntoPointNormals)
 
     ASSERT_NE(read_back, nullptr);
     ASSERT_TRUE(read_back->hasNormals());
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(0, 0), 0.0f);
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(0, 1), 0.0f);
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(0, 2), 1.0f);
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(2, 0), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(0, 0), 0.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(0, 1), 0.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(0, 2), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(2, 0), 1.0f);
 
     std::remove(path.c_str());
 }
@@ -251,9 +269,9 @@ TEST(ObjIoTest, ReadsFaceNormalIndicesWithUnreferencedVertex)
 
     ASSERT_NE(read_back, nullptr);
     ASSERT_TRUE(read_back->hasNormals());
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(0, 2), 1.0f);
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(2, 0), 1.0f);
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(3, 0), -1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(0, 2), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(2, 0), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(3, 0), -1.0f);
 
     std::remove(path.c_str());
 }
@@ -277,9 +295,9 @@ TEST(ObjIoTest, ReadsRelativeFaceNormalIndices)
 
     ASSERT_NE(read_back, nullptr);
     ASSERT_TRUE(read_back->hasNormals());
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(0, 2), 1.0f);
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(1, 1), 1.0f);
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(2, 0), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(0, 2), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(1, 1), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(2, 0), 1.0f);
 
     std::remove(path.c_str());
 }
@@ -304,9 +322,9 @@ TEST(ObjIoTest, FallsBackToOrderedNormalsWhenFaceNormalIndicesConflict)
 
     ASSERT_NE(read_back, nullptr);
     ASSERT_TRUE(read_back->hasNormals());
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(0, 0), 1.0f);
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(1, 1), 1.0f);
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(2, 2), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(1, 1), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(2, 2), 1.0f);
 
     std::remove(path.c_str());
 }
@@ -414,8 +432,8 @@ TEST(ObjIoTest, ReadsFaceNormalIndicesWhenSomeFacesOmitNormals)
 
     ASSERT_NE(read_back, nullptr);
     ASSERT_TRUE(read_back->hasNormals());
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(0, 2), 1.0f);
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(2, 0), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(0, 2), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(2, 0), 1.0f);
 
     std::remove(path.c_str());
 }
@@ -464,7 +482,7 @@ TEST(ObjIoTest, ReadsIndependentTextureCoordinateTable)
     ASSERT_TRUE(read_back->hasTextureCoords());
     EXPECT_EQ(read_back->textureCoords()->rows(), 4);
     ASSERT_TRUE(read_back->hasFaceTextureIndices());
-    EXPECT_EQ(read_back->faceTextureIndices()->getValue(0, 2), 3);
+    EXPECT_EQ(read_back->faceTextureIndices()->operator()(0, 2), 3);
 
     std::remove(path.c_str());
 }
@@ -491,48 +509,52 @@ TEST(ObjIoTest, TriangulatesQuadFacesAndTextureIndices)
     ASSERT_NE(read_back, nullptr);
     ASSERT_TRUE(read_back->hasFaces());
     ASSERT_EQ(read_back->faces()->rows(), 2);
-    EXPECT_EQ(read_back->faces()->getValue(0, 0), 0);
-    EXPECT_EQ(read_back->faces()->getValue(0, 1), 1);
-    EXPECT_EQ(read_back->faces()->getValue(0, 2), 2);
-    EXPECT_EQ(read_back->faces()->getValue(1, 0), 0);
-    EXPECT_EQ(read_back->faces()->getValue(1, 1), 2);
-    EXPECT_EQ(read_back->faces()->getValue(1, 2), 3);
+    EXPECT_EQ(read_back->faces()->operator()(0, 0), 0);
+    EXPECT_EQ(read_back->faces()->operator()(0, 1), 1);
+    EXPECT_EQ(read_back->faces()->operator()(0, 2), 2);
+    EXPECT_EQ(read_back->faces()->operator()(1, 0), 0);
+    EXPECT_EQ(read_back->faces()->operator()(1, 1), 2);
+    EXPECT_EQ(read_back->faces()->operator()(1, 2), 3);
     ASSERT_TRUE(read_back->hasTextureCoords());
     EXPECT_EQ(read_back->textureCoords()->rows(), 4);
     ASSERT_TRUE(read_back->hasFaceTextureIndices());
     ASSERT_EQ(read_back->faceTextureIndices()->rows(), 2);
-    EXPECT_EQ(read_back->faceTextureIndices()->getValue(0, 0), 0);
-    EXPECT_EQ(read_back->faceTextureIndices()->getValue(0, 1), 1);
-    EXPECT_EQ(read_back->faceTextureIndices()->getValue(0, 2), 2);
-    EXPECT_EQ(read_back->faceTextureIndices()->getValue(1, 0), 0);
-    EXPECT_EQ(read_back->faceTextureIndices()->getValue(1, 1), 2);
-    EXPECT_EQ(read_back->faceTextureIndices()->getValue(1, 2), 3);
+    EXPECT_EQ(read_back->faceTextureIndices()->operator()(0, 0), 0);
+    EXPECT_EQ(read_back->faceTextureIndices()->operator()(0, 1), 1);
+    EXPECT_EQ(read_back->faceTextureIndices()->operator()(0, 2), 2);
+    EXPECT_EQ(read_back->faceTextureIndices()->operator()(1, 0), 0);
+    EXPECT_EQ(read_back->faceTextureIndices()->operator()(1, 1), 2);
+    EXPECT_EQ(read_back->faceTextureIndices()->operator()(1, 2), 3);
 
     std::remove(path.c_str());
 }
 
 TEST(ObjIoTest, WritesAllTextureCoordinates)
 {
-    using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<float>;
     Cloud cloud(3);
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> texture_coords(4, 2);
-    texture_coords.setValue(0, 0, 0.0f); texture_coords.setValue(0, 1, 0.0f);
-    texture_coords.setValue(1, 0, 1.0f); texture_coords.setValue(1, 1, 0.0f);
-    texture_coords.setValue(2, 0, 0.0f); texture_coords.setValue(2, 1, 1.0f);
-    texture_coords.setValue(3, 0, 1.0f); texture_coords.setValue(3, 1, 1.0f);
+    plamatrix::MatrixXf texture_coords(4, 2);
+    texture_coords.operator()(0, 0) = 0.0f;
+    texture_coords.operator()(0, 1) = 0.0f;
+    texture_coords.operator()(1, 0) = 1.0f;
+    texture_coords.operator()(1, 1) = 0.0f;
+    texture_coords.operator()(2, 0) = 0.0f;
+    texture_coords.operator()(2, 1) = 1.0f;
+    texture_coords.operator()(3, 0) = 1.0f;
+    texture_coords.operator()(3, 1) = 1.0f;
     cloud.setTextureCoords(std::move(texture_coords));
 
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
-    faces.setValue(0, 0, 0);
-    faces.setValue(0, 1, 1);
-    faces.setValue(0, 2, 2);
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> faces(1, 3);
+    faces.operator()(0, 0) = 0;
+    faces.operator()(0, 1) = 1;
+    faces.operator()(0, 2) = 2;
     cloud.setFaces(std::move(faces));
 
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(1, 3);
-    face_texture_indices.setValue(0, 0, 0);
-    face_texture_indices.setValue(0, 1, 1);
-    face_texture_indices.setValue(0, 2, 3);
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> face_texture_indices(1, 3);
+    face_texture_indices.operator()(0, 0) = 0;
+    face_texture_indices.operator()(0, 1) = 1;
+    face_texture_indices.operator()(0, 2) = 3;
     cloud.setFaceTextureIndices(std::move(face_texture_indices));
 
     const plapoint::test::TempFile temp_file(".obj");
@@ -543,7 +565,7 @@ TEST(ObjIoTest, WritesAllTextureCoordinates)
     ASSERT_TRUE(read_back->hasTextureCoords());
     EXPECT_EQ(read_back->textureCoords()->rows(), 4);
     ASSERT_TRUE(read_back->hasFaceTextureIndices());
-    EXPECT_EQ(read_back->faceTextureIndices()->getValue(0, 2), 3);
+    EXPECT_EQ(read_back->faceTextureIndices()->operator()(0, 2), 3);
 
     std::remove(path.c_str());
 }
@@ -573,19 +595,19 @@ TEST(ObjIoTest, ReadsCompleteFaceTextureAndNormalIndices)
 
     ASSERT_NE(read_back, nullptr);
     ASSERT_TRUE(read_back->hasFaces());
-    EXPECT_EQ(read_back->faces()->getValue(0, 0), 0);
-    EXPECT_EQ(read_back->faces()->getValue(0, 1), 1);
-    EXPECT_EQ(read_back->faces()->getValue(0, 2), 2);
+    EXPECT_EQ(read_back->faces()->operator()(0, 0), 0);
+    EXPECT_EQ(read_back->faces()->operator()(0, 1), 1);
+    EXPECT_EQ(read_back->faces()->operator()(0, 2), 2);
     ASSERT_TRUE(read_back->hasTextureCoords());
     EXPECT_EQ(read_back->textureCoords()->rows(), 4);
     ASSERT_TRUE(read_back->hasFaceTextureIndices());
-    EXPECT_EQ(read_back->faceTextureIndices()->getValue(0, 0), 3);
-    EXPECT_EQ(read_back->faceTextureIndices()->getValue(0, 1), 1);
-    EXPECT_EQ(read_back->faceTextureIndices()->getValue(0, 2), 0);
+    EXPECT_EQ(read_back->faceTextureIndices()->operator()(0, 0), 3);
+    EXPECT_EQ(read_back->faceTextureIndices()->operator()(0, 1), 1);
+    EXPECT_EQ(read_back->faceTextureIndices()->operator()(0, 2), 0);
     ASSERT_TRUE(read_back->hasNormals());
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(0, 2), 1.0f);
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(1, 1), 1.0f);
-    EXPECT_FLOAT_EQ(read_back->normals()->getValue(2, 0), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(0, 2), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(1, 1), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->normals()->operator()(2, 0), 1.0f);
 
     std::filesystem::remove(path);
 }
@@ -608,12 +630,12 @@ TEST(ObjIoTest, ReadsVertexLinesWithExtraAttributes)
 
     ASSERT_NE(read_back, nullptr);
     ASSERT_EQ(read_back->size(), 2u);
-    EXPECT_FLOAT_EQ(read_back->points().getValue(0, 0), 1.0f);
-    EXPECT_FLOAT_EQ(read_back->points().getValue(0, 1), 2.0f);
-    EXPECT_FLOAT_EQ(read_back->points().getValue(0, 2), 3.0f);
-    EXPECT_FLOAT_EQ(read_back->points().getValue(1, 0), 4.0f);
-    EXPECT_FLOAT_EQ(read_back->points().getValue(1, 1), 5.0f);
-    EXPECT_FLOAT_EQ(read_back->points().getValue(1, 2), 6.0f);
+    EXPECT_FLOAT_EQ(read_back->points().operator()(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(read_back->points().operator()(0, 1), 2.0f);
+    EXPECT_FLOAT_EQ(read_back->points().operator()(0, 2), 3.0f);
+    EXPECT_FLOAT_EQ(read_back->points().operator()(1, 0), 4.0f);
+    EXPECT_FLOAT_EQ(read_back->points().operator()(1, 1), 5.0f);
+    EXPECT_FLOAT_EQ(read_back->points().operator()(1, 2), 6.0f);
 
     std::filesystem::remove(path);
 }
@@ -635,12 +657,12 @@ TEST(ObjIoTest, ReadsVertexRgbAttributesAsColors)
     ASSERT_NE(read_back, nullptr);
     ASSERT_TRUE(read_back->hasColors());
     ASSERT_EQ(read_back->size(), 2u);
-    EXPECT_EQ(read_back->colors()->getValue(0, 0), 255);
-    EXPECT_EQ(read_back->colors()->getValue(0, 1), 128);
-    EXPECT_EQ(read_back->colors()->getValue(0, 2), 0);
-    EXPECT_EQ(read_back->colors()->getValue(1, 0), 10);
-    EXPECT_EQ(read_back->colors()->getValue(1, 1), 20);
-    EXPECT_EQ(read_back->colors()->getValue(1, 2), 30);
+    EXPECT_EQ(read_back->colors()->operator()(0, 0), 255);
+    EXPECT_EQ(read_back->colors()->operator()(0, 1), 128);
+    EXPECT_EQ(read_back->colors()->operator()(0, 2), 0);
+    EXPECT_EQ(read_back->colors()->operator()(1, 0), 10);
+    EXPECT_EQ(read_back->colors()->operator()(1, 1), 20);
+    EXPECT_EQ(read_back->colors()->operator()(1, 2), 30);
 
     std::filesystem::remove(path);
 }
@@ -665,16 +687,24 @@ TEST(ObjIoTest, RejectsNonFiniteVertexColorAttributes)
 
 TEST(ObjIoTest, WriteObjPreservesVertexColors)
 {
-    using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<float>;
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> pts(2, 3);
-    pts.setValue(0, 0, 0.0f); pts.setValue(0, 1, 0.0f); pts.setValue(0, 2, 0.0f);
-    pts.setValue(1, 0, 1.0f); pts.setValue(1, 1, 2.0f); pts.setValue(1, 2, 3.0f);
+    plamatrix::MatrixXf pts(2, 3);
+    pts.operator()(0, 0) = 0.0f;
+    pts.operator()(0, 1) = 0.0f;
+    pts.operator()(0, 2) = 0.0f;
+    pts.operator()(1, 0) = 1.0f;
+    pts.operator()(1, 1) = 2.0f;
+    pts.operator()(1, 2) = 3.0f;
     Cloud cloud(std::move(pts));
 
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(2, 3);
-    colors.setValue(0, 0, 12); colors.setValue(0, 1, 34); colors.setValue(0, 2, 56);
-    colors.setValue(1, 0, 78); colors.setValue(1, 1, 90); colors.setValue(1, 2, 123);
+    plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(2, 3);
+    colors.operator()(0, 0) = 12;
+    colors.operator()(0, 1) = 34;
+    colors.operator()(0, 2) = 56;
+    colors.operator()(1, 0) = 78;
+    colors.operator()(1, 1) = 90;
+    colors.operator()(1, 2) = 123;
     cloud.setColors(std::move(colors));
 
     const plapoint::test::TempFile temp_file(".obj");
@@ -686,12 +716,12 @@ TEST(ObjIoTest, WriteObjPreservesVertexColors)
     ASSERT_NE(read_back, nullptr);
     ASSERT_TRUE(read_back->hasColors());
     ASSERT_EQ(read_back->size(), 2u);
-    EXPECT_EQ(read_back->colors()->getValue(0, 0), 12);
-    EXPECT_EQ(read_back->colors()->getValue(0, 1), 34);
-    EXPECT_EQ(read_back->colors()->getValue(0, 2), 56);
-    EXPECT_EQ(read_back->colors()->getValue(1, 0), 78);
-    EXPECT_EQ(read_back->colors()->getValue(1, 1), 90);
-    EXPECT_EQ(read_back->colors()->getValue(1, 2), 123);
+    EXPECT_EQ(read_back->colors()->operator()(0, 0), 12);
+    EXPECT_EQ(read_back->colors()->operator()(0, 1), 34);
+    EXPECT_EQ(read_back->colors()->operator()(0, 2), 56);
+    EXPECT_EQ(read_back->colors()->operator()(1, 0), 78);
+    EXPECT_EQ(read_back->colors()->operator()(1, 1), 90);
+    EXPECT_EQ(read_back->colors()->operator()(1, 2), 123);
 
     std::filesystem::remove(path);
 }
@@ -940,4 +970,24 @@ TEST(ObjIoTest, StreamsCanStopOrCancelWithoutReadingTheWholeFile)
         });
     EXPECT_EQ(cancelled_after_visit, plapoint::io::ObjStreamStatus::Cancelled);
     EXPECT_EQ(visits, 1);
+}
+
+TEST(ObjIoTest, WriteRejectsNonFiniteCoordinates)
+{
+    const plapoint::test::TempFile temp_file(".obj");
+    plapoint::GeometryCloud<double> cloud(1);
+    cloud.points().operator()(0, 2) = std::numeric_limits<double>::quiet_NaN();
+
+    EXPECT_THROW(plapoint::io::writeObj(temp_file.string(), cloud), std::invalid_argument);
+}
+
+TEST(ObjIoTest, WriteReportsLateDeviceFailures)
+{
+    if (!std::filesystem::exists("/dev/full"))
+    {
+        GTEST_SKIP() << "/dev/full is unavailable on this platform";
+    }
+
+    plapoint::GeometryCloud<float> cloud(1);
+    EXPECT_THROW(plapoint::io::writeObj("/dev/full", cloud), std::runtime_error);
 }

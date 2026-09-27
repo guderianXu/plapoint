@@ -40,16 +40,16 @@ void writeMeshPly(const std::filesystem::path& path,
 
     for (plamatrix::Index i = 0; i < mesh.vertices.rows(); ++i)
     {
-        out << mesh.vertices.getValue(i, 0) << ' '
-            << mesh.vertices.getValue(i, 1) << ' '
-            << mesh.vertices.getValue(i, 2) << '\n';
+        out << mesh.vertices.coeff(i, 0) << ' '
+            << mesh.vertices.coeff(i, 1) << ' '
+            << mesh.vertices.coeff(i, 2) << '\n';
     }
     for (plamatrix::Index i = 0; i < mesh.faces.rows(); ++i)
     {
         out << "3 "
-            << static_cast<int>(std::round(mesh.faces.getValue(i, 0))) << ' '
-            << static_cast<int>(std::round(mesh.faces.getValue(i, 1))) << ' '
-            << static_cast<int>(std::round(mesh.faces.getValue(i, 2))) << '\n';
+            << static_cast<int>(std::round(mesh.faces.coeff(i, 0))) << ' '
+            << static_cast<int>(std::round(mesh.faces.coeff(i, 1))) << ' '
+            << static_cast<int>(std::round(mesh.faces.coeff(i, 2))) << '\n';
     }
 }
 

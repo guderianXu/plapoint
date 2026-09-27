@@ -1,6 +1,6 @@
 #include <plapoint/opencl/opencl_runtime.h>
 
-#include <plamatrix/opencl/runtime.h>
+#include <plamatrix/internal/opencl/runtime.h>
 
 namespace plapoint
 {
@@ -10,7 +10,7 @@ namespace opencl
 std::vector<OpenClDeviceInfo> enumerateOpenClGpuDevices()
 {
     std::vector<OpenClDeviceInfo> result;
-    for (const auto& device : plamatrix::opencl::enumerateOpenClGpuDevices())
+    for (const auto& device : plamatrix::internal::opencl::enumerateOpenClGpuDevices())
     {
         result.push_back({
             device.index,
@@ -27,22 +27,22 @@ std::vector<OpenClDeviceInfo> enumerateOpenClGpuDevices()
 
 bool hasUsableOpenClDevice() noexcept
 {
-    return plamatrix::opencl::hasUsableOpenClDevice();
+    return plamatrix::internal::opencl::hasUsableOpenClDevice();
 }
 
 void requireUsableOpenClDevice()
 {
-    plamatrix::opencl::requireUsableOpenClDevice();
+    plamatrix::internal::opencl::requireUsableOpenClDevice();
 }
 
 std::string selectedOpenClDeviceName()
 {
-    return plamatrix::opencl::selectedOpenClDeviceName();
+    return plamatrix::internal::opencl::selectedOpenClDeviceName();
 }
 
 int selectedOpenClDeviceIndex() noexcept
 {
-    return plamatrix::opencl::selectedOpenClDeviceIndex();
+    return plamatrix::internal::opencl::selectedOpenClDeviceIndex();
 }
 
 } // namespace opencl

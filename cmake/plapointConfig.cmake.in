@@ -2,6 +2,8 @@
 
 include(CMakeFindDependencyMacro)
 find_dependency(plamatrix CONFIG)
+find_dependency(Eigen3 CONFIG)
+find_dependency(Boost)
 
 function(_plapoint_target_has_definition target definition result)
     get_target_property(_plapoint_definitions ${target} INTERFACE_COMPILE_DEFINITIONS)

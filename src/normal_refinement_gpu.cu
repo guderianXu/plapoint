@@ -8,6 +8,8 @@
 #include <utility>
 
 #include <plapoint/gpu/cuda_check.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/device/device_matrix.h>
 
 namespace plapoint
 {
@@ -120,13 +122,14 @@ __global__ void orientNormalsKernel(
 
 template <typename Scalar>
 void smoothNormalsAsync(
-    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
     const GpuSpatialIndex<Scalar>& index,
     int k,
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& output,
+    plamatrix::internal::ResidentMatrix<Scalar>& output,
     NormalRefinementGpuWorkspace<Scalar>& workspace,
     cudaStream_t stream)
 {
+    cloud.validate();
     if (!cloud.hasNormals())
     {
         throw std::invalid_argument("smoothNormalsAsync requires cloud normals");
@@ -151,12 +154,12 @@ void smoothNormalsAsync(
     }
 
     const auto point_count = static_cast<plamatrix::Index>(cloud.size());
-    workspace.bindStream(stream);
+    output.validateContext(*cloud.executionContext());
     if (output.rows() != point_count || output.cols() != 3)
     {
-        output = plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>
-            ::uninitialized(point_count, 3);
+        throw std::invalid_argument("smoothNormalsAsync requires an N x 3 output in the cloud context");
     }
+    workspace.bindStream(stream);
     workspace._neighbors = index.knnSearchAsync(
         cloud.points(), k, workspace._queryWorkspace, stream);
     if (point_count == 0)
@@ -167,17 +170,18 @@ void smoothNormalsAsync(
     constexpr int block_size = 256;
     const int grid_size = static_cast<int>((point_count + block_size - 1) / block_size);
     smoothNormalsKernel<<<grid_size, block_size, 0, stream>>>(
-        cloud.normals()->data(), point_count, workspace._neighbors.indices.data(), k,
+        cloud.normals()->data(), point_count, workspace._neighbors->indices.data(), k,
         output.data());
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 }
 
 template <typename Scalar>
 void orientNormalsTowardViewpointAsync(
-    PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
-    const plamatrix::Vec3<Scalar>& viewpoint,
+    plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
+    const plamatrix::Matrix<Scalar, 3, 1>& viewpoint,
     cudaStream_t stream)
 {
+    cloud.validate();
     if (!cloud.hasNormals())
     {
         throw std::invalid_argument("orientNormalsTowardViewpointAsync requires cloud normals");
@@ -197,32 +201,32 @@ void orientNormalsTowardViewpointAsync(
     const int grid_size = static_cast<int>((point_count + block_size - 1) / block_size);
     orientNormalsKernel<<<grid_size, block_size, 0, stream>>>(
         std::as_const(cloud).points().data(), cloud.normals()->data(), point_count,
-        viewpoint.x, viewpoint.y, viewpoint.z);
+        viewpoint(0), viewpoint(1), viewpoint(2));
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 }
 
 template void smoothNormalsAsync<float>(
-    const PointCloud<float, plamatrix::Device::GPU>&,
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>&,
     const GpuSpatialIndex<float>&,
     int,
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU>&,
+    plamatrix::internal::ResidentMatrix<float>&,
     NormalRefinementGpuWorkspace<float>&,
     cudaStream_t);
 template void smoothNormalsAsync<double>(
-    const PointCloud<double, plamatrix::Device::GPU>&,
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::GPU>&,
     const GpuSpatialIndex<double>&,
     int,
-    plamatrix::DenseMatrix<double, plamatrix::Device::GPU>&,
+    plamatrix::internal::ResidentMatrix<double>&,
     NormalRefinementGpuWorkspace<double>&,
     cudaStream_t);
 
 template void orientNormalsTowardViewpointAsync<float>(
-    PointCloud<float, plamatrix::Device::GPU>&,
-    const plamatrix::Vec3<float>&,
+    plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>&,
+    const plamatrix::Matrix<float, 3, 1>&,
     cudaStream_t);
 template void orientNormalsTowardViewpointAsync<double>(
-    PointCloud<double, plamatrix::Device::GPU>&,
-    const plamatrix::Vec3<double>&,
+    plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::GPU>&,
+    const plamatrix::Matrix<double, 3, 1>&,
     cudaStream_t);
 
 } // namespace gpu

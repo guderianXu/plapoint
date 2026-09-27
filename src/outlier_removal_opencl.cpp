@@ -8,6 +8,7 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
+#include <plamatrix/internal/core/device.h>
 
 namespace plapoint
 {
@@ -18,7 +19,7 @@ namespace
 
 template <typename Scalar>
 std::vector<std::uint8_t> statisticalOutlierKeepMaskImpl(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& input,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& input,
     int mean_k,
     Scalar stddev_mul)
 {
@@ -142,7 +143,7 @@ std::vector<std::uint8_t> statisticalOutlierKeepMaskImpl(
 
 template <typename Scalar>
 std::vector<std::uint8_t> radiusOutlierKeepMaskImpl(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& input,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& input,
     Scalar radius,
     int min_neighbors)
 {
@@ -201,25 +202,25 @@ std::vector<std::uint8_t> radiusOutlierKeepMaskImpl(
 } // namespace
 
 std::vector<std::uint8_t> statisticalOutlierKeepMask(
-    const PointCloud<float, plamatrix::Device::CPU>& input, int mean_k, float stddev_mul)
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>& input, int mean_k, float stddev_mul)
 {
     return statisticalOutlierKeepMaskImpl(input, mean_k, stddev_mul);
 }
 
 std::vector<std::uint8_t> statisticalOutlierKeepMask(
-    const PointCloud<double, plamatrix::Device::CPU>& input, int mean_k, double stddev_mul)
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::CPU>& input, int mean_k, double stddev_mul)
 {
     return statisticalOutlierKeepMaskImpl(input, mean_k, stddev_mul);
 }
 
 std::vector<std::uint8_t> radiusOutlierKeepMask(
-    const PointCloud<float, plamatrix::Device::CPU>& input, float radius, int min_neighbors)
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>& input, float radius, int min_neighbors)
 {
     return radiusOutlierKeepMaskImpl(input, radius, min_neighbors);
 }
 
 std::vector<std::uint8_t> radiusOutlierKeepMask(
-    const PointCloud<double, plamatrix::Device::CPU>& input, double radius, int min_neighbors)
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::CPU>& input, double radius, int min_neighbors)
 {
     return radiusOutlierKeepMaskImpl(input, radius, min_neighbors);
 }

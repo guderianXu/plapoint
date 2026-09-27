@@ -1,54 +1,6 @@
 #pragma once
 
 template <typename Scalar>
-struct HeightGridBounds
-{
-    Scalar minX;
-    Scalar maxX;
-    Scalar minY;
-    Scalar maxY;
-    int finiteCount;
-};
-
-template <typename Scalar>
-struct HeightGridBoundsTransform
-{
-    const Scalar* points;
-    int pointCount;
-    Scalar maxValue;
-
-    __host__ __device__ HeightGridBounds<Scalar> operator()(int index) const
-    {
-        const Scalar x = points[index];
-        const Scalar y = points[pointCount + index];
-        const Scalar z = points[2 * pointCount + index];
-        if (!isfinite(static_cast<double>(x)) ||
-            !isfinite(static_cast<double>(y)) ||
-            !isfinite(static_cast<double>(z)))
-        {
-            return {maxValue, -maxValue, maxValue, -maxValue, 0};
-        }
-        return {x, x, y, y, 1};
-    }
-};
-
-template <typename Scalar>
-struct HeightGridBoundsReduce
-{
-    __host__ __device__ HeightGridBounds<Scalar> operator()(
-        const HeightGridBounds<Scalar>& lhs,
-        const HeightGridBounds<Scalar>& rhs) const
-    {
-        return {
-            lhs.minX < rhs.minX ? lhs.minX : rhs.minX,
-            lhs.maxX > rhs.maxX ? lhs.maxX : rhs.maxX,
-            lhs.minY < rhs.minY ? lhs.minY : rhs.minY,
-            lhs.maxY > rhs.maxY ? lhs.maxY : rhs.maxY,
-            lhs.finiteCount + rhs.finiteCount};
-    }
-};
-
-template <typename Scalar>
 __global__ void validateHeightGridPointsKernel(
     const Scalar* points,
     int point_count,

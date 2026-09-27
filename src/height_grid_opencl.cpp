@@ -13,6 +13,7 @@
 #include <string>
 #include <type_traits>
 #include <vector>
+#include <plamatrix/internal/core/device.h>
 
 namespace plapoint
 {
@@ -58,7 +59,7 @@ Scalar checkedGridSpan(Scalar minimum, Scalar maximum)
 
 template <typename Scalar>
 std::vector<Contribution<Scalar>> buildContributions(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& cloud,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& cloud,
     const mesh::HeightGridOptions<Scalar>& options,
     const mesh::HeightGrid<Scalar>& grid)
 {
@@ -67,9 +68,9 @@ std::vector<Contribution<Scalar>> buildContributions(
     for (std::size_t index = 0; index < cloud.size(); ++index)
     {
         const auto row = static_cast<plamatrix::Index>(index);
-        const Scalar x = cloud.points().getValue(row, 0);
-        const Scalar y = cloud.points().getValue(row, 1);
-        const Scalar z = cloud.points().getValue(row, 2);
+        const Scalar x = cloud.points().operator()(row, 0);
+        const Scalar y = cloud.points().operator()(row, 1);
+        const Scalar z = cloud.points().operator()(row, 2);
         if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
         {
             continue;
@@ -126,7 +127,7 @@ int aggregationCode(mesh::ElevationAggregation aggregation)
 
 template <typename Scalar>
 mesh::HeightGrid<Scalar> initializeGridGeometry(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& cloud,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& cloud,
     const mesh::HeightGridOptions<Scalar>& options)
 {
     mesh::HeightGrid<Scalar> grid;
@@ -143,9 +144,9 @@ mesh::HeightGrid<Scalar> initializeGridGeometry(
     for (std::size_t index = 0; index < cloud.size(); ++index)
     {
         const auto row = static_cast<plamatrix::Index>(index);
-        const Scalar x = cloud.points().getValue(row, 0);
-        const Scalar y = cloud.points().getValue(row, 1);
-        const Scalar z = cloud.points().getValue(row, 2);
+        const Scalar x = cloud.points().operator()(row, 0);
+        const Scalar y = cloud.points().operator()(row, 1);
+        const Scalar z = cloud.points().operator()(row, 2);
         if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
         {
             if (options.skipNonFinite) continue;
@@ -241,7 +242,7 @@ mesh::HeightGrid<Scalar> initializeGridGeometry(
 
 template <typename Scalar>
 void populateExactColors(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& cloud,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& cloud,
     const std::vector<Contribution<Scalar>>& contributions,
     mesh::HeightGrid<Scalar>& grid)
 {
@@ -258,7 +259,7 @@ void populateExactColors(
             total_weight += weight;
             for (int channel = 0; channel < 3; ++channel)
             {
-                sums[channel] += static_cast<long double>(cloud.colors()->getValue(
+                sums[channel] += static_cast<long double>(cloud.colors()->operator()(
                     contributions[cursor].point, channel)) * weight;
             }
         }
@@ -279,7 +280,7 @@ void populateExactColors(
 
 template <typename Scalar>
 mesh::HeightGrid<Scalar> buildHeightGridImpl(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& cloud,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& cloud,
     const mesh::HeightGridOptions<Scalar>& options)
 {
     if (cloud.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
@@ -304,7 +305,7 @@ mesh::HeightGrid<Scalar> buildHeightGridImpl(
     std::vector<Scalar> point_z(cloud.size());
     for (std::size_t index = 0; index < cloud.size(); ++index)
     {
-        point_z[index] = cloud.points().getValue(static_cast<plamatrix::Index>(index), 2);
+        point_z[index] = cloud.points().operator()(static_cast<plamatrix::Index>(index), 2);
     }
 
     std::vector<int> source_indices;
@@ -403,14 +404,14 @@ std::uint64_t heightGridOpenClExecutionCount() noexcept
 }
 
 mesh::HeightGrid<float> buildHeightGrid(
-    const PointCloud<float, plamatrix::Device::CPU>& cloud,
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>& cloud,
     const mesh::HeightGridOptions<float>& options)
 {
     return buildHeightGridImpl(cloud, options);
 }
 
 mesh::HeightGrid<double> buildHeightGrid(
-    const PointCloud<double, plamatrix::Device::CPU>& cloud,
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::CPU>& cloud,
     const mesh::HeightGridOptions<double>& options)
 {
     return buildHeightGridImpl(cloud, options);

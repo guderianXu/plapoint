@@ -9,6 +9,7 @@
 
 #include <plapoint/features/normal_estimation.h>
 #include <plapoint/opencl/opencl_runtime.h>
+#include <plamatrix/internal/core/device.h>
 #ifdef PLAPOINT_WITH_CUDA
 #include <plapoint/gpu/cuda_check.h>
 #endif
@@ -16,22 +17,22 @@
 namespace
 {
 
-plapoint::PointCloud<float, plamatrix::Device::CPU> makePlane()
-{
-    constexpr int side = 6;
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> points(side * side, 3);
-    for (int y = 0; y < side; ++y)
+    plapoint::GeometryCloud<float> makePlane()
     {
-        for (int x = 0; x < side; ++x)
+        constexpr int side = 6;
+        plamatrix::MatrixXf points(side * side, 3);
+        for (int y = 0; y < side; ++y)
         {
-            const int row = y * side + x;
-            points(row, 0) = static_cast<float>(x) * 0.1f;
-            points(row, 1) = static_cast<float>(y) * 0.1f;
-            points(row, 2) = 0.25f * points(row, 0) - 0.1f * points(row, 1);
+            for (int x = 0; x < side; ++x)
+            {
+                const int row = y * side + x;
+                points(row, 0) = static_cast<float>(x) * 0.1f;
+                points(row, 1) = static_cast<float>(y) * 0.1f;
+                points(row, 2) = 0.25f * points(row, 0) - 0.1f * points(row, 1);
+            }
         }
+        return plapoint::GeometryCloud<float>(std::move(points));
     }
-    return plapoint::PointCloud<float, plamatrix::Device::CPU>(std::move(points));
-}
 
 } // namespace
 

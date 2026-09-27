@@ -1,8 +1,8 @@
 // Included once by plapoint_benchmarks.cpp inside its anonymous namespace.
 void benchmarkCpuKnn(int points, int iterations)
 {
-    auto cloud = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(points));
-    plapoint::search::KdTree<float, plamatrix::Device::CPU> tree;
+    auto cloud = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(points));
+    plapoint::search::internal::DeviceKdTree<float, plamatrix::internal::Device::CPU> tree;
     tree.setInputCloud(cloud);
     tree.build();
     auto queries = makeQueries<float>(std::min(points, 512));
@@ -24,13 +24,13 @@ void benchmarkCpuKnn(int points, int iterations)
 
 void benchmarkCpuVoxelGrid(int points, int iterations)
 {
-    auto cloud = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(points));
+    auto cloud = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(points));
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
-        plapoint::VoxelGrid<float, plamatrix::Device::CPU> voxel;
+        plapoint::VoxelGrid<float, plamatrix::internal::Device::CPU> voxel;
         voxel.setInputCloud(cloud);
         voxel.setLeafSize(0.1f, 0.1f, 0.1f);
-        Cloud<plamatrix::Device::CPU> output;
+        Cloud<plamatrix::internal::Device::CPU> output;
         voxel.filter(output);
         sink += output.size();
     });
@@ -44,14 +44,14 @@ void benchmarkCpuVoxelGrid(int points, int iterations)
 void benchmarkCpuNormalEstimation(int points, int iterations)
 {
     const int normal_points = std::min(points, 3000);
-    auto cloud = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(normal_points));
-    auto tree = std::make_shared<plapoint::search::KdTree<float, plamatrix::Device::CPU>>();
+    auto cloud = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(normal_points));
+    auto tree = std::make_shared<plapoint::search::internal::DeviceKdTree<float, plamatrix::internal::Device::CPU>>();
     tree->setInputCloud(cloud);
     tree->build();
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
-        plapoint::NormalEstimation<float, plamatrix::Device::CPU> normals;
+        plapoint::MatrixNormalEstimation<float, plamatrix::internal::Device::CPU> normals;
         normals.setInputCloud(cloud);
         normals.setSearchMethod(tree);
         normals.setKSearch(8);
@@ -68,20 +68,20 @@ void benchmarkCpuNormalEstimation(int points, int iterations)
 void benchmarkCpuNormalSmoothing(int points, int iterations)
 {
     const int normal_points = std::min(points, 3000);
-    auto cloud = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(normal_points));
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> normals(normal_points, 3);
-    normals.fill(0.0f);
+    auto cloud = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(normal_points));
+    plamatrix::MatrixXf normals(normal_points, 3);
+    normals.setConstant(0.0f);
     for (int row = 0; row < normal_points; ++row)
     {
         normals(row, 2) = 1.0f;
     }
     cloud->setNormals(std::move(normals));
-    auto tree = std::make_shared<plapoint::search::KdTree<float, plamatrix::Device::CPU>>();
+    auto tree = std::make_shared<plapoint::search::internal::DeviceKdTree<float, plamatrix::internal::Device::CPU>>();
     tree->setInputCloud(cloud);
     tree->build();
 
     const double elapsed = bestMilliseconds(iterations, [&] {
-        plapoint::NormalRefinement<float, plamatrix::Device::CPU> refinement;
+        plapoint::NormalRefinement<float, plamatrix::internal::Device::CPU> refinement;
         refinement.setInputCloud(cloud);
         refinement.setSearchMethod(tree);
         refinement.smooth(8);
@@ -91,15 +91,15 @@ void benchmarkCpuNormalSmoothing(int points, int iterations)
 
 void benchmarkCpuStatisticalOutlierRemoval(int points, int iterations)
 {
-    auto cloud = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(points));
-    auto tree = std::make_shared<plapoint::search::KdTree<float, plamatrix::Device::CPU>>();
+    auto cloud = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(points));
+    auto tree = std::make_shared<plapoint::search::internal::DeviceKdTree<float, plamatrix::internal::Device::CPU>>();
     tree->setInputCloud(cloud);
     tree->build();
-    plapoint::StatisticalOutlierRemoval<float, plamatrix::Device::CPU> filter;
+    plapoint::StatisticalOutlierRemoval<float, plamatrix::internal::Device::CPU> filter;
     filter.setInputCloud(cloud);
     filter.setSearchMethod(tree);
     filter.setMeanK(8);
-    Cloud<plamatrix::Device::CPU> output;
+    Cloud<plamatrix::internal::Device::CPU> output;
 
     const double elapsed = bestMilliseconds(iterations, [&] {
         filter.filter(output);
@@ -109,12 +109,12 @@ void benchmarkCpuStatisticalOutlierRemoval(int points, int iterations)
 
 void benchmarkCpuRadiusOutlierRemoval(int points, int iterations)
 {
-    auto cloud = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(points));
-    plapoint::RadiusOutlierRemoval<float, plamatrix::Device::CPU> filter;
+    auto cloud = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(points));
+    plapoint::RadiusOutlierRemoval<float, plamatrix::internal::Device::CPU> filter;
     filter.setInputCloud(cloud);
     filter.setRadius(0.011f);
     filter.setMinNeighbors(1);
-    Cloud<plamatrix::Device::CPU> output;
+    Cloud<plamatrix::internal::Device::CPU> output;
 
     const double elapsed = bestMilliseconds(iterations, [&] {
         filter.filter(output);
@@ -124,15 +124,15 @@ void benchmarkCpuRadiusOutlierRemoval(int points, int iterations)
 
 void benchmarkCpuIcp(int icp_points, int icp_max_iterations, int iterations)
 {
-    auto source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
-        plapoint::IterativeClosestPoint<float, plamatrix::Device::CPU> icp;
+        plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::CPU> icp;
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxIterations(icp_max_iterations);
-        Cloud<plamatrix::Device::CPU> output;
+        Cloud<plamatrix::internal::Device::CPU> output;
         icp.align(output);
         sink += output.size();
     });
@@ -145,16 +145,16 @@ void benchmarkCpuIcp(int icp_points, int icp_max_iterations, int iterations)
 
 void benchmarkCpuIcpFiniteRadius(int icp_points, int icp_max_iterations, int iterations)
 {
-    auto source = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    auto target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
-        plapoint::IterativeClosestPoint<float, plamatrix::Device::CPU> icp;
+        plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::CPU> icp;
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxCorrespondenceDistance(0.02f);
         icp.setMaxIterations(icp_max_iterations);
-        Cloud<plamatrix::Device::CPU> output;
+        Cloud<plamatrix::internal::Device::CPU> output;
         icp.align(output);
         sink += output.size();
     });
@@ -167,17 +167,17 @@ void benchmarkCpuIcpFiniteRadius(int icp_points, int icp_max_iterations, int ite
 
 void benchmarkCpuIcpFiniteRadiusTranslation(int icp_points, int icp_max_iterations, int iterations)
 {
-    auto source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
-        plapoint::IterativeClosestPoint<float, plamatrix::Device::CPU> icp;
+        plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::CPU> icp;
         icp.setInputSource(source);
         icp.setInputTarget(target);
         icp.setMaxCorrespondenceDistance(0.02f);
         icp.setMaxIterations(icp_max_iterations);
-        Cloud<plamatrix::Device::CPU> output;
+        Cloud<plamatrix::internal::Device::CPU> output;
         icp.align(output);
         sink += output.size();
     });
@@ -190,10 +190,10 @@ void benchmarkCpuIcpFiniteRadiusTranslation(int icp_points, int icp_max_iteratio
 
 void benchmarkCpuIcpFiniteRadiusTranslationReuse(int icp_points, int icp_max_iterations, int iterations)
 {
-    auto source = std::make_shared<Cloud<plamatrix::Device::CPU>>(
+    auto source = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(
         makeTranslatedGridPoints<float>(icp_points, 0.003f, -0.002f, 0.001f));
-    auto target = std::make_shared<Cloud<plamatrix::Device::CPU>>(makeGridPoints<float>(icp_points));
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::CPU> icp;
+    auto target = std::make_shared<Cloud<plamatrix::internal::Device::CPU>>(makeGridPoints<float>(icp_points));
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::CPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -201,7 +201,7 @@ void benchmarkCpuIcpFiniteRadiusTranslationReuse(int icp_points, int icp_max_ite
 
     std::size_t sink = 0;
     const double elapsed = bestMilliseconds(iterations, [&] {
-        Cloud<plamatrix::Device::CPU> output;
+        Cloud<plamatrix::internal::Device::CPU> output;
         icp.align(output);
         sink += output.size();
     });
@@ -211,4 +211,3 @@ void benchmarkCpuIcpFiniteRadiusTranslationReuse(int icp_points, int icp_max_ite
         std::cerr << "cpu_icp_finite_radius_translation_reuse produced no aligned points\n";
     }
 }
-

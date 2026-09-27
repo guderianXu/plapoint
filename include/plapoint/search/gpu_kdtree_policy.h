@@ -86,10 +86,9 @@ bool hostGridCell(Scalar x, Scalar y, Scalar z, Scalar cell_size, HostGridCell& 
 }
 
 template <typename Scalar>
-bool buildHostGridOccupancy(
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& points,
-    Scalar cell_size,
-    HostGridCellSet& occupied_cells)
+bool buildHostGridOccupancy(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& points,
+                            Scalar cell_size,
+                            HostGridCellSet& occupied_cells)
 {
     HostGridCellSet replacement;
     replacement.reserve(static_cast<std::size_t>(points.rows()));
@@ -114,13 +113,11 @@ bool buildHostGridOccupancy(
 }
 
 template <typename Scalar>
-Scalar estimateKnnCellSize(
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& points)
+Scalar estimateKnnCellSize(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& points)
 {
-    double minima[3] = {
-        std::numeric_limits<double>::infinity(),
-        std::numeric_limits<double>::infinity(),
-        std::numeric_limits<double>::infinity()};
+    double minima[3] = {std::numeric_limits<double>::infinity(),
+                        std::numeric_limits<double>::infinity(),
+                        std::numeric_limits<double>::infinity()};
     double maxima[3] = {
         -std::numeric_limits<double>::infinity(),
         -std::numeric_limits<double>::infinity(),
@@ -178,10 +175,9 @@ bool indexedGridIsPathological(const gpu::GpuSpatialIndex<Scalar>& index)
 }
 
 template <typename Scalar>
-bool queriesFitIndexedShells(
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& queries,
-    Scalar cell_size,
-    const HostGridCellSet& occupied_cells)
+bool queriesFitIndexedShells(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& queries,
+                             Scalar cell_size,
+                             const HostGridCellSet& occupied_cells)
 {
     for (plamatrix::Index row = 0; row < queries.rows(); ++row)
     {

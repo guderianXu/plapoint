@@ -3,6 +3,7 @@
 #include <plapoint/io/ply_io.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
+#include <plamatrix/internal/core/device.h>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -64,27 +65,27 @@ void writeBigEndianInt32(std::ofstream& f, std::int32_t value)
     f.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
 }
 
-std::shared_ptr<plapoint::PointCloud<float, plamatrix::Device::CPU>> makeCloudWithColors()
+std::shared_ptr<plapoint::GeometryCloud<float>> makeCloudWithColors()
 {
-    using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using PointMatrix = plamatrix::DenseMatrix<float, plamatrix::Device::CPU>;
-    using ColorMatrix = plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<float>;
+    using PointMatrix = plamatrix::MatrixXf;
+    using ColorMatrix = plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic>;
 
     PointMatrix points(2, 3);
-    points.setValue(0, 0, 1.0f);
-    points.setValue(0, 1, 2.0f);
-    points.setValue(0, 2, 3.0f);
-    points.setValue(1, 0, 4.0f);
-    points.setValue(1, 1, 5.0f);
-    points.setValue(1, 2, 6.0f);
+    points.operator()(0, 0) = 1.0f;
+    points.operator()(0, 1) = 2.0f;
+    points.operator()(0, 2) = 3.0f;
+    points.operator()(1, 0) = 4.0f;
+    points.operator()(1, 1) = 5.0f;
+    points.operator()(1, 2) = 6.0f;
 
     ColorMatrix colors(2, 3);
-    colors.setValue(0, 0, 10);
-    colors.setValue(0, 1, 20);
-    colors.setValue(0, 2, 30);
-    colors.setValue(1, 0, 200);
-    colors.setValue(1, 1, 210);
-    colors.setValue(1, 2, 220);
+    colors.operator()(0, 0) = 10;
+    colors.operator()(0, 1) = 20;
+    colors.operator()(0, 2) = 30;
+    colors.operator()(1, 0) = 200;
+    colors.operator()(1, 1) = 210;
+    colors.operator()(1, 2) = 220;
 
     auto cloud = std::make_shared<Cloud>(std::move(points));
     cloud->setColors(std::move(colors));
@@ -96,17 +97,17 @@ std::shared_ptr<plapoint::PointCloud<float, plamatrix::Device::CPU>> makeCloudWi
 TEST(PlyIOTest, RoundtripASCII)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<Scalar>;
+    using Matrix = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>;
 
     Matrix pts(5, 3);
     Matrix nrm(5, 3);
     for (int i = 0; i < 5; ++i)
     {
-        pts.setValue(i, 0, Scalar(i));
-        pts.setValue(i, 1, Scalar(i*2));
-        pts.setValue(i, 2, Scalar(i*3));
-        nrm.setValue(i, 0, 0); nrm.setValue(i, 1, 0); nrm.setValue(i, 2, 1);
+        pts.operator()(i, 0) = Scalar(i);
+        pts.operator()(i, 1) = Scalar(i*2);
+        pts.operator()(i, 2) = Scalar(i*3);
+        nrm.operator()(i, 0) = 0; nrm.operator()(i, 1) = 0; nrm.operator()(i, 2) = 1;
     }
     auto cloud = std::make_shared<Cloud>(std::move(pts));
     cloud->setNormals(std::move(nrm));
@@ -118,7 +119,7 @@ TEST(PlyIOTest, RoundtripASCII)
     auto loaded = plapoint::io::readPly<Scalar>(path);
     EXPECT_EQ(loaded->size(), 5u);
     EXPECT_TRUE(loaded->hasNormals());
-    EXPECT_FLOAT_EQ(loaded->normals()->getValue(0, 2), 1.0f);
+    EXPECT_FLOAT_EQ(loaded->normals()->operator()(0, 2), 1.0f);
 
     std::remove(path.c_str());
 }
@@ -126,16 +127,16 @@ TEST(PlyIOTest, RoundtripASCII)
 TEST(PlyIOTest, RoundtripAsciiPreservesDoubleLargeCoordinateDeltas)
 {
     using Scalar = double;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<Scalar>;
+    using Matrix = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>;
 
     Matrix pts(2, 3);
-    pts.setValue(0, 0, 100000000.01);
-    pts.setValue(0, 1, -100000000.02);
-    pts.setValue(0, 2, 123456789.125);
-    pts.setValue(1, 0, 100000000.02);
-    pts.setValue(1, 1, -100000000.03);
-    pts.setValue(1, 2, 123456789.25);
+    pts.operator()(0, 0) = 100000000.01;
+    pts.operator()(0, 1) = -100000000.02;
+    pts.operator()(0, 2) = 123456789.125;
+    pts.operator()(1, 0) = 100000000.02;
+    pts.operator()(1, 1) = -100000000.03;
+    pts.operator()(1, 2) = 123456789.25;
     Cloud cloud(std::move(pts));
 
     const plapoint::test::TempFile temp_file(".ply");
@@ -145,12 +146,12 @@ TEST(PlyIOTest, RoundtripAsciiPreservesDoubleLargeCoordinateDeltas)
     auto loaded = plapoint::io::readPly<Scalar>(path);
 
     ASSERT_EQ(loaded->size(), 2u);
-    EXPECT_DOUBLE_EQ(loaded->points().getValue(0, 0), 100000000.01);
-    EXPECT_DOUBLE_EQ(loaded->points().getValue(0, 1), -100000000.02);
-    EXPECT_DOUBLE_EQ(loaded->points().getValue(0, 2), 123456789.125);
-    EXPECT_DOUBLE_EQ(loaded->points().getValue(1, 0), 100000000.02);
-    EXPECT_DOUBLE_EQ(loaded->points().getValue(1, 1), -100000000.03);
-    EXPECT_DOUBLE_EQ(loaded->points().getValue(1, 2), 123456789.25);
+    EXPECT_DOUBLE_EQ(loaded->points().operator()(0, 0), 100000000.01);
+    EXPECT_DOUBLE_EQ(loaded->points().operator()(0, 1), -100000000.02);
+    EXPECT_DOUBLE_EQ(loaded->points().operator()(0, 2), 123456789.125);
+    EXPECT_DOUBLE_EQ(loaded->points().operator()(1, 0), 100000000.02);
+    EXPECT_DOUBLE_EQ(loaded->points().operator()(1, 1), -100000000.03);
+    EXPECT_DOUBLE_EQ(loaded->points().operator()(1, 2), 123456789.25);
 
     std::remove(path.c_str());
 }
@@ -170,8 +171,8 @@ TEST(PlyIOTest, ReadOnlyPositions)
     auto cloud = plapoint::io::readPly<Scalar>(path);
     EXPECT_EQ(cloud->size(), 3u);
     EXPECT_FALSE(cloud->hasNormals());
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(2, 2), 9.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(2, 2), 9.0f);
 
     std::remove(path.c_str());
 }
@@ -200,15 +201,15 @@ TEST(PlyIOTest, ReadsAsciiIntensityAsGrayscaleColors)
 
     ASSERT_EQ(cloud->size(), 2u);
     ASSERT_TRUE(cloud->hasIntensities());
-    EXPECT_EQ(cloud->intensities()->getValue(0, 0), 17);
-    EXPECT_EQ(cloud->intensities()->getValue(1, 0), 240);
+    EXPECT_EQ(cloud->intensities()->operator()(0, 0), 17);
+    EXPECT_EQ(cloud->intensities()->operator()(1, 0), 240);
     ASSERT_TRUE(cloud->hasColors());
-    EXPECT_EQ(cloud->colors()->getValue(0, 0), 17);
-    EXPECT_EQ(cloud->colors()->getValue(0, 1), 17);
-    EXPECT_EQ(cloud->colors()->getValue(0, 2), 17);
-    EXPECT_EQ(cloud->colors()->getValue(1, 0), 240);
-    EXPECT_EQ(cloud->colors()->getValue(1, 1), 240);
-    EXPECT_EQ(cloud->colors()->getValue(1, 2), 240);
+    EXPECT_EQ(cloud->colors()->operator()(0, 0), 17);
+    EXPECT_EQ(cloud->colors()->operator()(0, 1), 17);
+    EXPECT_EQ(cloud->colors()->operator()(0, 2), 17);
+    EXPECT_EQ(cloud->colors()->operator()(1, 0), 240);
+    EXPECT_EQ(cloud->colors()->operator()(1, 1), 240);
+    EXPECT_EQ(cloud->colors()->operator()(1, 2), 240);
 
     std::remove(path.c_str());
 }
@@ -237,15 +238,15 @@ TEST(PlyIOTest, ReadsAsciiFloatIntensityAsNormalizedGrayscaleColors)
 
     ASSERT_EQ(cloud->size(), 2u);
     ASSERT_TRUE(cloud->hasIntensities());
-    EXPECT_EQ(cloud->intensities()->getValue(0, 0), 32768);
-    EXPECT_EQ(cloud->intensities()->getValue(1, 0), 65535);
+    EXPECT_EQ(cloud->intensities()->operator()(0, 0), 32768);
+    EXPECT_EQ(cloud->intensities()->operator()(1, 0), 65535);
     ASSERT_TRUE(cloud->hasColors());
-    EXPECT_EQ(cloud->colors()->getValue(0, 0), 128);
-    EXPECT_EQ(cloud->colors()->getValue(0, 1), 128);
-    EXPECT_EQ(cloud->colors()->getValue(0, 2), 128);
-    EXPECT_EQ(cloud->colors()->getValue(1, 0), 255);
-    EXPECT_EQ(cloud->colors()->getValue(1, 1), 255);
-    EXPECT_EQ(cloud->colors()->getValue(1, 2), 255);
+    EXPECT_EQ(cloud->colors()->operator()(0, 0), 128);
+    EXPECT_EQ(cloud->colors()->operator()(0, 1), 128);
+    EXPECT_EQ(cloud->colors()->operator()(0, 2), 128);
+    EXPECT_EQ(cloud->colors()->operator()(1, 0), 255);
+    EXPECT_EQ(cloud->colors()->operator()(1, 1), 255);
+    EXPECT_EQ(cloud->colors()->operator()(1, 2), 255);
 }
 
 TEST(PlyIOTest, ReadsAsciiRgbColorsUsingHeaderOrder)
@@ -274,15 +275,15 @@ TEST(PlyIOTest, ReadsAsciiRgbColorsUsingHeaderOrder)
 
     ASSERT_EQ(cloud->size(), 2u);
     ASSERT_TRUE(cloud->hasColors());
-    EXPECT_EQ(cloud->colors()->getValue(0, 0), 10);
-    EXPECT_EQ(cloud->colors()->getValue(0, 1), 20);
-    EXPECT_EQ(cloud->colors()->getValue(0, 2), 30);
-    EXPECT_EQ(cloud->colors()->getValue(1, 0), 40);
-    EXPECT_EQ(cloud->colors()->getValue(1, 1), 50);
-    EXPECT_EQ(cloud->colors()->getValue(1, 2), 60);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), 2.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 2), 3.0f);
+    EXPECT_EQ(cloud->colors()->operator()(0, 0), 10);
+    EXPECT_EQ(cloud->colors()->operator()(0, 1), 20);
+    EXPECT_EQ(cloud->colors()->operator()(0, 2), 30);
+    EXPECT_EQ(cloud->colors()->operator()(1, 0), 40);
+    EXPECT_EQ(cloud->colors()->operator()(1, 1), 50);
+    EXPECT_EQ(cloud->colors()->operator()(1, 2), 60);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 1), 2.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 2), 3.0f);
 
     std::remove(path.c_str());
 }
@@ -312,12 +313,12 @@ TEST(PlyIOTest, ReadsAsciiUshortRgbColorsByScalingToUint8)
     auto cloud = plapoint::io::readPly<Scalar>(path);
 
     ASSERT_TRUE(cloud->hasColors());
-    EXPECT_EQ(cloud->colors()->getValue(0, 0), 0);
-    EXPECT_EQ(cloud->colors()->getValue(0, 1), 128);
-    EXPECT_EQ(cloud->colors()->getValue(0, 2), 255);
-    EXPECT_EQ(cloud->colors()->getValue(1, 0), 255);
-    EXPECT_EQ(cloud->colors()->getValue(1, 1), 128);
-    EXPECT_EQ(cloud->colors()->getValue(1, 2), 0);
+    EXPECT_EQ(cloud->colors()->operator()(0, 0), 0);
+    EXPECT_EQ(cloud->colors()->operator()(0, 1), 128);
+    EXPECT_EQ(cloud->colors()->operator()(0, 2), 255);
+    EXPECT_EQ(cloud->colors()->operator()(1, 0), 255);
+    EXPECT_EQ(cloud->colors()->operator()(1, 1), 128);
+    EXPECT_EQ(cloud->colors()->operator()(1, 2), 0);
 
     std::remove(path.c_str());
 }
@@ -352,15 +353,15 @@ TEST(PlyIOTest, ReadsBinaryIntensityAsGrayscaleColors)
 
     ASSERT_EQ(cloud->size(), 2u);
     ASSERT_TRUE(cloud->hasIntensities());
-    EXPECT_EQ(cloud->intensities()->getValue(0, 0), 18);
-    EXPECT_EQ(cloud->intensities()->getValue(1, 0), 241);
+    EXPECT_EQ(cloud->intensities()->operator()(0, 0), 18);
+    EXPECT_EQ(cloud->intensities()->operator()(1, 0), 241);
     ASSERT_TRUE(cloud->hasColors());
-    EXPECT_EQ(cloud->colors()->getValue(0, 0), 18);
-    EXPECT_EQ(cloud->colors()->getValue(0, 1), 18);
-    EXPECT_EQ(cloud->colors()->getValue(0, 2), 18);
-    EXPECT_EQ(cloud->colors()->getValue(1, 0), 241);
-    EXPECT_EQ(cloud->colors()->getValue(1, 1), 241);
-    EXPECT_EQ(cloud->colors()->getValue(1, 2), 241);
+    EXPECT_EQ(cloud->colors()->operator()(0, 0), 18);
+    EXPECT_EQ(cloud->colors()->operator()(0, 1), 18);
+    EXPECT_EQ(cloud->colors()->operator()(0, 2), 18);
+    EXPECT_EQ(cloud->colors()->operator()(1, 0), 241);
+    EXPECT_EQ(cloud->colors()->operator()(1, 1), 241);
+    EXPECT_EQ(cloud->colors()->operator()(1, 2), 241);
 
     std::remove(path.c_str());
 }
@@ -400,12 +401,12 @@ TEST(PlyIOTest, ReadsBinaryBigEndianUshortRgbColorsByScalingToUint8)
     auto cloud = plapoint::io::readPly<Scalar>(path);
 
     ASSERT_TRUE(cloud->hasColors());
-    EXPECT_EQ(cloud->colors()->getValue(0, 0), 0);
-    EXPECT_EQ(cloud->colors()->getValue(0, 1), 128);
-    EXPECT_EQ(cloud->colors()->getValue(0, 2), 255);
-    EXPECT_EQ(cloud->colors()->getValue(1, 0), 255);
-    EXPECT_EQ(cloud->colors()->getValue(1, 1), 128);
-    EXPECT_EQ(cloud->colors()->getValue(1, 2), 0);
+    EXPECT_EQ(cloud->colors()->operator()(0, 0), 0);
+    EXPECT_EQ(cloud->colors()->operator()(0, 1), 128);
+    EXPECT_EQ(cloud->colors()->operator()(0, 2), 255);
+    EXPECT_EQ(cloud->colors()->operator()(1, 0), 255);
+    EXPECT_EQ(cloud->colors()->operator()(1, 1), 128);
+    EXPECT_EQ(cloud->colors()->operator()(1, 2), 0);
 
     std::remove(path.c_str());
 }
@@ -422,12 +423,12 @@ TEST(PlyIOTest, RoundtripAsciiPreservesColors)
 
     ASSERT_EQ(loaded->size(), 2u);
     ASSERT_TRUE(loaded->hasColors());
-    EXPECT_EQ(loaded->colors()->getValue(0, 0), 10);
-    EXPECT_EQ(loaded->colors()->getValue(0, 1), 20);
-    EXPECT_EQ(loaded->colors()->getValue(0, 2), 30);
-    EXPECT_EQ(loaded->colors()->getValue(1, 0), 200);
-    EXPECT_EQ(loaded->colors()->getValue(1, 1), 210);
-    EXPECT_EQ(loaded->colors()->getValue(1, 2), 220);
+    EXPECT_EQ(loaded->colors()->operator()(0, 0), 10);
+    EXPECT_EQ(loaded->colors()->operator()(0, 1), 20);
+    EXPECT_EQ(loaded->colors()->operator()(0, 2), 30);
+    EXPECT_EQ(loaded->colors()->operator()(1, 0), 200);
+    EXPECT_EQ(loaded->colors()->operator()(1, 1), 210);
+    EXPECT_EQ(loaded->colors()->operator()(1, 2), 220);
 
     std::remove(path.c_str());
 }
@@ -444,35 +445,35 @@ TEST(PlyIOTest, RoundtripBinaryPreservesColors)
 
     ASSERT_EQ(loaded->size(), 2u);
     ASSERT_TRUE(loaded->hasColors());
-    EXPECT_EQ(loaded->colors()->getValue(0, 0), 10);
-    EXPECT_EQ(loaded->colors()->getValue(0, 1), 20);
-    EXPECT_EQ(loaded->colors()->getValue(0, 2), 30);
-    EXPECT_EQ(loaded->colors()->getValue(1, 0), 200);
-    EXPECT_EQ(loaded->colors()->getValue(1, 1), 210);
-    EXPECT_EQ(loaded->colors()->getValue(1, 2), 220);
+    EXPECT_EQ(loaded->colors()->operator()(0, 0), 10);
+    EXPECT_EQ(loaded->colors()->operator()(0, 1), 20);
+    EXPECT_EQ(loaded->colors()->operator()(0, 2), 30);
+    EXPECT_EQ(loaded->colors()->operator()(1, 0), 200);
+    EXPECT_EQ(loaded->colors()->operator()(1, 1), 210);
+    EXPECT_EQ(loaded->colors()->operator()(1, 2), 220);
 
     std::remove(path.c_str());
 }
 
 TEST(PlyIOTest, RoundtripAsciiPreservesIntensities)
 {
-    using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using IntensityMatrix = plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<float>;
+    using IntensityMatrix = plamatrix::Matrix<std::uint16_t, plamatrix::Dynamic, plamatrix::Dynamic>;
 
     const plapoint::test::TempFile temp_file(".ply");
     const auto path = temp_file.string();
 
     Cloud cloud(2);
-    cloud.points().setValue(0, 0, 1.0f);
-    cloud.points().setValue(0, 1, 2.0f);
-    cloud.points().setValue(0, 2, 3.0f);
-    cloud.points().setValue(1, 0, 4.0f);
-    cloud.points().setValue(1, 1, 5.0f);
-    cloud.points().setValue(1, 2, 6.0f);
+    cloud.points().operator()(0, 0) = 1.0f;
+    cloud.points().operator()(0, 1) = 2.0f;
+    cloud.points().operator()(0, 2) = 3.0f;
+    cloud.points().operator()(1, 0) = 4.0f;
+    cloud.points().operator()(1, 1) = 5.0f;
+    cloud.points().operator()(1, 2) = 6.0f;
 
     IntensityMatrix intensities(2, 1);
-    intensities.setValue(0, 0, 17);
-    intensities.setValue(1, 0, 4096);
+    intensities.operator()(0, 0) = 17;
+    intensities.operator()(1, 0) = 4096;
     cloud.setIntensities(std::move(intensities));
 
     plapoint::io::writePly(path, cloud, plapoint::io::PlyFormat::ASCII);
@@ -496,39 +497,39 @@ TEST(PlyIOTest, RoundtripAsciiPreservesIntensities)
 
     EXPECT_TRUE(saw_intensity_property);
     ASSERT_TRUE(loaded->hasIntensities());
-    EXPECT_EQ(loaded->intensities()->getValue(0, 0), 17);
-    EXPECT_EQ(loaded->intensities()->getValue(1, 0), 4096);
+    EXPECT_EQ(loaded->intensities()->operator()(0, 0), 17);
+    EXPECT_EQ(loaded->intensities()->operator()(1, 0), 4096);
 }
 
 TEST(PlyIOTest, RoundtripBinaryPreservesColorsAndIntensities)
 {
-    using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using ColorMatrix = plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>;
-    using IntensityMatrix = plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<float>;
+    using ColorMatrix = plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic>;
+    using IntensityMatrix = plamatrix::Matrix<std::uint16_t, plamatrix::Dynamic, plamatrix::Dynamic>;
 
     const plapoint::test::TempFile temp_file(".ply");
     const auto path = temp_file.string();
 
     Cloud cloud(2);
-    cloud.points().setValue(0, 0, 1.0f);
-    cloud.points().setValue(0, 1, 2.0f);
-    cloud.points().setValue(0, 2, 3.0f);
-    cloud.points().setValue(1, 0, 4.0f);
-    cloud.points().setValue(1, 1, 5.0f);
-    cloud.points().setValue(1, 2, 6.0f);
+    cloud.points().operator()(0, 0) = 1.0f;
+    cloud.points().operator()(0, 1) = 2.0f;
+    cloud.points().operator()(0, 2) = 3.0f;
+    cloud.points().operator()(1, 0) = 4.0f;
+    cloud.points().operator()(1, 1) = 5.0f;
+    cloud.points().operator()(1, 2) = 6.0f;
 
     ColorMatrix colors(2, 3);
-    colors.setValue(0, 0, 10);
-    colors.setValue(0, 1, 20);
-    colors.setValue(0, 2, 30);
-    colors.setValue(1, 0, 200);
-    colors.setValue(1, 1, 210);
-    colors.setValue(1, 2, 220);
+    colors.operator()(0, 0) = 10;
+    colors.operator()(0, 1) = 20;
+    colors.operator()(0, 2) = 30;
+    colors.operator()(1, 0) = 200;
+    colors.operator()(1, 1) = 210;
+    colors.operator()(1, 2) = 220;
     cloud.setColors(std::move(colors));
 
     IntensityMatrix intensities(2, 1);
-    intensities.setValue(0, 0, 17);
-    intensities.setValue(1, 0, 4096);
+    intensities.operator()(0, 0) = 17;
+    intensities.operator()(1, 0) = 4096;
     cloud.setIntensities(std::move(intensities));
 
     plapoint::io::writePly(path, cloud, plapoint::io::PlyFormat::BinaryLE);
@@ -538,34 +539,34 @@ TEST(PlyIOTest, RoundtripBinaryPreservesColorsAndIntensities)
     std::remove(path.c_str());
 
     ASSERT_TRUE(loaded->hasColors());
-    EXPECT_EQ(loaded->colors()->getValue(0, 0), 10);
-    EXPECT_EQ(loaded->colors()->getValue(0, 1), 20);
-    EXPECT_EQ(loaded->colors()->getValue(0, 2), 30);
-    EXPECT_EQ(loaded->colors()->getValue(1, 0), 200);
-    EXPECT_EQ(loaded->colors()->getValue(1, 1), 210);
-    EXPECT_EQ(loaded->colors()->getValue(1, 2), 220);
+    EXPECT_EQ(loaded->colors()->operator()(0, 0), 10);
+    EXPECT_EQ(loaded->colors()->operator()(0, 1), 20);
+    EXPECT_EQ(loaded->colors()->operator()(0, 2), 30);
+    EXPECT_EQ(loaded->colors()->operator()(1, 0), 200);
+    EXPECT_EQ(loaded->colors()->operator()(1, 1), 210);
+    EXPECT_EQ(loaded->colors()->operator()(1, 2), 220);
     ASSERT_TRUE(loaded->hasIntensities());
-    EXPECT_EQ(loaded->intensities()->getValue(0, 0), 17);
-    EXPECT_EQ(loaded->intensities()->getValue(1, 0), 4096);
+    EXPECT_EQ(loaded->intensities()->operator()(0, 0), 17);
+    EXPECT_EQ(loaded->intensities()->operator()(1, 0), 4096);
 }
 
 TEST(PlyIOTest, RoundtripAsciiPreservesExtraScalarFields)
 {
     using Scalar = float;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(2, 3);
-    points.setValue(0, 0, 1.0f);
-    points.setValue(0, 1, 2.0f);
-    points.setValue(0, 2, 3.0f);
-    points.setValue(1, 0, 4.0f);
-    points.setValue(1, 1, 5.0f);
-    points.setValue(1, 2, 6.0f);
-    plapoint::PointCloud<Scalar, plamatrix::Device::CPU> cloud(std::move(points));
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> points(2, 3);
+    points.operator()(0, 0) = 1.0f;
+    points.operator()(0, 1) = 2.0f;
+    points.operator()(0, 2) = 3.0f;
+    points.operator()(1, 0) = 4.0f;
+    points.operator()(1, 1) = 5.0f;
+    points.operator()(1, 2) = 6.0f;
+    plapoint::GeometryCloud<Scalar> cloud(std::move(points));
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> scalar_fields(2, 2);
-    scalar_fields.setValue(0, 0, 0.25f);
-    scalar_fields.setValue(1, 0, 0.5f);
-    scalar_fields.setValue(0, 1, 10.0f);
-    scalar_fields.setValue(1, 1, 20.0f);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> scalar_fields(2, 2);
+    scalar_fields.operator()(0, 0) = 0.25f;
+    scalar_fields.operator()(1, 0) = 0.5f;
+    scalar_fields.operator()(0, 1) = 10.0f;
+    scalar_fields.operator()(1, 1) = 20.0f;
     cloud.setScalarFields({"error", "confidence"}, std::move(scalar_fields));
 
     const plapoint::test::TempFile temp_file(".ply");
@@ -578,8 +579,8 @@ TEST(PlyIOTest, RoundtripAsciiPreservesExtraScalarFields)
     ASSERT_EQ(loaded->scalarFieldNames().size(), 2u);
     EXPECT_EQ(loaded->scalarFieldNames().at(0), "error");
     EXPECT_EQ(loaded->scalarFieldNames().at(1), "confidence");
-    EXPECT_FLOAT_EQ(loaded->scalarFields()->getValue(1, 0), 0.5f);
-    EXPECT_FLOAT_EQ(loaded->scalarFields()->getValue(0, 1), 10.0f);
+    EXPECT_FLOAT_EQ(loaded->scalarFields()->operator()(1, 0), 0.5f);
+    EXPECT_FLOAT_EQ(loaded->scalarFields()->operator()(0, 1), 10.0f);
 
     std::remove(path.c_str());
 }
@@ -587,14 +588,14 @@ TEST(PlyIOTest, RoundtripAsciiPreservesExtraScalarFields)
 TEST(PlyIOTest, RoundtripBinaryPreservesExtraScalarFields)
 {
     using Scalar = float;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(1, 3);
-    points.setValue(0, 0, 1.0f);
-    points.setValue(0, 1, 2.0f);
-    points.setValue(0, 2, 3.0f);
-    plapoint::PointCloud<Scalar, plamatrix::Device::CPU> cloud(std::move(points));
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> points(1, 3);
+    points.operator()(0, 0) = 1.0f;
+    points.operator()(0, 1) = 2.0f;
+    points.operator()(0, 2) = 3.0f;
+    plapoint::GeometryCloud<Scalar> cloud(std::move(points));
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> scalar_fields(1, 1);
-    scalar_fields.setValue(0, 0, 0.125f);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> scalar_fields(1, 1);
+    scalar_fields.operator()(0, 0) = 0.125f;
     cloud.setScalarFields({"error"}, std::move(scalar_fields));
 
     const plapoint::test::TempFile temp_file(".ply");
@@ -604,7 +605,7 @@ TEST(PlyIOTest, RoundtripBinaryPreservesExtraScalarFields)
     auto loaded = plapoint::io::readPly<Scalar>(path);
 
     ASSERT_TRUE(loaded->hasScalarField("error"));
-    EXPECT_FLOAT_EQ(loaded->scalarFields()->getValue(0, loaded->scalarFieldIndex("error")), 0.125f);
+    EXPECT_FLOAT_EQ(loaded->scalarFields()->operator()(0, loaded->scalarFieldIndex("error")), 0.125f);
 
     std::remove(path.c_str());
 }
@@ -636,14 +637,14 @@ TEST(PlyIOTest, ReadsAsciiVertexPropertiesUsingHeaderOrder)
     auto cloud = plapoint::io::readPly<Scalar>(path);
     ASSERT_EQ(cloud->size(), 2u);
     ASSERT_TRUE(cloud->hasNormals());
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), 2.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 2), 3.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 0), 4.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 1), 5.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 6.0f);
-    EXPECT_FLOAT_EQ(cloud->normals()->getValue(0, 2), 1.0f);
-    EXPECT_FLOAT_EQ(cloud->normals()->getValue(1, 0), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 1), 2.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 2), 3.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 0), 4.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 1), 5.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 2), 6.0f);
+    EXPECT_FLOAT_EQ(cloud->normals()->operator()(0, 2), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->normals()->operator()(1, 0), 1.0f);
 
     std::remove(path.c_str());
 }
@@ -696,14 +697,14 @@ TEST(PlyIOTest, ReadsBinaryVertexPropertiesUsingHeaderOrder)
     auto cloud = plapoint::io::readPly<Scalar>(path);
     ASSERT_EQ(cloud->size(), 2u);
     ASSERT_TRUE(cloud->hasNormals());
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), 2.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 2), 3.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 0), 4.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 1), 5.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 6.0f);
-    EXPECT_FLOAT_EQ(cloud->normals()->getValue(0, 2), 1.0f);
-    EXPECT_FLOAT_EQ(cloud->normals()->getValue(1, 0), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 1), 2.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 2), 3.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 0), 4.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 1), 5.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 2), 6.0f);
+    EXPECT_FLOAT_EQ(cloud->normals()->operator()(0, 2), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->normals()->operator()(1, 0), 1.0f);
 
     std::remove(path.c_str());
 }
@@ -729,9 +730,9 @@ TEST(PlyIOTest, ReadsPointOffsetComment)
 
     auto cloud = plapoint::io::readPly<Scalar>(path);
     EXPECT_EQ(cloud->size(), 2u);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1000001.25f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), -1999997.5f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 2999994.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 0), 1000001.25f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 1), -1999997.5f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 2), 2999994.0f);
 
     std::remove(path.c_str());
 }
@@ -760,9 +761,9 @@ TEST(PlyIOTest, ReadsBinaryLittleEndianPointOffsetComment)
 
     auto cloud = plapoint::io::readPly<Scalar>(path);
     EXPECT_EQ(cloud->size(), 2u);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1000001.25f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), -1999997.5f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 2999994.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 0), 1000001.25f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 1), -1999997.5f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 2), 2999994.0f);
 
     std::remove(path.c_str());
 }
@@ -792,9 +793,9 @@ TEST(PlyIOTest, ReadsBinaryBigEndianPointOffsetComment)
 
     auto cloud = plapoint::io::readPly<Scalar>(path);
     EXPECT_EQ(cloud->size(), 2u);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1000001.25f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), -1999997.5f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 2999994.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 0), 1000001.25f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 1), -1999997.5f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 2), 2999994.0f);
 
     std::remove(path.c_str());
 }
@@ -827,12 +828,12 @@ TEST(PlyIOTest, ReadsPointOffsetAsLocalCoordinatesWhenRequested)
     EXPECT_DOUBLE_EQ(offset[0], 100000000.0);
     EXPECT_DOUBLE_EQ(offset[1], -200000000.0);
     EXPECT_DOUBLE_EQ(offset[2], 300000000.0);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 0.03125f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), 0.0625f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 2), 0.09375f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 0), 0.125f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 1), 0.15625f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 0.1875f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 0), 0.03125f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 1), 0.0625f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 2), 0.09375f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 0), 0.125f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 1), 0.15625f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 2), 0.1875f);
 
     std::remove(path.c_str());
 }
@@ -875,12 +876,12 @@ TEST(PlyIOTest, ReadsBinaryPointOffsetAsLocalCoordinatesWhenRequested)
         EXPECT_DOUBLE_EQ(offset[0], 100000000.0);
         EXPECT_DOUBLE_EQ(offset[1], -200000000.0);
         EXPECT_DOUBLE_EQ(offset[2], 300000000.0);
-        EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 0.03125f);
-        EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), 0.0625f);
-        EXPECT_FLOAT_EQ(cloud->points().getValue(0, 2), 0.09375f);
-        EXPECT_FLOAT_EQ(cloud->points().getValue(1, 0), 0.125f);
-        EXPECT_FLOAT_EQ(cloud->points().getValue(1, 1), 0.15625f);
-        EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 0.1875f);
+        EXPECT_FLOAT_EQ(cloud->points().operator()(0, 0), 0.03125f);
+        EXPECT_FLOAT_EQ(cloud->points().operator()(0, 1), 0.0625f);
+        EXPECT_FLOAT_EQ(cloud->points().operator()(0, 2), 0.09375f);
+        EXPECT_FLOAT_EQ(cloud->points().operator()(1, 0), 0.125f);
+        EXPECT_FLOAT_EQ(cloud->points().operator()(1, 1), 0.15625f);
+        EXPECT_FLOAT_EQ(cloud->points().operator()(1, 2), 0.1875f);
         std::remove(path.c_str());
     };
 
@@ -915,13 +916,13 @@ TEST(PlyIOTest, FaceElementDoesNotOverrideVertexCount)
 
     auto cloud = plapoint::io::readPly<Scalar>(path);
     ASSERT_EQ(cloud->size(), 3u);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(2, 2), 9.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(2, 2), 9.0f);
     ASSERT_TRUE(cloud->hasFaces());
     ASSERT_EQ(cloud->faces()->rows(), 1);
-    EXPECT_EQ(cloud->faces()->getValue(0, 0), 0);
-    EXPECT_EQ(cloud->faces()->getValue(0, 1), 1);
-    EXPECT_EQ(cloud->faces()->getValue(0, 2), 2);
+    EXPECT_EQ(cloud->faces()->operator()(0, 0), 0);
+    EXPECT_EQ(cloud->faces()->operator()(0, 1), 1);
+    EXPECT_EQ(cloud->faces()->operator()(0, 2), 2);
 
     std::remove(path.c_str());
 }
@@ -929,29 +930,29 @@ TEST(PlyIOTest, FaceElementDoesNotOverrideVertexCount)
 TEST(PlyIOTest, RoundtripAsciiPreservesFaces)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<Scalar>;
 
     Cloud cloud(4);
-    cloud.points().setValue(0, 0, 0.0f);
-    cloud.points().setValue(0, 1, 0.0f);
-    cloud.points().setValue(0, 2, 0.0f);
-    cloud.points().setValue(1, 0, 1.0f);
-    cloud.points().setValue(1, 1, 0.0f);
-    cloud.points().setValue(1, 2, 0.0f);
-    cloud.points().setValue(2, 0, 1.0f);
-    cloud.points().setValue(2, 1, 1.0f);
-    cloud.points().setValue(2, 2, 0.0f);
-    cloud.points().setValue(3, 0, 0.0f);
-    cloud.points().setValue(3, 1, 1.0f);
-    cloud.points().setValue(3, 2, 0.0f);
+    cloud.points().operator()(0, 0) = 0.0f;
+    cloud.points().operator()(0, 1) = 0.0f;
+    cloud.points().operator()(0, 2) = 0.0f;
+    cloud.points().operator()(1, 0) = 1.0f;
+    cloud.points().operator()(1, 1) = 0.0f;
+    cloud.points().operator()(1, 2) = 0.0f;
+    cloud.points().operator()(2, 0) = 1.0f;
+    cloud.points().operator()(2, 1) = 1.0f;
+    cloud.points().operator()(2, 2) = 0.0f;
+    cloud.points().operator()(3, 0) = 0.0f;
+    cloud.points().operator()(3, 1) = 1.0f;
+    cloud.points().operator()(3, 2) = 0.0f;
 
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(2, 3);
-    faces.setValue(0, 0, 0);
-    faces.setValue(0, 1, 1);
-    faces.setValue(0, 2, 2);
-    faces.setValue(1, 0, 0);
-    faces.setValue(1, 1, 2);
-    faces.setValue(1, 2, 3);
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> faces(2, 3);
+    faces.operator()(0, 0) = 0;
+    faces.operator()(0, 1) = 1;
+    faces.operator()(0, 2) = 2;
+    faces.operator()(1, 0) = 0;
+    faces.operator()(1, 1) = 2;
+    faces.operator()(1, 2) = 3;
     cloud.setFaces(std::move(faces));
 
     const plapoint::test::TempFile temp_file(".ply");
@@ -962,12 +963,12 @@ TEST(PlyIOTest, RoundtripAsciiPreservesFaces)
 
     ASSERT_TRUE(loaded->hasFaces());
     ASSERT_EQ(loaded->faces()->rows(), 2);
-    EXPECT_EQ(loaded->faces()->getValue(0, 0), 0);
-    EXPECT_EQ(loaded->faces()->getValue(0, 1), 1);
-    EXPECT_EQ(loaded->faces()->getValue(0, 2), 2);
-    EXPECT_EQ(loaded->faces()->getValue(1, 0), 0);
-    EXPECT_EQ(loaded->faces()->getValue(1, 1), 2);
-    EXPECT_EQ(loaded->faces()->getValue(1, 2), 3);
+    EXPECT_EQ(loaded->faces()->operator()(0, 0), 0);
+    EXPECT_EQ(loaded->faces()->operator()(0, 1), 1);
+    EXPECT_EQ(loaded->faces()->operator()(0, 2), 2);
+    EXPECT_EQ(loaded->faces()->operator()(1, 0), 0);
+    EXPECT_EQ(loaded->faces()->operator()(1, 1), 2);
+    EXPECT_EQ(loaded->faces()->operator()(1, 2), 3);
 
     std::remove(path.c_str());
 }
@@ -1009,19 +1010,19 @@ TEST(PlyIOTest, ReadsBinaryVertexPropertiesWithUcharColors)
 
     auto cloud = plapoint::io::readPly<Scalar>(path);
     ASSERT_EQ(cloud->size(), 2u);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1001.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), -1998.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 2), 3003.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 0), 1004.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 1), -1995.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 3006.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 0), 1001.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 1), -1998.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 2), 3003.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 0), 1004.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 1), -1995.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 2), 3006.0f);
     ASSERT_TRUE(cloud->hasColors());
-    EXPECT_EQ(cloud->colors()->getValue(0, 0), 10);
-    EXPECT_EQ(cloud->colors()->getValue(0, 1), 20);
-    EXPECT_EQ(cloud->colors()->getValue(0, 2), 30);
-    EXPECT_EQ(cloud->colors()->getValue(1, 0), 40);
-    EXPECT_EQ(cloud->colors()->getValue(1, 1), 50);
-    EXPECT_EQ(cloud->colors()->getValue(1, 2), 60);
+    EXPECT_EQ(cloud->colors()->operator()(0, 0), 10);
+    EXPECT_EQ(cloud->colors()->operator()(0, 1), 20);
+    EXPECT_EQ(cloud->colors()->operator()(0, 2), 30);
+    EXPECT_EQ(cloud->colors()->operator()(1, 0), 40);
+    EXPECT_EQ(cloud->colors()->operator()(1, 1), 50);
+    EXPECT_EQ(cloud->colors()->operator()(1, 2), 60);
 
     std::remove(path.c_str());
 }
@@ -1050,9 +1051,9 @@ TEST(PlyIOTest, ReadsAsciiWhenFaceElementPrecedesVertexElement)
 
     auto cloud = plapoint::io::readPly<Scalar>(path);
     ASSERT_EQ(cloud->size(), 2u);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), 2.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 6.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 1), 2.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 2), 6.0f);
 
     std::remove(path.c_str());
 }
@@ -1087,9 +1088,9 @@ TEST(PlyIOTest, ReadsBinaryWhenFaceElementPrecedesVertexElement)
 
     auto cloud = plapoint::io::readPly<Scalar>(path);
     ASSERT_EQ(cloud->size(), 2u);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 101.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), -198.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 306.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 0), 101.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 1), -198.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 2), 306.0f);
 
     std::remove(path.c_str());
 }
@@ -1124,9 +1125,9 @@ TEST(PlyIOTest, ReadsBigEndianBinaryWhenFaceElementPrecedesVertexElement)
 
     auto cloud = plapoint::io::readPly<Scalar>(path);
     ASSERT_EQ(cloud->size(), 2u);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 101.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), -198.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(1, 2), 306.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 0), 101.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 1), -198.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(1, 2), 306.0f);
 
     std::remove(path.c_str());
 }
@@ -1301,9 +1302,9 @@ TEST(PlyIOTest, IgnoresIncompleteNormalTriplet)
 
     ASSERT_EQ(cloud->size(), 1u);
     EXPECT_FALSE(cloud->hasNormals());
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 1.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), 2.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 2), 3.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 1), 2.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 2), 3.0f);
 
     std::filesystem::remove(path);
 }
@@ -1458,9 +1459,25 @@ TEST(PlyIOTest, SkipsBinaryScalarPropertiesOnNonVertexElementsBeforeVertices)
     auto cloud = plapoint::io::readPly<float>(path);
 
     ASSERT_EQ(cloud->size(), 1u);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 0), 7.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 1), 8.0f);
-    EXPECT_FLOAT_EQ(cloud->points().getValue(0, 2), 9.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 0), 7.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 1), 8.0f);
+    EXPECT_FLOAT_EQ(cloud->points().operator()(0, 2), 9.0f);
 
     std::filesystem::remove(path);
+}
+
+TEST(PlyIOTest, WriteReportsLateDeviceFailuresForAsciiAndBinary)
+{
+    if (!std::filesystem::exists("/dev/full"))
+    {
+        GTEST_SKIP() << "/dev/full is unavailable on this platform";
+    }
+
+    plapoint::GeometryCloud<float> cloud(1);
+    EXPECT_THROW(
+        plapoint::io::writePly("/dev/full", cloud, plapoint::io::PlyFormat::ASCII),
+        std::runtime_error);
+    EXPECT_THROW(
+        plapoint::io::writePly("/dev/full", cloud, plapoint::io::PlyFormat::BinaryLE),
+        std::runtime_error);
 }

@@ -1,11 +1,11 @@
 // Included once by plapoint_benchmarks.cpp inside its anonymous namespace.
 #ifdef PLAPOINT_WITH_CUDA
 
-std::shared_ptr<Cloud<plamatrix::Device::CPU>> makePoissonBenchmarkCloud(int count)
+std::shared_ptr<plapoint::GeometryCloud<float>> makePoissonBenchmarkCloud(int count)
 {
     count = std::max(count, 48);
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> points(count, 3);
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> normals(count, 3);
+    plamatrix::MatrixXf points(count, 3);
+    plamatrix::MatrixXf normals(count, 3);
     constexpr float pi = 3.14159265358979323846f;
     constexpr float golden_angle = pi * (3.0f - 2.2360679774997896964f);
     for (int index = 0; index < count; ++index)
@@ -15,31 +15,31 @@ std::shared_ptr<Cloud<plamatrix::Device::CPU>> makePoissonBenchmarkCloud(int cou
         const float theta = golden_angle * static_cast<float>(index);
         const float x = radius * std::cos(theta);
         const float y = radius * std::sin(theta);
-        points.setValue(index, 0, x);
-        points.setValue(index, 1, y);
-        points.setValue(index, 2, z);
-        normals.setValue(index, 0, x);
-        normals.setValue(index, 1, y);
-        normals.setValue(index, 2, z);
+        points(index, 0) = x;
+        points(index, 1) = y;
+        points(index, 2) = z;
+        normals(index, 0) = x;
+        normals(index, 1) = y;
+        normals(index, 2) = z;
     }
-    auto cloud = std::make_shared<Cloud<plamatrix::Device::CPU>>(std::move(points));
+    auto cloud = std::make_shared<plapoint::GeometryCloud<float>>(std::move(points));
     cloud->setNormals(std::move(normals));
     return cloud;
 }
 
-Cloud<plamatrix::Device::CPU> makeHeightGridBenchmarkCloud(int count, int& side)
+Cloud<plamatrix::internal::Device::CPU> makeHeightGridBenchmarkCloud(int count, int& side)
 {
     side = std::max(4, static_cast<int>(std::ceil(std::sqrt(static_cast<double>(count)))));
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> points(count, 3);
+    plamatrix::MatrixXf points(count, 3);
     for (int index = 0; index < count; ++index)
     {
         const int x = index % side;
         const int y = index / side;
-        points.setValue(index, 0, static_cast<float>(x));
-        points.setValue(index, 1, static_cast<float>(y));
-        points.setValue(index, 2, std::sin(static_cast<float>(x) * 0.2f) + std::cos(static_cast<float>(y) * 0.15f));
+        points(index, 0) = static_cast<float>(x);
+        points(index, 1) = static_cast<float>(y);
+        points(index, 2) = std::sin(static_cast<float>(x) * 0.2f) + std::cos(static_cast<float>(y) * 0.15f);
     }
-    return Cloud<plamatrix::Device::CPU>(std::move(points));
+    return Cloud<plamatrix::internal::Device::CPU>(std::move(points));
 }
 
 void benchmarkMarchingCubesField(int points, int iterations)
@@ -47,7 +47,7 @@ void benchmarkMarchingCubesField(int points, int iterations)
     const int cubes = std::clamp(static_cast<int>(std::cbrt(static_cast<double>(points))) * 2, 8, 24);
     const int samples = cubes + 1;
     const int sample_count = samples * samples * samples;
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> field_cpu(sample_count, 1);
+    plamatrix::MatrixXf field_cpu(sample_count, 1);
     for (int z = 0; z < samples; ++z)
     {
         for (int y = 0; y < samples; ++y)
@@ -58,13 +58,14 @@ void benchmarkMarchingCubesField(int points, int iterations)
                 const float fy = static_cast<float>(y) / static_cast<float>(cubes) * 2.0f - 1.0f;
                 const float fz = static_cast<float>(z) / static_cast<float>(cubes) * 2.0f - 1.0f;
                 const int offset = x + samples * (y + samples * z);
-                field_cpu.setValue(offset, 0, fx * fx + fy * fy + fz * fz - 0.55f);
+                field_cpu(offset, 0) = fx * fx + fy * fy + fz * fz - 0.55f;
             }
         }
     }
-    const auto field_gpu = field_cpu.toGpu();
+    auto context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
+    const auto field_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(field_cpu, context);
     plapoint::gpu::MarchingCubesGpuWorkspace<float> workspace;
-    Cloud<plamatrix::Device::GPU> output;
+    Cloud<plamatrix::internal::Device::GPU> output;
     const double elapsed =
         bestMilliseconds(iterations,
                          [&]()
@@ -73,8 +74,8 @@ void benchmarkMarchingCubesField(int points, int iterations)
                                                                    cubes,
                                                                    cubes,
                                                                    cubes,
-                                                                   plamatrix::Vec3<float>{-1.0f, -1.0f, -1.0f},
-                                                                   plamatrix::Vec3<float>{1.0f, 1.0f, 1.0f},
+                                                                   std::array<float, 3>{-1.0f, -1.0f, -1.0f},
+                                                                   std::array<float, 3>{1.0f, 1.0f, 1.0f},
                                                                    0.0f,
                                                                    workspace);
                          });
@@ -119,7 +120,7 @@ void benchmarkHeightGridFill(int points, int iterations)
 
 struct PoissonBenchmarkFixture
 {
-    std::shared_ptr<Cloud<plamatrix::Device::CPU>> cloud;
+    std::shared_ptr<plapoint::GeometryCloud<float>> cloud;
     plapoint::mesh::PoissonReconstruction<float> assembled;
     int depth = 0;
 };
@@ -151,20 +152,24 @@ PoissonBenchmarkFixture preparePoissonBenchmark(int points, int depth)
 void benchmarkPoisson(PoissonBenchmarkFixture& fixture, int iterations)
 {
     const auto& system = fixture.assembled.lastSystem();
-    const auto matrix_gpu = system.matrix.toGpu();
-    const auto rhs_gpu = system.rhs.toGpu();
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> solution(system.matrix.rows(), 1);
-    plamatrix::IterativeSolverWorkspace<float> workspace;
-    plamatrix::IterativeSolverOptions solver_options;
+    auto context = plamatrix::internal::ExecutionContext::create({plamatrix::internal::Backend::Cuda, 0});
+    const auto matrix_gpu = plamatrix::internal::ResidentCsrMatrix<float>::copyFrom(system.matrix, context);
+    const auto rhs_gpu = plamatrix::internal::ResidentVector<float>::copyFrom(system.rhs, context);
+    plamatrix::internal::ResidentVector<float> solution(system.matrix.rows(), context);
+    plamatrix::internal::SolveOptions solver_options;
     solver_options.maxIterations = 500;
     solver_options.relativeTolerance = 1.0e-3;
-    plamatrix::IterativeSolverReport solver_report;
+    plamatrix::internal::IterativeSolverReport solver_report;
     double elapsed = bestMilliseconds(iterations,
                                       [&]()
                                       {
-                                          solution.fill(0.0f);
+                                          PLAPOINT_CHECK_CUDA(cudaMemset(
+                                              solution.data(), 0,
+                                              static_cast<std::size_t>(solution.size()) * sizeof(float)));
+                                          // PCG uses the resident context stream, not the CUDA default stream.
+                                          PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(nullptr));
                                           solver_report =
-                                              plamatrix::pcg(matrix_gpu, rhs_gpu, solution, workspace, solver_options);
+                                              plamatrix::internal::pcg(matrix_gpu, rhs_gpu, solution, solver_options, context);
                                       });
     printResult("poisson_solve", static_cast<int>(system.leafNodes.size()), iterations, elapsed);
     if (!solver_report.converged)

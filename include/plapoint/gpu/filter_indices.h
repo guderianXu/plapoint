@@ -2,11 +2,15 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <memory>
+#include <optional>
 #include <vector>
 
-#include <plamatrix/dense/dense_matrix.h>
+#include <plamatrix/internal/device/device_matrix.h>
 #ifdef PLAPOINT_WITH_CUDA
-#include <plamatrix/ops/reduction.h>
+#include <plamatrix/internal/ops/reduction.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/core/execution_context.h>
 
 #include <plapoint/core/point_cloud.h>
 #include <plapoint/gpu/spatial_index.h>
@@ -38,45 +42,50 @@ public:
 
 private:
     template <typename OtherScalar>
-    friend plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>
+    friend plamatrix::internal::ResidentMatrix<std::uint8_t>
     radiusOutlierRemovalKeepMaskDevice(
-        const PointCloud<OtherScalar, plamatrix::Device::GPU>&,
+        const plapoint::internal::DeviceCloud<OtherScalar, plamatrix::internal::Device::GPU>&,
         OtherScalar,
         int,
         OutlierRemovalGpuWorkspace<OtherScalar>&,
         cudaStream_t);
 
     template <typename OtherScalar>
-    friend plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>
+    friend plamatrix::internal::ResidentMatrix<std::uint8_t>
     statisticalOutlierRemovalKeepMaskDevice(
-        const PointCloud<OtherScalar, plamatrix::Device::GPU>&,
+        const plapoint::internal::DeviceCloud<OtherScalar, plamatrix::internal::Device::GPU>&,
         int,
         OtherScalar,
         OutlierRemovalGpuWorkspace<OtherScalar>&,
         cudaStream_t);
 
-    void ensureBuffers(plamatrix::Index rows)
+    void ensureBuffers(plamatrix::Index rows,
+                       const std::shared_ptr<plamatrix::internal::ExecutionContext>& context)
     {
-        if (_meanDistances.rows() == rows)
+        if (_context != context)
         {
-            return;
+            _meanDistances.reset();
+            _finiteWeights.reset();
+            _invalidDistances.reset();
+            _squaredDeviations.reset();
+            _context = context;
         }
-        _meanDistances = plamatrix::DenseMatrix<double, plamatrix::Device::GPU>
-            ::uninitialized(rows, 1);
-        _finiteWeights = plamatrix::DenseMatrix<double, plamatrix::Device::GPU>
-            ::uninitialized(rows, 1);
-        _invalidDistances = plamatrix::DenseMatrix<double, plamatrix::Device::GPU>
-            ::uninitialized(rows, 1);
-        _squaredDeviations = plamatrix::DenseMatrix<double, plamatrix::Device::GPU>
-            ::uninitialized(rows, 1);
+        if (!_meanDistances || _meanDistances->rows() != rows)
+        {
+            _meanDistances.emplace(rows, 1, context);
+            _finiteWeights.emplace(rows, 1, context);
+            _invalidDistances.emplace(rows, 1, context);
+            _squaredDeviations.emplace(rows, 1, context);
+        }
     }
 
     GpuSpatialIndex<Scalar> _index;
     GpuSpatialQueryWorkspace<Scalar> _queryWorkspace;
-    plamatrix::DenseMatrix<double, plamatrix::Device::GPU> _meanDistances;
-    plamatrix::DenseMatrix<double, plamatrix::Device::GPU> _finiteWeights;
-    plamatrix::DenseMatrix<double, plamatrix::Device::GPU> _invalidDistances;
-    plamatrix::DenseMatrix<double, plamatrix::Device::GPU> _squaredDeviations;
+    std::shared_ptr<plamatrix::internal::ExecutionContext> _context;
+    std::optional<plamatrix::internal::ResidentMatrix<double>> _meanDistances;
+    std::optional<plamatrix::internal::ResidentMatrix<double>> _finiteWeights;
+    std::optional<plamatrix::internal::ResidentMatrix<double>> _invalidDistances;
+    std::optional<plamatrix::internal::ResidentMatrix<double>> _squaredDeviations;
     GpuOutlierRemovalBackend _lastBackend = GpuOutlierRemovalBackend::None;
     std::size_t _indexBuildCount = 0;
 };
@@ -90,19 +99,19 @@ std::vector<int> removedIndicesFromKeepMask(const std::vector<std::uint8_t>& kee
 
 /// Download the byte keep mask for compatibility diagnostics only.
 std::vector<std::uint8_t> keepMaskToHost(
-    const plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>& keep_mask);
+    const plamatrix::internal::ResidentMatrix<std::uint8_t>& keep_mask);
 
 #ifdef PLAPOINT_WITH_CUDA
 /// Stably compact removed source indices on the device and download only those indices.
 std::vector<int> removedIndicesFromKeepMaskDevice(
-    const plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>& keep_mask,
+    const plamatrix::internal::ResidentMatrix<std::uint8_t>& keep_mask,
     cudaStream_t stream = nullptr);
 
 /// Indexed RadiusOutlierRemoval mask. The returned ordinary allocation is independent of workspace.
 template <typename Scalar>
-plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>
+plamatrix::internal::ResidentMatrix<std::uint8_t>
 radiusOutlierRemovalKeepMaskDevice(
-    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
     Scalar radius,
     int min_neighbors,
     OutlierRemovalGpuWorkspace<Scalar>& workspace,
@@ -110,9 +119,9 @@ radiusOutlierRemovalKeepMaskDevice(
 
 /// Indexed StatisticalOutlierRemoval mask. The returned ordinary allocation is independent of workspace.
 template <typename Scalar>
-plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>
+plamatrix::internal::ResidentMatrix<std::uint8_t>
 statisticalOutlierRemovalKeepMaskDevice(
-    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
     int mean_k,
     Scalar stddev_mul,
     OutlierRemovalGpuWorkspace<Scalar>& workspace,
@@ -128,14 +137,16 @@ std::vector<std::uint8_t> radiusOutlierRemovalKeepMaskDeviceColumnMajor(
     const double* d_points, int point_count, double radius, int min_neighbors);
 
 /// Compute the RadiusOutlierRemoval keep-mask into PlaMatrix GPU storage.
-plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU> radiusOutlierRemovalKeepMaskDevice(
-    const plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& points,
+/// The input must own a shared CUDA execution context; the result retains it.
+plamatrix::internal::ResidentMatrix<std::uint8_t> radiusOutlierRemovalKeepMaskDevice(
+    const plamatrix::internal::ResidentMatrix<float>& points,
     float radius,
     int min_neighbors);
 
 /// Compute the RadiusOutlierRemoval keep-mask into PlaMatrix GPU storage.
-plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU> radiusOutlierRemovalKeepMaskDevice(
-    const plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& points,
+/// The input must own a shared CUDA execution context; the result retains it.
+plamatrix::internal::ResidentMatrix<std::uint8_t> radiusOutlierRemovalKeepMaskDevice(
+    const plamatrix::internal::ResidentMatrix<double>& points,
     double radius,
     int min_neighbors);
 
@@ -148,14 +159,16 @@ std::vector<std::uint8_t> statisticalOutlierRemovalKeepMaskDeviceColumnMajor(
     const double* d_points, int point_count, int mean_k, double stddev_mul);
 
 /// Compute the StatisticalOutlierRemoval keep-mask into PlaMatrix GPU storage.
-plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU> statisticalOutlierRemovalKeepMaskDevice(
-    const plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& points,
+/// The input must own a shared CUDA execution context; the result retains it.
+plamatrix::internal::ResidentMatrix<std::uint8_t> statisticalOutlierRemovalKeepMaskDevice(
+    const plamatrix::internal::ResidentMatrix<float>& points,
     int mean_k,
     float stddev_mul);
 
 /// Compute the StatisticalOutlierRemoval keep-mask into PlaMatrix GPU storage.
-plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU> statisticalOutlierRemovalKeepMaskDevice(
-    const plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& points,
+/// The input must own a shared CUDA execution context; the result retains it.
+plamatrix::internal::ResidentMatrix<std::uint8_t> statisticalOutlierRemovalKeepMaskDevice(
+    const plamatrix::internal::ResidentMatrix<double>& points,
     int mean_k,
     double stddev_mul);
 

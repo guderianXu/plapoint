@@ -7,9 +7,11 @@
 #include <gtest/gtest.h>
 
 #include <plamatrix/plamatrix.h>
+#include <plamatrix/internal/core/device.h>
 
 #include <plapoint/core/point_cloud.h>
 #include <plapoint/mesh/height_grid.h>
+#include <plapoint/filters/detail/geometry_bridge.h>
 
 #ifdef PLAPOINT_WITH_CUDA
 #include <plapoint/gpu/cuda_check.h>
@@ -19,17 +21,17 @@
 namespace
 {
 
-using Scalar = float;
-using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-using CpuMatrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+    using Scalar = float;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using CpuMatrix = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>;
 
 #ifdef PLAPOINT_WITH_CUDA
-using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
-bool hasCudaDevice()
-{
-    return plapoint::gpu::hasUsableCudaDevice();
-}
+    bool hasCudaDevice()
+    {
+        return plapoint::gpu::hasUsableCudaDevice();
+    }
 
 #define SKIP_IF_NO_GPU() \
     do \
@@ -44,25 +46,39 @@ bool hasCudaDevice()
 CpuCloud makeSmallTerrainCloud()
 {
     CpuMatrix points(5, 3);
-    points.setValue(0, 0, 0.0f); points.setValue(0, 1, 0.0f); points.setValue(0, 2, 1.0f);
-    points.setValue(1, 0, 1.0f); points.setValue(1, 1, 0.0f); points.setValue(1, 2, 2.0f);
-    points.setValue(2, 0, 0.0f); points.setValue(2, 1, 1.0f); points.setValue(2, 2, 3.0f);
-    points.setValue(3, 0, 1.0f); points.setValue(3, 1, 1.0f); points.setValue(3, 2, 4.0f);
-    points.setValue(4, 0, 0.25f); points.setValue(4, 1, 0.25f); points.setValue(4, 2, 5.0f);
+    points.operator()(0, 0) = 0.0f; points.operator()(0, 1) = 0.0f; points.operator()(0, 2) = 1.0f;
+    points.operator()(1, 0) = 1.0f; points.operator()(1, 1) = 0.0f; points.operator()(1, 2) = 2.0f;
+    points.operator()(2, 0) = 0.0f; points.operator()(2, 1) = 1.0f; points.operator()(2, 2) = 3.0f;
+    points.operator()(3, 0) = 1.0f;
+    points.operator()(3, 1) = 1.0f;
+    points.operator()(3, 2) = 4.0f;
+    points.operator()(4, 0) = 0.25f;
+    points.operator()(4, 1) = 0.25f;
+    points.operator()(4, 2) = 5.0f;
 
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(5, 3);
-    colors.setValue(0, 0, 10); colors.setValue(0, 1, 20); colors.setValue(0, 2, 30);
-    colors.setValue(1, 0, 40); colors.setValue(1, 1, 50); colors.setValue(1, 2, 60);
-    colors.setValue(2, 0, 70); colors.setValue(2, 1, 80); colors.setValue(2, 2, 90);
-    colors.setValue(3, 0, 100); colors.setValue(3, 1, 110); colors.setValue(3, 2, 120);
-    colors.setValue(4, 0, 130); colors.setValue(4, 1, 140); colors.setValue(4, 2, 150);
+    plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(5, 3);
+    colors.operator()(0, 0) = 10;
+    colors.operator()(0, 1) = 20;
+    colors.operator()(0, 2) = 30;
+    colors.operator()(1, 0) = 40;
+    colors.operator()(1, 1) = 50;
+    colors.operator()(1, 2) = 60;
+    colors.operator()(2, 0) = 70;
+    colors.operator()(2, 1) = 80;
+    colors.operator()(2, 2) = 90;
+    colors.operator()(3, 0) = 100;
+    colors.operator()(3, 1) = 110;
+    colors.operator()(3, 2) = 120;
+    colors.operator()(4, 0) = 130;
+    colors.operator()(4, 1) = 140;
+    colors.operator()(4, 2) = 150;
 
-    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(5, 1);
-    intensities.setValue(0, 0, 1000);
-    intensities.setValue(1, 0, 2000);
-    intensities.setValue(2, 0, 3000);
-    intensities.setValue(3, 0, 4000);
-    intensities.setValue(4, 0, 5000);
+    plamatrix::Matrix<std::uint16_t, plamatrix::Dynamic, plamatrix::Dynamic> intensities(5, 1);
+    intensities.operator()(0, 0) = 1000;
+    intensities.operator()(1, 0) = 2000;
+    intensities.operator()(2, 0) = 3000;
+    intensities.operator()(3, 0) = 4000;
+    intensities.operator()(4, 0) = 5000;
 
     CpuCloud cloud(std::move(points));
     cloud.setColors(std::move(colors));
@@ -119,7 +135,8 @@ TEST(HeightGridGpuTest, BuildHeightGridMatchesCpuOnSmallCloud)
     const GpuCloud gpu_cloud = cpu_cloud.toGpu();
     const auto options = smallGridOptions();
 
-    const auto expected = plapoint::mesh::buildHeightGrid(cpu_cloud, options);
+    const auto expected = plapoint::mesh::buildHeightGrid(
+        plapoint::detail::fromDeviceCloud(cpu_cloud), options, plapoint::ProcessingDevice::CPU);
     const auto actual = plapoint::gpu::buildHeightGrid(gpu_cloud, options);
 
     expectGridNear(actual, expected);
@@ -133,9 +150,11 @@ TEST(HeightGridGpuTest, HeightGridToMeshPreservesColorsAndIntensitiesThroughGpuP
     const GpuCloud gpu_cloud = cpu_cloud.toGpu();
     const auto options = smallGridOptions();
 
-    auto expected_grid = plapoint::mesh::buildHeightGrid(cpu_cloud, options);
+    auto expected_grid = plapoint::mesh::buildHeightGrid(
+        plapoint::detail::fromDeviceCloud(cpu_cloud), options, plapoint::ProcessingDevice::CPU);
     plapoint::mesh::fillHoles(expected_grid, 1);
-    const auto expected_mesh = plapoint::mesh::heightGridToMesh(expected_grid, cpu_cloud, options);
+    const auto expected_mesh = plapoint::mesh::heightGridToMesh(
+        expected_grid, plapoint::detail::fromDeviceCloud(cpu_cloud), options);
 
     auto actual_grid = plapoint::gpu::buildHeightGrid(gpu_cloud, options);
     plapoint::gpu::fillHoles(actual_grid, 1);
@@ -153,13 +172,13 @@ TEST(HeightGridGpuTest, HeightGridToMeshPreservesColorsAndIntensitiesThroughGpuP
     for (std::size_t i = 0; i < expected_mesh.size(); ++i)
     {
         const auto row = static_cast<plamatrix::Index>(i);
-        EXPECT_NEAR(actual_mesh.points().getValue(row, 0), expected_mesh.points().getValue(row, 0), 1.0e-5f);
-        EXPECT_NEAR(actual_mesh.points().getValue(row, 1), expected_mesh.points().getValue(row, 1), 1.0e-5f);
-        EXPECT_NEAR(actual_mesh.points().getValue(row, 2), expected_mesh.points().getValue(row, 2), 1.0e-5f);
-        EXPECT_EQ(actual_mesh.colors()->getValue(row, 0), expected_mesh.colors()->getValue(row, 0));
-        EXPECT_EQ(actual_mesh.colors()->getValue(row, 1), expected_mesh.colors()->getValue(row, 1));
-        EXPECT_EQ(actual_mesh.colors()->getValue(row, 2), expected_mesh.colors()->getValue(row, 2));
-        EXPECT_EQ(actual_mesh.intensities()->getValue(row, 0), expected_mesh.intensities()->getValue(row, 0));
+        EXPECT_NEAR(actual_mesh.points().operator()(row, 0), expected_mesh.points().operator()(row, 0), 1.0e-5f);
+        EXPECT_NEAR(actual_mesh.points().operator()(row, 1), expected_mesh.points().operator()(row, 1), 1.0e-5f);
+        EXPECT_NEAR(actual_mesh.points().operator()(row, 2), expected_mesh.points().operator()(row, 2), 1.0e-5f);
+        EXPECT_EQ(actual_mesh.colors()->operator()(row, 0), expected_mesh.colors()->operator()(row, 0));
+        EXPECT_EQ(actual_mesh.colors()->operator()(row, 1), expected_mesh.colors()->operator()(row, 1));
+        EXPECT_EQ(actual_mesh.colors()->operator()(row, 2), expected_mesh.colors()->operator()(row, 2));
+        EXPECT_EQ(actual_mesh.intensities()->operator()(row, 0), expected_mesh.intensities()->operator()(row, 0));
     }
 }
 
@@ -215,7 +234,8 @@ TEST(HeightGridGpuTest, DeviceGridBuildAndDownloadMatchCpuOnNonDefaultStream)
         EXPECT_GE(workspace.cellCapacity(), std::size_t{9});
 
         const auto actual = plapoint::gpu::downloadHeightGrid(device_grid, stream);
-        const auto expected = plapoint::mesh::buildHeightGrid(cpu_cloud, options);
+        const auto expected = plapoint::mesh::buildHeightGrid(
+        plapoint::detail::fromDeviceCloud(cpu_cloud), options, plapoint::ProcessingDevice::CPU);
         expectGridNear(actual, expected);
     }
     PLAPOINT_CHECK_CUDA(cudaStreamDestroy(stream));
@@ -237,7 +257,8 @@ TEST(HeightGridGpuTest, DeviceHoleFillMatchesCpuForMultiplePassesColorsAndMetada
     options.maxY = 1.0f;
     options.useBilinearSplat = false;
 
-    auto expected = plapoint::mesh::buildHeightGrid(cpu_cloud, options);
+    auto expected = plapoint::mesh::buildHeightGrid(
+        plapoint::detail::fromDeviceCloud(cpu_cloud), options, plapoint::ProcessingDevice::CPU);
     plapoint::mesh::fillHoles(expected, 4, 2, 1);
 
     cudaStream_t stream = nullptr;
@@ -276,16 +297,37 @@ TEST(HeightGridGpuTest, DeviceHoleFillHandlesEmptyGridAndRejectsInvalidShape)
         std::invalid_argument);
 }
 
+TEST(HeightGridGpuTest, MovingPendingGridTransfersStorageAndStreamOwnership)
+{
+    SKIP_IF_NO_GPU();
+
+    const GpuCloud cloud = makeSmallTerrainCloud().toGpu();
+    auto options = smallGridOptions();
+    options.useExplicitBounds = true;
+    options.minX = 0.0f;
+    options.maxX = 1.0f;
+    options.minY = 0.0f;
+    options.maxY = 1.0f;
+    plapoint::gpu::HeightGridGpuWorkspace<Scalar> workspace;
+    auto pending = plapoint::gpu::buildHeightGridDeviceAsync(cloud, options, workspace);
+    auto moved = std::move(pending);
+
+    EXPECT_EQ(plapoint::gpu::downloadHeightGrid(pending).width, 0);
+    const auto host = plapoint::gpu::downloadHeightGrid(moved);
+    EXPECT_EQ(host.width, options.width);
+    EXPECT_EQ(host.height, options.height);
+}
+
 TEST(HeightGridGpuTest, DeviceBuildSupportsMinMaxAndSkippedNonFiniteBounds)
 {
     SKIP_IF_NO_GPU();
 
     CpuMatrix points(4, 3);
-    points.setValue(0, 0, 0.0f); points.setValue(0, 1, 0.0f); points.setValue(0, 2, 3.0f);
-    points.setValue(1, 0, 0.0f); points.setValue(1, 1, 0.0f); points.setValue(1, 2, 1.0f);
-    points.setValue(2, 0, 1.0f); points.setValue(2, 1, 1.0f); points.setValue(2, 2, 5.0f);
-    points.setValue(3, 0, std::numeric_limits<float>::quiet_NaN());
-    points.setValue(3, 1, 0.5f); points.setValue(3, 2, 9.0f);
+    points.operator()(0, 0) = 0.0f; points.operator()(0, 1) = 0.0f; points.operator()(0, 2) = 3.0f;
+    points.operator()(1, 0) = 0.0f; points.operator()(1, 1) = 0.0f; points.operator()(1, 2) = 1.0f;
+    points.operator()(2, 0) = 1.0f; points.operator()(2, 1) = 1.0f; points.operator()(2, 2) = 5.0f;
+    points.operator()(3, 0) = std::numeric_limits<float>::quiet_NaN();
+    points.operator()(3, 1) = 0.5f; points.operator()(3, 2) = 9.0f;
     const CpuCloud cpu_cloud(std::move(points));
     const GpuCloud gpu_cloud = cpu_cloud.toGpu();
     auto options = smallGridOptions();
@@ -302,7 +344,8 @@ TEST(HeightGridGpuTest, DeviceBuildSupportsMinMaxAndSkippedNonFiniteBounds)
              plapoint::mesh::ElevationAggregation::Max})
     {
         options.elevationAggregation = aggregation;
-        const auto expected = plapoint::mesh::buildHeightGrid(cpu_cloud, options);
+        const auto expected = plapoint::mesh::buildHeightGrid(
+        plapoint::detail::fromDeviceCloud(cpu_cloud), options, plapoint::ProcessingDevice::CPU);
         plapoint::gpu::HeightGridGpuWorkspace<Scalar> workspace;
         const auto device = plapoint::gpu::buildHeightGridDeviceAsync(
             gpu_cloud, options, workspace, nullptr);
@@ -315,13 +358,15 @@ TEST(HeightGridGpuTest, DoubleDeviceBuildAndFillMatchCpu)
 {
     SKIP_IF_NO_GPU();
 
-    using DoubleMatrix = plamatrix::DenseMatrix<double, plamatrix::Device::CPU>;
-    using DoubleCpuCloud = plapoint::PointCloud<double, plamatrix::Device::CPU>;
+    using DoubleMatrix = plamatrix::MatrixXd;
+    using DoubleCpuCloud = plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::CPU>;
     DoubleMatrix points(4, 3);
-    points.setValue(0, 0, 0.0); points.setValue(0, 1, 0.0); points.setValue(0, 2, 1.0);
-    points.setValue(1, 0, 1.0); points.setValue(1, 1, 0.0); points.setValue(1, 2, 2.0);
-    points.setValue(2, 0, 0.0); points.setValue(2, 1, 1.0); points.setValue(2, 2, 3.0);
-    points.setValue(3, 0, 1.0); points.setValue(3, 1, 1.0); points.setValue(3, 2, 4.0);
+    points.operator()(0, 0) = 0.0;
+    points.operator()(0, 1) = 0.0;
+    points.operator()(0, 2) = 1.0;
+    points.operator()(1, 0) = 1.0; points.operator()(1, 1) = 0.0; points.operator()(1, 2) = 2.0;
+    points.operator()(2, 0) = 0.0; points.operator()(2, 1) = 1.0; points.operator()(2, 2) = 3.0;
+    points.operator()(3, 0) = 1.0; points.operator()(3, 1) = 1.0; points.operator()(3, 2) = 4.0;
     const DoubleCpuCloud cpu_cloud(std::move(points));
     const auto gpu_cloud = cpu_cloud.toGpu();
     plapoint::mesh::HeightGridOptions<double> options;
@@ -334,7 +379,8 @@ TEST(HeightGridGpuTest, DoubleDeviceBuildAndFillMatchCpu)
     options.maxX = 1.0;
     options.minY = 0.0;
     options.maxY = 1.0;
-    auto expected = plapoint::mesh::buildHeightGrid(cpu_cloud, options);
+    auto expected = plapoint::mesh::buildHeightGrid(
+        plapoint::detail::fromDeviceCloud(cpu_cloud), options, plapoint::ProcessingDevice::CPU);
     plapoint::mesh::fillHoles(expected, 3, 1, 1);
 
     plapoint::gpu::HeightGridGpuWorkspace<double> workspace;
@@ -396,8 +442,8 @@ TEST(HeightGridGpuTest, DeviceAsyncRequiresExplicitBoundsAndDefersStrictInputSta
         std::invalid_argument);
 
     CpuMatrix points(2, 3);
-    points.fill(0.0f);
-    points.setValue(1, 0, std::numeric_limits<float>::quiet_NaN());
+    points.setConstant(0.0f);
+    points.operator()(1, 0) = std::numeric_limits<float>::quiet_NaN();
     const GpuCloud invalid_cloud = CpuCloud(std::move(points)).toGpu();
     auto options = smallGridOptions();
     options.useExplicitBounds = true;
@@ -466,7 +512,8 @@ TEST(HeightGridGpuTest, MovedFromWorkspaceCanBeReusedAndOddColorPassMatchesCpu)
     options.minY = 0.0f;
     options.maxY = 1.0f;
     options.useBilinearSplat = false;
-    auto expected = plapoint::mesh::buildHeightGrid(cpu_cloud, options);
+    auto expected = plapoint::mesh::buildHeightGrid(
+        plapoint::detail::fromDeviceCloud(cpu_cloud), options, plapoint::ProcessingDevice::CPU);
     plapoint::mesh::fillHoles(expected, 3, 1, 1);
 
     plapoint::gpu::HeightGridGpuWorkspace<Scalar> original;

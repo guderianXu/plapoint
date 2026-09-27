@@ -18,6 +18,10 @@ enum class ProcessingDevice
     OpenCL = 3
 };
 
+/// Check build support and runtime availability for a processing device.
+/// CPU and Auto are always available; CUDA and OpenCL require usable runtime devices.
+bool isProcessingDeviceAvailable(ProcessingDevice device) noexcept;
+
 static_assert(static_cast<int>(ProcessingDevice::CPU) == 0);
 static_assert(static_cast<int>(ProcessingDevice::CUDA) == 1);
 static_assert(static_cast<int>(ProcessingDevice::GPU) == 1);

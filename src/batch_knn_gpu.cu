@@ -10,7 +10,10 @@
 #include <string>
 #include <vector>
 
-#include <plamatrix/dense/dense_matrix.h>
+#include <plamatrix/internal/core/execution_context.h>
+#include <plamatrix/dense/matrix.h>
+#include <plamatrix/internal/device/device_matrix.h>
+#include <plamatrix/internal/core/backend.h>
 
 // Forward-declare the kernel from knn_gpu.cu
 namespace plapoint { namespace gpu {
@@ -112,13 +115,13 @@ void batchKnn(const double* h_queries, int M,
     batchKnnImpl<double>(h_queries, M, h_data, N, K, out_indices, out_dists);
 }
 
-template <typename Scalar, plamatrix::Device Dev>
+template <typename Queries, typename Data, typename Indices, typename Distances>
 void validateMatrixKnnInputs(
-    const plamatrix::DenseMatrix<Scalar, Dev>& queries,
-    const plamatrix::DenseMatrix<Scalar, Dev>& data,
+    const Queries& queries,
+    const Data& data,
     int K,
-    const plamatrix::DenseMatrix<int, Dev>& out_indices,
-    const plamatrix::DenseMatrix<Scalar, Dev>& out_dists)
+    const Indices& out_indices,
+    const Distances& out_dists)
 {
     if (queries.cols() != 3 || data.cols() != 3)
     {
@@ -146,39 +149,39 @@ void validateMatrixKnnInputs(
 
 template <typename Scalar>
 void batchKnnMatrixImpl(
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& queries,
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& data,
+    const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& queries,
+    const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& data,
     int K,
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU>& out_indices,
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& out_dists)
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic>& out_indices,
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& out_dists)
 {
     validateMatrixKnnInputs(queries, data, K, out_indices, out_dists);
-    auto d_queries = queries.toGpu();
-    auto d_data = data.toGpu();
-    plamatrix::DenseMatrix<int, plamatrix::Device::GPU> d_indices(queries.rows(), K);
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> d_dists(queries.rows(), K);
+    auto context = plamatrix::internal::ExecutionContext::create({plamatrix::internal::Backend::Cuda, 0});
+    auto d_queries = plamatrix::internal::ResidentMatrix<Scalar>::copyFrom(queries, context);
+    auto d_data = plamatrix::internal::ResidentMatrix<Scalar>::copyFrom(data, context);
+    plamatrix::internal::ResidentMatrix<int> d_indices(queries.rows(), K, context);
+    plamatrix::internal::ResidentMatrix<Scalar> d_dists(queries.rows(), K, context);
     batchKnnDevice(d_queries, d_data, K, d_indices, d_dists);
-    d_indices.copyToCpuAsync(out_indices);
-    d_dists.copyToCpuAsync(out_dists);
-    PLAPOINT_CHECK_CUDA(cudaDeviceSynchronize());
+    out_indices = d_indices.toHostMatrix();
+    out_dists = d_dists.toHostMatrix();
 }
 
 void batchKnn(
-    const plamatrix::DenseMatrix<float, plamatrix::Device::CPU>& queries,
-    const plamatrix::DenseMatrix<float, plamatrix::Device::CPU>& data,
+    const plamatrix::MatrixXf& queries,
+    const plamatrix::MatrixXf& data,
     int K,
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU>& out_indices,
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU>& out_dists)
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic>& out_indices,
+    plamatrix::MatrixXf& out_dists)
 {
     batchKnnMatrixImpl<float>(queries, data, K, out_indices, out_dists);
 }
 
 void batchKnn(
-    const plamatrix::DenseMatrix<double, plamatrix::Device::CPU>& queries,
-    const plamatrix::DenseMatrix<double, plamatrix::Device::CPU>& data,
+    const plamatrix::MatrixXd& queries,
+    const plamatrix::MatrixXd& data,
     int K,
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU>& out_indices,
-    plamatrix::DenseMatrix<double, plamatrix::Device::CPU>& out_dists)
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic>& out_indices,
+    plamatrix::MatrixXd& out_dists)
 {
     batchKnnMatrixImpl<double>(queries, data, K, out_indices, out_dists);
 }
@@ -288,15 +291,18 @@ void batchKnnDeviceColumnMajorAsync(const double* d_queries, int M,
 
 template <typename Scalar>
 void batchKnnDeviceMatrixImpl(
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& queries,
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& data,
+    const plamatrix::internal::ResidentMatrix<Scalar>& queries,
+    const plamatrix::internal::ResidentMatrix<Scalar>& data,
     int K,
-    plamatrix::DenseMatrix<int, plamatrix::Device::GPU>& out_indices,
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& out_dists,
+    plamatrix::internal::ResidentMatrix<int>& out_indices,
+    plamatrix::internal::ResidentMatrix<Scalar>& out_dists,
     cudaStream_t stream,
     bool synchronize)
 {
     validateMatrixKnnInputs(queries, data, K, out_indices, out_dists);
+    data.validateContext(queries.context());
+    out_indices.validateContext(queries.context());
+    out_dists.validateContext(queries.context());
     batchKnnDeviceImpl<Scalar>(
         queries.data(),
         static_cast<int>(queries.rows()),
@@ -313,42 +319,42 @@ void batchKnnDeviceMatrixImpl(
 }
 
 void batchKnnDevice(
-    const plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& queries,
-    const plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& data,
+    const plamatrix::internal::ResidentMatrix<float>& queries,
+    const plamatrix::internal::ResidentMatrix<float>& data,
     int K,
-    plamatrix::DenseMatrix<int, plamatrix::Device::GPU>& out_indices,
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& out_dists)
+    plamatrix::internal::ResidentMatrix<int>& out_indices,
+    plamatrix::internal::ResidentMatrix<float>& out_dists)
 {
     batchKnnDeviceMatrixImpl<float>(queries, data, K, out_indices, out_dists, 0, true);
 }
 
 void batchKnnDevice(
-    const plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& queries,
-    const plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& data,
+    const plamatrix::internal::ResidentMatrix<double>& queries,
+    const plamatrix::internal::ResidentMatrix<double>& data,
     int K,
-    plamatrix::DenseMatrix<int, plamatrix::Device::GPU>& out_indices,
-    plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& out_dists)
+    plamatrix::internal::ResidentMatrix<int>& out_indices,
+    plamatrix::internal::ResidentMatrix<double>& out_dists)
 {
     batchKnnDeviceMatrixImpl<double>(queries, data, K, out_indices, out_dists, 0, true);
 }
 
 void batchKnnDeviceAsync(
-    const plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& queries,
-    const plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& data,
+    const plamatrix::internal::ResidentMatrix<float>& queries,
+    const plamatrix::internal::ResidentMatrix<float>& data,
     int K,
-    plamatrix::DenseMatrix<int, plamatrix::Device::GPU>& out_indices,
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& out_dists,
+    plamatrix::internal::ResidentMatrix<int>& out_indices,
+    plamatrix::internal::ResidentMatrix<float>& out_dists,
     cudaStream_t stream)
 {
     batchKnnDeviceMatrixImpl<float>(queries, data, K, out_indices, out_dists, stream, false);
 }
 
 void batchKnnDeviceAsync(
-    const plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& queries,
-    const plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& data,
+    const plamatrix::internal::ResidentMatrix<double>& queries,
+    const plamatrix::internal::ResidentMatrix<double>& data,
     int K,
-    plamatrix::DenseMatrix<int, plamatrix::Device::GPU>& out_indices,
-    plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& out_dists,
+    plamatrix::internal::ResidentMatrix<int>& out_indices,
+    plamatrix::internal::ResidentMatrix<double>& out_dists,
     cudaStream_t stream)
 {
     batchKnnDeviceMatrixImpl<double>(queries, data, K, out_indices, out_dists, stream, false);

@@ -2,7 +2,9 @@
 
 #include <plapoint/core/point_cloud.h>
 #include <plapoint/search/kdtree.h>
-#include <plamatrix/ops/point_cloud.h>
+#include <plamatrix/dense/matrix.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/device/device_matrix.h>
 #ifdef PLAPOINT_WITH_CUDA
 #include <cuda_runtime.h>
 #include <plapoint/gpu/cuda_check.h>
@@ -16,14 +18,14 @@
 
 namespace plapoint {
 
-template <typename Scalar, plamatrix::Device Dev>
+template <typename Scalar, plamatrix::internal::Device Dev>
 class NormalRefinement
 {
 public:
-    using PointCloudType = PointCloud<Scalar, Dev>;
+    using PointCloudType = plapoint::internal::DeviceCloud<Scalar, Dev>;
 
     void setInputCloud(const std::shared_ptr<PointCloudType>& cloud) { _cloud = cloud; }
-    void setSearchMethod(std::shared_ptr<search::KdTree<Scalar, Dev>> tree) { _tree = tree; }
+    void setSearchMethod(std::shared_ptr<search::internal::DeviceKdTree<Scalar, Dev>> tree) { _tree = tree; }
 
     /// Smooth existing normals by averaging each point's k nearest neighbor normals.
     /// Throws if the cloud, search method, normals, or k are invalid.
@@ -35,7 +37,7 @@ public:
         if (k <= 0) throw std::invalid_argument("NormalRefinement: k must be positive");
 
 #ifdef PLAPOINT_WITH_CUDA
-        if constexpr (Dev == plamatrix::Device::GPU)
+        if constexpr (Dev == plamatrix::internal::Device::GPU)
         {
             if (k <= 32)
             {
@@ -46,7 +48,8 @@ public:
                 gpu::GpuSpatialIndex<Scalar> index;
                 index.buildAdaptive(*_cloud);
                 gpu::NormalRefinementGpuWorkspace<Scalar> workspace;
-                plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> refined_normals;
+                plamatrix::internal::ResidentMatrix<Scalar> refined_normals(
+                    static_cast<plamatrix::Index>(_cloud->size()), 3, _cloud->executionContext());
                 gpu::smoothNormalsAsync(
                     *_cloud, index, k, refined_normals, workspace, nullptr);
                 PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(nullptr));
@@ -61,13 +64,12 @@ public:
         const auto& points_cpu = _cloud->pointsCpu();
         auto normals_cpu = toCpuCopy(*_cloud->normals());
 
-        std::vector<plamatrix::Vec3<Scalar>> temp(static_cast<std::size_t>(n));
+        std::vector<plamatrix::Matrix<Scalar, 3, 1>> temp(static_cast<std::size_t>(n));
         for (int i = 0; i < n; ++i)
-            temp[static_cast<std::size_t>(i)] = {
+            temp[static_cast<std::size_t>(i)] = plamatrix::Matrix<Scalar, 3, 1>(
                 normals_cpu(i, 0),
                 normals_cpu(i, 1),
-                normals_cpu(i, 2)
-            };
+                normals_cpu(i, 2));
 
         const auto all_neighbors = _tree->batchNearestKSearch(points_cpu, k);
         for (int i = 0; i < n; ++i)
@@ -76,9 +78,9 @@ public:
             Scalar sx = 0, sy = 0, sz = 0;
             for (int nb : neighbors)
             {
-                sx += temp[static_cast<std::size_t>(nb)].x;
-                sy += temp[static_cast<std::size_t>(nb)].y;
-                sz += temp[static_cast<std::size_t>(nb)].z;
+                sx += temp[static_cast<std::size_t>(nb)](0);
+                sy += temp[static_cast<std::size_t>(nb)](1);
+                sz += temp[static_cast<std::size_t>(nb)](2);
             }
             Scalar len = std::sqrt(sx*sx + sy*sy + sz*sz);
             if (len > Scalar(1e-10))
@@ -92,11 +94,11 @@ public:
     }
 
     /// Flip normals in place so they point toward the supplied viewpoint.
-    void orientConsistently(const plamatrix::Vec3<Scalar>& viewpoint)
+    void orientConsistently(const plamatrix::Matrix<Scalar, 3, 1>& viewpoint)
     {
         if (!_cloud || !_cloud->hasNormals()) return;
 #ifdef PLAPOINT_WITH_CUDA
-        if constexpr (Dev == plamatrix::Device::GPU)
+        if constexpr (Dev == plamatrix::internal::Device::GPU)
         {
             gpu::orientNormalsTowardViewpointAsync(*_cloud, viewpoint, nullptr);
             PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(nullptr));
@@ -108,8 +110,8 @@ public:
         auto normals_cpu = toCpuCopy(*_cloud->normals());
         for (int i = 0; i < n; ++i)
         {
-            plamatrix::Vec3<Scalar> pt = pointVec(points_cpu, i);
-            Scalar dx = viewpoint.x - pt.x, dy = viewpoint.y - pt.y, dz = viewpoint.z - pt.z;
+            const auto pt = pointVec(points_cpu, i);
+            Scalar dx = viewpoint(0) - pt(0), dy = viewpoint(1) - pt(1), dz = viewpoint(2) - pt(2);
             Scalar nx = normals_cpu(i, 0), ny = normals_cpu(i, 1), nz = normals_cpu(i, 2);
             if (dx * nx + dy * ny + dz * nz < 0)
             {
@@ -122,44 +124,40 @@ public:
     }
 
 private:
-    static plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> toCpuCopy(
-        const plamatrix::DenseMatrix<Scalar, Dev>& m)
+    static plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>
+    toCpuCopy(const typename PointCloudType::MatrixType& m)
     {
-        if constexpr (Dev == plamatrix::Device::CPU)
+        if constexpr (Dev == plamatrix::internal::Device::CPU)
         {
-            plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> copy(m.rows(), m.cols());
-            for (plamatrix::Index r = 0; r < m.rows(); ++r)
-                for (plamatrix::Index c = 0; c < m.cols(); ++c)
-                    copy(r, c) = m(r, c);
-            return copy;
+            return m;
         }
         else
         {
-            return m.toCpu();
+            return m.toHostMatrix();
         }
     }
 
-    static plamatrix::Vec3<Scalar> pointVec(
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& points,
-        int idx)
+    static plamatrix::Matrix<Scalar, 3, 1>
+    pointVec(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& points, int idx)
     {
-        return {points(idx, 0), points(idx, 1), points(idx, 2)};
+        return plamatrix::Matrix<Scalar, 3, 1>(points(idx, 0), points(idx, 1), points(idx, 2));
     }
 
-    void setCloudNormals(plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>&& normals_cpu)
+    void setCloudNormals(plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>&& normals_cpu)
     {
-        if constexpr (Dev == plamatrix::Device::CPU)
+        if constexpr (Dev == plamatrix::internal::Device::CPU)
         {
             _cloud->setNormals(std::move(normals_cpu));
         }
         else
         {
-            _cloud->setNormals(normals_cpu.toGpu());
+            _cloud->setNormals(plamatrix::internal::ResidentMatrix<Scalar>::copyFrom(
+                normals_cpu, _cloud->executionContext()));
         }
     }
 
     std::shared_ptr<PointCloudType> _cloud;
-    std::shared_ptr<search::KdTree<Scalar, Dev>> _tree;
+    std::shared_ptr<search::internal::DeviceKdTree<Scalar, Dev>> _tree;
 };
 
 } // namespace plapoint

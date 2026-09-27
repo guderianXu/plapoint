@@ -22,7 +22,7 @@ jobs:
           ref: d67dc6cfe2525a7a5053a7a3d0c1eedc82948904
           path: plamatrix
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libgtest-dev ninja-build
+        run: sudo apt-get update && sudo apt-get install -y libeigen3-dev libgtest-dev ninja-build
       - name: Build and install CPU PlaMatrix
         run: |
           cmake -S plamatrix -B build/plamatrix -G Ninja \
@@ -59,6 +59,136 @@ jobs:
           ctest --test-dir build/plapoint-benchmark --output-on-failure
           python3 plapoint/scripts/test_python_tools.py
 
+  linux-sanitizer-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PlaPoint
+        uses: actions/checkout@v7
+        with:
+          path: plapoint
+      - name: Check out PlaMatrix
+        uses: actions/checkout@v7
+        with:
+          repository: guderianXu/plamatrix
+          ref: d67dc6cfe2525a7a5053a7a3d0c1eedc82948904
+          path: plamatrix
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libeigen3-dev libgtest-dev ninja-build
+      - name: Build sanitizer PlaMatrix
+        run: |
+          cmake -S plamatrix -B build/plamatrix-sanitizer -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_INSTALL_PREFIX="$PWD/build/deps-sanitizer" \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DPLAMATRIX_WITH_CUDA=OFF \
+            -DPLAMATRIX_WITH_OPENCL=OFF \
+            -DPLAMATRIX_BUILD_TESTS=OFF \
+            -DPLAMATRIX_BUILD_BENCHMARKS=OFF
+          cmake --build build/plamatrix-sanitizer --target install
+      - name: Build and test PlaPoint with ASan and UBSan
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          cmake -S plapoint -B build/plapoint-sanitizer -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_PREFIX_PATH="$PWD/build/deps-sanitizer" \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DPLAPOINT_WITH_CUDA=OFF \
+            -DPLAPOINT_WITH_OPENCL=OFF \
+            -DPLAPOINT_BUILD_TESTS=ON \
+            -DPLAPOINT_BUILD_BENCHMARKS=OFF
+          cmake --build build/plapoint-sanitizer
+          ctest --test-dir build/plapoint-sanitizer --output-on-failure
+
+  linux-opencl-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PlaPoint
+        uses: actions/checkout@v7
+        with:
+          path: plapoint
+      - name: Check out PlaMatrix
+        uses: actions/checkout@v7
+        with:
+          repository: guderianXu/plamatrix
+          ref: d67dc6cfe2525a7a5053a7a3d0c1eedc82948904
+          path: plamatrix
+      - name: Install OpenCL build and runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeigen3-dev libgtest-dev ninja-build ocl-icd-opencl-dev pocl-opencl-icd
+      - name: Build and install OpenCL PlaMatrix
+        run: |
+          cmake -S plamatrix -B build/plamatrix-opencl -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/build/deps-opencl" \
+            -DPLAMATRIX_WITH_CUDA=OFF \
+            -DPLAMATRIX_WITH_OPENCL=ON \
+            -DPLAMATRIX_BUILD_TESTS=ON \
+            -DPLAMATRIX_BUILD_BENCHMARKS=OFF
+          cmake --build build/plamatrix-opencl
+          ctest --test-dir build/plamatrix-opencl --output-on-failure
+          cmake --install build/plamatrix-opencl
+      - name: Build and test PlaPoint OpenCL paths
+        run: |
+          cmake -S plapoint -B build/plapoint-opencl -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$PWD/build/deps-opencl" \
+            -DPLAPOINT_WITH_CUDA=OFF \
+            -DPLAPOINT_WITH_OPENCL=ON \
+            -DPLAPOINT_BUILD_TESTS=ON \
+            -DPLAPOINT_BUILD_BENCHMARKS=OFF
+          cmake --build build/plapoint-opencl
+          ctest --test-dir build/plapoint-opencl --output-on-failure
+
+  linux-cuda-build-and-tests:
+    name: Linux CUDA compile and host smoke tests
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:13.4.1-devel-ubuntu24.04
+    timeout-minutes: 45
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y cmake g++ git libeigen3-dev libgtest-dev ninja-build
+      - name: Check out PlaPoint
+        uses: actions/checkout@v7
+        with:
+          path: plapoint
+      - name: Check out PlaMatrix
+        uses: actions/checkout@v7
+        with:
+          repository: guderianXu/plamatrix
+          ref: d67dc6cfe2525a7a5053a7a3d0c1eedc82948904
+          path: plamatrix
+      - name: Build and install CUDA PlaMatrix
+        run: |
+          cmake -S plamatrix -B build/plamatrix-cuda -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES=75 \
+            -DCMAKE_INSTALL_PREFIX="$PWD/build/deps-cuda" \
+            -DPLAMATRIX_WITH_CUDA=ON \
+            -DPLAMATRIX_WITH_OPENCL=OFF \
+            -DPLAMATRIX_BUILD_TESTS=OFF \
+            -DPLAMATRIX_BUILD_BENCHMARKS=OFF
+          cmake --build build/plamatrix-cuda --target install
+      - name: Build CUDA paths and run host-visible tests
+        run: |
+          cmake -S plapoint -B build/plapoint-cuda -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES=75 \
+            -DCMAKE_PREFIX_PATH="$PWD/build/deps-cuda" \
+            -DPLAPOINT_WITH_CUDA=ON \
+            -DPLAPOINT_WITH_OPENCL=OFF \
+            -DPLAPOINT_BUILD_TESTS=ON \
+            -DPLAPOINT_BUILD_BENCHMARKS=OFF \
+            -DPLAPOINT_REQUIRE_CUDA_TEST_DEVICE=OFF
+          cmake --build build/plapoint-cuda
+          ctest --test-dir build/plapoint-cuda --output-on-failure
+
   windows-msvc-build:
     runs-on: windows-latest
     steps:
@@ -72,6 +202,19 @@ jobs:
           repository: guderianXu/plamatrix
           ref: d67dc6cfe2525a7a5053a7a3d0c1eedc82948904
           path: plamatrix
+      - name: Check out GoogleTest
+        uses: actions/checkout@v7
+        with:
+          repository: google/googletest
+          ref: v1.18.0
+          path: googletest
+      - name: Build and install GoogleTest
+        shell: pwsh
+        run: |
+          cmake -S googletest -B build/googletest -A x64 `
+            -DCMAKE_INSTALL_PREFIX="$pwd/build/deps" `
+            -Dgtest_force_shared_crt=ON
+          cmake --build build/googletest --config Release --target install
       - name: Build and install CPU PlaMatrix
         shell: pwsh
         run: |
@@ -92,9 +235,11 @@ jobs:
             -DBUILD_SHARED_LIBS=ON `
             -DPLAPOINT_WITH_CUDA=OFF `
             -DPLAPOINT_WITH_OPENCL=OFF `
-            -DPLAPOINT_BUILD_TESTS=OFF `
+            -DPLAPOINT_BUILD_TESTS=ON `
             -DPLAPOINT_BUILD_BENCHMARKS=OFF
           cmake --build build/plapoint --config Release --target install
+          $env:PATH = "$pwd\build\plapoint\Release;$pwd\build\deps\bin;$env:PATH"
+          ctest --test-dir build/plapoint -C Release --output-on-failure
       - name: Build and run installed-package consumer
         shell: pwsh
         run: |

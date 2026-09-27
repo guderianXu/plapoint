@@ -8,8 +8,10 @@
 #include <utility>
 
 #include <plamatrix/plamatrix.h>
+#include <plamatrix/internal/core/device.h>
 
 #include <plapoint/core/point_cloud.h>
+#include <plapoint/geometry_cloud.h>
 #include <plapoint/mesh/marching_cubes.h>
 #include <plapoint/mesh/poisson_reconstruction.h>
 
@@ -24,10 +26,9 @@ constexpr Scalar pi()
 }
 
 /// Triangle mesh represented as vertex and face matrices returned by mesh algorithms.
-template <typename Scalar>
-struct Mesh
+template <typename Scalar> struct Mesh
 {
-    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+    using Matrix = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>;
 
     Matrix vertices;
     Matrix faces;
@@ -51,37 +52,35 @@ struct SphereMeshMetrics
 namespace detail
 {
 
-template <typename Scalar>
-void accumulateVertexMetrics(
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& vertices,
-    plamatrix::Index row,
-    Scalar radius,
-    SphereMeshMetrics& metrics,
-    double& radius_error_sum)
-{
-    const double x = static_cast<double>(vertices.getValue(row, 0));
-    const double y = static_cast<double>(vertices.getValue(row, 1));
-    const double z = static_cast<double>(vertices.getValue(row, 2));
-    metrics.max_abs_coordinate = std::max(metrics.max_abs_coordinate, std::abs(x));
-    metrics.max_abs_coordinate = std::max(metrics.max_abs_coordinate, std::abs(y));
-    metrics.max_abs_coordinate = std::max(metrics.max_abs_coordinate, std::abs(z));
+    template <typename Scalar>
+    void accumulateVertexMetrics(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& vertices,
+                                 plamatrix::Index row,
+                                 Scalar radius,
+                                 SphereMeshMetrics& metrics,
+                                 double& radius_error_sum)
+    {
+        const double x = static_cast<double>(vertices.operator()(row, 0));
+        const double y = static_cast<double>(vertices.operator()(row, 1));
+        const double z = static_cast<double>(vertices.operator()(row, 2));
+        metrics.max_abs_coordinate = std::max(metrics.max_abs_coordinate, std::abs(x));
+        metrics.max_abs_coordinate = std::max(metrics.max_abs_coordinate, std::abs(y));
+        metrics.max_abs_coordinate = std::max(metrics.max_abs_coordinate, std::abs(z));
 
-    const double r = std::sqrt(x * x + y * y + z * z);
-    const double error = std::abs(r - static_cast<double>(radius));
-    metrics.max_radius_error = std::max(metrics.max_radius_error, error);
-    radius_error_sum += error;
+        const double r = std::sqrt(x * x + y * y + z * z);
+        const double error = std::abs(r - static_cast<double>(radius));
+        metrics.max_radius_error = std::max(metrics.max_radius_error, error);
+        radius_error_sum += error;
 }
 
 template <typename Scalar>
-bool readFaceIndices(
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& faces,
-    plamatrix::Index row,
-    int vertex_count,
-    int (&idx)[3])
+bool readFaceIndices(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& faces,
+                     plamatrix::Index row,
+                     int vertex_count,
+                     int (&idx)[3])
 {
     for (int c = 0; c < 3; ++c)
     {
-        const double raw = static_cast<double>(faces.getValue(row, c));
+        const double raw = static_cast<double>(faces.operator()(row, c));
         const double rounded = std::round(raw);
         if (!std::isfinite(raw) || std::abs(raw - rounded) > 1e-4)
         {
@@ -97,25 +96,24 @@ bool readFaceIndices(
 }
 
 template <typename Scalar>
-void accumulateFaceMetrics(
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& vertices,
-    const int (&idx)[3],
-    SphereMeshMetrics& metrics,
-    int& outward_count,
-    int& inward_count)
+void accumulateFaceMetrics(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& vertices,
+                           const int (&idx)[3],
+                           SphereMeshMetrics& metrics,
+                           int& outward_count,
+                           int& inward_count)
 {
     constexpr double kDegenerateArea = 1e-10;
     constexpr double kOrientationEpsilon = 1e-12;
 
-    const double ax = static_cast<double>(vertices.getValue(idx[0], 0));
-    const double ay = static_cast<double>(vertices.getValue(idx[0], 1));
-    const double az = static_cast<double>(vertices.getValue(idx[0], 2));
-    const double bx = static_cast<double>(vertices.getValue(idx[1], 0));
-    const double by = static_cast<double>(vertices.getValue(idx[1], 1));
-    const double bz = static_cast<double>(vertices.getValue(idx[1], 2));
-    const double cx = static_cast<double>(vertices.getValue(idx[2], 0));
-    const double cy = static_cast<double>(vertices.getValue(idx[2], 1));
-    const double cz = static_cast<double>(vertices.getValue(idx[2], 2));
+    const double ax = static_cast<double>(vertices.operator()(idx[0], 0));
+    const double ay = static_cast<double>(vertices.operator()(idx[0], 1));
+    const double az = static_cast<double>(vertices.operator()(idx[0], 2));
+    const double bx = static_cast<double>(vertices.operator()(idx[1], 0));
+    const double by = static_cast<double>(vertices.operator()(idx[1], 1));
+    const double bz = static_cast<double>(vertices.operator()(idx[1], 2));
+    const double cx = static_cast<double>(vertices.operator()(idx[2], 0));
+    const double cy = static_cast<double>(vertices.operator()(idx[2], 1));
+    const double cz = static_cast<double>(vertices.operator()(idx[2], 2));
 
     const double ux = bx - ax;
     const double uy = by - ay;
@@ -170,7 +168,7 @@ Mesh<Scalar> generateMarchingCubesSphere(Scalar radius, int resolution)
 
 /// Generate a point cloud sampled on a sphere with outward normals for reconstruction tests.
 template <typename Scalar>
-std::shared_ptr<plapoint::PointCloud<Scalar, plamatrix::Device::CPU>>
+std::shared_ptr<plapoint::GeometryCloud<Scalar>>
 makeSpherePointCloud(Scalar radius, int rings, int segments)
 {
     if (rings < 3 || segments < 3)
@@ -178,7 +176,7 @@ makeSpherePointCloud(Scalar radius, int rings, int segments)
         throw std::invalid_argument("sphere point cloud requires at least 3 rings and 3 segments");
     }
 
-    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
+    using Matrix = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>;
     const int point_count = 2 + (rings - 1) * segments;
     Matrix points(point_count, 3);
     Matrix normals(point_count, 3);
@@ -186,14 +184,14 @@ makeSpherePointCloud(Scalar radius, int rings, int segments)
     int row = 0;
     const auto write_point = [&](Scalar x, Scalar y, Scalar z)
     {
-        points.setValue(row, 0, x);
-        points.setValue(row, 1, y);
-        points.setValue(row, 2, z);
+        points.operator()(row, 0) = x;
+        points.operator()(row, 1) = y;
+        points.operator()(row, 2) = z;
 
         const Scalar inv_radius = Scalar(1) / radius;
-        normals.setValue(row, 0, x * inv_radius);
-        normals.setValue(row, 1, y * inv_radius);
-        normals.setValue(row, 2, z * inv_radius);
+        normals.operator()(row, 0) = x * inv_radius;
+        normals.operator()(row, 1) = y * inv_radius;
+        normals.operator()(row, 2) = z * inv_radius;
         ++row;
     };
 
@@ -213,7 +211,7 @@ makeSpherePointCloud(Scalar radius, int rings, int segments)
     }
     write_point(Scalar(0), Scalar(0), -radius);
 
-    auto cloud = std::make_shared<plapoint::PointCloud<Scalar, plamatrix::Device::CPU>>(
+    auto cloud = std::make_shared<plapoint::GeometryCloud<Scalar>>(
         std::move(points));
     cloud->setNormals(std::move(normals));
     return cloud;
@@ -240,10 +238,9 @@ Mesh<Scalar> generatePoissonSphere(Scalar radius,
 
 /// Measure vertex errors, index validity, degenerate faces, and face orientation consistency.
 template <typename Scalar>
-SphereMeshMetrics measureSphereMesh(
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& vertices,
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>& faces,
-    Scalar radius)
+SphereMeshMetrics measureSphereMesh(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& vertices,
+                                    const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& faces,
+                                    Scalar radius)
 {
     SphereMeshMetrics metrics;
     metrics.vertex_count = static_cast<int>(vertices.rows());

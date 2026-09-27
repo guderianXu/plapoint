@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include <vector>
+#include <plamatrix/internal/core/device.h>
 
 namespace plapoint
 {
@@ -51,11 +52,11 @@ Attribute roundedAttribute(long double value)
 
 template <typename Scalar>
 void setAveragedAttributes(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& input,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& input,
     const std::vector<int>& sorted_indices,
     const std::vector<int>& offsets,
     const std::vector<int>& counts,
-    PointCloud<Scalar, plamatrix::Device::CPU>& output)
+    plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& output)
 {
     const bool have_normals = input.hasNormals();
     const bool have_colors = input.hasColors();
@@ -68,28 +69,27 @@ void setAveragedAttributes(
     const auto scalar_field_count = static_cast<plamatrix::Index>(input.scalarFieldNames().size());
     const auto voxel_count = static_cast<plamatrix::Index>(counts.size());
 
-    std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>> normals;
-    std::unique_ptr<plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>> colors;
-    std::unique_ptr<plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU>> intensities;
-    std::unique_ptr<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>> scalar_fields;
+    std::unique_ptr<plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>> normals;
+    std::unique_ptr<plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic>> colors;
+    std::unique_ptr<plamatrix::Matrix<std::uint16_t, plamatrix::Dynamic, plamatrix::Dynamic>> intensities;
+    std::unique_ptr<plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>> scalar_fields;
     if (have_normals)
     {
-        normals = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(
-            voxel_count, 3);
+        normals = std::make_unique<plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>>(voxel_count, 3);
     }
     if (have_colors)
     {
-        colors = std::make_unique<plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU>>(
-            voxel_count, 3);
+        colors =
+            std::make_unique<plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic>>(voxel_count, 3);
     }
     if (have_intensities)
     {
-        intensities = std::make_unique<
-            plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU>>(voxel_count, 1);
+        intensities =
+            std::make_unique<plamatrix::Matrix<std::uint16_t, plamatrix::Dynamic, plamatrix::Dynamic>>(voxel_count, 1);
     }
     if (have_scalar_fields)
     {
-        scalar_fields = std::make_unique<plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>>(
+        scalar_fields = std::make_unique<plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>>(
             voxel_count, scalar_field_count);
     }
 
@@ -111,21 +111,21 @@ void setAveragedAttributes(
             const int count = item + 1;
             if (have_normals)
             {
-                updateMean(mean_nx, static_cast<long double>(input_normals->getValue(point, 0)), count);
-                updateMean(mean_ny, static_cast<long double>(input_normals->getValue(point, 1)), count);
-                updateMean(mean_nz, static_cast<long double>(input_normals->getValue(point, 2)), count);
+                updateMean(mean_nx, static_cast<long double>(input_normals->operator()(point, 0)), count);
+                updateMean(mean_ny, static_cast<long double>(input_normals->operator()(point, 1)), count);
+                updateMean(mean_nz, static_cast<long double>(input_normals->operator()(point, 2)), count);
             }
             if (have_colors)
             {
-                updateMean(mean_r, static_cast<long double>(input_colors->getValue(point, 0)), count);
-                updateMean(mean_g, static_cast<long double>(input_colors->getValue(point, 1)), count);
-                updateMean(mean_b, static_cast<long double>(input_colors->getValue(point, 2)), count);
+                updateMean(mean_r, static_cast<long double>(input_colors->operator()(point, 0)), count);
+                updateMean(mean_g, static_cast<long double>(input_colors->operator()(point, 1)), count);
+                updateMean(mean_b, static_cast<long double>(input_colors->operator()(point, 2)), count);
             }
             if (have_intensities)
             {
                 updateMean(
                     mean_intensity,
-                    static_cast<long double>(input_intensities->getValue(point, 0)),
+                    static_cast<long double>(input_intensities->operator()(point, 0)),
                     count);
             }
             if (have_scalar_fields)
@@ -134,7 +134,7 @@ void setAveragedAttributes(
                 {
                     updateMean(
                         mean_scalar_fields[static_cast<std::size_t>(column)],
-                        static_cast<long double>(input_scalar_fields->getValue(point, column)),
+                        static_cast<long double>(input_scalar_fields->operator()(point, column)),
                         count);
                 }
             }
@@ -177,8 +177,8 @@ void setAveragedAttributes(
 }
 
 template <typename Scalar>
-PointCloud<Scalar, plamatrix::Device::CPU> voxelDownsampleImpl(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& input,
+plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU> voxelDownsampleImpl(
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& input,
     Scalar leaf_x,
     Scalar leaf_y,
     Scalar leaf_z)
@@ -194,7 +194,7 @@ PointCloud<Scalar, plamatrix::Device::CPU> voxelDownsampleImpl(
     }
     if (input.size() == 0)
     {
-        PointCloud<Scalar, plamatrix::Device::CPU> output(0);
+        plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU> output(0);
         const std::vector<int> empty;
         setAveragedAttributes(input, empty, empty, empty, output);
         return output;
@@ -271,12 +271,11 @@ PointCloud<Scalar, plamatrix::Device::CPU> voxelDownsampleImpl(
     detail::kernelArg(kernel, 4, voxel_count);
     detail::kernelBufferArg(kernel, 5, centroid_buffer);
     const std::size_t global_size = counts.size();
-    detail::checkOpenCl(
-        clEnqueueNDRangeKernel(queue, kernel, 1, nullptr, &global_size, nullptr, 0, nullptr, nullptr),
-        "clEnqueueNDRangeKernel(voxelCentroids)");
+    detail::checkOpenCl(clEnqueueNDRangeKernel(queue, kernel, 1, nullptr, &global_size, nullptr, 0, nullptr, nullptr),
+                        "clEnqueueNDRangeKernel(voxelCentroids)");
     detail::readVector(queue, centroid_buffer, centroids);
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> output_points(voxel_count, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> output_points(voxel_count, 3);
     for (int row = 0; row < voxel_count; ++row)
     {
         output_points(row, 0) = centroids[static_cast<std::size_t>(row) * 3u];
@@ -286,18 +285,18 @@ PointCloud<Scalar, plamatrix::Device::CPU> voxelDownsampleImpl(
     if (!input.hasNormals() && !input.hasColors() && !input.hasIntensities()
         && !input.hasScalarFields())
     {
-        return PointCloud<Scalar, plamatrix::Device::CPU>(std::move(output_points));
+        return plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>(std::move(output_points));
     }
 
-    PointCloud<Scalar, plamatrix::Device::CPU> output(std::move(output_points));
+    plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU> output(std::move(output_points));
     setAveragedAttributes(input, sorted_indices, offsets, counts, output);
     return output;
 }
 
 } // namespace
 
-PointCloud<float, plamatrix::Device::CPU> voxelDownsample(
-    const PointCloud<float, plamatrix::Device::CPU>& input,
+plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU> voxelDownsample(
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>& input,
     float leaf_x,
     float leaf_y,
     float leaf_z)
@@ -305,8 +304,8 @@ PointCloud<float, plamatrix::Device::CPU> voxelDownsample(
     return voxelDownsampleImpl(input, leaf_x, leaf_y, leaf_z);
 }
 
-PointCloud<double, plamatrix::Device::CPU> voxelDownsample(
-    const PointCloud<double, plamatrix::Device::CPU>& input,
+plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::CPU> voxelDownsample(
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::CPU>& input,
     double leaf_x,
     double leaf_y,
     double leaf_z)

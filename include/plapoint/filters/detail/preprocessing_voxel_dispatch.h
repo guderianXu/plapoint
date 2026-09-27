@@ -1,12 +1,12 @@
 #pragma once
 
-namespace plapoint
+namespace plapoint::detail
 {
 
 /// Downsample a CPU-owned point cloud using the requested device, returning CPU-owned output.
 template <typename Scalar>
-PointCloud<Scalar, plamatrix::Device::CPU> voxelDownsample(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& input,
+plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU> voxelDownsample(
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& input,
     Scalar leaf_x,
     Scalar leaf_y,
     Scalar leaf_z,
@@ -130,8 +130,8 @@ PointCloud<Scalar, plamatrix::Device::CPU> voxelDownsample(
 
 /// Downsample a CPU-owned point cloud using cubic voxels and the requested device.
 template <typename Scalar>
-PointCloud<Scalar, plamatrix::Device::CPU> voxelDownsample(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& input,
+plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU> voxelDownsample(
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& input,
     Scalar leaf_size,
     ProcessingDevice device,
     ProcessingReport* report = nullptr)
@@ -139,4 +139,4 @@ PointCloud<Scalar, plamatrix::Device::CPU> voxelDownsample(
     return voxelDownsample(input, leaf_size, leaf_size, leaf_size, device, report);
 }
 
-} // namespace plapoint
+} // namespace plapoint::detail

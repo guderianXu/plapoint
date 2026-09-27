@@ -212,87 +212,148 @@ public:
     /// Reserve reusable per-block target-grid bounds storage.
     void reserveTargetSpatialGridBoundsPartials(int partial_count);
 
-    /// Reserve reusable temporary storage for CUB target-grid run-length and scan operations.
-    void reserveTargetSpatialGridCubTempStorage(std::size_t byte_count);
-
-    /// Reserve device storage for the target-grid run count produced by CUB.
+    /// Reserve device storage for the target-grid run count produced by PlaMatrix grouping.
     void reserveTargetSpatialGridRunCount();
 
     /// Mark the optional dense target-grid cell lookup metadata for the current cached spatial grid.
     void markTargetSpatialGridDirectLookupCache(
-        int min_x,
-        int min_y,
-        int min_z,
-        int range_x,
-        int range_y,
-        int range_z,
-        int entry_count);
+        int min_x, int min_y, int min_z, int range_x, int range_y, int range_z, int entry_count);
 
     /// Mark the reusable target tile bounds storage as containing bounds for the supplied target.
     void markTargetTileBoundsCache(const void* target_points, int target_count);
 
     /// Return the currently reserved partial reduction capacity, in blocks.
-    int partialCapacity() const { return _partial_capacity; }
+    int partialCapacity() const
+    {
+        return _partial_capacity;
+    }
 
     /// Return the currently reserved target tile bound capacity, in tiles.
-    int targetTileBoundCapacity() const { return _target_tile_bound_capacity; }
+    int targetTileBoundCapacity() const
+    {
+        return _target_tile_bound_capacity;
+    }
 
     /// Return the currently reserved target spatial grid capacity, in points.
-    int targetSpatialGridCapacity() const { return _target_spatial_grid_capacity; }
+    int targetSpatialGridCapacity() const
+    {
+        return _target_spatial_grid_capacity;
+    }
 
     /// Return the number of unique cells in the currently cached target spatial grid.
-    int targetSpatialGridCellCount() const { return _target_spatial_grid_cell_count; }
+    int targetSpatialGridCellCount() const
+    {
+        return _target_spatial_grid_cell_count;
+    }
 
     /// Return the target point buffer identity used by the cached spatial grid.
-    const void* targetSpatialGridPoints() const { return _target_spatial_grid_points; }
+    const void* targetSpatialGridPoints() const
+    {
+        return _target_spatial_grid_points;
+    }
 
     /// Return the target point count used by the cached spatial grid.
-    int targetSpatialGridPointCount() const { return _target_spatial_grid_point_count; }
+    int targetSpatialGridPointCount() const
+    {
+        return _target_spatial_grid_point_count;
+    }
 
     /// Return the reusable partial reduction storage pointer, or null before reserve().
-    unsigned char* partialStorage() { return _partial_storage.get(); }
+    unsigned char* partialStorage()
+    {
+        return _partial_storage.get();
+    }
 
     /// Return the reusable final stats storage pointer, or null before reserve().
-    unsigned char* statsStorage() { return _stats_storage.get(); }
+    unsigned char* statsStorage()
+    {
+        return _stats_storage.get();
+    }
 
     /// Return the reusable pinned host result storage pointer, or null before a result-producing reserve call.
-    unsigned char* hostResultStorage() { return _host_result_storage.get(); }
+    unsigned char* hostResultStorage()
+    {
+        return _host_result_storage.get();
+    }
 
     /// Return the currently reserved pinned host result storage capacity, in bytes.
-    std::size_t hostResultStorageCapacity() const { return _host_result_storage.size(); }
+    std::size_t hostResultStorageCapacity() const
+    {
+        return _host_result_storage.size();
+    }
 
     /// Return the reusable target tile bounds storage pointer, or null before reserveTargetTileBounds().
-    unsigned char* targetTileBoundsStorage() { return _target_tile_bounds_storage.get(); }
+    unsigned char* targetTileBoundsStorage()
+    {
+        return _target_tile_bounds_storage.get();
+    }
 
     /// Return the reusable sorted target-grid key storage pointer.
-    unsigned char* targetSpatialGridKeysStorage() { return _target_spatial_grid_keys_storage.get(); }
+    unsigned char* targetSpatialGridKeysStorage()
+    {
+        return _target_spatial_grid_sorted_keys_storage.get();
+    }
 
-    /// Return the reusable unique target-grid cell key storage pointer.
-    unsigned char* targetSpatialGridUniqueKeysStorage() { return _target_spatial_grid_unique_keys_storage.get(); }
+    /// Return the reusable unique target-grid cell key storage pointer. Before grouping this buffer
+    /// temporarily holds generated keys; after a successful build it contains unique cell keys.
+    unsigned char* targetSpatialGridUniqueKeysStorage()
+    {
+        return _target_spatial_grid_keys_storage.get();
+    }
+
+    /// Explicit alias for targetSpatialGridKeysStorage().
+    unsigned char* targetSpatialGridSortedKeysStorage()
+    {
+        return _target_spatial_grid_sorted_keys_storage.get();
+    }
 
     /// Return the reusable sorted target index storage pointer.
-    unsigned char* targetSpatialGridIndicesStorage() { return _target_spatial_grid_indices_storage.get(); }
+    unsigned char* targetSpatialGridIndicesStorage()
+    {
+        return _target_spatial_grid_indices_storage.get();
+    }
 
     /// Return the reusable target-index to sorted-offset storage pointer.
-    unsigned char* targetSpatialGridSortedOffsetsStorage() { return _target_spatial_grid_sorted_offsets_storage.get(); }
+    unsigned char* targetSpatialGridSortedOffsetsStorage()
+    {
+        return _target_spatial_grid_sorted_offsets_storage.get();
+    }
 
     /// Return the reusable sorted target x-coordinate storage pointer.
-    unsigned char* targetSpatialGridSortedXStorage() { return _target_spatial_grid_sorted_x_storage.get(); }
+    unsigned char* targetSpatialGridSortedXStorage()
+    {
+        return _target_spatial_grid_sorted_x_storage.get();
+    }
 
     /// Return the reusable sorted target y-coordinate storage pointer.
-    unsigned char* targetSpatialGridSortedYStorage() { return _target_spatial_grid_sorted_y_storage.get(); }
+    unsigned char* targetSpatialGridSortedYStorage()
+    {
+        return _target_spatial_grid_sorted_y_storage.get();
+    }
 
     /// Return the reusable sorted target z-coordinate storage pointer.
-    unsigned char* targetSpatialGridSortedZStorage() { return _target_spatial_grid_sorted_z_storage.get(); }
+    unsigned char* targetSpatialGridSortedZStorage()
+    {
+        return _target_spatial_grid_sorted_z_storage.get();
+    }
 
     /// Return the reusable target-grid cell start storage pointer.
-    unsigned char* targetSpatialGridCellStartsStorage() { return _target_spatial_grid_cell_starts_storage.get(); }
+    unsigned char* targetSpatialGridCellStartsStorage()
+    {
+        return _target_spatial_grid_cell_starts_storage.get();
+    }
 
     /// Return the reusable target-grid cell count storage pointer.
-    unsigned char* targetSpatialGridCellCountsStorage() { return _target_spatial_grid_cell_counts_storage.get(); }
+    unsigned char* targetSpatialGridCellCountsStorage()
+    {
+        return _target_spatial_grid_cell_counts_storage.get();
+    }
 
     /// Return the reusable dense target-grid direct cell lookup storage pointer.
-    unsigned char* targetSpatialGridDirectLookupStorage() { return _target_spatial_grid_direct_lookup_storage.get(); }
+    unsigned char* targetSpatialGridDirectLookupStorage()
+    {
+        return _target_spatial_grid_direct_lookup_storage.get();
+    }
 
     /// Return the reusable target-grid per-block bounds storage pointer.
     unsigned char* targetSpatialGridBoundsPartialsStorage()
@@ -300,32 +361,41 @@ public:
         return _target_spatial_grid_bounds_partials_storage.get();
     }
 
-    /// Return reusable temporary storage for CUB target-grid run-length and scan operations.
-    unsigned char* targetSpatialGridCubTempStorage() { return _target_spatial_grid_cub_temp_storage.get(); }
-
     /// Return reusable device storage for the target-grid run count.
-    unsigned char* targetSpatialGridRunCountStorage() { return _target_spatial_grid_run_count_storage.get(); }
+    unsigned char* targetSpatialGridRunCountStorage()
+    {
+        return _target_spatial_grid_run_count_storage.get();
+    }
 
     /// Return the currently reserved dense target-grid direct lookup capacity, in entries.
-    int targetSpatialGridDirectLookupCapacity() const { return _target_spatial_grid_direct_lookup_capacity; }
+    int targetSpatialGridDirectLookupCapacity() const
+    {
+        return _target_spatial_grid_direct_lookup_capacity;
+    }
 
     /// Return the currently reserved target-grid bounds partial capacity, in blocks.
-    int targetSpatialGridBoundsPartialCapacity() const { return _target_spatial_grid_bounds_partial_capacity; }
-
-    /// Return the currently reserved CUB target-grid temporary storage capacity, in bytes.
-    std::size_t targetSpatialGridCubTempStorageCapacity() const
+    int targetSpatialGridBoundsPartialCapacity() const
     {
-        return _target_spatial_grid_cub_temp_storage.size();
+        return _target_spatial_grid_bounds_partial_capacity;
     }
 
     /// Return the dense target-grid direct lookup entry count for the currently cached grid, or zero if inactive.
-    int targetSpatialGridDirectLookupEntryCount() const { return _target_spatial_grid_direct_lookup_entry_count; }
+    int targetSpatialGridDirectLookupEntryCount() const
+    {
+        return _target_spatial_grid_direct_lookup_entry_count;
+    }
 
     /// Return true once the current cached spatial grid has evaluated direct lookup eligibility.
-    bool targetSpatialGridDirectLookupEvaluated() const { return _target_spatial_grid_direct_lookup_evaluated; }
+    bool targetSpatialGridDirectLookupEvaluated() const
+    {
+        return _target_spatial_grid_direct_lookup_evaluated;
+    }
 
     /// Return the minimum x-cell coordinate covered by the direct target-grid lookup table.
-    int targetSpatialGridDirectLookupMinX() const { return _target_spatial_grid_direct_lookup_min_x; }
+    int targetSpatialGridDirectLookupMinX() const
+    {
+        return _target_spatial_grid_direct_lookup_min_x;
+    }
 
     /// Return the minimum y-cell coordinate covered by the direct target-grid lookup table.
     int targetSpatialGridDirectLookupMinY() const { return _target_spatial_grid_direct_lookup_min_y; }
@@ -348,18 +418,17 @@ private:
     void reserveHostResultStorage(std::size_t byte_count);
     void reserveAlignmentStepStorage(int source_count, std::size_t result_byte_count);
     void reserveTargetSpatialGrid(int target_count, std::size_t coordinate_value_bytes);
-    bool targetSpatialGridCacheMatches(
-        const void* target_points,
-        int target_count,
-        double cell_size,
-        std::size_t coordinate_value_bytes) const;
+    bool targetSpatialGridCacheMatches(const void* target_points,
+                                       int target_count,
+                                       double cell_size,
+                                       std::size_t coordinate_value_bytes) const;
 
     DeviceBuffer<unsigned char> _partial_storage;
     DeviceBuffer<unsigned char> _stats_storage;
     HostPinnedBuffer<unsigned char> _host_result_storage;
     DeviceBuffer<unsigned char> _target_tile_bounds_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_keys_storage;
-    DeviceBuffer<unsigned char> _target_spatial_grid_unique_keys_storage;
+    DeviceBuffer<unsigned char> _target_spatial_grid_sorted_keys_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_indices_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_sorted_offsets_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_sorted_x_storage;
@@ -369,7 +438,6 @@ private:
     DeviceBuffer<unsigned char> _target_spatial_grid_cell_counts_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_direct_lookup_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_bounds_partials_storage;
-    DeviceBuffer<unsigned char> _target_spatial_grid_cub_temp_storage;
     DeviceBuffer<unsigned char> _target_spatial_grid_run_count_storage;
     int _partial_capacity = 0;
     int _target_tile_bound_capacity = 0;
@@ -649,808 +717,811 @@ IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajor(
 
 /// Compute compact stats and the step transform needed by the GPU ICP alignment loop.
 /// Copies only the compact convergence/error summary and step delta back to host.
-IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajor(
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    double* d_step_transform,
-    cudaStream_t stream = 0,
-    bool assume_ordered_correspondences = false);
+IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajor(const double* d_source_points,
+                                                                  int source_count,
+                                                                  const double* d_target_points,
+                                                                  int target_count,
+                                                                  double max_correspondence_distance,
+                                                                  IcpCorrespondenceStatsWorkspace& stats_workspace,
+                                                                  double* d_step_transform,
+                                                                  cudaStream_t stream = 0,
+                                                                  bool assume_ordered_correspondences = false);
 
 namespace detail
 {
 
-/// Return the byte count for one sorted target-coordinate column stored with Scalar precision.
-template <typename Scalar>
-inline std::size_t targetSpatialGridSortedCoordinateByteCount(int target_count)
-{
-    if (target_count <= 0)
-    {
-        return 0;
-    }
-    return static_cast<std::size_t>(target_count) * sizeof(Scalar);
-}
+    /// Build and synchronize the reusable finite-radius ICP target grid without running a query.
+    /// Returns false when the target size or correspondence radius selects a non-grid path.
+    bool prepareIcpTargetSpatialGridColumnMajor(const float* d_target_points,
+                                                int target_count,
+                                                float max_correspondence_distance,
+                                                IcpCorrespondenceStatsWorkspace& workspace,
+                                                cudaStream_t stream = 0);
 
-/// Return true when the reusable sorted-coordinate storage is too small or has the wrong scalar width.
-inline bool targetSpatialGridCoordinateStorageNeedsReserve(
-    int current_point_capacity,
-    std::size_t current_coordinate_value_bytes,
-    int target_count,
-    std::size_t requested_coordinate_value_bytes)
-{
-    return target_count > current_point_capacity ||
-           current_coordinate_value_bytes != requested_coordinate_value_bytes;
-}
+    /// Build and synchronize the reusable finite-radius ICP target grid without running a query.
+    /// Returns false when the target size or correspondence radius selects a non-grid path.
+    bool prepareIcpTargetSpatialGridColumnMajor(const double* d_target_points,
+                                                int target_count,
+                                                double max_correspondence_distance,
+                                                IcpCorrespondenceStatsWorkspace& workspace,
+                                                cudaStream_t stream = 0);
 
-/// Return true when exact pointwise stats can skip target-coordinate loads because source and target alias.
-template <typename Scalar>
-inline bool canUseSameBufferExactPointwiseStats(
-    const Scalar* d_source_points,
-    int source_count,
-    const Scalar* d_target_points,
-    int target_count,
-    const int* d_correspondence_indices)
-{
-    return d_correspondence_indices == nullptr &&
-           source_count == target_count &&
-           d_source_points == d_target_points;
-}
-
-/// Return true when exact pointwise stats may be attempted before falling back to nearest-neighbor search.
-template <typename Scalar>
-inline bool canProbeExactPointwiseStats(
-    const Scalar* d_source_points,
-    int source_count,
-    const Scalar* d_target_points,
-    int target_count,
-    Scalar max_correspondence_distance,
-    const int* d_correspondence_indices,
-    bool probe_exact_pointwise_on_finite_radius = false)
-{
-    if (d_correspondence_indices || source_count != target_count)
+    /// Return the byte count for one sorted target-coordinate column stored with Scalar precision.
+    template <typename Scalar> inline std::size_t targetSpatialGridSortedCoordinateByteCount(int target_count)
     {
-        return false;
-    }
-    if (canUseSameBufferExactPointwiseStats(
-            d_source_points,
-            source_count,
-            d_target_points,
-            target_count,
-            d_correspondence_indices))
-    {
-        return true;
+        if (target_count <= 0)
+        {
+            return 0;
+        }
+        return static_cast<std::size_t>(target_count) * sizeof(Scalar);
     }
 
-    const double max_dist = static_cast<double>(max_correspondence_distance);
-    return probe_exact_pointwise_on_finite_radius || !std::isfinite(max_dist);
-}
+    /// Return true when the reusable sorted-coordinate storage is too small or has the wrong scalar width.
+    inline bool targetSpatialGridCoordinateStorageNeedsReserve(int current_point_capacity,
+                                                               std::size_t current_coordinate_value_bytes,
+                                                               int target_count,
+                                                               std::size_t requested_coordinate_value_bytes)
+    {
+        return target_count > current_point_capacity ||
+               current_coordinate_value_bytes != requested_coordinate_value_bytes;
+    }
 
-/// Return true when transformed stats may accept same-index target matches before nearest-neighbor search.
-inline bool canProbeTransformedExactPointwiseStats(
-    int source_count,
-    const void* target_points,
-    int target_count,
-    const int* d_correspondence_indices)
-{
-    return d_correspondence_indices == nullptr &&
-           target_points != nullptr &&
-           source_count == target_count;
-}
+    /// Return true when exact pointwise stats can skip target-coordinate loads because source and target alias.
+    template <typename Scalar>
+    inline bool canUseSameBufferExactPointwiseStats(const Scalar* d_source_points,
+                                                    int source_count,
+                                                    const Scalar* d_target_points,
+                                                    int target_count,
+                                                    const int* d_correspondence_indices)
+    {
+        return d_correspondence_indices == nullptr && source_count == target_count &&
+               d_source_points == d_target_points;
+    }
 
-/// Compute the compact ICP alignment step using workspace already reserved for source_count.
-/// The caller must call IcpCorrespondenceStatsWorkspace::reserveFloatAlignmentStep(source_count) first.
-IcpAlignmentStepResult<float> computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    float* d_step_transform,
-    cudaStream_t stream = 0,
-    bool assume_ordered_correspondences = false,
-    bool probe_exact_pointwise_on_finite_radius = false);
+    /// Return true when exact pointwise stats may be attempted before falling back to nearest-neighbor search.
+    template <typename Scalar>
+    inline bool canProbeExactPointwiseStats(const Scalar* d_source_points,
+                                            int source_count,
+                                            const Scalar* d_target_points,
+                                            int target_count,
+                                            Scalar max_correspondence_distance,
+                                            const int* d_correspondence_indices,
+                                            bool probe_exact_pointwise_on_finite_radius = false)
+    {
+        if (d_correspondence_indices || source_count != target_count)
+        {
+            return false;
+        }
+        if (canUseSameBufferExactPointwiseStats(
+                d_source_points, source_count, d_target_points, target_count, d_correspondence_indices))
+        {
+            return true;
+        }
 
-/// Compute the compact ICP alignment step using workspace already reserved for source_count.
-/// The caller must call IcpCorrespondenceStatsWorkspace::reserveDoubleAlignmentStep(source_count) first.
-IcpAlignmentStepResult<double> computeIcpAlignmentStepColumnMajorWithReservedWorkspace(
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    double* d_step_transform,
-    cudaStream_t stream = 0,
-    bool assume_ordered_correspondences = false,
-    bool probe_exact_pointwise_on_finite_radius = false);
+        const double max_dist = static_cast<double>(max_correspondence_distance);
+        return probe_exact_pointwise_on_finite_radius || !std::isfinite(max_dist);
+    }
 
-/// Enqueue a compact ICP alignment step without copying the result to host.
-/// This helper returns false when the call would require ordered correspondences or host-guided exact-pointwise
-/// preflight fallback.
-bool launchIcpAlignmentStepColumnMajorWithReservedWorkspace(
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    float* d_step_transform,
-    cudaStream_t stream = 0,
-    bool assume_ordered_correspondences = false,
-    bool probe_exact_pointwise_on_finite_radius = false);
+    /// Return true when transformed stats may accept same-index target matches before nearest-neighbor search.
+    inline bool canProbeTransformedExactPointwiseStats(int source_count,
+                                                       const void* target_points,
+                                                       int target_count,
+                                                       const int* d_correspondence_indices)
+    {
+        return d_correspondence_indices == nullptr && target_points != nullptr && source_count == target_count;
+    }
 
-/// Enqueue a compact ICP alignment step without copying the result to host.
-/// This helper returns false when the call would require ordered correspondences or host-guided exact-pointwise
-/// preflight fallback.
-bool launchIcpAlignmentStepColumnMajorWithReservedWorkspace(
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    double* d_step_transform,
-    cudaStream_t stream = 0,
-    bool assume_ordered_correspondences = false,
-    bool probe_exact_pointwise_on_finite_radius = false);
+    /// Compute the compact ICP alignment step using workspace already reserved for source_count.
+    /// The caller must call IcpCorrespondenceStatsWorkspace::reserveFloatAlignmentStep(source_count) first.
+    IcpAlignmentStepResult<float>
+    computeIcpAlignmentStepColumnMajorWithReservedWorkspace(const float* d_source_points,
+                                                            int source_count,
+                                                            const float* d_target_points,
+                                                            int target_count,
+                                                            float max_correspondence_distance,
+                                                            IcpCorrespondenceStatsWorkspace& stats_workspace,
+                                                            float* d_step_transform,
+                                                            cudaStream_t stream = 0,
+                                                            bool assume_ordered_correspondences = false,
+                                                            bool probe_exact_pointwise_on_finite_radius = false);
 
-/// Enqueue a small-target compact ICP alignment step without copying the result to host.
-/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
-bool launchSmallTargetAlignmentStepColumnMajorWithReservedWorkspace(
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    float* d_step_transform,
-    cudaStream_t stream = 0);
+    /// Compute the compact ICP alignment step using workspace already reserved for source_count.
+    /// The caller must call IcpCorrespondenceStatsWorkspace::reserveDoubleAlignmentStep(source_count) first.
+    IcpAlignmentStepResult<double>
+    computeIcpAlignmentStepColumnMajorWithReservedWorkspace(const double* d_source_points,
+                                                            int source_count,
+                                                            const double* d_target_points,
+                                                            int target_count,
+                                                            double max_correspondence_distance,
+                                                            IcpCorrespondenceStatsWorkspace& stats_workspace,
+                                                            double* d_step_transform,
+                                                            cudaStream_t stream = 0,
+                                                            bool assume_ordered_correspondences = false,
+                                                            bool probe_exact_pointwise_on_finite_radius = false);
 
-/// Enqueue a small-target compact ICP alignment step without copying the result to host.
-/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
-bool launchSmallTargetAlignmentStepColumnMajorWithReservedWorkspace(
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    double* d_step_transform,
-    cudaStream_t stream = 0);
+    /// Enqueue a compact ICP alignment step without copying the result to host.
+    /// This helper returns false when the call would require ordered correspondences or host-guided exact-pointwise
+    /// preflight fallback.
+    bool launchIcpAlignmentStepColumnMajorWithReservedWorkspace(const float* d_source_points,
+                                                                int source_count,
+                                                                const float* d_target_points,
+                                                                int target_count,
+                                                                float max_correspondence_distance,
+                                                                IcpCorrespondenceStatsWorkspace& stats_workspace,
+                                                                float* d_step_transform,
+                                                                cudaStream_t stream = 0,
+                                                                bool assume_ordered_correspondences = false,
+                                                                bool probe_exact_pointwise_on_finite_radius = false);
 
-/// Compute the compact ICP alignment step from source points transformed by d_source_transform.
-/// The caller must call IcpCorrespondenceStatsWorkspace::reserveFloatAlignmentStep(source_count) first.
-/// Set probe_transformed_exact_pointwise_on_cache_hit only when same-index transformed matches are expected often
-/// enough to justify an extra O(source_count) exact preflight before reusing a cached target spatial grid.
-IcpAlignmentStepResult<float> computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(
-    const float* d_source_transform,
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    float* d_step_transform,
-    cudaStream_t stream = 0,
-    bool assume_ordered_correspondences = false,
-    bool probe_transformed_exact_pointwise_on_cache_hit = false);
+    /// Enqueue a compact ICP alignment step without copying the result to host.
+    /// This helper returns false when the call would require ordered correspondences or host-guided exact-pointwise
+    /// preflight fallback.
+    bool launchIcpAlignmentStepColumnMajorWithReservedWorkspace(const double* d_source_points,
+                                                                int source_count,
+                                                                const double* d_target_points,
+                                                                int target_count,
+                                                                double max_correspondence_distance,
+                                                                IcpCorrespondenceStatsWorkspace& stats_workspace,
+                                                                double* d_step_transform,
+                                                                cudaStream_t stream = 0,
+                                                                bool assume_ordered_correspondences = false,
+                                                                bool probe_exact_pointwise_on_finite_radius = false);
 
-/// Compute the compact ICP alignment step from source points transformed by d_source_transform.
-/// The caller must call IcpCorrespondenceStatsWorkspace::reserveDoubleAlignmentStep(source_count) first.
-/// Set probe_transformed_exact_pointwise_on_cache_hit only when same-index transformed matches are expected often
-/// enough to justify an extra O(source_count) exact preflight before reusing a cached target spatial grid.
-IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(
-    const double* d_source_transform,
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    double* d_step_transform,
-    cudaStream_t stream = 0,
-    bool assume_ordered_correspondences = false,
-    bool probe_transformed_exact_pointwise_on_cache_hit = false);
+    /// Enqueue a small-target compact ICP alignment step without copying the result to host.
+    /// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+    bool
+    launchSmallTargetAlignmentStepColumnMajorWithReservedWorkspace(const float* d_source_points,
+                                                                   int source_count,
+                                                                   const float* d_target_points,
+                                                                   int target_count,
+                                                                   float max_correspondence_distance,
+                                                                   IcpCorrespondenceStatsWorkspace& stats_workspace,
+                                                                   float* d_step_transform,
+                                                                   cudaStream_t stream = 0);
 
-/// Compute a transformed compact ICP alignment step and write accumulated_transform = step * previous_accumulated.
-/// The caller must call IcpCorrespondenceStatsWorkspace::reserveFloatAlignmentStep(source_count) first.
-/// Set probe_transformed_exact_pointwise_on_cache_hit only when same-index transformed matches are expected often
-/// enough to justify an extra O(source_count) exact preflight before reusing a cached target spatial grid.
-IcpAlignmentStepResult<float> computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
-    const float* d_source_transform,
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    float* d_step_transform,
-    const float* d_previous_accumulated_transform,
-    float* d_accumulated_transform,
-    cudaStream_t stream = 0,
-    bool assume_ordered_correspondences = false,
-    bool probe_transformed_exact_pointwise_on_cache_hit = false);
+    /// Enqueue a small-target compact ICP alignment step without copying the result to host.
+    /// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+    bool
+    launchSmallTargetAlignmentStepColumnMajorWithReservedWorkspace(const double* d_source_points,
+                                                                   int source_count,
+                                                                   const double* d_target_points,
+                                                                   int target_count,
+                                                                   double max_correspondence_distance,
+                                                                   IcpCorrespondenceStatsWorkspace& stats_workspace,
+                                                                   double* d_step_transform,
+                                                                   cudaStream_t stream = 0);
 
-/// Compute a transformed compact ICP alignment step and write accumulated_transform = step * previous_accumulated.
-/// The caller must call IcpCorrespondenceStatsWorkspace::reserveDoubleAlignmentStep(source_count) first.
-/// Set probe_transformed_exact_pointwise_on_cache_hit only when same-index transformed matches are expected often
-/// enough to justify an extra O(source_count) exact preflight before reusing a cached target spatial grid.
-IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
-    const double* d_source_transform,
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    double* d_step_transform,
-    const double* d_previous_accumulated_transform,
-    double* d_accumulated_transform,
-    cudaStream_t stream = 0,
-    bool assume_ordered_correspondences = false,
-    bool probe_transformed_exact_pointwise_on_cache_hit = false);
+    /// Compute the compact ICP alignment step from source points transformed by d_source_transform.
+    /// The caller must call IcpCorrespondenceStatsWorkspace::reserveFloatAlignmentStep(source_count) first.
+    /// Set probe_transformed_exact_pointwise_on_cache_hit only when same-index transformed matches are expected often
+    /// enough to justify an extra O(source_count) exact preflight before reusing a cached target spatial grid.
+    IcpAlignmentStepResult<float> computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(
+        const float* d_source_transform,
+        const float* d_source_points,
+        int source_count,
+        const float* d_target_points,
+        int target_count,
+        float max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& stats_workspace,
+        float* d_step_transform,
+        cudaStream_t stream = 0,
+        bool assume_ordered_correspondences = false,
+        bool probe_transformed_exact_pointwise_on_cache_hit = false);
 
-/// Enqueue a transformed compact ICP alignment step and write accumulated_transform = step * previous_accumulated.
-/// The helper does not copy the compact alignment-step result to host or synchronize with the host. It enqueues the
-/// spatial-grid or fallback nearest-neighbor path directly instead of using host-guided exact-pointwise preflight.
-bool launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
-    const float* d_source_transform,
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    float* d_step_transform,
-    const float* d_previous_accumulated_transform,
-    float* d_accumulated_transform,
-    cudaStream_t stream = 0);
+    /// Compute the compact ICP alignment step from source points transformed by d_source_transform.
+    /// The caller must call IcpCorrespondenceStatsWorkspace::reserveDoubleAlignmentStep(source_count) first.
+    /// Set probe_transformed_exact_pointwise_on_cache_hit only when same-index transformed matches are expected often
+    /// enough to justify an extra O(source_count) exact preflight before reusing a cached target spatial grid.
+    IcpAlignmentStepResult<double> computeTransformedIcpAlignmentStepColumnMajorWithReservedWorkspace(
+        const double* d_source_transform,
+        const double* d_source_points,
+        int source_count,
+        const double* d_target_points,
+        int target_count,
+        double max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& stats_workspace,
+        double* d_step_transform,
+        cudaStream_t stream = 0,
+        bool assume_ordered_correspondences = false,
+        bool probe_transformed_exact_pointwise_on_cache_hit = false);
 
-/// Enqueue a transformed compact ICP alignment step and write accumulated_transform = step * previous_accumulated.
-/// The helper does not copy the compact alignment-step result to host or synchronize with the host. It enqueues the
-/// spatial-grid or fallback nearest-neighbor path directly instead of using host-guided exact-pointwise preflight.
-bool launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
-    const double* d_source_transform,
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    double* d_step_transform,
-    const double* d_previous_accumulated_transform,
-    double* d_accumulated_transform,
-    cudaStream_t stream = 0);
+    /// Compute a transformed compact ICP alignment step and write accumulated_transform = step * previous_accumulated.
+    /// The caller must call IcpCorrespondenceStatsWorkspace::reserveFloatAlignmentStep(source_count) first.
+    /// Set probe_transformed_exact_pointwise_on_cache_hit only when same-index transformed matches are expected often
+    /// enough to justify an extra O(source_count) exact preflight before reusing a cached target spatial grid.
+    IcpAlignmentStepResult<float>
+    computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
+        const float* d_source_transform,
+        const float* d_source_points,
+        int source_count,
+        const float* d_target_points,
+        int target_count,
+        float max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& stats_workspace,
+        float* d_step_transform,
+        const float* d_previous_accumulated_transform,
+        float* d_accumulated_transform,
+        cudaStream_t stream = 0,
+        bool assume_ordered_correspondences = false,
+        bool probe_transformed_exact_pointwise_on_cache_hit = false);
 
-/// Enqueue a transformed terminal ICP alignment step and final residual metrics against the cached target spatial
-/// grid snapshot. The helper writes accumulated_transform = step * previous_accumulated and does not synchronize.
-bool launchTransformedIcpTerminalAlignmentAndResidualWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
-    const float* d_source_transform,
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& alignment_step_workspace,
-    IcpCorrespondenceStatsWorkspace& residual_workspace,
-    float* d_step_transform,
-    const float* d_previous_accumulated_transform,
-    float* d_accumulated_transform,
-    cudaStream_t stream = 0,
-    float* d_output_points = nullptr);
+    /// Compute a transformed compact ICP alignment step and write accumulated_transform = step * previous_accumulated.
+    /// The caller must call IcpCorrespondenceStatsWorkspace::reserveDoubleAlignmentStep(source_count) first.
+    /// Set probe_transformed_exact_pointwise_on_cache_hit only when same-index transformed matches are expected often
+    /// enough to justify an extra O(source_count) exact preflight before reusing a cached target spatial grid.
+    IcpAlignmentStepResult<double>
+    computeTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
+        const double* d_source_transform,
+        const double* d_source_points,
+        int source_count,
+        const double* d_target_points,
+        int target_count,
+        double max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& stats_workspace,
+        double* d_step_transform,
+        const double* d_previous_accumulated_transform,
+        double* d_accumulated_transform,
+        cudaStream_t stream = 0,
+        bool assume_ordered_correspondences = false,
+        bool probe_transformed_exact_pointwise_on_cache_hit = false);
 
-/// Enqueue a transformed terminal ICP alignment step and final residual metrics against the cached target spatial
-/// grid snapshot. The helper writes accumulated_transform = step * previous_accumulated and does not synchronize.
-bool launchTransformedIcpTerminalAlignmentAndResidualWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
-    const double* d_source_transform,
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& alignment_step_workspace,
-    IcpCorrespondenceStatsWorkspace& residual_workspace,
-    double* d_step_transform,
-    const double* d_previous_accumulated_transform,
-    double* d_accumulated_transform,
-    cudaStream_t stream = 0,
-    double* d_output_points = nullptr);
+    /// Enqueue a transformed compact ICP alignment step and write accumulated_transform = step * previous_accumulated.
+    /// The helper does not copy the compact alignment-step result to host or synchronize with the host. It enqueues the
+    /// spatial-grid or fallback nearest-neighbor path directly instead of using host-guided exact-pointwise preflight.
+    bool launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
+        const float* d_source_transform,
+        const float* d_source_points,
+        int source_count,
+        const float* d_target_points,
+        int target_count,
+        float max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& stats_workspace,
+        float* d_step_transform,
+        const float* d_previous_accumulated_transform,
+        float* d_accumulated_transform,
+        cudaStream_t stream = 0);
 
-/// Enqueue a small-target transformed alignment step and write accumulated_transform = step * previous_accumulated.
-/// The helper does not copy the compact alignment-step result to host or synchronize with the host.
-/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
-bool launchTransformedSmallTargetAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
-    const float* d_source_transform,
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    float* d_step_transform,
-    const float* d_previous_accumulated_transform,
-    float* d_accumulated_transform,
-    cudaStream_t stream = 0);
+    /// Enqueue a transformed compact ICP alignment step and write accumulated_transform = step * previous_accumulated.
+    /// The helper does not copy the compact alignment-step result to host or synchronize with the host. It enqueues the
+    /// spatial-grid or fallback nearest-neighbor path directly instead of using host-guided exact-pointwise preflight.
+    bool launchTransformedIcpAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
+        const double* d_source_transform,
+        const double* d_source_points,
+        int source_count,
+        const double* d_target_points,
+        int target_count,
+        double max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& stats_workspace,
+        double* d_step_transform,
+        const double* d_previous_accumulated_transform,
+        double* d_accumulated_transform,
+        cudaStream_t stream = 0);
 
-/// Enqueue a small-target transformed alignment step and write accumulated_transform = step * previous_accumulated.
-/// The helper does not copy the compact alignment-step result to host or synchronize with the host.
-/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
-bool launchTransformedSmallTargetAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
-    const double* d_source_transform,
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    double* d_step_transform,
-    const double* d_previous_accumulated_transform,
-    double* d_accumulated_transform,
-    cudaStream_t stream = 0);
+    /// Enqueue a transformed terminal ICP alignment step and final residual metrics against the cached target spatial
+    /// grid snapshot. The helper writes accumulated_transform = step * previous_accumulated and does not synchronize.
+    bool launchTransformedIcpTerminalAlignmentAndResidualWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
+        const float* d_source_transform,
+        const float* d_source_points,
+        int source_count,
+        const float* d_target_points,
+        int target_count,
+        float max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& alignment_step_workspace,
+        IcpCorrespondenceStatsWorkspace& residual_workspace,
+        float* d_step_transform,
+        const float* d_previous_accumulated_transform,
+        float* d_accumulated_transform,
+        cudaStream_t stream = 0,
+        float* d_output_points = nullptr);
 
-/// Enqueue two transformed ICP alignment steps on one stream without copying either result to host.
-/// The first step reads d_initial_accumulated_transform, writes d_first_accumulated_transform, and the second step
-/// writes d_final_accumulated_transform. The two workspaces must be distinct because both compact device results are
-/// copied together later.
-bool launchTransformedIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
-    const float* d_initial_accumulated_transform,
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& first_step_workspace,
-    IcpCorrespondenceStatsWorkspace& second_step_workspace,
-    float* d_step_transform,
-    float* d_first_accumulated_transform,
-    float* d_final_accumulated_transform,
-    cudaStream_t stream = 0);
+    /// Enqueue a transformed terminal ICP alignment step and final residual metrics against the cached target spatial
+    /// grid snapshot. The helper writes accumulated_transform = step * previous_accumulated and does not synchronize.
+    bool launchTransformedIcpTerminalAlignmentAndResidualWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
+        const double* d_source_transform,
+        const double* d_source_points,
+        int source_count,
+        const double* d_target_points,
+        int target_count,
+        double max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& alignment_step_workspace,
+        IcpCorrespondenceStatsWorkspace& residual_workspace,
+        double* d_step_transform,
+        const double* d_previous_accumulated_transform,
+        double* d_accumulated_transform,
+        cudaStream_t stream = 0,
+        double* d_output_points = nullptr);
 
-/// Enqueue two transformed ICP alignment steps on one stream without copying either result to host.
-/// The first step reads d_initial_accumulated_transform, writes d_first_accumulated_transform, and the second step
-/// writes d_final_accumulated_transform. The two workspaces must be distinct because both compact device results are
-/// copied together later.
-bool launchTransformedIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
-    const double* d_initial_accumulated_transform,
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& first_step_workspace,
-    IcpCorrespondenceStatsWorkspace& second_step_workspace,
-    double* d_step_transform,
-    double* d_first_accumulated_transform,
-    double* d_final_accumulated_transform,
-    cudaStream_t stream = 0);
+    /// Enqueue a small-target transformed alignment step and write accumulated_transform = step * previous_accumulated.
+    /// The helper does not copy the compact alignment-step result to host or synchronize with the host.
+    /// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+    bool launchTransformedSmallTargetAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
+        const float* d_source_transform,
+        const float* d_source_points,
+        int source_count,
+        const float* d_target_points,
+        int target_count,
+        float max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& stats_workspace,
+        float* d_step_transform,
+        const float* d_previous_accumulated_transform,
+        float* d_accumulated_transform,
+        cudaStream_t stream = 0);
 
-/// Copy the compact alignment-step result produced by an async alignment-step helper and synchronize the stream.
-template <typename Scalar>
-IcpAlignmentStepResult<Scalar> copyAlignmentStepResultFromReservedWorkspace(
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    cudaStream_t stream = 0);
+    /// Enqueue a small-target transformed alignment step and write accumulated_transform = step * previous_accumulated.
+    /// The helper does not copy the compact alignment-step result to host or synchronize with the host.
+    /// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+    bool launchTransformedSmallTargetAlignmentStepAndAccumulateTransformColumnMajorWithReservedWorkspace(
+        const double* d_source_transform,
+        const double* d_source_points,
+        int source_count,
+        const double* d_target_points,
+        int target_count,
+        double max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& stats_workspace,
+        double* d_step_transform,
+        const double* d_previous_accumulated_transform,
+        double* d_accumulated_transform,
+        cudaStream_t stream = 0);
 
-/// Enqueue two small-target alignment steps on one stream without copying either result to host.
-/// The second step consumes the first step transform only when the first compact result is acceptable to ICP.
-/// The two workspaces must be distinct because both compact device results are copied together later.
-/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
-bool launchSmallTargetTwoStepAlignmentColumnMajorWithReservedWorkspaces(
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& first_step_workspace,
-    IcpCorrespondenceStatsWorkspace& second_step_workspace,
-    float* d_first_step_transform,
-    float* d_second_step_transform,
-    float* d_accumulated_transform,
-    cudaStream_t stream = 0);
+    /// Enqueue two transformed ICP alignment steps on one stream without copying either result to host.
+    /// The first step reads d_initial_accumulated_transform, writes d_first_accumulated_transform, and the second step
+    /// writes d_final_accumulated_transform. The two workspaces must be distinct because both compact device results
+    /// are copied together later.
+    bool launchTransformedIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
+        const float* d_initial_accumulated_transform,
+        const float* d_source_points,
+        int source_count,
+        const float* d_target_points,
+        int target_count,
+        float max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& first_step_workspace,
+        IcpCorrespondenceStatsWorkspace& second_step_workspace,
+        float* d_step_transform,
+        float* d_first_accumulated_transform,
+        float* d_final_accumulated_transform,
+        cudaStream_t stream = 0);
 
-/// Enqueue two small-target alignment steps on one stream without copying either result to host.
-/// The second step consumes the first step transform only when the first compact result is acceptable to ICP.
-/// The two workspaces must be distinct because both compact device results are copied together later.
-/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
-bool launchSmallTargetTwoStepAlignmentColumnMajorWithReservedWorkspaces(
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& first_step_workspace,
-    IcpCorrespondenceStatsWorkspace& second_step_workspace,
-    double* d_first_step_transform,
-    double* d_second_step_transform,
-    double* d_accumulated_transform,
-    cudaStream_t stream = 0);
+    /// Enqueue two transformed ICP alignment steps on one stream without copying either result to host.
+    /// The first step reads d_initial_accumulated_transform, writes d_first_accumulated_transform, and the second step
+    /// writes d_final_accumulated_transform. The two workspaces must be distinct because both compact device results
+    /// are copied together later.
+    bool launchTransformedIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
+        const double* d_initial_accumulated_transform,
+        const double* d_source_points,
+        int source_count,
+        const double* d_target_points,
+        int target_count,
+        double max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& first_step_workspace,
+        IcpCorrespondenceStatsWorkspace& second_step_workspace,
+        double* d_step_transform,
+        double* d_first_accumulated_transform,
+        double* d_final_accumulated_transform,
+        cudaStream_t stream = 0);
 
-/// Enqueue two ICP alignment steps on one stream without copying either result to host.
-/// The two workspaces must be distinct because both compact device results are copied together later.
-bool launchIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& first_step_workspace,
-    IcpCorrespondenceStatsWorkspace& second_step_workspace,
-    float* d_first_step_transform,
-    float* d_second_step_transform,
-    float* d_accumulated_transform,
-    cudaStream_t stream = 0);
+    /// Copy the compact alignment-step result produced by an async alignment-step helper and synchronize the stream.
+    template <typename Scalar>
+    IcpAlignmentStepResult<Scalar>
+    copyAlignmentStepResultFromReservedWorkspace(IcpCorrespondenceStatsWorkspace& stats_workspace,
+                                                 cudaStream_t stream = 0);
 
-/// Enqueue two ICP alignment steps on one stream without copying either result to host.
-/// The two workspaces must be distinct because both compact device results are copied together later.
-bool launchIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& first_step_workspace,
-    IcpCorrespondenceStatsWorkspace& second_step_workspace,
-    double* d_first_step_transform,
-    double* d_second_step_transform,
-    double* d_accumulated_transform,
-    cudaStream_t stream = 0);
+    /// Enqueue two small-target alignment steps on one stream without copying either result to host.
+    /// The second step consumes the first step transform only when the first compact result is acceptable to ICP.
+    /// The two workspaces must be distinct because both compact device results are copied together later.
+    /// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+    bool launchSmallTargetTwoStepAlignmentColumnMajorWithReservedWorkspaces(
+        const float* d_source_points,
+        int source_count,
+        const float* d_target_points,
+        int target_count,
+        float max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& first_step_workspace,
+        IcpCorrespondenceStatsWorkspace& second_step_workspace,
+        float* d_first_step_transform,
+        float* d_second_step_transform,
+        float* d_accumulated_transform,
+        cudaStream_t stream = 0);
 
-/// Copy both compact alignment-step results produced by the two-step async helper and synchronize the stream once.
-template <typename Scalar>
-IcpSmallTargetTwoStepAlignmentResult<Scalar>
-copySmallTargetTwoStepAlignmentResultFromReservedWorkspaces(
-    IcpCorrespondenceStatsWorkspace& first_step_workspace,
-    IcpCorrespondenceStatsWorkspace& second_step_workspace,
-    cudaStream_t stream = 0);
+    /// Enqueue two small-target alignment steps on one stream without copying either result to host.
+    /// The second step consumes the first step transform only when the first compact result is acceptable to ICP.
+    /// The two workspaces must be distinct because both compact device results are copied together later.
+    /// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+    bool launchSmallTargetTwoStepAlignmentColumnMajorWithReservedWorkspaces(
+        const double* d_source_points,
+        int source_count,
+        const double* d_target_points,
+        int target_count,
+        double max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& first_step_workspace,
+        IcpCorrespondenceStatsWorkspace& second_step_workspace,
+        double* d_first_step_transform,
+        double* d_second_step_transform,
+        double* d_accumulated_transform,
+        cudaStream_t stream = 0);
 
-/// Copy both compact alignment-step results produced by the two-step async helper and synchronize the stream once.
-template <typename Scalar>
-IcpTwoStepAlignmentResult<Scalar>
-copyIcpTwoStepAlignmentResultFromReservedWorkspaces(
-    IcpCorrespondenceStatsWorkspace& first_step_workspace,
-    IcpCorrespondenceStatsWorkspace& second_step_workspace,
-    cudaStream_t stream = 0);
+    /// Enqueue two ICP alignment steps on one stream without copying either result to host.
+    /// The two workspaces must be distinct because both compact device results are copied together later.
+    bool
+    launchIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(const float* d_source_points,
+                                                               int source_count,
+                                                               const float* d_target_points,
+                                                               int target_count,
+                                                               float max_correspondence_distance,
+                                                               IcpCorrespondenceStatsWorkspace& first_step_workspace,
+                                                               IcpCorrespondenceStatsWorkspace& second_step_workspace,
+                                                               float* d_first_step_transform,
+                                                               float* d_second_step_transform,
+                                                               float* d_accumulated_transform,
+                                                               cudaStream_t stream = 0);
 
-/// Copy one compact alignment-step result and one residual-stats result, then synchronize the stream once.
-template <typename Scalar>
-IcpTerminalAlignmentAndResidualResult<Scalar>
-copyIcpAlignmentAndResidualResultFromReservedWorkspaces(
-    IcpCorrespondenceStatsWorkspace& alignment_step_workspace,
-    IcpCorrespondenceStatsWorkspace& residual_workspace,
-    cudaStream_t stream = 0);
+    /// Enqueue two ICP alignment steps on one stream without copying either result to host.
+    /// The two workspaces must be distinct because both compact device results are copied together later.
+    bool
+    launchIcpTwoStepAlignmentColumnMajorWithReservedWorkspaces(const double* d_source_points,
+                                                               int source_count,
+                                                               const double* d_target_points,
+                                                               int target_count,
+                                                               double max_correspondence_distance,
+                                                               IcpCorrespondenceStatsWorkspace& first_step_workspace,
+                                                               IcpCorrespondenceStatsWorkspace& second_step_workspace,
+                                                               double* d_first_step_transform,
+                                                               double* d_second_step_transform,
+                                                               double* d_accumulated_transform,
+                                                               cudaStream_t stream = 0);
 
-/// Copy two compact alignment-step results and one residual-stats result, then synchronize the stream once.
-template <typename Scalar>
-IcpTwoStepAlignmentAndResidualResult<Scalar>
-copyIcpTwoStepAlignmentAndResidualResultFromReservedWorkspaces(
-    IcpCorrespondenceStatsWorkspace& first_step_workspace,
-    IcpCorrespondenceStatsWorkspace& second_step_workspace,
-    IcpCorrespondenceStatsWorkspace& residual_workspace,
-    cudaStream_t stream = 0);
+    /// Copy both compact alignment-step results produced by the two-step async helper and synchronize the stream once.
+    template <typename Scalar>
+    IcpSmallTargetTwoStepAlignmentResult<Scalar>
+    copySmallTargetTwoStepAlignmentResultFromReservedWorkspaces(IcpCorrespondenceStatsWorkspace& first_step_workspace,
+                                                                IcpCorrespondenceStatsWorkspace& second_step_workspace,
+                                                                cudaStream_t stream = 0);
 
-/// Enqueue an initial small-target alignment step and exact post-step residual metrics.
-/// The helper writes d_step_transform as the final one-step transform and does not synchronize with the host.
-/// If d_output_points is not null, the helper also writes the final transformed source points.
-/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
-bool launchSmallTargetSingleStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    float* d_step_transform,
-    cudaStream_t stream = 0,
-    float* d_output_points = nullptr);
+    /// Copy both compact alignment-step results produced by the two-step async helper and synchronize the stream once.
+    template <typename Scalar>
+    IcpTwoStepAlignmentResult<Scalar>
+    copyIcpTwoStepAlignmentResultFromReservedWorkspaces(IcpCorrespondenceStatsWorkspace& first_step_workspace,
+                                                        IcpCorrespondenceStatsWorkspace& second_step_workspace,
+                                                        cudaStream_t stream = 0);
 
-/// Enqueue an initial small-target alignment step and exact post-step residual metrics.
-/// The helper writes d_step_transform as the final one-step transform and does not synchronize with the host.
-/// If d_output_points is not null, the helper also writes the final transformed source points.
-/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
-bool launchSmallTargetSingleStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    double* d_step_transform,
-    cudaStream_t stream = 0,
-    double* d_output_points = nullptr);
+    /// Copy one compact alignment-step result and one residual-stats result, then synchronize the stream once.
+    template <typename Scalar>
+    IcpTerminalAlignmentAndResidualResult<Scalar>
+    copyIcpAlignmentAndResidualResultFromReservedWorkspaces(IcpCorrespondenceStatsWorkspace& alignment_step_workspace,
+                                                            IcpCorrespondenceStatsWorkspace& residual_workspace,
+                                                            cudaStream_t stream = 0);
 
-/// Enqueue a small-target terminal transformed alignment step and exact post-step residual metrics.
-/// The helper writes accumulated_transform = step * previous_accumulated and does not synchronize with the host.
-/// If d_output_points is not null, the helper also writes the final transformed source points.
-/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
-bool launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
-    const float* d_source_transform,
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    float* d_step_transform,
-    const float* d_previous_accumulated_transform,
-    float* d_accumulated_transform,
-    cudaStream_t stream = 0,
-    float* d_output_points = nullptr);
+    /// Copy two compact alignment-step results and one residual-stats result, then synchronize the stream once.
+    template <typename Scalar>
+    IcpTwoStepAlignmentAndResidualResult<Scalar> copyIcpTwoStepAlignmentAndResidualResultFromReservedWorkspaces(
+        IcpCorrespondenceStatsWorkspace& first_step_workspace,
+        IcpCorrespondenceStatsWorkspace& second_step_workspace,
+        IcpCorrespondenceStatsWorkspace& residual_workspace,
+        cudaStream_t stream = 0);
 
-/// Enqueue a small-target terminal transformed alignment step and exact post-step residual metrics.
-/// The helper writes accumulated_transform = step * previous_accumulated and does not synchronize with the host.
-/// If d_output_points is not null, the helper also writes the final transformed source points.
-/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
-bool launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
-    const double* d_source_transform,
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    double* d_step_transform,
-    const double* d_previous_accumulated_transform,
-    double* d_accumulated_transform,
-    cudaStream_t stream = 0,
-    double* d_output_points = nullptr);
+    /// Enqueue an initial small-target alignment step and exact post-step residual metrics.
+    /// The helper writes d_step_transform as the final one-step transform and does not synchronize with the host.
+    /// If d_output_points is not null, the helper also writes the final transformed source points.
+    /// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+    bool launchSmallTargetSingleStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+        const float* d_source_points,
+        int source_count,
+        const float* d_target_points,
+        int target_count,
+        float max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& stats_workspace,
+        float* d_step_transform,
+        cudaStream_t stream = 0,
+        float* d_output_points = nullptr);
 
-/// Copy the result produced by launchTransformedSmallTargetTerminalAlignmentAndResidual... and synchronize the stream.
-template <typename Scalar>
-IcpTerminalAlignmentAndResidualResult<Scalar>
-copySmallTargetTerminalAlignmentAndResidualResultFromReservedWorkspace(
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    cudaStream_t stream = 0);
+    /// Enqueue an initial small-target alignment step and exact post-step residual metrics.
+    /// The helper writes d_step_transform as the final one-step transform and does not synchronize with the host.
+    /// If d_output_points is not null, the helper also writes the final transformed source points.
+    /// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+    bool launchSmallTargetSingleStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+        const double* d_source_points,
+        int source_count,
+        const double* d_target_points,
+        int target_count,
+        double max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& stats_workspace,
+        double* d_step_transform,
+        cudaStream_t stream = 0,
+        double* d_output_points = nullptr);
 
-/// Enqueue an initial small-target alignment step followed by terminal transformed metrics on the same stream.
-/// The two workspaces must be distinct because both compact device results are copied together later.
-/// The terminal kernel writes an empty terminal result when the queued first step is not acceptable to ICP.
-/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
-bool launchSmallTargetTwoStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspaces(
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& first_step_workspace,
-    IcpCorrespondenceStatsWorkspace& terminal_workspace,
-    float* d_first_step_transform,
-    float* d_terminal_step_transform,
-    float* d_accumulated_transform,
-    cudaStream_t stream = 0,
-    float* d_output_points = nullptr);
+    /// Enqueue a small-target terminal transformed alignment step and exact post-step residual metrics.
+    /// The helper writes accumulated_transform = step * previous_accumulated and does not synchronize with the host.
+    /// If d_output_points is not null, the helper also writes the final transformed source points.
+    /// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+    bool launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+        const float* d_source_transform,
+        const float* d_source_points,
+        int source_count,
+        const float* d_target_points,
+        int target_count,
+        float max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& stats_workspace,
+        float* d_step_transform,
+        const float* d_previous_accumulated_transform,
+        float* d_accumulated_transform,
+        cudaStream_t stream = 0,
+        float* d_output_points = nullptr);
 
-/// Enqueue an initial small-target alignment step followed by terminal transformed metrics on the same stream.
-/// The two workspaces must be distinct because both compact device results are copied together later.
-/// The terminal kernel writes an empty terminal result when the queued first step is not acceptable to ICP.
-/// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
-bool launchSmallTargetTwoStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspaces(
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& first_step_workspace,
-    IcpCorrespondenceStatsWorkspace& terminal_workspace,
-    double* d_first_step_transform,
-    double* d_terminal_step_transform,
-    double* d_accumulated_transform,
-    cudaStream_t stream = 0,
-    double* d_output_points = nullptr);
+    /// Enqueue a small-target terminal transformed alignment step and exact post-step residual metrics.
+    /// The helper writes accumulated_transform = step * previous_accumulated and does not synchronize with the host.
+    /// If d_output_points is not null, the helper also writes the final transformed source points.
+    /// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+    bool launchTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+        const double* d_source_transform,
+        const double* d_source_points,
+        int source_count,
+        const double* d_target_points,
+        int target_count,
+        double max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& stats_workspace,
+        double* d_step_transform,
+        const double* d_previous_accumulated_transform,
+        double* d_accumulated_transform,
+        cudaStream_t stream = 0,
+        double* d_output_points = nullptr);
 
-/// Copy both compact results produced by the two-step async helper and synchronize the stream once.
-template <typename Scalar>
-IcpSmallTargetTwoStepTerminalAlignmentAndResidualResult<Scalar>
-copySmallTargetTwoStepTerminalAlignmentAndResidualResultFromReservedWorkspaces(
-    IcpCorrespondenceStatsWorkspace& first_step_workspace,
-    IcpCorrespondenceStatsWorkspace& terminal_workspace,
-    cudaStream_t stream = 0);
+    /// Copy the result produced by launchTransformedSmallTargetTerminalAlignmentAndResidual... and synchronize the
+    /// stream.
+    template <typename Scalar>
+    IcpTerminalAlignmentAndResidualResult<Scalar>
+    copySmallTargetTerminalAlignmentAndResidualResultFromReservedWorkspace(
+        IcpCorrespondenceStatsWorkspace& stats_workspace, cudaStream_t stream = 0);
 
-/// Compute a small-target terminal transformed alignment step and exact post-step residual metrics.
-/// The helper writes accumulated_transform = step * previous_accumulated and copies one compact result to host.
-/// If d_output_points is not null, the helper also writes the final transformed source points.
-/// It returns launched=false when the source/target sizes or correspondence radius are outside the small-target path.
-IcpTerminalAlignmentAndResidualResult<float>
-computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
-    const float* d_source_transform,
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    float* d_step_transform,
-    const float* d_previous_accumulated_transform,
-    float* d_accumulated_transform,
-    cudaStream_t stream = 0,
-    float* d_output_points = nullptr);
+    /// Enqueue an initial small-target alignment step followed by terminal transformed metrics on the same stream.
+    /// The two workspaces must be distinct because both compact device results are copied together later.
+    /// The terminal kernel writes an empty terminal result when the queued first step is not acceptable to ICP.
+    /// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+    bool launchSmallTargetTwoStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspaces(
+        const float* d_source_points,
+        int source_count,
+        const float* d_target_points,
+        int target_count,
+        float max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& first_step_workspace,
+        IcpCorrespondenceStatsWorkspace& terminal_workspace,
+        float* d_first_step_transform,
+        float* d_terminal_step_transform,
+        float* d_accumulated_transform,
+        cudaStream_t stream = 0,
+        float* d_output_points = nullptr);
 
-/// Compute a small-target terminal transformed alignment step and exact post-step residual metrics.
-/// The helper writes accumulated_transform = step * previous_accumulated and copies one compact result to host.
-/// If d_output_points is not null, the helper also writes the final transformed source points.
-/// It returns launched=false when the source/target sizes or correspondence radius are outside the small-target path.
-IcpTerminalAlignmentAndResidualResult<double>
-computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
-    const double* d_source_transform,
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& stats_workspace,
-    double* d_step_transform,
-    const double* d_previous_accumulated_transform,
-    double* d_accumulated_transform,
-    cudaStream_t stream = 0,
-    double* d_output_points = nullptr);
+    /// Enqueue an initial small-target alignment step followed by terminal transformed metrics on the same stream.
+    /// The two workspaces must be distinct because both compact device results are copied together later.
+    /// The terminal kernel writes an empty terminal result when the queued first step is not acceptable to ICP.
+    /// It returns false when the source/target sizes or correspondence radius are outside the small-target path.
+    bool launchSmallTargetTwoStepTerminalAlignmentAndResidualColumnMajorWithReservedWorkspaces(
+        const double* d_source_points,
+        int source_count,
+        const double* d_target_points,
+        int target_count,
+        double max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& first_step_workspace,
+        IcpCorrespondenceStatsWorkspace& terminal_workspace,
+        double* d_first_step_transform,
+        double* d_terminal_step_transform,
+        double* d_accumulated_transform,
+        cudaStream_t stream = 0,
+        double* d_output_points = nullptr);
 
-/// Compute final residual metrics using workspace already reserved for source_count.
-/// The caller must reserve residual-compatible partial and result storage first.
-IcpResidualStats<float> computeIcpResidualStatsColumnMajorWithReservedWorkspace(
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& workspace,
-    cudaStream_t stream = 0);
+    /// Copy both compact results produced by the two-step async helper and synchronize the stream once.
+    template <typename Scalar>
+    IcpSmallTargetTwoStepTerminalAlignmentAndResidualResult<Scalar>
+    copySmallTargetTwoStepTerminalAlignmentAndResidualResultFromReservedWorkspaces(
+        IcpCorrespondenceStatsWorkspace& first_step_workspace,
+        IcpCorrespondenceStatsWorkspace& terminal_workspace,
+        cudaStream_t stream = 0);
 
-/// Compute final residual metrics using workspace already reserved for source_count.
-/// The caller must reserve residual-compatible partial and result storage first.
-/// Set assume_ordered_correspondences when source[i] should be compared only with target[i] instead of nearest search.
-IcpResidualStats<float> computeIcpResidualStatsColumnMajorWithReservedWorkspace(
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& workspace,
-    cudaStream_t stream,
-    bool assume_ordered_correspondences);
+    /// Compute a small-target terminal transformed alignment step and exact post-step residual metrics.
+    /// The helper writes accumulated_transform = step * previous_accumulated and copies one compact result to host.
+    /// If d_output_points is not null, the helper also writes the final transformed source points.
+    /// It returns launched=false when the source/target sizes or correspondence radius are outside the small-target
+    /// path.
+    IcpTerminalAlignmentAndResidualResult<float>
+    computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+        const float* d_source_transform,
+        const float* d_source_points,
+        int source_count,
+        const float* d_target_points,
+        int target_count,
+        float max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& stats_workspace,
+        float* d_step_transform,
+        const float* d_previous_accumulated_transform,
+        float* d_accumulated_transform,
+        cudaStream_t stream = 0,
+        float* d_output_points = nullptr);
 
-/// Compute final residual metrics using workspace already reserved for source_count.
-/// The caller must reserve residual-compatible partial and result storage first.
-IcpResidualStats<double> computeIcpResidualStatsColumnMajorWithReservedWorkspace(
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& workspace,
-    cudaStream_t stream = 0);
+    /// Compute a small-target terminal transformed alignment step and exact post-step residual metrics.
+    /// The helper writes accumulated_transform = step * previous_accumulated and copies one compact result to host.
+    /// If d_output_points is not null, the helper also writes the final transformed source points.
+    /// It returns launched=false when the source/target sizes or correspondence radius are outside the small-target
+    /// path.
+    IcpTerminalAlignmentAndResidualResult<double>
+    computeTransformedSmallTargetTerminalAlignmentAndResidualColumnMajorWithReservedWorkspace(
+        const double* d_source_transform,
+        const double* d_source_points,
+        int source_count,
+        const double* d_target_points,
+        int target_count,
+        double max_correspondence_distance,
+        IcpCorrespondenceStatsWorkspace& stats_workspace,
+        double* d_step_transform,
+        const double* d_previous_accumulated_transform,
+        double* d_accumulated_transform,
+        cudaStream_t stream = 0,
+        double* d_output_points = nullptr);
 
-/// Compute final residual metrics using workspace already reserved for source_count.
-/// The caller must reserve residual-compatible partial and result storage first.
-/// Set assume_ordered_correspondences when source[i] should be compared only with target[i] instead of nearest search.
-IcpResidualStats<double> computeIcpResidualStatsColumnMajorWithReservedWorkspace(
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& workspace,
-    cudaStream_t stream,
-    bool assume_ordered_correspondences);
+    /// Compute final residual metrics using workspace already reserved for source_count.
+    /// The caller must reserve residual-compatible partial and result storage first.
+    IcpResidualStats<float>
+    computeIcpResidualStatsColumnMajorWithReservedWorkspace(const float* d_source_points,
+                                                            int source_count,
+                                                            const float* d_target_points,
+                                                            int target_count,
+                                                            float max_correspondence_distance,
+                                                            IcpCorrespondenceStatsWorkspace& workspace,
+                                                            cudaStream_t stream = 0);
 
-/// Transform points and compute final residual metrics using workspace already reserved for source_count.
-/// The caller must reserve residual-compatible partial and result storage first.
-/// Throws if d_output_points aliases d_target_points because residual search must read the original target points.
-/// d_output_points may be null to compute metrics without materializing transformed points.
-IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
-    const float* d_transform,
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    float* d_output_points,
-    IcpCorrespondenceStatsWorkspace& workspace,
-    cudaStream_t stream = 0);
+    /// Compute final residual metrics using workspace already reserved for source_count.
+    /// The caller must reserve residual-compatible partial and result storage first.
+    /// Set assume_ordered_correspondences when source[i] should be compared only with target[i] instead of nearest
+    /// search.
+    IcpResidualStats<float>
+    computeIcpResidualStatsColumnMajorWithReservedWorkspace(const float* d_source_points,
+                                                            int source_count,
+                                                            const float* d_target_points,
+                                                            int target_count,
+                                                            float max_correspondence_distance,
+                                                            IcpCorrespondenceStatsWorkspace& workspace,
+                                                            cudaStream_t stream,
+                                                            bool assume_ordered_correspondences);
 
-/// Transform points and compute final residual metrics using workspace already reserved for source_count.
-/// The caller must reserve residual-compatible partial and result storage first.
-/// Throws if d_output_points aliases d_target_points because residual search must read the original target points.
-/// d_output_points may be null to compute metrics without materializing transformed points.
-IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
-    const double* d_transform,
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    double* d_output_points,
-    IcpCorrespondenceStatsWorkspace& workspace,
-    cudaStream_t stream = 0);
+    /// Compute final residual metrics using workspace already reserved for source_count.
+    /// The caller must reserve residual-compatible partial and result storage first.
+    IcpResidualStats<double>
+    computeIcpResidualStatsColumnMajorWithReservedWorkspace(const double* d_source_points,
+                                                            int source_count,
+                                                            const double* d_target_points,
+                                                            int target_count,
+                                                            double max_correspondence_distance,
+                                                            IcpCorrespondenceStatsWorkspace& workspace,
+                                                            cudaStream_t stream = 0);
 
-/// Transform points and compute final residual metrics against same-index target points using reserved workspace.
-/// The caller must reserve residual-compatible partial and result storage first, and source_count must equal
-/// target_count.
-/// d_output_points may alias d_target_points; each source row reads its same-index target before writing output.
-/// d_output_points may be null to compute metrics without materializing transformed points.
-IcpResidualStats<float> transformPointsAndComputeOrderedIcpResidualStatsColumnMajorWithReservedWorkspace(
-    const float* d_transform,
-    const float* d_source_points,
-    int source_count,
-    const float* d_target_points,
-    int target_count,
-    float max_correspondence_distance,
-    float* d_output_points,
-    IcpCorrespondenceStatsWorkspace& workspace,
-    cudaStream_t stream = 0);
+    /// Compute final residual metrics using workspace already reserved for source_count.
+    /// The caller must reserve residual-compatible partial and result storage first.
+    /// Set assume_ordered_correspondences when source[i] should be compared only with target[i] instead of nearest
+    /// search.
+    IcpResidualStats<double>
+    computeIcpResidualStatsColumnMajorWithReservedWorkspace(const double* d_source_points,
+                                                            int source_count,
+                                                            const double* d_target_points,
+                                                            int target_count,
+                                                            double max_correspondence_distance,
+                                                            IcpCorrespondenceStatsWorkspace& workspace,
+                                                            cudaStream_t stream,
+                                                            bool assume_ordered_correspondences);
 
-/// Transform points and compute final residual metrics against same-index target points using reserved workspace.
-/// The caller must reserve residual-compatible partial and result storage first, and source_count must equal
-/// target_count.
-/// d_output_points may alias d_target_points; each source row reads its same-index target before writing output.
-/// d_output_points may be null to compute metrics without materializing transformed points.
-IcpResidualStats<double> transformPointsAndComputeOrderedIcpResidualStatsColumnMajorWithReservedWorkspace(
-    const double* d_transform,
-    const double* d_source_points,
-    int source_count,
-    const double* d_target_points,
-    int target_count,
-    double max_correspondence_distance,
-    double* d_output_points,
-    IcpCorrespondenceStatsWorkspace& workspace,
-    cudaStream_t stream = 0);
+    /// Transform points and compute final residual metrics using workspace already reserved for source_count.
+    /// The caller must reserve residual-compatible partial and result storage first.
+    /// Throws if d_output_points aliases d_target_points because residual search must read the original target points.
+    /// d_output_points may be null to compute metrics without materializing transformed points.
+    IcpResidualStats<float> transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
+        const float* d_transform,
+        const float* d_source_points,
+        int source_count,
+        const float* d_target_points,
+        int target_count,
+        float max_correspondence_distance,
+        float* d_output_points,
+        IcpCorrespondenceStatsWorkspace& workspace,
+        cudaStream_t stream = 0);
 
-/// Transform points and compute final residual metrics against a cached target spatial-grid snapshot using reserved
-/// residual-compatible partial and result storage.
-/// d_output_points may be null to compute metrics without materializing transformed points.
-IcpResidualStats<float>
-transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
-    const float* d_transform,
-    const float* d_source_points,
-    int source_count,
-    float max_correspondence_distance,
-    float* d_output_points,
-    IcpCorrespondenceStatsWorkspace& workspace,
-    int target_spatial_grid_cell_count,
-    cudaStream_t stream = 0);
+    /// Transform points and compute final residual metrics using workspace already reserved for source_count.
+    /// The caller must reserve residual-compatible partial and result storage first.
+    /// Throws if d_output_points aliases d_target_points because residual search must read the original target points.
+    /// d_output_points may be null to compute metrics without materializing transformed points.
+    IcpResidualStats<double> transformPointsAndComputeIcpResidualStatsColumnMajorWithReservedWorkspace(
+        const double* d_transform,
+        const double* d_source_points,
+        int source_count,
+        const double* d_target_points,
+        int target_count,
+        double max_correspondence_distance,
+        double* d_output_points,
+        IcpCorrespondenceStatsWorkspace& workspace,
+        cudaStream_t stream = 0);
 
-/// Transform points and compute final residual metrics against a cached target spatial-grid snapshot using reserved
-/// residual-compatible partial and result storage.
-/// d_output_points may be null to compute metrics without materializing transformed points.
-IcpResidualStats<double>
-transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
-    const double* d_transform,
-    const double* d_source_points,
-    int source_count,
-    double max_correspondence_distance,
-    double* d_output_points,
-    IcpCorrespondenceStatsWorkspace& workspace,
-    int target_spatial_grid_cell_count,
-    cudaStream_t stream = 0);
+    /// Transform points and compute final residual metrics against same-index target points using reserved workspace.
+    /// The caller must reserve residual-compatible partial and result storage first, and source_count must equal
+    /// target_count.
+    /// d_output_points may alias d_target_points; each source row reads its same-index target before writing output.
+    /// d_output_points may be null to compute metrics without materializing transformed points.
+    IcpResidualStats<float> transformPointsAndComputeOrderedIcpResidualStatsColumnMajorWithReservedWorkspace(
+        const float* d_transform,
+        const float* d_source_points,
+        int source_count,
+        const float* d_target_points,
+        int target_count,
+        float max_correspondence_distance,
+        float* d_output_points,
+        IcpCorrespondenceStatsWorkspace& workspace,
+        cudaStream_t stream = 0);
 
-/// Enqueue transformed residual metrics against a cached target spatial-grid snapshot without synchronizing.
-/// Target-grid storage is read from target_grid_workspace; residual partial/result storage is written to
-/// residual_workspace. d_output_points may be null.
-bool launchTransformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
-    const float* d_transform,
-    const float* d_source_points,
-    int source_count,
-    float max_correspondence_distance,
-    float* d_output_points,
-    IcpCorrespondenceStatsWorkspace& target_grid_workspace,
-    IcpCorrespondenceStatsWorkspace& residual_workspace,
-    int target_spatial_grid_cell_count,
-    cudaStream_t stream = 0);
+    /// Transform points and compute final residual metrics against same-index target points using reserved workspace.
+    /// The caller must reserve residual-compatible partial and result storage first, and source_count must equal
+    /// target_count.
+    /// d_output_points may alias d_target_points; each source row reads its same-index target before writing output.
+    /// d_output_points may be null to compute metrics without materializing transformed points.
+    IcpResidualStats<double> transformPointsAndComputeOrderedIcpResidualStatsColumnMajorWithReservedWorkspace(
+        const double* d_transform,
+        const double* d_source_points,
+        int source_count,
+        const double* d_target_points,
+        int target_count,
+        double max_correspondence_distance,
+        double* d_output_points,
+        IcpCorrespondenceStatsWorkspace& workspace,
+        cudaStream_t stream = 0);
 
-/// Enqueue transformed residual metrics against a cached target spatial-grid snapshot without synchronizing.
-/// Target-grid storage is read from target_grid_workspace; residual partial/result storage is written to
-/// residual_workspace. d_output_points may be null.
-bool launchTransformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
-    const double* d_transform,
-    const double* d_source_points,
-    int source_count,
-    double max_correspondence_distance,
-    double* d_output_points,
-    IcpCorrespondenceStatsWorkspace& target_grid_workspace,
-    IcpCorrespondenceStatsWorkspace& residual_workspace,
-    int target_spatial_grid_cell_count,
-    cudaStream_t stream = 0);
+    /// Transform points and compute final residual metrics against a cached target spatial-grid snapshot using reserved
+    /// residual-compatible partial and result storage.
+    /// d_output_points may be null to compute metrics without materializing transformed points.
+    IcpResidualStats<float>
+    transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
+        const float* d_transform,
+        const float* d_source_points,
+        int source_count,
+        float max_correspondence_distance,
+        float* d_output_points,
+        IcpCorrespondenceStatsWorkspace& workspace,
+        int target_spatial_grid_cell_count,
+        cudaStream_t stream = 0);
+
+    /// Transform points and compute final residual metrics against a cached target spatial-grid snapshot using reserved
+    /// residual-compatible partial and result storage.
+    /// d_output_points may be null to compute metrics without materializing transformed points.
+    IcpResidualStats<double>
+    transformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspace(
+        const double* d_transform,
+        const double* d_source_points,
+        int source_count,
+        double max_correspondence_distance,
+        double* d_output_points,
+        IcpCorrespondenceStatsWorkspace& workspace,
+        int target_spatial_grid_cell_count,
+        cudaStream_t stream = 0);
+
+    /// Enqueue transformed residual metrics against a cached target spatial-grid snapshot without synchronizing.
+    /// Target-grid storage is read from target_grid_workspace; residual partial/result storage is written to
+    /// residual_workspace. d_output_points may be null.
+    bool launchTransformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
+        const float* d_transform,
+        const float* d_source_points,
+        int source_count,
+        float max_correspondence_distance,
+        float* d_output_points,
+        IcpCorrespondenceStatsWorkspace& target_grid_workspace,
+        IcpCorrespondenceStatsWorkspace& residual_workspace,
+        int target_spatial_grid_cell_count,
+        cudaStream_t stream = 0);
+
+    /// Enqueue transformed residual metrics against a cached target spatial-grid snapshot without synchronizing.
+    /// Target-grid storage is read from target_grid_workspace; residual partial/result storage is written to
+    /// residual_workspace. d_output_points may be null.
+    bool launchTransformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapshotColumnMajorWithReservedWorkspaces(
+        const double* d_transform,
+        const double* d_source_points,
+        int source_count,
+        double max_correspondence_distance,
+        double* d_output_points,
+        IcpCorrespondenceStatsWorkspace& target_grid_workspace,
+        IcpCorrespondenceStatsWorkspace& residual_workspace,
+        int target_spatial_grid_cell_count,
+        cudaStream_t stream = 0);
 
 } // namespace detail
 

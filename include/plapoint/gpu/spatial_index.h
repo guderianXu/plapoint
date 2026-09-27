@@ -4,10 +4,13 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 #include <cuda_runtime.h>
 
-#include <plamatrix/dense/dense_matrix.h>
+#include <plamatrix/internal/device/device_matrix.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/core/execution_context.h>
 
 #include <plapoint/core/point_cloud.h>
 #include <plapoint/gpu/cuda_check.h>
@@ -33,49 +36,61 @@ public:
 private:
     friend class GpuSpatialIndex<Scalar>;
 
-    plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& distanceKeys(
+    plamatrix::internal::ResidentMatrix<double>& distanceKeys(
         plamatrix::Index rows,
         plamatrix::Index columns,
-        cudaStream_t)
+        const std::shared_ptr<plamatrix::internal::ExecutionContext>& context)
     {
-        if (_distanceKeys.rows() != rows || _distanceKeys.cols() != columns)
+        if (_context != context)
         {
-            _distanceKeys = plamatrix::DenseMatrix<double, plamatrix::Device::GPU>
-                ::uninitialized(rows, columns);
+            _distanceKeys.reset();
+            _distanceExponents.reset();
+            _context = context;
         }
-        return _distanceKeys;
+        if (!_distanceKeys || _distanceKeys->rows() != rows || _distanceKeys->cols() != columns)
+        {
+            _distanceKeys.emplace(rows, columns, context);
+        }
+        return *_distanceKeys;
     }
 
-    plamatrix::DenseMatrix<int, plamatrix::Device::GPU>& distanceExponents(
+    plamatrix::internal::ResidentMatrix<int>& distanceExponents(
         plamatrix::Index rows,
         plamatrix::Index columns,
-        cudaStream_t)
+        const std::shared_ptr<plamatrix::internal::ExecutionContext>& context)
     {
-        if (_distanceExponents.rows() != rows || _distanceExponents.cols() != columns)
+        if (_context != context)
         {
-            _distanceExponents = plamatrix::DenseMatrix<int, plamatrix::Device::GPU>
-                ::uninitialized(rows, columns);
+            _distanceKeys.reset();
+            _distanceExponents.reset();
+            _context = context;
         }
-        return _distanceExponents;
+        if (!_distanceExponents || _distanceExponents->rows() != rows
+            || _distanceExponents->cols() != columns)
+        {
+            _distanceExponents.emplace(rows, columns, context);
+        }
+        return *_distanceExponents;
     }
 
-    plamatrix::DenseMatrix<double, plamatrix::Device::GPU> _distanceKeys;
-    plamatrix::DenseMatrix<int, plamatrix::Device::GPU> _distanceExponents;
+    std::shared_ptr<plamatrix::internal::ExecutionContext> _context;
+    std::optional<plamatrix::internal::ResidentMatrix<double>> _distanceKeys;
+    std::optional<plamatrix::internal::ResidentMatrix<int>> _distanceExponents;
 };
 
 template <typename Scalar>
 struct GpuRadiusSearchResult
 {
-    plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU> indices;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> squaredDistances;
-    plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU> counts;
+    plamatrix::internal::ResidentMatrix<plamatrix::Index> indices;
+    plamatrix::internal::ResidentMatrix<Scalar> squaredDistances;
+    plamatrix::internal::ResidentMatrix<plamatrix::Index> counts;
 };
 
 template <typename Scalar>
 struct GpuKnnSearchResult
 {
-    plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU> indices;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> squaredDistances;
+    plamatrix::internal::ResidentMatrix<plamatrix::Index> indices;
+    plamatrix::internal::ResidentMatrix<Scalar> squaredDistances;
 };
 
 /// Deterministic uniform-grid index over finite points in one GPU point-cloud revision.
@@ -92,24 +107,25 @@ public:
     GpuSpatialIndex& operator=(GpuSpatialIndex&&) noexcept = default;
 
     /// Build synchronously on stream. The previous index remains intact if construction fails.
-    void build(const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    void build(const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
                Scalar cell_size,
                cudaStream_t stream = nullptr);
 
-    /// Build with a cell size derived from GPU min/max reductions and finite-point count.
+    /// Build with a cell size derived from finite column bounds and the finite-point count.
     void buildAdaptive(
-        const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+        const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
         cudaStream_t stream = nullptr);
 
     /// Return true when this index belongs to the current cloud positions and exact cell size.
-    bool matches(const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    bool matches(const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
                  Scalar cell_size) const noexcept
     {
         const auto& points = cloud.points();
         return _cloudRevision != 0
-            && !cloud.hasUntrackedMutablePointAlias()
+            && cloud.pointCachesReusable()
             && _sourceIdentity == cloud.pointsIdentity()
             && _sourceData == points.data()
+            && _context == cloud.executionContext()
             && _pointCount == points.rows()
             && _cloudRevision == cloud.pointsRevision()
             && _cellSize == cell_size;
@@ -119,18 +135,34 @@ public:
     int cellCount() const noexcept { return _cellCount; }
     int maxCellOccupancy() const noexcept { return _maxCellOccupancy; }
     Scalar cellSize() const noexcept { return _cellSize; }
+    const std::shared_ptr<plamatrix::internal::ExecutionContext>& executionContext() const noexcept
+    {
+        return _context;
+    }
     std::uint64_t axisSpanX() const noexcept { return _axisSpanX; }
     std::uint64_t axisSpanY() const noexcept { return _axisSpanY; }
     std::uint64_t axisSpanZ() const noexcept { return _axisSpanZ; }
 
-    const std::uint64_t* sortedCellKeysData() const noexcept { return _sortedCellKeys.get(); }
-    const std::uint64_t* uniqueCellKeysData() const noexcept { return _uniqueCellKeys.get(); }
+    const std::uint64_t* sortedCellKeysData() const noexcept
+    {
+        return _sortedCellKeys ? _sortedCellKeys->data() : nullptr;
+    }
+    const std::uint64_t* uniqueCellKeysData() const noexcept
+    {
+        return _uniqueCellKeys ? _uniqueCellKeys->data() : nullptr;
+    }
     const plamatrix::Index* sortedPointIndicesData() const noexcept
     {
-        return _sortedPointIndices.data();
+        return _sortedPointIndices ? _sortedPointIndices->data() : nullptr;
     }
-    const plamatrix::Index* cellOffsetsData() const noexcept { return _cellOffsets.data(); }
-    const plamatrix::Index* cellCountsData() const noexcept { return _cellCounts.data(); }
+    const plamatrix::Index* cellOffsetsData() const noexcept
+    {
+        return _cellOffsets ? _cellOffsets->data() : nullptr;
+    }
+    const plamatrix::Index* cellCountsData() const noexcept
+    {
+        return _cellCounts ? _cellCounts->data() : nullptr;
+    }
 
     std::int64_t originX() const noexcept { return _originX; }
     std::int64_t originY() const noexcept { return _originY; }
@@ -138,8 +170,8 @@ public:
 
     /// Enqueue saturated radius counts for Qx3 GPU queries.
     /// Index, queries, result, workspace, and stream must outlive queued work.
-    plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU> radiusCountAsync(
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& queries,
+    plamatrix::internal::ResidentMatrix<plamatrix::Index> radiusCountAsync(
+        const plamatrix::internal::ResidentMatrix<Scalar>& queries,
         Scalar radius,
         int max_count,
         GpuSpatialQueryWorkspace<Scalar>& workspace,
@@ -148,7 +180,7 @@ public:
     /// Enqueue bounded radius neighbors ordered by squared distance then source index.
     /// Do not overlap operations sharing a workspace; destroy results before their stream.
     GpuRadiusSearchResult<Scalar> radiusSearchAsync(
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& queries,
+        const plamatrix::internal::ResidentMatrix<Scalar>& queries,
         Scalar radius,
         int max_neighbors,
         GpuSpatialQueryWorkspace<Scalar>& workspace,
@@ -156,15 +188,21 @@ public:
 
     /// Enqueue KNN ordered by squared distance then source index, for 1 <= k <= 32.
     GpuKnnSearchResult<Scalar> knnSearchAsync(
-        const plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& queries,
+        const plamatrix::internal::ResidentMatrix<Scalar>& queries,
         int k,
         GpuSpatialQueryWorkspace<Scalar>& workspace,
         cudaStream_t stream) const;
 
 private:
+    void buildImpl(const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
+                   Scalar cell_size,
+                   bool adaptive_cell_size,
+                   cudaStream_t stream);
+
     const Scalar* _sourceData = nullptr;
     std::shared_ptr<const void> _sourceIdentity;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> _points;
+    std::shared_ptr<plamatrix::internal::ExecutionContext> _context;
+    std::optional<plamatrix::internal::ResidentMatrix<Scalar>> _points;
     plamatrix::Index _pointCount = 0;
     std::uint64_t _cloudRevision = 0;
     Scalar _cellSize = Scalar(0);
@@ -177,11 +215,11 @@ private:
     std::int64_t _originX = 0;
     std::int64_t _originY = 0;
     std::int64_t _originZ = 0;
-    DeviceBuffer<std::uint64_t> _sortedCellKeys;
-    DeviceBuffer<std::uint64_t> _uniqueCellKeys;
-    plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU> _sortedPointIndices;
-    plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU> _cellOffsets;
-    plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU> _cellCounts;
+    std::optional<plamatrix::internal::ResidentMatrix<std::uint64_t>> _sortedCellKeys;
+    std::optional<plamatrix::internal::ResidentMatrix<std::uint64_t>> _uniqueCellKeys;
+    std::optional<plamatrix::internal::ResidentMatrix<plamatrix::Index>> _sortedPointIndices;
+    std::optional<plamatrix::internal::ResidentMatrix<plamatrix::Index>> _cellOffsets;
+    std::optional<plamatrix::internal::ResidentMatrix<plamatrix::Index>> _cellCounts;
 };
 
 } // namespace gpu

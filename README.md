@@ -5,18 +5,37 @@ CUDA/OpenCL-accelerated point cloud processing library built on [PlaMatrix](http
 ## Features
 
 ### Core
-- **PointCloud\<Scalar, Dev\>** — Nx3 point cloud with optional normals, colors, intensities, texture coordinates, mesh/material metadata, and named scalar fields. Same-device copy setters use bulk matrix copies, CPU/GPU transfer uses `toGpu()`/`toCpu()`, and `pointsCpu()` provides a cached CPU point view for GPU clouds.
+- **`PointXYZ`, `PointXYZI`, `PointXYZRGB`, `PointXYZRGBA`, `Normal`, `PointNormal`, `PointXYZd`** — common point records use the same field names, aligned storage, color packing, constructors, and Eigen map accessors as the corresponding PCL 1.15.1 records. `PointXYZd` is a PlaPoint extension for georeferenced double-precision positions.
+- **`PointCloud<PointT>`** — point-record cloud with aligned `points`, shape, header, sensor pose, `Ptr`/`ConstPtr`, subset construction, container mutation, advanced Eigen float views, organized indexing, and iteration. Its search, filter, normal-estimation, and ICP APIs currently run on CPU.
+- **Point reflection and blobs** — `POINT_CLOUD_REGISTER_POINT_STRUCT`, `POINT_CLOUD_REGISTER_POINT_WRAPPER`, field traits, `PCLPointCloud2`, `PCLPointField`, `PointIndices`, `Vertices`, and `PolygonMesh` provide the data contracts used by the supported algorithms and I/O overloads.
+- **`GeometryCloud<Scalar>`** — independently owned CPU Nx3 coordinates with optional normals,
+  colors, intensities, texture coordinates, faces, material metadata, and named scalar fields.
+  PLY/OBJ/XYZ/LAS matrix I/O, mesh processing, and device-selecting preprocessing use this type.
+  The former scalar/device cloud is `internal::DeviceCloud<Scalar, Dev>` for backend execution.
+  `editPoints()` bounds mutable access so point-derived caches can become reusable again.
+
+The numerical implementation uses Eigen-style `plamatrix::Matrix`, fixed vectors, and
+`SparseMatrix` on the host. CUDA storage uses `ResidentMatrix` with a shared execution
+context; returned device results retain that context. PlaPoint owns voxel quantization,
+centroids, spatial search, normals, and registration. PlaMatrix supplies general numerical
+primitives such as sort, run-length encoding, scans, reductions, and sparse solvers.
+BA observations, residuals, and problem assembly belong to PlaBundle.
 
 ### Spatial Indexing
-- **KdTree\<Scalar, Dev\>** — 3D kd-tree with KNN search (priority queue) and radius search. Call `build()` after `setInputCloud()`; searches throw a clear exception if the tree has not been built.
-- **GpuSpatialIndex\<Scalar\>** — deterministic uniform-grid index for finite GPU points, with bounded radius count/search and KNN (`k <= 32`). Cached users invalidate the index when point storage identity, point count, or `pointsRevision()` changes.
+- **`search::Search<PointT>` / `search::KdTree<PointT>` / `KdTreeFLANN<PointT, Dist>`** — point-type queries through a polymorphic search interface by point, cloud/index, subset position, or batch; results use original-cloud indices and squared `float` distances. The public contracts include point representations, epsilon, minimum-points, sorted results, and PCL-compatible `setInputCloud()` return types.
+- **`search::internal::DeviceKdTree<Scalar, Dev>`** — backend matrix kd-tree used by CPU and CUDA algorithms. Point-type `search::KdTree<PointT>` builds its index during `setInputCloud()` so independent read-only queries can run concurrently.
+- **GpuSpatialIndex\<Scalar\>** — reusable prepared uniform-grid snapshot for finite GPU points,
+  with bounded radius count/search and KNN (`k <= 32`). Queries use caller-owned
+  `GpuSpatialQueryWorkspace` storage; separate workspaces allow independent streams to share the
+  immutable index. Cached users invalidate the index when point storage identity, point count, or
+  `pointsRevision()` changes.
 
 ### Filters
 - **VoxelGrid** — centroid-based voxel downsampling with mean aggregation for normals, colors, intensities, and named scalar fields
 - **StatisticalOutlierRemoval** — KNN distance statistics outlier filtering
 - **RadiusOutlierRemoval** — radius-based neighbor count filtering
 - **UniformDownsample** — keep every Nth point
-- **Filter\<Scalar, Dev\>** — abstract base class for all filters
+- **`Filter<PointT>`** — public point-record filter base; scalar/device filters remain backend implementations
 
 Point-index preserving filters and GPU gather helpers keep point-aligned attributes
 (`normals`, `colors`, `intensities`, and named scalar fields) for the selected
@@ -24,12 +43,35 @@ points. Mesh compaction uses the same rule for surviving vertices. VoxelGrid is
 the main aggregation filter: it averages per-voxel scalar fields instead of
 dropping them.
 
+`VoxelGrid<PointT>`, `StatisticalOutlierRemoval<PointT>`, and
+`RadiusOutlierRemoval<PointT>` expose the common PCL 1.15.1 CPU point-cloud calls.
+Voxel filtering supports minimum points per voxel, full-field averaging, field limits,
+negative limits, saved leaf layouts, and centroid lookup. The outlier filters use the
+`PCLBase`/`Filter`/`FilterIndices` contracts, and radius filtering exposes the thread-count
+setting.
+The outlier filters preserve the original point record and metadata when
+compacting, and support search injection, input-index subsets, negative selection,
+and organized output. The subset limits query points; neighbor searches still use
+the full input cloud.
+
 ### Features
-- **NormalEstimation** — PCA-based surface normal estimation; CPU accumulates each 3x3 covariance on the stack and calls PlaMatrix's allocation-free symmetric eigensolver, CUDA keeps the complete supported path on device, while OpenCL accelerates uniform-grid KNN for CPU-owned clouds
+- **`Feature<PointInT, PointOutT>` / `NormalEstimation<PointInT, PointOutT>`** — polymorphic K/radius neighborhood, search surface, input indices, viewpoint API, `computePointNormal()` overloads, and normal-flip helpers writing `PointCloud<Normal>` or `PointCloud<PointNormal>` with curvature. Covariance and eigendecomposition use PlaMatrix fixed matrices.
+- **`estimateNormals(GeometryCloud<Scalar>, ...)`** — public CPU-owned geometry entry point selecting CPU, CUDA, or OpenCL. The scalar/device PCA estimator handles backend execution.
 - **NormalRefinement** — normal smoothing and viewpoint orientation, with device-resident CUDA kernels for GPU clouds
 
 ### Registration
-- **IterativeClosestPoint** (ICP) — point-to-point ICP with PlaMatrix's fixed 3x3 SVD rigid transform, initial guess support, and PCL-style correspondence/convergence controls
+- **`Registration<PointSource, PointTarget, Scalar>` / `IterativeClosestPoint<PointSource, PointTarget, Scalar>`** — polymorphic point-type ICP with public Eigen 4x4 transforms and a PlaMatrix computation backend. The supported contract includes correspondence and SVD transformation estimators, distance rejection, deterministic RANSAC, reciprocal correspondences, convergence criteria, incremental/final transforms, and visualization callbacks. `getFitnessScore()` reports mean squared nearest-neighbor distance; `getInlierFraction()` reports PlaPoint's accepted-correspondence ratio.
+- **`MatrixIterativeClosestPoint<Scalar, Dev>`** — backend scalar/device ICP implementation, including the existing CUDA path and correspondence controls.
+
+For the types and algorithms listed above, public class names, templates, method names,
+parameter order, return types, defaults, and metric meanings follow PCL 1.15.1. Existing
+code confined to this supported surface can normally migrate by changing the include
+prefix and namespace from `pcl` to `plapoint`. PlaPoint is not an implementation of all
+PCL modules: point types and algorithms not listed here, including segmentation,
+descriptors, keypoints, visualization, NDT, and generalized ICP, still require source
+changes or another library. PlaPoint does not link against PCL and does not use
+PCL-specific implementation filenames; compatibility names such as `PCLHeader` and
+`PCLPointCloud2` remain public because applications use them directly.
 
 ### Mesh
 - **MarchingCubes** — CPU callback extraction plus deterministic CUDA extraction from a device scalar field
@@ -37,7 +79,8 @@ dropping them.
 - **PoissonReconstruction** — deterministic 2:1-balanced adaptive octree, symmetric CSR assembly, PlaMatrix Jacobi-PCG, single-pass field sampling, and MC extraction
 
 ### I/O
-- **PLY** — ASCII/binary read/write plus chunked binary vertex traversal with cancellation and progress callbacks
+- **PCD** — typed and `PCLPointCloud2` ASCII, binary, and binary-compressed read/write APIs, including header/body stream overloads, sensor pose, organized dimensions, selected indices, and header generation.
+- **PLY** — typed and `PCLPointCloud2` ASCII/binary I/O, selected indices, `PolygonMesh`, sensor pose, stream output, and public header generation. Existing matrix I/O and chunked binary traversal remain available.
 - **OBJ** — geometry/material read/write plus bounded-memory line-record streaming with non-owning token views
 - **XYZ** — strict-by-default text XYZ reader. Strict rows must be exactly `x y z` or `x y z r g b`; malformed rows throw with file path and line number. Pass `io::XyzReadMode::Permissive` to skip bad legacy rows and keep the older trailing-column tolerance.
 
@@ -46,14 +89,20 @@ dropping them.
 When `PLAPOINT_WITH_CUDA=ON`, CUDA Toolkit is available, and `plamatrix::plamatrix`
 was built with CUDA support:
 
-- **Adaptive KNN** — `KdTree<Scalar, GPU>` selects between the shared-memory brute-force kernel and `GpuSpatialIndex`. Grid KNN is limited to `k <= 32`; wide empty-shell queries, pathological occupancy, unsafe quantization, small work, and larger `k` use a compatibility backend. Results are ordered deterministically by distance then source index.
+- **Adaptive KNN** — `search::internal::DeviceKdTree<Scalar, GPU>` selects between the shared-memory brute-force kernel and `GpuSpatialIndex`. Grid KNN is limited to `k <= 32`; wide empty-shell queries, pathological occupancy, unsafe quantization, small work, and larger `k` use a compatibility backend. Results are ordered deterministically by distance then source index.
 - **Stream-aware device KNN** — `gpu::batchKnnDeviceAsync()` and `gpu::batchKnnDeviceColumnMajorAsync()` launch on a caller-provided `cudaStream_t`; existing non-async overloads preserve synchronous behavior.
 - **Indexed radius and outlier filters** — RadiusOR uses saturated uniform-grid counts. SOR uses indexed KNN plus PlaMatrix reductions and device compaction. Normals, colors, intensities, named scalar fields, and point-aligned UV data stay aligned during stable GPU compaction.
 - **Device normal processing** — normal estimation uses batched symmetric eigensolves; smoothing and viewpoint orientation remain on device for supported GPU inputs.
-- **VoxelGrid CUDA downsampling** (`src/voxel_grid_gpu.cu`) — GPU path computes voxel keys, sorts them, reduces centroids, and preserves deterministic sorted voxel-key output.
+- **VoxelGrid CUDA downsampling** (`src/voxel_grid_gpu.cu`) — PlaPoint quantizes points and computes overflow-safe centroids, while PlaMatrix stably sorts and groups three-component signed voxel keys and scans group offsets; output remains deterministic in voxel-key order.
 - **GPU mesh primitives** — `gpu::marchingCubes()` returns a GPU triangle soup directly from a device field. `buildHeightGridDeviceAsync()` aggregates into a device grid using explicit bounds, and `fillHolesAsync()` keeps multi-pass fill on the producing stream until one final download.
 - **Poisson PCG** — CPU, CUDA, and OpenCL solver selections share the same deterministic symmetric CSR. A scale-aware anchor per connected component makes the system SPD. Explicit accelerator non-convergence throws; `Auto` tries CUDA, OpenCL, then CPU and continues from the latest available iterate. The extraction grid is evaluated once and reused for range selection and Marching Cubes; face orientation builds one CPU kd-tree instead of scanning every input point per face. Field evaluation and MC extraction remain CPU, so `PoissonProcessingReport::solverDevice` reports the PCG device while `actualDevice` remains CPU for the complete chain.
-- **ICP GPU path** (`src/icp_gpu.cu`) — `IterativeClosestPoint<Scalar, GPU>` keeps source/target point buffers on GPU, reads the initial source buffer directly without a startup device-to-device copy, computes correspondences with a cached finite-radius target spatial grid or the shared-memory target-tiling fallback, uses precomputed finite-radius tile bounding-box skips and per-candidate axis pruning on the fallback path, accumulates centroid/covariance/residual stats with block-level reductions, derives degeneracy flags from covariance invariants, fuses stats reduction with device-side step-transform solving through a CUDA quaternion/Jacobi solver, applies point transforms through persistent GPU scratch buffers, initializes and asynchronously accumulates the final 4x4 transform on GPU, and writes terminal-iteration transforms directly into a plain non-input caller output cloud when possible. Reduced stats, step deltas, and metric checks still synchronize to CPU, while `getFinalTransformationDevice()` exposes the final transform without forcing callers through the CPU copy and the legacy CPU `getFinalTransformation()` materializes that copy lazily. The stats helper can skip per-source correspondence index output when callers only need aggregate ICP moments, persistent workspaces and GPU buffers avoid repeated reduction, target spatial-grid, target-tile bound, step-solver, transform-buffer, point-scratch, output-allocation, and final output-copy overhead across repeated `align()` calls on the same ICP object and plain same-shaped output cloud, and `alignGpu()` skips transformed final-stats scans on non-terminal iterations. `setComputeFinalMetrics(false)` is an opt-in throughput mode that skips the terminal post-transform fitness/RMSE scan when callers only need the transform or aligned output. Input-aliased, attributed, or metadata-bearing output clouds still use safe scratch/copy or replacement paths so stale normals, colors, intensities, named scalar fields, mesh, material, or texture data cannot leak into aligned-point results. PCL-style robust ICP options that need correspondence rejectors currently preserve GPU input/output types through a CPU-staged semantic fallback; the default CUDA fast path remains unchanged for the base ICP configuration.
+- **ICP GPU path** (`src/icp_gpu.cu`) — `MatrixIterativeClosestPoint<Scalar, GPU>` keeps source/target point buffers on GPU, reads the initial source buffer directly without a startup device-to-device copy, computes correspondences with a cached finite-radius target spatial grid or the shared-memory target-tiling fallback, and builds the target grid through PlaMatrix's stable three-component key sort, run-length encoding, and offset scan. It uses precomputed finite-radius tile bounding-box skips and per-candidate axis pruning on the fallback path, accumulates centroid/covariance/residual stats with block-level reductions, derives degeneracy flags from covariance invariants, fuses stats reduction with device-side step-transform solving through a CUDA quaternion/Jacobi solver, applies point transforms through persistent GPU scratch buffers, initializes and asynchronously accumulates the final 4x4 transform on GPU, and writes terminal-iteration transforms directly into a plain non-input caller output cloud when possible. Reduced stats, step deltas, and metric checks still synchronize to CPU, while `getFinalTransformationDevice()` exposes the final transform without forcing callers through the CPU copy and the legacy CPU `getFinalTransformation()` materializes that copy lazily. The stats helper can skip per-source correspondence index output when callers only need aggregate ICP moments, persistent workspaces and GPU buffers avoid repeated reduction, target spatial-grid, target-tile bound, step-solver, transform-buffer, point-scratch, output-allocation, and final output-copy overhead across repeated `align()` calls on the same ICP object and plain same-shaped output cloud, and `alignGpu()` skips transformed final-stats scans on non-terminal iterations. `setComputeFinalMetrics(false)` is an opt-in throughput mode that skips the terminal post-transform fitness/RMSE scan when callers only need the transform or aligned output. Input-aliased, attributed, or metadata-bearing output clouds still use safe scratch/copy or replacement paths so stale normals, colors, intensities, named scalar fields, mesh, material, or texture data cannot leak into aligned-point results. PCL-style robust ICP options that need correspondence rejectors currently preserve GPU input/output types through a CPU-staged semantic fallback; the default CUDA fast path remains unchanged for the base ICP configuration.
+
+For latency-sensitive GPU ICP, call `reserveGpuWorkspace()` to preallocate scratch and
+`prepareGpuTargetSpatialIndex()` to synchronously build the finite-radius target grid before
+the first `align()`. The prepare call returns `false` when the current radius or target size
+selects a different search path. A prepared grid is reused until the target positions or
+correspondence radius change.
 - **Compatibility fallbacks** — KNN/SOR requests above the indexed `k` limit and pathological grid queries use documented fallback paths.
 - **VoxelGrid CPU hot path** — CPU path uses hash aggregation and sorted voxel keys to keep deterministic centroid order.
 - Explicit template instantiations in `src/plapoint.cpp` reduce downstream compile times
@@ -62,8 +111,9 @@ When `PLAPOINT_WITH_OPENCL=ON`, PlaPoint uses PlaMatrix's OpenCL runtime and buf
 resources to run OpenCL C 1.2 kernels for CPU-owned voxel downsampling,
 statistical/radius outlier removal, normal-estimation KNN, height-grid aggregation,
 and Poisson's CSR Jacobi-PCG solve.
-The current high-level APIs still accept and return PlaMatrix CPU objects, while
-PlaMatrix owns OpenCL device discovery, program caching, queues, and device storage.
+The current high-level geometry APIs accept and return `GeometryCloud<Scalar>` or
+PlaMatrix host matrices, while PlaMatrix owns OpenCL device discovery, program caching,
+queues, and device storage.
 Point-cloud-specific kernels and their dispatch policy remain in PlaPoint.
 Enumerate devices with `opencl::enumerateOpenClGpuDevices()`. Set
 `PLAMATRIX_OPENCL_DEVICE_INDEX` to a stable enumerated GPU index (`-1` or unset means
@@ -88,15 +138,16 @@ for limits and lifetime rules.
 - C++17
 - CMake ≥ 3.21
 - [PlaMatrix](https://github.com/guderianXu/plamatrix) (math backend)
+- Eigen3 ≥ 3.3 (public PCL-compatible types)
 - CUDA Toolkit (optional, for CUDA kernels)
 - OpenCL SDK/loader and a GPU OpenCL driver (optional, for OpenCL C 1.2 kernels)
 - Google Test (for tests)
 
 ## Build
 
-Set `PLAPOINT_DEPS_PREFIX` to a CMake prefix list containing PlaMatrix and, for the
-test-enabled `*-release` presets, Google Test. Benchmark-only presets need only
-PlaMatrix. Use the checked-in presets for reproducible CPU, OpenCL, CUDA, and
+Set `PLAPOINT_DEPS_PREFIX` to a CMake prefix list containing PlaMatrix and Eigen3,
+and, for the test-enabled `*-release` presets, Google Test. Use the checked-in
+presets for reproducible CPU, OpenCL, CUDA, and
 instrumentation-free benchmark builds:
 
 ```bash
@@ -238,6 +289,27 @@ CUDA row to profile in Nsight or optimize next.
 
 ## Validation Helpers
 
+To prove that CUDA kernels execute on real hardware, configure the test build with
+`PLAPOINT_REQUIRE_CUDA_TEST_DEVICE=ON`. Configuration rejects this option unless both CUDA
+and tests are enabled, and the test suite fails if device discovery or CUDA context creation
+fails:
+
+```bash
+cmake -S . -B build-cuda-runtime \
+  -DPLAPOINT_WITH_CUDA=ON \
+  -DPLAPOINT_BUILD_TESTS=ON \
+  -DPLAPOINT_REQUIRE_CUDA_TEST_DEVICE=ON \
+  -DCMAKE_PREFIX_PATH=/path/to/cuda-plamatrix/install
+cmake --build build-cuda-runtime
+ctest --test-dir build-cuda-runtime --output-on-failure --no-tests=error
+```
+
+The ordinary hosted CUDA CI job checks compilation and any host-visible tests. The manual
+`gpu-runtime-validation` workflow targets a stable self-hosted runner labeled `gpu`, enables
+the required-device test, runs the CUDA suite, and compares an instrumentation-free benchmark
+against that runner's latest cached baseline with `--fail-on-regression` and
+`--fail-on-missing`. Its first run, or a run with `refresh_baseline`, seeds the baseline.
+
 Run a CPU-only configure, build, and CTest pass with:
 
 ```bash
@@ -287,91 +359,61 @@ then invokes the same PLY comparison and quality gates.
 ## API Overview
 
 ```cpp
-#include <plapoint/core/point_cloud.h>
+#include <plapoint/point_cloud.h>
 #include <plapoint/search/kdtree.h>
 #include <plapoint/filters/voxel_grid.h>
-#include <plapoint/filters/statistical_outlier_removal.h>
-#include <plapoint/filters/radius_outlier_removal.h>
-#include <plapoint/filters/uniform_downsample.h>
-#include <plapoint/features/normal_estimation.h>
-#include <plapoint/features/normal_refinement.h>
+#include <plapoint/features/normal_3d.h>
 #include <plapoint/registration/icp.h>
-#include <plapoint/mesh/marching_cubes.h>
-#include <plapoint/mesh/poisson_reconstruction.h>
 #include <plapoint/io/ply_io.h>
-#include <plapoint/io/xyz_io.h>
+#include <plapoint/io/pcd_io.h>
 
-using namespace plapoint;
+using Cloud = plapoint::PointCloud<plapoint::PointXYZ>;
+Cloud::Ptr source = std::make_shared<Cloud>();
+source->push_back(plapoint::PointXYZ(0.0f, 0.0f, 0.0f));
+source->push_back(plapoint::PointXYZ(1.0f, 0.0f, 0.0f));
+source->push_back(plapoint::PointXYZ(0.0f, 1.0f, 0.0f));
+source->push_back(plapoint::PointXYZ(0.0f, 0.0f, 1.0f));
 
-// Create a point cloud on CPU
-PointCloud<float, plamatrix::Device::CPU> cloud(1000);
-cloud.points().fill(1.0f);
-plamatrix::DenseMatrix<float, plamatrix::Device::CPU> scalar_fields(1000, 1);
-scalar_fields.fill(0.0f);
-cloud.setScalarFields({"error"}, std::move(scalar_fields));
+plapoint::search::KdTree<plapoint::PointXYZ> tree;
+tree.setInputCloud(source);
+std::vector<int> indices;
+std::vector<float> squared_distances;
+tree.nearestKSearch(source->points[0], 3, indices, squared_distances);
+tree.radiusSearch(source->points[0], 1.0, indices, squared_distances);
 
-// Transfer to GPU
-auto gpu_cloud = cloud.toGpu();
+plapoint::VoxelGrid<plapoint::PointXYZ> voxel;
+voxel.setInputCloud(source);
+voxel.setLeafSize(0.5f, 0.5f, 0.5f);
+Cloud filtered;
+voxel.filter(filtered);
 
-// Build kd-tree and search
-auto tree = std::make_shared<search::KdTree<float, plamatrix::Device::CPU>>();
-tree->setInputCloud(std::make_shared<PointCloud<...>>(std::move(cloud)));
-tree->build();
-auto neighbors = tree->nearestKSearch({0, 0, 0}, 10);
+plapoint::NormalEstimation<plapoint::PointXYZ, plapoint::Normal> estimator;
+estimator.setInputCloud(source);
+estimator.setKSearch(4);
+plapoint::PointCloud<plapoint::Normal> normals;
+estimator.compute(normals);
 
-// Filter
-VoxelGrid<float, plamatrix::Device::CPU> vg;
-vg.setInputCloud(...);
-vg.setLeafSize(0.1, 0.1, 0.1);
-PointCloud<float, plamatrix::Device::CPU> output;
-vg.filter(output);
-
-// Estimate normals
-NormalEstimation<float, plamatrix::Device::CPU> ne;
-ne.setInputCloud(...);
-ne.setSearchMethod(tree);
-auto normals = ne.compute();
-
-// ICP registration
-IterativeClosestPoint<float, plamatrix::Device::CPU> icp;
+plapoint::IterativeClosestPoint<plapoint::PointXYZ, plapoint::PointXYZ> icp;
 icp.setInputSource(source);
-icp.setInputTarget(target);
+icp.setInputTarget(source);
 icp.setMaximumIterations(50);
-icp.setMaxCorrespondenceDistance(0.05f);
-icp.setUseReciprocalCorrespondences(true);
-icp.setUseOneToOneCorrespondences(true);
-icp.setTrimmedOverlapRatio(0.8f);
-icp.setEuclideanFitnessEpsilon(1e-6f);
-icp.setTransformationRotationEpsilon(1e-6f);
-icp.align(aligned);
+icp.setTransformationEpsilon(1.0e-8); // squared translation threshold
+Cloud aligned;
+icp.align(aligned, Eigen::Matrix4f::Identity());
+const Eigen::Matrix4f transform = icp.getFinalTransformation();
+const double mean_squared_error = icp.getFitnessScore();
 
-plamatrix::DenseMatrix<float, plamatrix::Device::CPU> initial_guess(4, 4);
-// Fill initial_guess as a rigid 4x4 transform before passing it to align().
-icp.align(aligned, initial_guess);
-
-// Reconstruct surface
-PoissonReconstruction<float> pr;
-pr.setInputCloud(point_cloud_with_normals);
-pr.setDepth(6);
-auto [verts, faces] = pr.reconstruct();
-
-// PLY I/O
-auto ply_cloud = io::readPly<float>("input.ply");
-io::writePly("output.ply", *ply_cloud);
-
-// Stream a large binary PLY without materializing the complete cloud.
-io::PlyVertexStreamOptions stream_options;
-stream_options.chunkBytes = 8 * 1024 * 1024;
-io::forEachBinaryPlyVertex(
-    "large.ply", stream_options,
-    [](const char*, const io::PlyVertexPoint64& point, std::uint64_t index) {
-        processPoint(index, point.x, point.y, point.z);
-    });
-
-// XYZ I/O: strict by default, permissive for legacy files with bad rows.
-auto xyz_cloud = io::readXyz<float>("input.xyz");
-auto legacy_xyz_cloud = io::readXyz<float>("legacy.xyz", io::XyzReadMode::Permissive);
+plapoint::io::savePLYFileBinary("aligned.ply", aligned);
+Cloud loaded;
+plapoint::io::loadPLYFile("aligned.ply", loaded);
 ```
+
+The point-type API above currently materializes CPU matrices for search, filters, and ICP.
+The backend normal-estimation and ICP implementations retain existing CUDA/OpenCL
+processing routes. Typed PCD/PLY conversion uses registered fields, so the built-in point
+records and custom registered point records share the same I/O path. Matrix I/O and
+streaming APIs remain available through `GeometryCloud` for mesh faces, extra scalar fields,
+and large files.
 
 ## License
 

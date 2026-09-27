@@ -4,9 +4,10 @@ This document describes the CUDA Marching Cubes, HeightGrid, and Poisson solver 
 
 ## Marching Cubes
 
-`gpu::marchingCubes()` accepts a GPU column vector containing
+`gpu::marchingCubes()` accepts a CUDA `plamatrix::internal::ResidentMatrix` column vector containing
 `(nx + 1) * (ny + 1) * (nz + 1)` scalar samples in x-fastest order. It counts triangles,
 computes deterministic offsets, and returns a GPU `PointCloud` containing vertices and faces.
+Bounds are `std::array<Scalar, 3>`, matching the CPU Marching Cubes API.
 The current public call synchronizes the supplied stream before returning because the exact
 output size is needed for allocation.
 
@@ -35,6 +36,7 @@ auto host_grid = gpu::downloadHeightGrid(grid, stream);
 
 Mean, Min, and Max elevation aggregation run on device. Mean uses weights; colors use weighted
 aggregation. Validity and `fillPass` remain device-resident through multi-pass ping-pong fill.
+Keep the input point cloud and workspace alive until the producing stream completes.
 The convenience `buildHeightGrid()` wrapper may compute automatic bounds synchronously before
 launching aggregation.
 
@@ -42,6 +44,9 @@ Strict non-finite input checking writes device status and reports the error at
 `downloadHeightGrid()`. `skipNonFinite=true` drops those points instead. A grid with pending work
 must be filled, synchronized, or downloaded on its producer stream. The workspace also remains
 stream-bound until `resetStream()` synchronizes and rebinds it.
+`GpuHeightGrid` owns resident device fields. Moving it transfers pending stream work; destroying
+or overwriting a pending grid waits for that stream before releasing storage. Keep the producer
+stream alive until the grid is synchronized or destroyed.
 
 ## Poisson PCG
 
@@ -63,12 +68,14 @@ auto [vertices, faces] = reconstruction.reconstruct();
 const auto& report = reconstruction.lastReport();
 ```
 
-CPU, CUDA, and OpenCL selections call PlaMatrix Jacobi-PCG on the same CSR. Explicit accelerator
+Poisson assembles `plamatrix::SparseMatrix<Scalar, plamatrix::RowMajor, plamatrix::Index>`
+from `Triplet` entries. CPU uses `ConjugateGradient` with diagonal preconditioning; CUDA and
+OpenCL use `ResidentCsrMatrix`/`ResidentVector` PCG on the same canonical sparse system. Explicit accelerator
 non-convergence throws with iteration and residual context. `Auto` tries CUDA, OpenCL, then CPU,
 continues from a non-converged accelerator iterate when available, and fills `fallbackReason`.
 `solverDevice` identifies the PCG device; `actualDevice` remains CPU because octree field
 evaluation and final Marching Cubes extraction are not yet device-resident. `lastSystem()` exposes
-the latest CSR/RHS for diagnostics and benchmark reuse; its reference is invalidated by the next
+the latest Eigen-style sparse matrix/RHS for diagnostics and benchmark reuse; its reference is invalidated by the next
 `reconstruct()` on that object.
 
 ## Benchmarks

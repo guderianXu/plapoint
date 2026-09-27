@@ -13,6 +13,7 @@
 #include <plapoint/mesh/poisson_reconstruction.h>
 #include <plapoint/io/ply_io.h>
 #include <plamatrix/plamatrix.h>
+#include <plamatrix/internal/core/device.h>
 
 #include <cmath>
 #include <cstring>
@@ -90,20 +91,20 @@ TEST_P(KdTreeValidation, KnnMatchesScipy)
 
     int N = pts.rows, M = qrs.rows;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> mat(N, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> mat(N, 3);
     for (int i = 0; i < N; ++i)
         for (int c = 0; c < 3; ++c)
             mat(i, c) = pts.asFloat(i)[c];
 
-    auto cloud = std::make_shared<plapoint::PointCloud<Scalar, plamatrix::Device::CPU>>(std::move(mat));
-    plapoint::search::KdTree<Scalar, plamatrix::Device::CPU> tree;
+    auto cloud = std::make_shared<plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>>(std::move(mat));
+    plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::CPU> tree;
     tree.setInputCloud(cloud);
     tree.build();
 
     int errors = 0;
     for (int i = 0; i < M; ++i)
     {
-        plamatrix::Vec3<Scalar> q{qrs.asFloat(i)[0], qrs.asFloat(i)[1], qrs.asFloat(i)[2]};
+        plamatrix::Matrix<Scalar, 3, 1> q{qrs.asFloat(i)[0], qrs.asFloat(i)[1], qrs.asFloat(i)[2]};
         auto result = tree.nearestKSearch(q, k);
         ASSERT_EQ(static_cast<int>(result.size()), k) << "Query " << i;
         for (int j = 0; j < k; ++j)
@@ -134,17 +135,17 @@ TEST(VoxelGridValidation, CentroidsMatchReference)
     auto leaf_data = BinData::load(refPath("voxelgrid_leaf.bin"));
     Scalar leaf = leaf_data.asFloat()[0];
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> mat(input.rows, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> mat(input.rows, 3);
     for (int i = 0; i < input.rows; ++i)
         for (int c = 0; c < 3; ++c)
             mat(i, c) = input.asFloat(i)[c];
 
-    auto cloud = std::make_shared<plapoint::PointCloud<Scalar, plamatrix::Device::CPU>>(std::move(mat));
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> vg;
+    auto cloud = std::make_shared<plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>>(std::move(mat));
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::CPU> vg;
     vg.setInputCloud(cloud);
     vg.setLeafSize(leaf, leaf, leaf);
 
-    plapoint::PointCloud<Scalar, plamatrix::Device::CPU> output;
+    plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU> output;
     vg.filter(output);
 
     // Same voxel count?
@@ -154,9 +155,9 @@ TEST(VoxelGridValidation, CentroidsMatchReference)
     Scalar max_dist = 0;
     for (int i = 0; i < static_cast<int>(output.size()); ++i)
     {
-        Scalar ox = output.points().getValue(i, 0);
-        Scalar oy = output.points().getValue(i, 1);
-        Scalar oz = output.points().getValue(i, 2);
+        Scalar ox = output.points().operator()(i, 0);
+        Scalar oy = output.points().operator()(i, 1);
+        Scalar oz = output.points().operator()(i, 2);
 
         // Find closest reference centroid
         Scalar best = 1e10;
@@ -173,7 +174,7 @@ TEST(VoxelGridValidation, CentroidsMatchReference)
     }
 }
 
-// ---- NormalEstimation Cross-Validation ----
+// ---- MatrixNormalEstimation Cross-Validation ----
 TEST(NormalEstimationValidation, SphereNormals)
 {
     using Scalar = float;
@@ -183,18 +184,18 @@ TEST(NormalEstimationValidation, SphereNormals)
     int K = k_data.asInt()[0];
 
     int N = input.rows;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> mat(N, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> mat(N, 3);
     for (int i = 0; i < N; ++i)
         for (int c = 0; c < 3; ++c)
             mat(i, c) = input.asFloat(i)[c];
 
-    auto cloud = std::make_shared<plapoint::PointCloud<Scalar, plamatrix::Device::CPU>>(std::move(mat));
+    auto cloud = std::make_shared<plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>>(std::move(mat));
 
-    auto tree = std::make_shared<plapoint::search::KdTree<Scalar, plamatrix::Device::CPU>>();
+    auto tree = std::make_shared<plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::CPU>>();
     tree->setInputCloud(cloud);
     tree->build();
 
-    plapoint::NormalEstimation<Scalar, plamatrix::Device::CPU> ne;
+    plapoint::MatrixNormalEstimation<Scalar, plamatrix::internal::Device::CPU> ne;
     ne.setInputCloud(cloud);
     ne.setSearchMethod(tree);
     ne.setKSearch(K);
@@ -204,9 +205,9 @@ TEST(NormalEstimationValidation, SphereNormals)
     Scalar avg_angle = 0;
     for (int i = 0; i < N; ++i)
     {
-        Scalar nx = normals.getValue(i, 0);
-        Scalar ny = normals.getValue(i, 1);
-        Scalar nz = normals.getValue(i, 2);
+        Scalar nx = normals.operator()(i, 0);
+        Scalar ny = normals.operator()(i, 1);
+        Scalar nz = normals.operator()(i, 2);
 
         Scalar rx = ref_normals.asFloat(i)[0];
         Scalar ry = ref_normals.asFloat(i)[1];
@@ -233,8 +234,8 @@ TEST(ICPValidation, RecoversKnownTransform)
     int N = src_data.rows;
 
     // Build source and target clouds
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> src_mat(N, 3);
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> tgt_mat(N, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> src_mat(N, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> tgt_mat(N, 3);
     for (int i = 0; i < N; ++i)
         for (int c = 0; c < 3; ++c)
         {
@@ -242,15 +243,15 @@ TEST(ICPValidation, RecoversKnownTransform)
             tgt_mat(i, c) = static_cast<Scalar>(tgt_data.asDouble(i)[c]);
         }
 
-    auto source = std::make_shared<plapoint::PointCloud<Scalar, plamatrix::Device::CPU>>(std::move(src_mat));
-    auto target = std::make_shared<plapoint::PointCloud<Scalar, plamatrix::Device::CPU>>(std::move(tgt_mat));
+    auto source = std::make_shared<plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>>(std::move(src_mat));
+    auto target = std::make_shared<plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>>(std::move(tgt_mat));
 
-    plapoint::IterativeClosestPoint<Scalar, plamatrix::Device::CPU> icp;
+    plapoint::MatrixIterativeClosestPoint<Scalar, plamatrix::internal::Device::CPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxIterations(50);
 
-    plapoint::PointCloud<Scalar, plamatrix::Device::CPU> output;
+    plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU> output;
     icp.align(output);
 
     EXPECT_TRUE(icp.hasConverged());
@@ -260,13 +261,13 @@ TEST(ICPValidation, RecoversKnownTransform)
     Scalar rot_error = 0;
     for (int i = 0; i < 3; ++i)
         for (int j = 0; j < 3; ++j)
-            rot_error += std::abs(T.getValue(i, j) - static_cast<Scalar>(R_data.asDouble()[i*3+j]));
+            rot_error += std::abs(T.operator()(i, j) - static_cast<Scalar>(R_data.asDouble()[i*3+j]));
     EXPECT_LT(rot_error, Scalar(0.3)) << "Rotation error: " << rot_error;
 
     // Check translation
-    Scalar t_error = std::abs(T.getValue(0, 3) - static_cast<Scalar>(t_data.asDouble()[0]))
-                   + std::abs(T.getValue(1, 3) - static_cast<Scalar>(t_data.asDouble()[1]))
-                   + std::abs(T.getValue(2, 3) - static_cast<Scalar>(t_data.asDouble()[2]));
+    Scalar t_error = std::abs(T.operator()(0, 3) - static_cast<Scalar>(t_data.asDouble()[0]))
+                   + std::abs(T.operator()(1, 3) - static_cast<Scalar>(t_data.asDouble()[1]))
+                   + std::abs(T.operator()(2, 3) - static_cast<Scalar>(t_data.asDouble()[2]));
     EXPECT_LT(t_error, Scalar(0.3)) << "Translation error: " << t_error;
 }
 
@@ -294,9 +295,9 @@ TEST(MarchingCubesValidation, SphereVerticesOnSurface)
     int outside = 0;
     for (plamatrix::Index i = 0; i < verts.rows(); ++i)
     {
-        Scalar x = verts.getValue(i, 0);
-        Scalar y = verts.getValue(i, 1);
-        Scalar z = verts.getValue(i, 2);
+        Scalar x = verts.operator()(i, 0);
+        Scalar y = verts.operator()(i, 1);
+        Scalar z = verts.operator()(i, 2);
         Scalar r2 = x*x + y*y + z*z;
         Scalar err = std::abs(std::sqrt(r2) - R);
         max_error = std::max(max_error, err);
@@ -314,19 +315,19 @@ TEST(RadiusOutlierRemovalValidation, MatchesScipy)
     auto ref_mask = BinData::load(refPath("radius_filter_inliers.bin"));
 
     int N = input.rows;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> mat(N, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> mat(N, 3);
     for (int i = 0; i < N; ++i)
         for (int c = 0; c < 3; ++c)
             mat(i, c) = input.asFloat(i)[c];
 
-    auto cloud = std::make_shared<plapoint::PointCloud<Scalar, plamatrix::Device::CPU>>(std::move(mat));
+    auto cloud = std::make_shared<plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>>(std::move(mat));
 
-    plapoint::RadiusOutlierRemoval<Scalar, plamatrix::Device::CPU> ror;
+    plapoint::RadiusOutlierRemoval<Scalar, plamatrix::internal::Device::CPU> ror;
     ror.setInputCloud(cloud);
     ror.setRadius(Scalar(1.0));
     ror.setMinNeighbors(5);
 
-    plapoint::PointCloud<Scalar, plamatrix::Device::CPU> output;
+    plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU> output;
     ror.filter(output);
 
     // Count expected inliers
@@ -350,24 +351,24 @@ TEST(UniformDownsampleValidation, MatchesReference)
     int step = step_data.asInt()[0];
 
     int N = input.rows;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> mat(N, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> mat(N, 3);
     for (int i = 0; i < N; ++i)
         for (int c = 0; c < 3; ++c)
             mat(i, c) = input.asFloat(i)[c];
 
-    auto cloud = std::make_shared<plapoint::PointCloud<Scalar, plamatrix::Device::CPU>>(std::move(mat));
+    auto cloud = std::make_shared<plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>>(std::move(mat));
 
-    plapoint::UniformDownsample<Scalar, plamatrix::Device::CPU> ud;
+    plapoint::UniformDownsample<Scalar, plamatrix::internal::Device::CPU> ud;
     ud.setInputCloud(cloud);
     ud.setStep(step);
 
-    plapoint::PointCloud<Scalar, plamatrix::Device::CPU> output;
+    plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU> output;
     ud.filter(output);
 
     EXPECT_EQ(static_cast<int>(output.size()), ref_out.rows);
     for (int i = 0; i < ref_out.rows; ++i)
         for (int c = 0; c < 3; ++c)
-            EXPECT_FLOAT_EQ(output.points().getValue(i, c), ref_out.asFloat(i)[c])
+            EXPECT_FLOAT_EQ(output.points().operator()(i, c), ref_out.asFloat(i)[c])
                 << "Mismatch at point " << i << " dim " << c;
 }
 

@@ -6,6 +6,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
+#include <plamatrix/internal/device/device_matrix.h>
 
 namespace plapoint
 {
@@ -339,23 +340,23 @@ __global__ void radiusSearchKernel(
 } // namespace
 
 template <typename Scalar>
-plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU>
+plamatrix::internal::ResidentMatrix<plamatrix::Index>
 GpuSpatialIndex<Scalar>::radiusCountAsync(
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& queries,
+    const plamatrix::internal::ResidentMatrix<Scalar>& queries,
     Scalar radius,
     int max_count,
     GpuSpatialQueryWorkspace<Scalar>& workspace,
     cudaStream_t stream) const
 {
     detail::validateRadiusArguments(queries, radius, max_count, _cloudRevision);
+    queries.validateContext(*_context);
     static_cast<void>(workspace);
-    auto result = plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU>
-        ::uninitializedAsync(queries.rows(), 1, stream);
+    plamatrix::internal::ResidentMatrix<plamatrix::Index> result(queries.rows(), 1, _context);
     if (queries.rows() != 0)
     {
         const GridView<Scalar> grid{
-            _points.data(), _pointCount, _uniqueCellKeys.get(), _sortedPointIndices.data(),
-            _cellOffsets.data(), _cellCounts.data(), _cellCount, static_cast<double>(_cellSize),
+            _points->data(), _pointCount, uniqueCellKeysData(), sortedPointIndicesData(),
+            cellOffsetsData(), cellCountsData(), _cellCount, static_cast<double>(_cellSize),
             _originX, _originY, _originZ};
         radiusCountKernel<<<(queries.rows() + 255) / 256, 256, 0, stream>>>(
             grid, queries.data(), static_cast<int>(queries.rows()), static_cast<double>(radius),
@@ -367,26 +368,24 @@ GpuSpatialIndex<Scalar>::radiusCountAsync(
 
 template <typename Scalar>
 GpuRadiusSearchResult<Scalar> GpuSpatialIndex<Scalar>::radiusSearchAsync(
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& queries,
+    const plamatrix::internal::ResidentMatrix<Scalar>& queries,
     Scalar radius,
     int max_neighbors,
     GpuSpatialQueryWorkspace<Scalar>& workspace,
     cudaStream_t stream) const
 {
     detail::validateRadiusArguments(queries, radius, max_neighbors, _cloudRevision);
-    auto& distance_keys = workspace.distanceKeys(queries.rows(), max_neighbors, stream);
+    queries.validateContext(*_context);
+    auto& distance_keys = workspace.distanceKeys(queries.rows(), max_neighbors, _context);
     GpuRadiusSearchResult<Scalar> result{
-        plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU>
-            ::uninitializedAsync(queries.rows(), max_neighbors, stream),
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>
-            ::uninitializedAsync(queries.rows(), max_neighbors, stream),
-        plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU>
-            ::uninitializedAsync(queries.rows(), 1, stream)};
+        plamatrix::internal::ResidentMatrix<plamatrix::Index>(queries.rows(), max_neighbors, _context),
+        plamatrix::internal::ResidentMatrix<Scalar>(queries.rows(), max_neighbors, _context),
+        plamatrix::internal::ResidentMatrix<plamatrix::Index>(queries.rows(), 1, _context)};
     if (queries.rows() != 0)
     {
         const GridView<Scalar> grid{
-            _points.data(), _pointCount, _uniqueCellKeys.get(), _sortedPointIndices.data(),
-            _cellOffsets.data(), _cellCounts.data(), _cellCount, static_cast<double>(_cellSize),
+            _points->data(), _pointCount, uniqueCellKeysData(), sortedPointIndicesData(),
+            cellOffsetsData(), cellCountsData(), _cellCount, static_cast<double>(_cellSize),
             _originX, _originY, _originZ};
         radiusSearchKernel<<<(queries.rows() + 255) / 256, 256, 0, stream>>>(
             grid, queries.data(), static_cast<int>(queries.rows()), static_cast<double>(radius),
@@ -397,19 +396,19 @@ GpuRadiusSearchResult<Scalar> GpuSpatialIndex<Scalar>::radiusSearchAsync(
     return result;
 }
 
-template plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU>
+template plamatrix::internal::ResidentMatrix<plamatrix::Index>
 GpuSpatialIndex<float>::radiusCountAsync(
-    const plamatrix::DenseMatrix<float, plamatrix::Device::GPU>&,
+    const plamatrix::internal::ResidentMatrix<float>&,
     float, int, GpuSpatialQueryWorkspace<float>&, cudaStream_t) const;
-template plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU>
+template plamatrix::internal::ResidentMatrix<plamatrix::Index>
 GpuSpatialIndex<double>::radiusCountAsync(
-    const plamatrix::DenseMatrix<double, plamatrix::Device::GPU>&,
+    const plamatrix::internal::ResidentMatrix<double>&,
     double, int, GpuSpatialQueryWorkspace<double>&, cudaStream_t) const;
 template GpuRadiusSearchResult<float> GpuSpatialIndex<float>::radiusSearchAsync(
-    const plamatrix::DenseMatrix<float, plamatrix::Device::GPU>&,
+    const plamatrix::internal::ResidentMatrix<float>&,
     float, int, GpuSpatialQueryWorkspace<float>&, cudaStream_t) const;
 template GpuRadiusSearchResult<double> GpuSpatialIndex<double>::radiusSearchAsync(
-    const plamatrix::DenseMatrix<double, plamatrix::Device::GPU>&,
+    const plamatrix::internal::ResidentMatrix<double>&,
     double, int, GpuSpatialQueryWorkspace<double>&, cudaStream_t) const;
 
 } // namespace gpu

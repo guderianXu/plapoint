@@ -22,9 +22,11 @@
 #include <type_traits>
 #include <vector>
 
-#include <plamatrix/dense/dense_matrix.h>
+#include <plamatrix/dense/matrix.h>
+#include <plamatrix/internal/core/device.h>
 
 #include <plapoint/core/point_cloud.h>
+#include <plapoint/geometry_cloud.h>
 
 namespace plapoint {
 namespace io {
@@ -293,7 +295,7 @@ ObjStreamStatus forEachObjRecord(const std::string& path,
 }
 
 template <typename Scalar>
-std::shared_ptr<PointCloud<Scalar, plamatrix::Device::CPU>>
+std::shared_ptr<GeometryCloud<Scalar>>
 readObj(const std::string& path)
 {
     std::ifstream f(path, std::ios::binary);
@@ -523,26 +525,23 @@ readObj(const std::string& path)
     std::string().swap(file_data);
 
     size_t n = vx.size();
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(
-        static_cast<plamatrix::Index>(n), 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> pts(static_cast<plamatrix::Index>(n), 3);
     for (size_t i = 0; i < n; ++i)
     {
         pts(static_cast<plamatrix::Index>(i), 0) = vx[i];
         pts(static_cast<plamatrix::Index>(i), 1) = vy[i];
         pts(static_cast<plamatrix::Index>(i), 2) = vz[i];
     }
-    auto cloud = std::make_shared<PointCloud<Scalar, plamatrix::Device::CPU>>(
+    auto cloud = std::make_shared<GeometryCloud<Scalar>>(
         std::move(pts));
 
-    const bool can_assign_colors = n > 0 &&
-        has_vertex_color.size() == n &&
-        std::all_of(has_vertex_color.begin(), has_vertex_color.end(), [](bool has_color) {
-            return has_color;
-        });
+    const bool can_assign_colors =
+        n > 0 && has_vertex_color.size() == n &&
+        std::all_of(has_vertex_color.begin(), has_vertex_color.end(), [](bool has_color) { return has_color; });
     if (can_assign_colors)
     {
-        plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(
-            static_cast<plamatrix::Index>(n), 3);
+        plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(static_cast<plamatrix::Index>(n),
+                                                                                       3);
         for (size_t i = 0; i < n; ++i)
         {
             colors(static_cast<plamatrix::Index>(i), 0) = vr[i];
@@ -615,8 +614,7 @@ readObj(const std::string& path)
 
     if (can_assign_normals)
     {
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> nrm(
-            static_cast<plamatrix::Index>(n), 3);
+        plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> nrm(static_cast<plamatrix::Index>(n), 3);
         for (size_t i = 0; i < n; ++i)
         {
             const size_t ni =
@@ -632,8 +630,8 @@ readObj(const std::string& path)
 
     if (!tx.empty())
     {
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> tex(
-            static_cast<plamatrix::Index>(tx.size()), 2);
+        plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> tex(static_cast<plamatrix::Index>(tx.size()),
+                                                                              2);
         for (size_t i = 0; i < tx.size(); ++i)
         {
             tex(static_cast<plamatrix::Index>(i), 0) = tx[i];
@@ -645,7 +643,7 @@ readObj(const std::string& path)
     if (!face_verts.empty())
     {
         plamatrix::Index nf = static_cast<plamatrix::Index>(face_verts.size());
-        plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(nf, 3);
+        plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> faces(nf, 3);
         for (plamatrix::Index fi = 0; fi < nf; ++fi)
         {
             for (int c = 0; c < 3 && c < static_cast<int>(face_verts[fi].size()); ++c)
@@ -663,7 +661,7 @@ readObj(const std::string& path)
 
         if (has_complete_face_texture_indices)
         {
-            plamatrix::DenseMatrix<int, plamatrix::Device::CPU> ft(nf, 3);
+            plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> ft(nf, 3);
             for (plamatrix::Index fi = 0; fi < nf; ++fi)
             {
                 for (int c = 0; c < 3; ++c)
@@ -685,8 +683,32 @@ readObj(const std::string& path)
 
 template <typename Scalar>
 void writeObj(const std::string& path,
-              const PointCloud<Scalar, plamatrix::Device::CPU>& cloud)
+              const GeometryCloud<Scalar>& cloud)
 {
+    cloud.validate();
+    const auto require_finite_matrix = [](const auto& matrix, const char* label)
+    {
+        for (plamatrix::Index row = 0; row < matrix.rows(); ++row)
+        {
+            for (plamatrix::Index col = 0; col < matrix.cols(); ++col)
+            {
+                if (!std::isfinite(static_cast<double>(matrix.operator()(row, col))))
+                {
+                    throw std::invalid_argument(std::string("OBJ ") + label + " must be finite");
+                }
+            }
+        }
+    };
+    require_finite_matrix(cloud.points(), "coordinates");
+    if (cloud.hasNormals())
+    {
+        require_finite_matrix(*cloud.normals(), "normals");
+    }
+    if (cloud.hasTextureCoords())
+    {
+        require_finite_matrix(*cloud.textureCoords(), "texture coordinates");
+    }
+
     std::ofstream f(path);
     if (!f)
     {
@@ -707,9 +729,9 @@ void writeObj(const std::string& path,
           << " " << cloud.points()(static_cast<plamatrix::Index>(i), 2);
         if (cloud.hasColors())
         {
-            f << " " << static_cast<int>(cloud.colors()->getValue(static_cast<plamatrix::Index>(i), 0))
-              << " " << static_cast<int>(cloud.colors()->getValue(static_cast<plamatrix::Index>(i), 1))
-              << " " << static_cast<int>(cloud.colors()->getValue(static_cast<plamatrix::Index>(i), 2));
+            f << " " << static_cast<int>(cloud.colors()->operator()(static_cast<plamatrix::Index>(i), 0))
+              << " " << static_cast<int>(cloud.colors()->operator()(static_cast<plamatrix::Index>(i), 1))
+              << " " << static_cast<int>(cloud.colors()->operator()(static_cast<plamatrix::Index>(i), 2));
         }
         f << "\n";
     }
@@ -718,9 +740,9 @@ void writeObj(const std::string& path,
     {
         for (size_t i = 0; i < cloud.size(); ++i)
         {
-            f << "vn " << cloud.normals()->getValue(static_cast<plamatrix::Index>(i), 0)
-              << " " << cloud.normals()->getValue(static_cast<plamatrix::Index>(i), 1)
-              << " " << cloud.normals()->getValue(static_cast<plamatrix::Index>(i), 2) << "\n";
+            f << "vn " << cloud.normals()->operator()(static_cast<plamatrix::Index>(i), 0)
+              << " " << cloud.normals()->operator()(static_cast<plamatrix::Index>(i), 1)
+              << " " << cloud.normals()->operator()(static_cast<plamatrix::Index>(i), 2) << "\n";
         }
     }
 
@@ -728,8 +750,8 @@ void writeObj(const std::string& path,
     {
         for (plamatrix::Index i = 0; i < cloud.textureCoords()->rows(); ++i)
         {
-            f << "vt " << cloud.textureCoords()->getValue(i, 0)
-              << " " << cloud.textureCoords()->getValue(i, 1) << "\n";
+            f << "vt " << cloud.textureCoords()->operator()(i, 0)
+              << " " << cloud.textureCoords()->operator()(i, 1) << "\n";
         }
     }
 
@@ -746,14 +768,14 @@ void writeObj(const std::string& path,
             f << "f";
             for (int c = 0; c < 3; ++c)
             {
-                int vi = cloud.faces()->getValue(fi, c) + 1; // OBJ 1-indexed
+                int vi = cloud.faces()->operator()(fi, c) + 1; // OBJ 1-indexed
                 f << " " << vi;
                 if (use_tex || use_nrm)
                 {
                     f << "/";
                     if (use_tex)
                     {
-                        f << cloud.faceTextureIndices()->getValue(fi, c) + 1;
+                        f << cloud.faceTextureIndices()->operator()(fi, c) + 1;
                     }
                     if (use_nrm)
                     {
@@ -763,6 +785,11 @@ void writeObj(const std::string& path,
             }
             f << "\n";
         }
+    }
+    f.close();
+    if (!f)
+    {
+        throw std::runtime_error("Failed to write OBJ file: " + path);
     }
 }
 

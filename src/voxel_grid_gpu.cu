@@ -1,350 +1,150 @@
 #include <cmath>
-#include <climits>
 #include <limits>
 #include <stdexcept>
-#include <string>
 
 #include <cuda_runtime.h>
-#include <thrust/device_vector.h>
-#include <thrust/execution_policy.h>
-#include <thrust/iterator/discard_iterator.h>
-#include <thrust/iterator/transform_iterator.h>
-#include <thrust/reduce.h>
-#include <thrust/sequence.h>
-#include <thrust/sort.h>
-#include <thrust/transform.h>
 
 #include <plapoint/gpu/cuda_check.h>
 #include <plapoint/gpu/voxel_grid.h>
 
+#include "voxel_grouping_gpu_kernels.cuh"
+#include <plamatrix/internal/core/backend.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/core/execution_context.h>
+#include <plamatrix/internal/device/device_matrix.h>
+
 namespace plapoint
 {
-namespace gpu
-{
-
-namespace
-{
-
-struct VoxelKey
-{
-    int x;
-    int y;
-    int z;
-};
-
-struct VoxelKeyLess
-{
-    __host__ __device__ bool operator()(const VoxelKey& lhs, const VoxelKey& rhs) const
+    namespace gpu
     {
-        if (lhs.x != rhs.x) return lhs.x < rhs.x;
-        if (lhs.y != rhs.y) return lhs.y < rhs.y;
-        return lhs.z < rhs.z;
-    }
-};
 
-struct VoxelKeyEqual
-{
-    __host__ __device__ bool operator()(const VoxelKey& lhs, const VoxelKey& rhs) const
-    {
-        return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
-    }
-};
+        namespace
+        {
 
-template <typename Scalar>
-struct ComputeVoxelKey
-{
-    const Scalar* points;
-    int point_count;
-    Scalar leaf_x;
-    Scalar leaf_y;
-    Scalar leaf_z;
+            template <typename Scalar>
+            int voxelGridDownsampleColumnMajorImpl(const Scalar* d_points,
+                                                   int N,
+                                                   Scalar leaf_x,
+                                                   Scalar leaf_y,
+                                                   Scalar leaf_z,
+                                                   Scalar* d_out_points,
+                                                   plamatrix::internal::ExecutionContext& context,
+                                                   cudaStream_t stream)
+            {
+                if (N <= 0)
+                {
+                    return 0;
+                }
+                if (!d_points || !d_out_points)
+                {
+                    throw std::invalid_argument("VoxelGrid GPU: device pointers must not be null");
+                }
+                if (!std::isfinite(leaf_x) || !std::isfinite(leaf_y) || !std::isfinite(leaf_z) || leaf_x <= Scalar(0) ||
+                    leaf_y <= Scalar(0) || leaf_z <= Scalar(0))
+                {
+                    throw std::invalid_argument("VoxelGrid GPU: leaf size must be positive");
+                }
+                return detail::groupVoxelCentroidsColumnMajor(d_points,
+                                                              N,
+                                                              Scalar(0),
+                                                              Scalar(0),
+                                                              Scalar(0),
+                                                              leaf_x,
+                                                              leaf_y,
+                                                              leaf_z,
+                                                              d_out_points,
+                                                              nullptr,
+                                                              "VoxelGrid GPU",
+                                                              context,
+                                                              stream);
+            }
 
-    __host__ __device__ VoxelKey operator()(int idx) const
-    {
-        const Scalar x = points[idx];
-        const Scalar y = points[point_count + idx];
-        const Scalar z = points[2 * point_count + idx];
-        return {
-            static_cast<int>(floor(static_cast<double>(x) / static_cast<double>(leaf_x))),
-            static_cast<int>(floor(static_cast<double>(y) / static_cast<double>(leaf_y))),
-            static_cast<int>(floor(static_cast<double>(z) / static_cast<double>(leaf_z)))
-        };
-    }
-};
+        } // namespace
 
-struct MeanAccum
-{
-    double mean;
-    int count;
-
-    __host__ __device__ MeanAccum() : mean(0.0), count(0) {}
-    __host__ __device__ MeanAccum(double mean_, int count_) : mean(mean_), count(count_) {}
-};
-
-struct MeanAccumPlus
-{
-    __host__ __device__ MeanAccum operator()(const MeanAccum& lhs, const MeanAccum& rhs) const
-    {
-        if (lhs.count == 0) return rhs;
-        if (rhs.count == 0) return lhs;
-
-        const int total_count = lhs.count + rhs.count;
-        const double total = static_cast<double>(total_count);
-        const double lhs_weight = static_cast<double>(lhs.count) / total;
-        const double rhs_weight = static_cast<double>(rhs.count) / total;
-        return MeanAccum(lhs.mean * lhs_weight + rhs.mean * rhs_weight, total_count);
-    }
-};
-
-template <typename Scalar, int Dim>
-struct GatherCoordinateMean
-{
-    const Scalar* points;
-    int point_count;
-
-    __host__ __device__ MeanAccum operator()(int idx) const
-    {
-        return MeanAccum(static_cast<double>(points[static_cast<int>(Dim) * point_count + idx]), 1);
-    }
-};
-
-template <typename Scalar>
-__global__ void writeCentroidsColumnMajor(
-    const MeanAccum* mean_x,
-    const MeanAccum* mean_y,
-    const MeanAccum* mean_z,
-    int voxel_count,
-    Scalar* out_points)
-{
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= voxel_count)
-    {
-        return;
-    }
-
-    out_points[idx] = static_cast<Scalar>(mean_x[idx].mean);
-    out_points[voxel_count + idx] = static_cast<Scalar>(mean_y[idx].mean);
-    out_points[2 * voxel_count + idx] = static_cast<Scalar>(mean_z[idx].mean);
-}
-
-template <typename Scalar>
-__device__ int voxelCoordinateValidationError(Scalar coordinate, Scalar leaf)
-{
-    const double value = static_cast<double>(coordinate);
-    if (!isfinite(value))
-    {
-        return 1;
-    }
-    const double scaled = floor(value / static_cast<double>(leaf));
-    if (!isfinite(scaled) ||
-        scaled < static_cast<double>(INT_MIN) ||
-        scaled > static_cast<double>(INT_MAX))
-    {
-        return 2;
-    }
-    return 0;
-}
-
-template <typename Scalar>
-__global__ void validateVoxelGridInputKernel(
-    const Scalar* points,
-    int point_count,
-    Scalar leaf_x,
-    Scalar leaf_y,
-    Scalar leaf_z,
-    int* error_code)
-{
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= point_count)
-    {
-        return;
-    }
-
-    int error = voxelCoordinateValidationError(points[idx], leaf_x);
-    if (error == 0) error = voxelCoordinateValidationError(points[point_count + idx], leaf_y);
-    if (error == 0) error = voxelCoordinateValidationError(points[2 * point_count + idx], leaf_z);
-    if (error != 0)
-    {
-        atomicCAS(error_code, 0, error);
-    }
-}
-
-template <typename Scalar>
-void validateVoxelGridInputColumnMajorImpl(const Scalar* d_points, int N,
-                                           Scalar leaf_x, Scalar leaf_y, Scalar leaf_z,
+        int voxelGridDownsampleColumnMajor(const float* d_points,
+                                           int N,
+                                           float leaf_x,
+                                           float leaf_y,
+                                           float leaf_z,
+                                           float* d_out_points,
                                            cudaStream_t stream)
-{
-    if (N <= 0)
-    {
-        return;
-    }
+        {
+            int device = 0;
+            PLAPOINT_CHECK_CUDA(cudaGetDevice(&device));
+            auto context =
+                plamatrix::internal::ExecutionContext::create({plamatrix::internal::Backend::Cuda, static_cast<std::size_t>(device)});
+            return voxelGridDownsampleColumnMajorImpl<float>(
+                d_points, N, leaf_x, leaf_y, leaf_z, d_out_points, context, stream);
+        }
 
-    DeviceBuffer<int> d_error(1);
-    int host_error = 0;
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(d_error.get(), &host_error, sizeof(host_error),
-                                        cudaMemcpyHostToDevice, stream));
+        int voxelGridDownsampleColumnMajor(const double* d_points,
+                                           int N,
+                                           double leaf_x,
+                                           double leaf_y,
+                                           double leaf_z,
+                                           double* d_out_points,
+                                           cudaStream_t stream)
+        {
+            int device = 0;
+            PLAPOINT_CHECK_CUDA(cudaGetDevice(&device));
+            auto context =
+                plamatrix::internal::ExecutionContext::create({plamatrix::internal::Backend::Cuda, static_cast<std::size_t>(device)});
+            return voxelGridDownsampleColumnMajorImpl<double>(
+                d_points, N, leaf_x, leaf_y, leaf_z, d_out_points, context, stream);
+        }
 
-    constexpr int block_size = 256;
-    const int grid_size = (N + block_size - 1) / block_size;
-    validateVoxelGridInputKernel<Scalar><<<grid_size, block_size, 0, stream>>>(
-        d_points, N, leaf_x, leaf_y, leaf_z, d_error.get());
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&host_error, d_error.get(), sizeof(host_error),
-                                        cudaMemcpyDeviceToHost, stream));
-    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+        template <typename Scalar>
+        int voxelGridDownsampleColumnMajorMatrixImpl(const plamatrix::internal::ResidentMatrix<Scalar>& points,
+                                                     Scalar leaf_x,
+                                                     Scalar leaf_y,
+                                                     Scalar leaf_z,
+                                                     plamatrix::internal::ResidentMatrix<Scalar>& out_points,
+                                                     cudaStream_t stream)
+        {
+            out_points.validateContext(points.context());
+            static_cast<void>(points.template view<plamatrix::internal::Device::GPU>());
+            PLAPOINT_CHECK_CUDA(cudaSetDevice(static_cast<int>(points.context().device().index)));
+            if (points.cols() != 3 || out_points.cols() != 3)
+            {
+                throw std::invalid_argument("VoxelGrid GPU PlaMatrix inputs must be Nx3");
+            }
+            if (points.rows() > std::numeric_limits<int>::max())
+            {
+                throw std::overflow_error("VoxelGrid GPU PlaMatrix point count exceeds int range");
+            }
+            if (out_points.rows() < points.rows())
+            {
+                throw std::invalid_argument("VoxelGrid GPU PlaMatrix output capacity must be at least input rows");
+            }
+            return voxelGridDownsampleColumnMajorImpl<Scalar>(points.data(),
+                                                              static_cast<int>(points.rows()),
+                                                              leaf_x,
+                                                              leaf_y,
+                                                              leaf_z,
+                                                              out_points.data(),
+                                                              points.context(),
+                                                              stream);
+        }
 
-    if (host_error == 1)
-    {
-        throw std::invalid_argument("VoxelGrid GPU: points must be finite");
-    }
-    if (host_error == 2)
-    {
-        throw std::out_of_range("VoxelGrid GPU: voxel index is outside int range");
-    }
-}
+        int voxelGridDownsampleColumnMajor(const plamatrix::internal::ResidentMatrix<float>& points,
+                                           float leaf_x,
+                                           float leaf_y,
+                                           float leaf_z,
+                                           plamatrix::internal::ResidentMatrix<float>& out_points,
+                                           cudaStream_t stream)
+        {
+            return voxelGridDownsampleColumnMajorMatrixImpl<float>(points, leaf_x, leaf_y, leaf_z, out_points, stream);
+        }
 
-template <typename Scalar>
-int voxelGridDownsampleColumnMajorImpl(const Scalar* d_points, int N,
-                                       Scalar leaf_x, Scalar leaf_y, Scalar leaf_z,
-                                       Scalar* d_out_points,
-                                       cudaStream_t stream)
-{
-    if (N <= 0)
-    {
-        return 0;
-    }
-    if (!d_points || !d_out_points)
-    {
-        throw std::invalid_argument("VoxelGrid GPU: device pointers must not be null");
-    }
-    if (!std::isfinite(leaf_x) || !std::isfinite(leaf_y) || !std::isfinite(leaf_z) ||
-        leaf_x <= Scalar(0) || leaf_y <= Scalar(0) || leaf_z <= Scalar(0))
-    {
-        throw std::invalid_argument("VoxelGrid GPU: leaf size must be positive");
-    }
-    validateVoxelGridInputColumnMajorImpl(d_points, N, leaf_x, leaf_y, leaf_z, stream);
+        int voxelGridDownsampleColumnMajor(const plamatrix::internal::ResidentMatrix<double>& points,
+                                           double leaf_x,
+                                           double leaf_y,
+                                           double leaf_z,
+                                           plamatrix::internal::ResidentMatrix<double>& out_points,
+                                           cudaStream_t stream)
+        {
+            return voxelGridDownsampleColumnMajorMatrixImpl<double>(points, leaf_x, leaf_y, leaf_z, out_points, stream);
+        }
 
-    auto policy = thrust::cuda::par.on(stream);
-    thrust::device_vector<int> indices(static_cast<std::size_t>(N));
-    thrust::device_vector<VoxelKey> keys(static_cast<std::size_t>(N));
-    thrust::sequence(policy, indices.begin(), indices.end(), 0);
-    thrust::transform(policy, indices.begin(), indices.end(), keys.begin(),
-                      ComputeVoxelKey<Scalar>{d_points, N, leaf_x, leaf_y, leaf_z});
-    thrust::sort_by_key(policy, keys.begin(), keys.end(), indices.begin(), VoxelKeyLess{});
-
-    thrust::device_vector<VoxelKey> unique_keys(static_cast<std::size_t>(N));
-    thrust::device_vector<MeanAccum> mean_x(static_cast<std::size_t>(N));
-    thrust::device_vector<MeanAccum> mean_y(static_cast<std::size_t>(N));
-    thrust::device_vector<MeanAccum> mean_z(static_cast<std::size_t>(N));
-
-    auto x_values = thrust::make_transform_iterator(
-        indices.begin(), GatherCoordinateMean<Scalar, 0>{d_points, N});
-    auto y_values = thrust::make_transform_iterator(
-        indices.begin(), GatherCoordinateMean<Scalar, 1>{d_points, N});
-    auto z_values = thrust::make_transform_iterator(
-        indices.begin(), GatherCoordinateMean<Scalar, 2>{d_points, N});
-
-    auto reduced_x = thrust::reduce_by_key(policy,
-                                           keys.begin(), keys.end(),
-                                           x_values,
-                                           unique_keys.begin(),
-                                           mean_x.begin(),
-                                           VoxelKeyEqual{},
-                                           MeanAccumPlus{});
-    const int voxel_count = static_cast<int>(reduced_x.first - unique_keys.begin());
-
-    thrust::reduce_by_key(policy,
-                          keys.begin(), keys.end(),
-                          y_values,
-                          thrust::make_discard_iterator(),
-                          mean_y.begin(),
-                          VoxelKeyEqual{},
-                          MeanAccumPlus{});
-    thrust::reduce_by_key(policy,
-                          keys.begin(), keys.end(),
-                          z_values,
-                          thrust::make_discard_iterator(),
-                          mean_z.begin(),
-                          VoxelKeyEqual{},
-                          MeanAccumPlus{});
-
-    constexpr int block_size = 256;
-    const int grid_size = (voxel_count + block_size - 1) / block_size;
-    writeCentroidsColumnMajor<Scalar><<<grid_size, block_size, 0, stream>>>(
-        thrust::raw_pointer_cast(mean_x.data()),
-        thrust::raw_pointer_cast(mean_y.data()),
-        thrust::raw_pointer_cast(mean_z.data()),
-        voxel_count,
-        d_out_points);
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
-    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-    return voxel_count;
-}
-
-} // namespace
-
-int voxelGridDownsampleColumnMajor(const float* d_points, int N,
-                                   float leaf_x, float leaf_y, float leaf_z,
-                                   float* d_out_points,
-                                   cudaStream_t stream)
-{
-    return voxelGridDownsampleColumnMajorImpl<float>(d_points, N, leaf_x, leaf_y, leaf_z, d_out_points, stream);
-}
-
-int voxelGridDownsampleColumnMajor(const double* d_points, int N,
-                                   double leaf_x, double leaf_y, double leaf_z,
-                                   double* d_out_points,
-                                   cudaStream_t stream)
-{
-    return voxelGridDownsampleColumnMajorImpl<double>(d_points, N, leaf_x, leaf_y, leaf_z, d_out_points, stream);
-}
-
-template <typename Scalar>
-int voxelGridDownsampleColumnMajorMatrixImpl(
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& points,
-    Scalar leaf_x, Scalar leaf_y, Scalar leaf_z,
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& out_points,
-    cudaStream_t stream)
-{
-    if (points.cols() != 3 || out_points.cols() != 3)
-    {
-        throw std::invalid_argument("VoxelGrid GPU PlaMatrix inputs must be Nx3");
-    }
-    if (points.rows() > std::numeric_limits<int>::max())
-    {
-        throw std::overflow_error("VoxelGrid GPU PlaMatrix point count exceeds int range");
-    }
-    if (out_points.rows() < points.rows())
-    {
-        throw std::invalid_argument("VoxelGrid GPU PlaMatrix output capacity must be at least input rows");
-    }
-    return voxelGridDownsampleColumnMajorImpl<Scalar>(
-        points.data(),
-        static_cast<int>(points.rows()),
-        leaf_x,
-        leaf_y,
-        leaf_z,
-        out_points.data(),
-        stream);
-}
-
-int voxelGridDownsampleColumnMajor(
-    const plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& points,
-    float leaf_x, float leaf_y, float leaf_z,
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU>& out_points,
-    cudaStream_t stream)
-{
-    return voxelGridDownsampleColumnMajorMatrixImpl<float>(points, leaf_x, leaf_y, leaf_z, out_points, stream);
-}
-
-int voxelGridDownsampleColumnMajor(
-    const plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& points,
-    double leaf_x, double leaf_y, double leaf_z,
-    plamatrix::DenseMatrix<double, plamatrix::Device::GPU>& out_points,
-    cudaStream_t stream)
-{
-    return voxelGridDownsampleColumnMajorMatrixImpl<double>(points, leaf_x, leaf_y, leaf_z, out_points, stream);
-}
-
-} // namespace gpu
+    } // namespace gpu
 } // namespace plapoint

@@ -3,6 +3,7 @@
 #include <plapoint/opencl/preprocessing.h>
 
 #include <stdexcept>
+#include <plamatrix/internal/core/device.h>
 
 namespace plapoint
 {
@@ -19,21 +20,21 @@ namespace
 } // namespace
 
 OpenClKnnResult knnSearch(
-    const PointCloud<float, plamatrix::Device::CPU>&,
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>&,
     int)
 {
     throwOpenClUnavailable();
 }
 
 OpenClKnnResult knnSearch(
-    const PointCloud<double, plamatrix::Device::CPU>&,
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::CPU>&,
     int)
 {
     throwOpenClUnavailable();
 }
 
-PointCloud<float, plamatrix::Device::CPU> voxelDownsample(
-    const PointCloud<float, plamatrix::Device::CPU>&,
+plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU> voxelDownsample(
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>&,
     float,
     float,
     float)
@@ -41,8 +42,8 @@ PointCloud<float, plamatrix::Device::CPU> voxelDownsample(
     throwOpenClUnavailable();
 }
 
-PointCloud<double, plamatrix::Device::CPU> voxelDownsample(
-    const PointCloud<double, plamatrix::Device::CPU>&,
+plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::CPU> voxelDownsample(
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::CPU>&,
     double,
     double,
     double)
@@ -51,7 +52,7 @@ PointCloud<double, plamatrix::Device::CPU> voxelDownsample(
 }
 
 std::vector<std::uint8_t> statisticalOutlierKeepMask(
-    const PointCloud<float, plamatrix::Device::CPU>&,
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>&,
     int,
     float)
 {
@@ -59,7 +60,7 @@ std::vector<std::uint8_t> statisticalOutlierKeepMask(
 }
 
 std::vector<std::uint8_t> statisticalOutlierKeepMask(
-    const PointCloud<double, plamatrix::Device::CPU>&,
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::CPU>&,
     int,
     double)
 {
@@ -67,7 +68,7 @@ std::vector<std::uint8_t> statisticalOutlierKeepMask(
 }
 
 std::vector<std::uint8_t> radiusOutlierKeepMask(
-    const PointCloud<float, plamatrix::Device::CPU>&,
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>&,
     float,
     int)
 {
@@ -75,23 +76,21 @@ std::vector<std::uint8_t> radiusOutlierKeepMask(
 }
 
 std::vector<std::uint8_t> radiusOutlierKeepMask(
-    const PointCloud<double, plamatrix::Device::CPU>&,
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::CPU>&,
     double,
     int)
 {
     throwOpenClUnavailable();
 }
 
-plamatrix::DenseMatrix<float, plamatrix::Device::CPU> estimateNormals(
-    const PointCloud<float, plamatrix::Device::CPU>&,
-    int)
+plamatrix::MatrixXf estimateNormals(const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>&,
+                                    int)
 {
     throwOpenClUnavailable();
 }
 
-plamatrix::DenseMatrix<double, plamatrix::Device::CPU> estimateNormals(
-    const PointCloud<double, plamatrix::Device::CPU>&,
-    int)
+plamatrix::MatrixXd estimateNormals(const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::CPU>&,
+                                    int)
 {
     throwOpenClUnavailable();
 }
@@ -102,14 +101,14 @@ std::uint64_t heightGridOpenClExecutionCount() noexcept
 }
 
 mesh::HeightGrid<float> buildHeightGrid(
-    const PointCloud<float, plamatrix::Device::CPU>&,
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>&,
     const mesh::HeightGridOptions<float>&)
 {
     throwOpenClUnavailable();
 }
 
 mesh::HeightGrid<double> buildHeightGrid(
-    const PointCloud<double, plamatrix::Device::CPU>&,
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::CPU>&,
     const mesh::HeightGridOptions<double>&)
 {
     throwOpenClUnavailable();

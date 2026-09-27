@@ -9,6 +9,10 @@
 #include <gtest/gtest.h>
 
 #include <plamatrix/plamatrix.h>
+#include <plamatrix/internal/core/backend.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/core/execution_context.h>
+#include <plamatrix/internal/device/device_matrix.h>
 
 #include <plapoint/core/point_cloud.h>
 #include <plapoint/features/normal_estimation.h>
@@ -267,27 +271,31 @@ TEST(KdTreeGpuTest, BatchKnnAcceptsPlaMatrixCpuMatrices)
 
     using Scalar = float;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(2, 3);
-    queries.setValue(0, 0, 0.0f); queries.setValue(0, 1, 0.0f); queries.setValue(0, 2, 0.0f);
-    queries.setValue(1, 0, 3.0f); queries.setValue(1, 1, 0.0f); queries.setValue(1, 2, 0.0f);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> queries(2, 3);
+    queries.operator()(0, 0) = 0.0f;
+    queries.operator()(0, 1) = 0.0f;
+    queries.operator()(0, 2) = 0.0f;
+    queries.operator()(1, 0) = 3.0f;
+    queries.operator()(1, 1) = 0.0f;
+    queries.operator()(1, 2) = 0.0f;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> data(4, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> data(4, 3);
     for (int i = 0; i < 4; ++i)
     {
-        data.setValue(i, 0, static_cast<Scalar>(i));
-        data.setValue(i, 1, Scalar(0));
-        data.setValue(i, 2, Scalar(0));
+        data.operator()(i, 0) = static_cast<Scalar>(i);
+        data.operator()(i, 1) = Scalar(0);
+        data.operator()(i, 2) = Scalar(0);
     }
 
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> indices(2, 2);
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> dists(2, 2);
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> indices(2, 2);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> dists(2, 2);
 
     plapoint::gpu::batchKnn(queries, data, 2, indices, dists);
 
-    EXPECT_EQ(indices.getValue(0, 0), 0);
-    EXPECT_EQ(indices.getValue(1, 0), 3);
-    EXPECT_FLOAT_EQ(dists.getValue(0, 0), 0.0f);
-    EXPECT_FLOAT_EQ(dists.getValue(1, 0), 0.0f);
+    EXPECT_EQ(indices.operator()(0, 0), 0);
+    EXPECT_EQ(indices.operator()(1, 0), 3);
+    EXPECT_FLOAT_EQ(dists.operator()(0, 0), 0.0f);
+    EXPECT_FLOAT_EQ(dists.operator()(1, 0), 0.0f);
 }
 
 TEST(KdTreeGpuTest, BatchKnnDeviceAcceptsPlaMatrixGpuMatrices)
@@ -296,31 +304,36 @@ TEST(KdTreeGpuTest, BatchKnnDeviceAcceptsPlaMatrixGpuMatrices)
 
     using Scalar = float;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries_cpu(2, 3);
-    queries_cpu.setValue(0, 0, 1.0f); queries_cpu.setValue(0, 1, 0.0f); queries_cpu.setValue(0, 2, 0.0f);
-    queries_cpu.setValue(1, 0, 2.0f); queries_cpu.setValue(1, 1, 0.0f); queries_cpu.setValue(1, 2, 0.0f);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> queries_cpu(2, 3);
+    queries_cpu.operator()(0, 0) = 1.0f;
+    queries_cpu.operator()(0, 1) = 0.0f;
+    queries_cpu.operator()(0, 2) = 0.0f;
+    queries_cpu.operator()(1, 0) = 2.0f;
+    queries_cpu.operator()(1, 1) = 0.0f;
+    queries_cpu.operator()(1, 2) = 0.0f;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> data_cpu(4, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> data_cpu(4, 3);
     for (int i = 0; i < 4; ++i)
     {
-        data_cpu.setValue(i, 0, static_cast<Scalar>(i));
-        data_cpu.setValue(i, 1, Scalar(0));
-        data_cpu.setValue(i, 2, Scalar(0));
+        data_cpu.operator()(i, 0) = static_cast<Scalar>(i);
+        data_cpu.operator()(i, 1) = Scalar(0);
+        data_cpu.operator()(i, 2) = Scalar(0);
     }
 
-    auto queries = queries_cpu.toGpu();
-    auto data = data_cpu.toGpu();
-    plamatrix::DenseMatrix<int, plamatrix::Device::GPU> indices(2, 2);
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> dists(2, 2);
+    auto context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
+    auto queries = plamatrix::internal::ResidentMatrix<Scalar>::copyFrom(queries_cpu, context);
+    auto data = plamatrix::internal::ResidentMatrix<Scalar>::copyFrom(data_cpu, context);
+    plamatrix::internal::ResidentMatrix<int> indices(2, 2, context);
+    plamatrix::internal::ResidentMatrix<Scalar> dists(2, 2, context);
 
     plapoint::gpu::batchKnnDevice(queries, data, 2, indices, dists);
 
-    auto indices_cpu = indices.toCpu();
-    auto dists_cpu = dists.toCpu();
-    EXPECT_EQ(indices_cpu.getValue(0, 0), 1);
-    EXPECT_EQ(indices_cpu.getValue(1, 0), 2);
-    EXPECT_FLOAT_EQ(dists_cpu.getValue(0, 0), 0.0f);
-    EXPECT_FLOAT_EQ(dists_cpu.getValue(1, 0), 0.0f);
+    auto indices_cpu = indices.toHostMatrix();
+    auto dists_cpu = dists.toHostMatrix();
+    EXPECT_EQ(indices_cpu.operator()(0, 0), 1);
+    EXPECT_EQ(indices_cpu.operator()(1, 0), 2);
+    EXPECT_FLOAT_EQ(dists_cpu.operator()(0, 0), 0.0f);
+    EXPECT_FLOAT_EQ(dists_cpu.operator()(1, 0), 0.0f);
 }
 
 // ---- KdTree batchNearestKSearch with GPU-resident data ----
@@ -329,24 +342,24 @@ TEST(KdTreeGpuTest, BatchKnnOnGpuCloud)
     SKIP_IF_NO_GPU();
 
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> cpu_pts(100, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> cpu_pts(100, 3);
     for (int i = 0; i < 100; ++i)
     {
-        cpu_pts.setValue(i, 0, Scalar(i));
-        cpu_pts.setValue(i, 1, Scalar(i % 10));
-        cpu_pts.setValue(i, 2, Scalar(i % 5));
+        cpu_pts.operator()(i, 0) = Scalar(i);
+        cpu_pts.operator()(i, 1) = Scalar(i % 10);
+        cpu_pts.operator()(i, 2) = Scalar(i % 5);
     }
     Cloud cpu_cloud(std::move(cpu_pts));
     auto gpu_cloud_ptr = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
 
-    plapoint::search::KdTree<Scalar, plamatrix::Device::GPU> tree;
+    plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::GPU> tree;
     tree.setInputCloud(gpu_cloud_ptr);
     tree.build();
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(10, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> queries(10, 3);
     for (int i = 0; i < 10; ++i)
     {
         queries(i, 0) = Scalar(i * 10);
@@ -371,38 +384,38 @@ TEST(KdTreeGpuTest, BatchNearestKSearchHandlesWorkspaceReuseAndGrowth)
     SKIP_IF_NO_GPU();
 
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> cpu_pts(16, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> cpu_pts(16, 3);
     for (int i = 0; i < 16; ++i)
     {
-        cpu_pts.setValue(i, 0, Scalar(i));
-        cpu_pts.setValue(i, 1, 0);
-        cpu_pts.setValue(i, 2, 0);
+        cpu_pts.operator()(i, 0) = Scalar(i);
+        cpu_pts.operator()(i, 1) = 0;
+        cpu_pts.operator()(i, 2) = 0;
     }
     Cloud cpu_cloud(std::move(cpu_pts));
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
 
-    plapoint::search::KdTree<Scalar, plamatrix::Device::GPU> tree;
+    plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::GPU> tree;
     tree.setInputCloud(gpu_cloud);
     tree.build();
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> small_queries(1, 3);
-    small_queries.setValue(0, 0, 0);
-    small_queries.setValue(0, 1, 0);
-    small_queries.setValue(0, 2, 0);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> small_queries(1, 3);
+    small_queries.operator()(0, 0) = 0;
+    small_queries.operator()(0, 1) = 0;
+    small_queries.operator()(0, 2) = 0;
     auto small_result = tree.batchNearestKSearch(small_queries, 1);
     ASSERT_EQ(small_result.size(), 1u);
     ASSERT_EQ(small_result[0].size(), 1u);
     EXPECT_EQ(small_result[0][0], 0);
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> large_queries(8, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> large_queries(8, 3);
     for (int i = 0; i < 8; ++i)
     {
-        large_queries.setValue(i, 0, Scalar(i * 2));
-        large_queries.setValue(i, 1, 0);
-        large_queries.setValue(i, 2, 0);
+        large_queries.operator()(i, 0) = Scalar(i * 2);
+        large_queries.operator()(i, 1) = 0;
+        large_queries.operator()(i, 2) = 0;
     }
     auto large_result = tree.batchNearestKSearch(large_queries, 1);
     ASSERT_EQ(large_result.size(), 8u);
@@ -417,25 +430,25 @@ TEST(KdTreeGpuTest, BatchNearestKSearchHandlesWorkspaceReuseAndGrowth)
 TEST(KdTreeGpuTest, CpuGpuConsistency)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
     int N = 50;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(N, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> pts(N, 3);
     for (int i = 0; i < N; ++i)
     {
-        pts.setValue(i, 0, Scalar(i));
-        pts.setValue(i, 1, Scalar(i % 7));
-        pts.setValue(i, 2, Scalar(i % 11));
+        pts.operator()(i, 0) = Scalar(i);
+        pts.operator()(i, 1) = Scalar(i % 7);
+        pts.operator()(i, 2) = Scalar(i % 11);
     }
     auto cloud = std::make_shared<Cloud>(std::move(pts));
 
     // CPU KdTree
-    plapoint::search::KdTree<Scalar, plamatrix::Device::CPU> cpu_tree;
+    plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::CPU> cpu_tree;
     cpu_tree.setInputCloud(cloud);
     cpu_tree.build();
 
     // CPU batch query
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(5, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> queries(5, 3);
     for (int i = 0; i < 5; ++i)
     {
         queries(i, 0) = Scalar(i * 10);
@@ -453,10 +466,10 @@ TEST(KdTreeGpuTest, CpuGpuConsistency)
     // If GPU is available, GPU results should match CPU
     if (hasCudaDevice())
     {
-        using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+        using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
         auto gpu_cloud_ptr = std::make_shared<GpuCloud>(cloud->toGpu());
 
-        plapoint::search::KdTree<Scalar, plamatrix::Device::GPU> gpu_tree;
+        plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::GPU> gpu_tree;
         gpu_tree.setInputCloud(gpu_cloud_ptr);
         gpu_tree.build();
 
@@ -643,21 +656,27 @@ TEST(KdTreeGpuTest, BatchNearestKSearchClampsKToPointCount)
     SKIP_IF_NO_GPU();
 
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> cpu_pts(3, 3);
-    cpu_pts.setValue(0, 0, 0); cpu_pts.setValue(0, 1, 0); cpu_pts.setValue(0, 2, 0);
-    cpu_pts.setValue(1, 0, 1); cpu_pts.setValue(1, 1, 0); cpu_pts.setValue(1, 2, 0);
-    cpu_pts.setValue(2, 0, 2); cpu_pts.setValue(2, 1, 0); cpu_pts.setValue(2, 2, 0);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> cpu_pts(3, 3);
+    cpu_pts.operator()(0, 0) = 0;
+    cpu_pts.operator()(0, 1) = 0;
+    cpu_pts.operator()(0, 2) = 0;
+    cpu_pts.operator()(1, 0) = 1;
+    cpu_pts.operator()(1, 1) = 0;
+    cpu_pts.operator()(1, 2) = 0;
+    cpu_pts.operator()(2, 0) = 2;
+    cpu_pts.operator()(2, 1) = 0;
+    cpu_pts.operator()(2, 2) = 0;
     Cloud cpu_cloud(std::move(cpu_pts));
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
 
-    plapoint::search::KdTree<Scalar, plamatrix::Device::GPU> tree;
+    plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::GPU> tree;
     tree.setInputCloud(gpu_cloud);
     tree.build();
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(1, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> queries(1, 3);
     queries(0, 0) = 0;
     queries(0, 1) = 0;
     queries(0, 2) = 0;
@@ -674,25 +693,25 @@ TEST(KdTreeGpuTest, BatchNearestKSearchFallsBackWhenClampedKExceedsCudaLimit)
     SKIP_IF_NO_GPU();
 
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
     constexpr int N = 40;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> cpu_pts(N, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> cpu_pts(N, 3);
     for (int i = 0; i < N; ++i)
     {
-        cpu_pts.setValue(i, 0, Scalar(i));
-        cpu_pts.setValue(i, 1, Scalar(0));
-        cpu_pts.setValue(i, 2, Scalar(0));
+        cpu_pts.operator()(i, 0) = Scalar(i);
+        cpu_pts.operator()(i, 1) = Scalar(0);
+        cpu_pts.operator()(i, 2) = Scalar(0);
     }
     Cloud cpu_cloud(std::move(cpu_pts));
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
 
-    plapoint::search::KdTree<Scalar, plamatrix::Device::GPU> tree;
+    plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::GPU> tree;
     tree.setInputCloud(gpu_cloud);
     tree.build();
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(1, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> queries(1, 3);
     queries(0, 0) = 0;
     queries(0, 1) = 0;
     queries(0, 2) = 0;
@@ -713,25 +732,25 @@ TEST(KdTreeGpuTest, BatchNearestKSearchLaunchesCudaPathForThirtyTwoNeighbors)
     SKIP_IF_NO_GPU();
 
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
     constexpr int N = 32;
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> cpu_pts(N, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> cpu_pts(N, 3);
     for (int i = 0; i < N; ++i)
     {
-        cpu_pts.setValue(i, 0, Scalar(i));
-        cpu_pts.setValue(i, 1, Scalar(0));
-        cpu_pts.setValue(i, 2, Scalar(0));
+        cpu_pts.operator()(i, 0) = Scalar(i);
+        cpu_pts.operator()(i, 1) = Scalar(0);
+        cpu_pts.operator()(i, 2) = Scalar(0);
     }
     Cloud cpu_cloud(std::move(cpu_pts));
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
 
-    plapoint::search::KdTree<Scalar, plamatrix::Device::GPU> tree;
+    plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::GPU> tree;
     tree.setInputCloud(gpu_cloud);
     tree.build();
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(1, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> queries(1, 3);
     queries(0, 0) = 0;
     queries(0, 1) = 0;
     queries(0, 2) = 0;
@@ -748,21 +767,25 @@ TEST(KdTreeGpuTest, BatchNearestKSearchDropsInvalidInfiniteDistances)
     SKIP_IF_NO_GPU();
 
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
     constexpr Scalar infinity = std::numeric_limits<Scalar>::infinity();
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> cpu_pts(2, 3);
-    cpu_pts.setValue(0, 0, infinity); cpu_pts.setValue(0, 1, 0); cpu_pts.setValue(0, 2, 0);
-    cpu_pts.setValue(1, 0, infinity); cpu_pts.setValue(1, 1, 1); cpu_pts.setValue(1, 2, 0);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> cpu_pts(2, 3);
+    cpu_pts.operator()(0, 0) = infinity;
+    cpu_pts.operator()(0, 1) = 0;
+    cpu_pts.operator()(0, 2) = 0;
+    cpu_pts.operator()(1, 0) = infinity;
+    cpu_pts.operator()(1, 1) = 1;
+    cpu_pts.operator()(1, 2) = 0;
     Cloud cpu_cloud(std::move(cpu_pts));
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
 
-    plapoint::search::KdTree<Scalar, plamatrix::Device::GPU> tree;
+    plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::GPU> tree;
     tree.setInputCloud(gpu_cloud);
     tree.build();
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(1, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> queries(1, 3);
     queries(0, 0) = 0;
     queries(0, 1) = 0;
     queries(0, 2) = 0;
@@ -778,22 +801,22 @@ TEST(KdTreeGpuTest, BatchNearestKSearchKeepsExtremeButFiniteDistance)
     SKIP_IF_NO_GPU();
 
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
     constexpr Scalar max_value = std::numeric_limits<Scalar>::max();
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> cpu_pts(1, 3);
-    cpu_pts.setValue(0, 0, 0);
-    cpu_pts.setValue(0, 1, 0);
-    cpu_pts.setValue(0, 2, 0);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> cpu_pts(1, 3);
+    cpu_pts.operator()(0, 0) = 0;
+    cpu_pts.operator()(0, 1) = 0;
+    cpu_pts.operator()(0, 2) = 0;
     Cloud cpu_cloud(std::move(cpu_pts));
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
 
-    plapoint::search::KdTree<Scalar, plamatrix::Device::GPU> tree;
+    plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::GPU> tree;
     tree.setInputCloud(gpu_cloud);
     tree.build();
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(1, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> queries(1, 3);
     queries(0, 0) = max_value;
     queries(0, 1) = 0;
     queries(0, 2) = 0;
@@ -810,22 +833,24 @@ TEST(KdTreeGpuTest, BatchNearestKSearchKeepsFiniteNeighborWhenAnotherDistanceIsN
     SKIP_IF_NO_GPU();
 
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> cpu_pts(2, 3);
-    cpu_pts.setValue(0, 0, 0); cpu_pts.setValue(0, 1, 0); cpu_pts.setValue(0, 2, 0);
-    cpu_pts.setValue(1, 0, std::numeric_limits<Scalar>::quiet_NaN());
-    cpu_pts.setValue(1, 1, 0);
-    cpu_pts.setValue(1, 2, 0);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> cpu_pts(2, 3);
+    cpu_pts.operator()(0, 0) = 0;
+    cpu_pts.operator()(0, 1) = 0;
+    cpu_pts.operator()(0, 2) = 0;
+    cpu_pts.operator()(1, 0) = std::numeric_limits<Scalar>::quiet_NaN();
+    cpu_pts.operator()(1, 1) = 0;
+    cpu_pts.operator()(1, 2) = 0;
     Cloud cpu_cloud(std::move(cpu_pts));
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
 
-    plapoint::search::KdTree<Scalar, plamatrix::Device::GPU> tree;
+    plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::GPU> tree;
     tree.setInputCloud(gpu_cloud);
     tree.build();
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(1, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> queries(1, 3);
     queries(0, 0) = 0;
     queries(0, 1) = 0;
     queries(0, 2) = 0;
@@ -842,26 +867,26 @@ TEST(KdTreeGpuTest, BatchNearestKSearchFallbackDropsInvalidInfiniteDistances)
     SKIP_IF_NO_GPU();
 
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
     constexpr Scalar infinity = std::numeric_limits<Scalar>::infinity();
     constexpr int N = 40;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> cpu_pts(N, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> cpu_pts(N, 3);
     for (int i = 0; i < N; ++i)
     {
-        cpu_pts.setValue(i, 0, infinity);
-        cpu_pts.setValue(i, 1, Scalar(i));
-        cpu_pts.setValue(i, 2, 0);
+        cpu_pts.operator()(i, 0) = infinity;
+        cpu_pts.operator()(i, 1) = Scalar(i);
+        cpu_pts.operator()(i, 2) = 0;
     }
     Cloud cpu_cloud(std::move(cpu_pts));
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
 
-    plapoint::search::KdTree<Scalar, plamatrix::Device::GPU> tree;
+    plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::GPU> tree;
     tree.setInputCloud(gpu_cloud);
     tree.build();
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(1, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> queries(1, 3);
     queries(0, 0) = 0;
     queries(0, 1) = 0;
     queries(0, 2) = 0;
@@ -877,26 +902,32 @@ TEST(KdTreeGpuTest, BatchNearestKSearchMatchesCpuForDuplicateDistanceTies)
     SKIP_IF_NO_GPU();
 
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> cpu_pts(4, 3);
-    cpu_pts.setValue(0, 0, 0); cpu_pts.setValue(0, 1, 0); cpu_pts.setValue(0, 2, 0);
-    cpu_pts.setValue(1, 0, 0); cpu_pts.setValue(1, 1, 0); cpu_pts.setValue(1, 2, 0);
-    cpu_pts.setValue(2, 0, 0); cpu_pts.setValue(2, 1, 0); cpu_pts.setValue(2, 2, 0);
-    cpu_pts.setValue(3, 0, 5); cpu_pts.setValue(3, 1, 0); cpu_pts.setValue(3, 2, 0);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> cpu_pts(4, 3);
+    cpu_pts.operator()(0, 0) = 0;
+    cpu_pts.operator()(0, 1) = 0;
+    cpu_pts.operator()(0, 2) = 0;
+    cpu_pts.operator()(1, 0) = 0;
+    cpu_pts.operator()(1, 1) = 0;
+    cpu_pts.operator()(1, 2) = 0;
+    cpu_pts.operator()(2, 0) = 0;
+    cpu_pts.operator()(2, 1) = 0;
+    cpu_pts.operator()(2, 2) = 0;
+    cpu_pts.operator()(3, 0) = 5; cpu_pts.operator()(3, 1) = 0; cpu_pts.operator()(3, 2) = 0;
     auto cpu_cloud = std::make_shared<Cloud>(std::move(cpu_pts));
 
-    plapoint::search::KdTree<Scalar, plamatrix::Device::CPU> cpu_tree;
+    plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::CPU> cpu_tree;
     cpu_tree.setInputCloud(cpu_cloud);
     cpu_tree.build();
 
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud->toGpu());
-    plapoint::search::KdTree<Scalar, plamatrix::Device::GPU> gpu_tree;
+    plapoint::search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::GPU> gpu_tree;
     gpu_tree.setInputCloud(gpu_cloud);
     gpu_tree.build();
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(1, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> queries(1, 3);
     queries(0, 0) = 0;
     queries(0, 1) = 0;
     queries(0, 2) = 0;

@@ -16,6 +16,7 @@
 #include <plapoint/filters/statistical_outlier_removal.h>
 #include <plapoint/filters/voxel_grid.h>
 #include <plapoint/search/kdtree.h>
+#include <plamatrix/internal/core/device.h>
 
 #ifdef PLAPOINT_WITH_CUDA
 #include <plapoint/gpu/cuda_check.h>
@@ -30,11 +31,11 @@ namespace plapoint
 namespace detail
 {
 
-template <typename Scalar, plamatrix::Device Dev>
-std::shared_ptr<const PointCloud<Scalar, Dev>> nonOwningCloudPtr(
-    const PointCloud<Scalar, Dev>& cloud)
+template <typename Scalar, plamatrix::internal::Device Dev>
+std::shared_ptr<const plapoint::internal::DeviceCloud<Scalar, Dev>> nonOwningCloudPtr(
+    const plapoint::internal::DeviceCloud<Scalar, Dev>& cloud)
 {
-    return std::shared_ptr<const PointCloud<Scalar, Dev>>(&cloud, [](const PointCloud<Scalar, Dev>*) {});
+    return std::shared_ptr<const plapoint::internal::DeviceCloud<Scalar, Dev>>(&cloud, [](const plapoint::internal::DeviceCloud<Scalar, Dev>*) {});
 }
 
 inline bool gpuIsAvailable()
@@ -91,10 +92,10 @@ inline void setAutoCpuReport(ProcessingReport* report,
 }
 
 template <typename Scalar>
-class CpuPointSelection final : public Filter<Scalar, plamatrix::Device::CPU>
+class CpuPointSelection final : public Filter<Scalar, plamatrix::internal::Device::CPU>
 {
 public:
-    using Cloud = PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
     Cloud select(const Cloud& input,
                  const std::vector<std::uint8_t>& keep_mask,
@@ -128,8 +129,8 @@ protected:
 };
 
 template <typename Scalar>
-PointCloud<Scalar, plamatrix::Device::CPU> selectByKeepMask(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& input,
+plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU> selectByKeepMask(
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& input,
     const std::vector<std::uint8_t>& keep_mask,
     std::vector<int>* removed_indices)
 {
@@ -137,9 +138,9 @@ PointCloud<Scalar, plamatrix::Device::CPU> selectByKeepMask(
     return selection.select(input, keep_mask, removed_indices);
 }
 
-template <typename Scalar, plamatrix::Device Dev>
-PointCloud<Scalar, Dev> voxelDownsampleOnInputDevice(
-    const PointCloud<Scalar, Dev>& input,
+template <typename Scalar, plamatrix::internal::Device Dev>
+plapoint::internal::DeviceCloud<Scalar, Dev> voxelDownsampleOnInputDevice(
+    const plapoint::internal::DeviceCloud<Scalar, Dev>& input,
     Scalar leaf_x,
     Scalar leaf_y,
     Scalar leaf_z)
@@ -147,14 +148,14 @@ PointCloud<Scalar, Dev> voxelDownsampleOnInputDevice(
     VoxelGrid<Scalar, Dev> filter;
     filter.setInputCloud(nonOwningCloudPtr(input));
     filter.setLeafSize(leaf_x, leaf_y, leaf_z);
-    PointCloud<Scalar, Dev> output;
+    plapoint::internal::DeviceCloud<Scalar, Dev> output;
     filter.filter(output);
     return output;
 }
 
-template <typename Scalar, plamatrix::Device Dev>
-PointCloud<Scalar, Dev> statisticalOutlierRemovalOnInputDevice(
-    const PointCloud<Scalar, Dev>& input,
+template <typename Scalar, plamatrix::internal::Device Dev>
+plapoint::internal::DeviceCloud<Scalar, Dev> statisticalOutlierRemovalOnInputDevice(
+    const plapoint::internal::DeviceCloud<Scalar, Dev>& input,
     int mean_k,
     Scalar stddev_mul,
     std::vector<int>* removed_indices)
@@ -167,21 +168,21 @@ PointCloud<Scalar, Dev> statisticalOutlierRemovalOnInputDevice(
     const auto indexed_k = input.size() == 0
         ? std::size_t(0)
         : std::min<std::size_t>(static_cast<std::size_t>(mean_k) + 1, input.size());
-    if constexpr (Dev == plamatrix::Device::CPU)
+    if constexpr (Dev == plamatrix::internal::Device::CPU)
     {
-        auto tree = std::make_shared<search::KdTree<Scalar, Dev>>();
+        auto tree = std::make_shared<search::internal::DeviceKdTree<Scalar, Dev>>();
         tree->setInputCloud(input_ptr);
         tree->build();
         filter.setSearchMethod(std::move(tree));
     }
     else if (indexed_k > 32)
     {
-        auto tree = std::make_shared<search::KdTree<Scalar, Dev>>();
+        auto tree = std::make_shared<search::internal::DeviceKdTree<Scalar, Dev>>();
         tree->setInputCloud(input_ptr);
         tree->build();
         filter.setSearchMethod(std::move(tree));
     }
-    PointCloud<Scalar, Dev> output;
+    plapoint::internal::DeviceCloud<Scalar, Dev> output;
     if (removed_indices)
     {
         filter.filter(output, *removed_indices);
@@ -193,9 +194,9 @@ PointCloud<Scalar, Dev> statisticalOutlierRemovalOnInputDevice(
     return output;
 }
 
-template <typename Scalar, plamatrix::Device Dev>
-PointCloud<Scalar, Dev> radiusOutlierRemovalOnInputDevice(
-    const PointCloud<Scalar, Dev>& input,
+template <typename Scalar, plamatrix::internal::Device Dev>
+plapoint::internal::DeviceCloud<Scalar, Dev> radiusOutlierRemovalOnInputDevice(
+    const plapoint::internal::DeviceCloud<Scalar, Dev>& input,
     Scalar radius,
     int min_neighbors,
     std::vector<int>* removed_indices)
@@ -204,7 +205,7 @@ PointCloud<Scalar, Dev> radiusOutlierRemovalOnInputDevice(
     filter.setInputCloud(nonOwningCloudPtr(input));
     filter.setRadius(radius);
     filter.setMinNeighbors(min_neighbors);
-    PointCloud<Scalar, Dev> output;
+    plapoint::internal::DeviceCloud<Scalar, Dev> output;
     if (removed_indices)
     {
         filter.filter(output, *removed_indices);

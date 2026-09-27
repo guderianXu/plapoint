@@ -3,11 +3,13 @@
 #ifdef PLAPOINT_WITH_CUDA
 
 #include <stdexcept>
+#include <optional>
 
 #include <cuda_runtime.h>
 
-#include <plamatrix/dense/dense_matrix.h>
-#include <plamatrix/ops/vector.h>
+#include <plamatrix/dense/matrix.h>
+#include <plamatrix/internal/device/device_matrix.h>
+#include <plamatrix/internal/core/device.h>
 
 #include <plapoint/core/point_cloud.h>
 #include <plapoint/gpu/cuda_check.h>
@@ -43,8 +45,8 @@ public:
         }
         PLAPOINT_CHECK_CUDA(status);
 
-        _neighbors.indices.closeAsyncAllocation();
-        _neighbors.squaredDistances.closeAsyncAllocation();
+        _neighbors.reset();
+        _queryWorkspace = GpuSpatialQueryWorkspace<Scalar>();
         _stream = nullptr;
         _streamBound = false;
     }
@@ -52,10 +54,10 @@ public:
 private:
     template <typename OtherScalar>
     friend void smoothNormalsAsync(
-        const PointCloud<OtherScalar, plamatrix::Device::GPU>&,
+        const plapoint::internal::DeviceCloud<OtherScalar, plamatrix::internal::Device::GPU>&,
         const GpuSpatialIndex<OtherScalar>&,
         int,
-        plamatrix::DenseMatrix<OtherScalar, plamatrix::Device::GPU>&,
+        plamatrix::internal::ResidentMatrix<OtherScalar>&,
         NormalRefinementGpuWorkspace<OtherScalar>&,
         cudaStream_t);
 
@@ -75,7 +77,7 @@ private:
     }
 
     GpuSpatialQueryWorkspace<Scalar> _queryWorkspace;
-    GpuKnnSearchResult<Scalar> _neighbors;
+    std::optional<GpuKnnSearchResult<Scalar>> _neighbors;
     cudaStream_t _stream = nullptr;
     bool _streamBound = false;
 };
@@ -85,18 +87,18 @@ private:
 /// if any selected neighbor normal is non-finite, that point retains its source normal.
 template <typename Scalar>
 void smoothNormalsAsync(
-    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
     const GpuSpatialIndex<Scalar>& index,
     int k,
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& output,
+    plamatrix::internal::ResidentMatrix<Scalar>& output,
     NormalRefinementGpuWorkspace<Scalar>& workspace,
     cudaStream_t stream);
 
 /// Enqueue in-place normal flips so finite rows point toward the supplied viewpoint.
 template <typename Scalar>
 void orientNormalsTowardViewpointAsync(
-    PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
-    const plamatrix::Vec3<Scalar>& viewpoint,
+    plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
+    const plamatrix::Matrix<Scalar, 3, 1>& viewpoint,
     cudaStream_t stream);
 
 } // namespace gpu

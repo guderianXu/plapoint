@@ -191,9 +191,9 @@ TEST(RealReconstructionDataTest, GrayPlyFilesLoadIntensityAsPointCloudColors)
         for (std::size_t row = 0; row < cloud->size(); ++row)
         {
             const auto index = static_cast<plamatrix::Index>(row);
-            const auto r = cloud->colors()->getValue(index, 0);
-            const auto g = cloud->colors()->getValue(index, 1);
-            const auto b = cloud->colors()->getValue(index, 2);
+            const auto r = cloud->colors()->operator()(index, 0);
+            const auto g = cloud->colors()->operator()(index, 1);
+            const auto b = cloud->colors()->operator()(index, 2);
             EXPECT_EQ(g, r) << reference.relative_path << " row=" << row;
             EXPECT_EQ(b, r) << reference.relative_path << " row=" << row;
             min_intensity = std::min(min_intensity, r);

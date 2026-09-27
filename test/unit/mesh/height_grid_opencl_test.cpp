@@ -6,20 +6,21 @@
 #include <limits>
 
 #include <plapoint/opencl/height_grid.h>
+#include <plapoint/filters/detail/geometry_bridge.h>
 #include <plapoint/opencl/opencl_runtime.h>
+#include <plamatrix/internal/core/device.h>
 
 namespace
 {
 
-using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
+using Cloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
 
 Cloud makeHeightPoints()
 {
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> points(5, 3);
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(5, 3);
+    plamatrix::MatrixXf points(5, 3);
+    plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(5, 3);
     const float values[5][3] = {
-        {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 2.0f}, {0.0f, 1.0f, 3.0f},
-        {1.0f, 1.0f, 4.0f}, {0.45f, 0.6f, 2.5f}};
+        {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 2.0f}, {0.0f, 1.0f, 3.0f}, {1.0f, 1.0f, 4.0f}, {0.45f, 0.6f, 2.5f}};
     for (int row = 0; row < 5; ++row)
     {
         for (int column = 0; column < 3; ++column)
@@ -47,7 +48,8 @@ TEST(HeightGridOpenClTest, MatchesCpuBilinearMeanAndColors)
     options.height = 4;
     options.useBilinearSplat = true;
     options.elevationAggregation = plapoint::mesh::ElevationAggregation::Mean;
-    const auto cpu = plapoint::mesh::buildHeightGrid(cloud, options);
+    const auto cpu = plapoint::mesh::buildHeightGrid(
+        plapoint::detail::fromDeviceCloud(cloud), options, plapoint::ProcessingDevice::CPU);
     const auto executions_before = plapoint::opencl::heightGridOpenClExecutionCount();
     const auto result = plapoint::opencl::buildHeightGrid(cloud, options);
     EXPECT_GT(plapoint::opencl::heightGridOpenClExecutionCount(), executions_before);
@@ -76,7 +78,8 @@ TEST(HeightGridOpenClTest, MatchesCpuNearestMinimumAggregation)
     options.height = 3;
     options.useBilinearSplat = false;
     options.elevationAggregation = plapoint::mesh::ElevationAggregation::Min;
-    const auto cpu = plapoint::mesh::buildHeightGrid(cloud, options);
+    const auto cpu = plapoint::mesh::buildHeightGrid(
+        plapoint::detail::fromDeviceCloud(cloud), options, plapoint::ProcessingDevice::CPU);
     const auto result = plapoint::opencl::buildHeightGrid(cloud, options);
 
     EXPECT_EQ(result.valid, cpu.valid);
@@ -87,7 +90,7 @@ TEST(HeightGridOpenClTest, MatchesCpuNearestMinimumAggregation)
 
 TEST(HeightGridOpenClTest, RejectsNonFiniteDerivedGeometryBeforeDeviceUse)
 {
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> points(2, 3);
+    plamatrix::MatrixXf points(2, 3);
     points(0, 0) = std::numeric_limits<float>::lowest();
     points(0, 1) = 0.0f;
     points(0, 2) = 0.0f;

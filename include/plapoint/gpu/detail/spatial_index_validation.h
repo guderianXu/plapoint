@@ -5,7 +5,7 @@
 #include <limits>
 #include <stdexcept>
 
-#include <plamatrix/dense/dense_matrix.h>
+#include <plamatrix/internal/device/device_matrix.h>
 
 namespace plapoint
 {
@@ -16,7 +16,7 @@ namespace detail
 
 template <typename Scalar>
 void validateRadiusArguments(
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& queries,
+    const plamatrix::internal::ResidentMatrix<Scalar>& queries,
     Scalar radius,
     int maximum,
     std::uint64_t cloud_revision)

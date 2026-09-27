@@ -6,14 +6,15 @@
 #include <exception>
 #include <memory>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #ifdef _OPENMP
 #include <omp.h>
 #endif
 
-#include <plamatrix/ops/decomposition.h>
-#include <plamatrix/ops/point_cloud.h>
+#include <plamatrix/dense/matrix_self_adjoint.h>
+#include <plamatrix/internal/core/device.h>
 
 #include <plapoint/opencl/preprocessing.h>
 
@@ -24,28 +25,27 @@ namespace opencl
 namespace
 {
 
-template <typename Scalar>
-plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> estimateNormalsImpl(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& input,
-    int k)
-{
-    if (k < 3 || k > 32)
+    template <typename Scalar>
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>
+    estimateNormalsImpl(const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& input, int k)
     {
-        throw std::invalid_argument("OpenCL normal estimation requires 3 <= k <= 32");
-    }
+        if (k < 3 || k > 32)
+        {
+            throw std::invalid_argument("OpenCL normal estimation requires 3 <= k <= 32");
+        }
 
-    const OpenClKnnResult neighbors = knnSearch(input, k);
-    if (std::find(neighbors.finiteQueries.begin(), neighbors.finiteQueries.end(), 0)
-        != neighbors.finiteQueries.end())
-    {
-        throw std::invalid_argument("OpenCL normal estimation requires finite input points");
-    }
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> normals(
-        static_cast<plamatrix::Index>(input.size()), 3);
-    normals.fill(Scalar(0));
-    const auto& points = input.points();
-    const auto row_count = static_cast<std::int64_t>(input.size());
-    int failure_slot_count = 1;
+        const OpenClKnnResult neighbors = knnSearch(input, k);
+        if (std::find(neighbors.finiteQueries.begin(), neighbors.finiteQueries.end(), 0) !=
+            neighbors.finiteQueries.end())
+        {
+            throw std::invalid_argument("OpenCL normal estimation requires finite input points");
+        }
+        plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> normals(
+            static_cast<plamatrix::Index>(input.size()), 3);
+        normals.setZero();
+        const auto& points = input.points();
+        const auto row_count = static_cast<std::int64_t>(input.size());
+        int failure_slot_count = 1;
 #ifdef _OPENMP
     failure_slot_count = omp_get_max_threads();
     if (failure_slot_count < 1)
@@ -111,30 +111,38 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> estimateNormalsImpl(
                 continue;
             }
 
-            plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> neighborhood(
-                neighbor_count, 3);
+            using Accum = std::conditional_t<std::is_same_v<Scalar, float>, double, Scalar>;
+            plamatrix::Matrix<Accum, plamatrix::Dynamic, 3> neighborhood(neighbor_count, 3);
             int output_row = 0;
             for (int column = 0; column < neighbors.k; ++column)
             {
-                const int point_index = neighbors.indices[
-                    row * static_cast<std::size_t>(neighbors.k)
-                    + static_cast<std::size_t>(column)];
+                const int point_index =
+                    neighbors.indices[row * static_cast<std::size_t>(neighbors.k) + static_cast<std::size_t>(column)];
                 if (point_index < 0)
                 {
                     continue;
                 }
-                neighborhood(output_row, 0) = points(point_index, 0);
-                neighborhood(output_row, 1) = points(point_index, 1);
-                neighborhood(output_row, 2) = points(point_index, 2);
+                neighborhood(output_row, 0) = static_cast<Accum>(points(point_index, 0));
+                neighborhood(output_row, 1) = static_cast<Accum>(points(point_index, 1));
+                neighborhood(output_row, 2) = static_cast<Accum>(points(point_index, 2));
                 ++output_row;
             }
-            auto covariance = plamatrix::covarianceMatrix(neighborhood);
-            auto [left, singular_values, right_transpose] = plamatrix::svd(covariance);
-            (void)left;
-            (void)singular_values;
-            normals(static_cast<plamatrix::Index>(row), 0) = right_transpose.getValue(2, 0);
-            normals(static_cast<plamatrix::Index>(row), 1) = right_transpose.getValue(2, 1);
-            normals(static_cast<plamatrix::Index>(row), 2) = right_transpose.getValue(2, 2);
+            const plamatrix::Matrix<Accum, 1, 3> center = neighborhood.colwise().mean();
+            for (plamatrix::Index neighbor = 0; neighbor < neighbor_count; ++neighbor)
+            {
+                for (plamatrix::Index coordinate = 0; coordinate < 3; ++coordinate)
+                {
+                    neighborhood(neighbor, coordinate) -= center(0, coordinate);
+                }
+            }
+            plamatrix::Matrix<Accum, 3, 3> covariance;
+            covariance.noalias() = neighborhood.transpose() * neighborhood;
+            covariance /= static_cast<Accum>(neighbor_count);
+            const plamatrix::SelfAdjointEigenSolver<plamatrix::Matrix<Accum, 3, 3>> solver(covariance);
+            const auto& eigenvectors = solver.eigenvectors();
+            normals(static_cast<plamatrix::Index>(row), 0) = static_cast<Scalar>(eigenvectors(0, 0));
+            normals(static_cast<plamatrix::Index>(row), 1) = static_cast<Scalar>(eigenvectors(1, 0));
+            normals(static_cast<plamatrix::Index>(row), 2) = static_cast<Scalar>(eigenvectors(2, 0));
         }
         catch (...)
         {
@@ -157,20 +165,18 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> estimateNormalsImpl(
         std::rethrow_exception(selected_failure);
     }
     return normals;
-}
+    }
 
 } // namespace
 
-plamatrix::DenseMatrix<float, plamatrix::Device::CPU> estimateNormals(
-    const PointCloud<float, plamatrix::Device::CPU>& input,
-    int k)
+plamatrix::MatrixXf
+estimateNormals(const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>& input, int k)
 {
     return estimateNormalsImpl(input, k);
 }
 
-plamatrix::DenseMatrix<double, plamatrix::Device::CPU> estimateNormals(
-    const PointCloud<double, plamatrix::Device::CPU>& input,
-    int k)
+plamatrix::MatrixXd
+estimateNormals(const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::CPU>& input, int k)
 {
     return estimateNormalsImpl(input, k);
 }

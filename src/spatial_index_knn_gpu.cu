@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include <plapoint/gpu/detail/distance_key.cuh>
+#include <plamatrix/internal/device/device_matrix.h>
 
 namespace plapoint
 {
@@ -365,7 +366,7 @@ __global__ void indexedKnnKernel(
 
 template <typename Scalar>
 GpuKnnSearchResult<Scalar> GpuSpatialIndex<Scalar>::knnSearchAsync(
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& queries,
+    const plamatrix::internal::ResidentMatrix<Scalar>& queries,
     int k,
     GpuSpatialQueryWorkspace<Scalar>& workspace,
     cudaStream_t stream) const
@@ -382,18 +383,17 @@ GpuKnnSearchResult<Scalar> GpuSpatialIndex<Scalar>::knnSearchAsync(
     {
         throw std::overflow_error("GpuSpatialIndex query count exceeds int range");
     }
-    auto& distance_keys = workspace.distanceKeys(queries.rows(), k, stream);
-    auto& distance_exponents = workspace.distanceExponents(queries.rows(), k, stream);
+    queries.validateContext(*_context);
+    auto& distance_keys = workspace.distanceKeys(queries.rows(), k, _context);
+    auto& distance_exponents = workspace.distanceExponents(queries.rows(), k, _context);
     GpuKnnSearchResult<Scalar> result{
-        plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU>
-            ::uninitializedAsync(queries.rows(), k, stream),
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>
-            ::uninitializedAsync(queries.rows(), k, stream)};
+        plamatrix::internal::ResidentMatrix<plamatrix::Index>(queries.rows(), k, _context),
+        plamatrix::internal::ResidentMatrix<Scalar>(queries.rows(), k, _context)};
     if (queries.rows() != 0)
     {
         const KnnGridView<Scalar> grid{
-            _points.data(), _pointCount, _uniqueCellKeys.get(), _sortedPointIndices.data(),
-            _cellOffsets.data(), _cellCounts.data(), _cellCount, static_cast<double>(_cellSize),
+            _points->data(), _pointCount, uniqueCellKeysData(), sortedPointIndicesData(),
+            cellOffsetsData(), cellCountsData(), _cellCount, static_cast<double>(_cellSize),
             _originX, _originY, _originZ,
             static_cast<long long>(_axisSpanX), static_cast<long long>(_axisSpanY),
             static_cast<long long>(_axisSpanZ)};
@@ -407,10 +407,10 @@ GpuKnnSearchResult<Scalar> GpuSpatialIndex<Scalar>::knnSearchAsync(
 }
 
 template GpuKnnSearchResult<float> GpuSpatialIndex<float>::knnSearchAsync(
-    const plamatrix::DenseMatrix<float, plamatrix::Device::GPU>&,
+    const plamatrix::internal::ResidentMatrix<float>&,
     int, GpuSpatialQueryWorkspace<float>&, cudaStream_t) const;
 template GpuKnnSearchResult<double> GpuSpatialIndex<double>::knnSearchAsync(
-    const plamatrix::DenseMatrix<double, plamatrix::Device::GPU>&,
+    const plamatrix::internal::ResidentMatrix<double>&,
     int, GpuSpatialQueryWorkspace<double>&, cudaStream_t) const;
 
 } // namespace gpu

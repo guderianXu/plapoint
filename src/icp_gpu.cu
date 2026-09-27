@@ -9,289 +9,261 @@
 #include <stdexcept>
 #include <type_traits>
 
-#include <cub/device/device_run_length_encode.cuh>
-#include <cub/device/device_scan.cuh>
 #include <cuda_runtime.h>
+#include <math_constants.h>
 #include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
 #include <thrust/functional.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/reduce.h>
-#include <thrust/sort.h>
 #include <thrust/transform.h>
 #include <thrust/transform_reduce.h>
+
+#include <plamatrix/internal/dense/matrix_view.h>
+#include <plamatrix/internal/ops/grouping.h>
+#include <plamatrix/internal/ops/indexing.h>
+#include <plamatrix/internal/core/device.h>
 
 #include <plapoint/gpu/cuda_check.h>
 #include <plapoint/gpu/icp.h>
 
 namespace plapoint
 {
-namespace gpu
-{
-
-namespace
-{
-
-__host__ __device__ __forceinline__ constexpr double icpPositiveInfinity()
-{
-    return std::numeric_limits<double>::infinity();
-}
-
-template <typename Scalar>
-__device__ __forceinline__ void markSharedTransformMaybeUnused(Scalar* transform)
-{
-    (void)transform;
-}
-
-struct RawIcpStats
-{
-    int active_count;
-    int invalid_source_count;
-    int same_index_correspondence_count;
-    double src_sum[3];
-    double tgt_sum[3];
-    double cross_sum[9];
-    double src_outer_sum[6];
-    double tgt_outer_sum[6];
-    double residual_sq_sum;
-};
-
-struct RawIcpIdentityStats
-{
-    int active_count;
-    int invalid_source_count;
-    double src_sum[3];
-    double src_outer_sum[6];
-    double residual_sq_sum;
-};
-
-struct RawIcpResidualStats
-{
-    int active_count;
-    int invalid_source_count;
-    double residual_sq_sum;
-};
-
-struct IcpTargetTileBounds
-{
-    double min_x;
-    double min_y;
-    double min_z;
-    double max_x;
-    double max_y;
-    double max_z;
-    int has_valid_point;
-};
-
-struct IcpGridCellKey
-{
-    int x;
-    int y;
-    int z;
-};
-
-__host__ __device__ __forceinline__ bool operator==(const IcpGridCellKey& lhs, const IcpGridCellKey& rhs)
-{
-    return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
-}
-
-struct IcpGridCellBounds
-{
-    int min_x;
-    int min_y;
-    int min_z;
-    int max_x;
-    int max_y;
-    int max_z;
-};
-
-struct IcpGridCellKeyLess
-{
-    __host__ __device__ __forceinline__ bool operator()(const IcpGridCellKey& lhs, const IcpGridCellKey& rhs) const
+    namespace gpu
     {
-        if (lhs.x != rhs.x) return lhs.x < rhs.x;
-        if (lhs.y != rhs.y) return lhs.y < rhs.y;
-        return lhs.z < rhs.z;
-    }
-};
 
-struct IcpGridCellBoundsFromKey
-{
-    __host__ __device__ __forceinline__ IcpGridCellBounds operator()(const IcpGridCellKey& key) const
-    {
-        if (key.x == INT_MAX && key.y == INT_MAX && key.z == INT_MAX)
+        namespace
         {
-            return {INT_MAX, INT_MAX, INT_MAX, INT_MIN, INT_MIN, INT_MIN};
-        }
-        return {key.x, key.y, key.z, key.x, key.y, key.z};
-    }
-};
 
-struct IcpGridCellBoundsReduce
-{
-    __host__ __device__ __forceinline__ IcpGridCellBounds operator()(
-        const IcpGridCellBounds& lhs,
-        const IcpGridCellBounds& rhs) const
-    {
-        return {
-            lhs.min_x < rhs.min_x ? lhs.min_x : rhs.min_x,
-            lhs.min_y < rhs.min_y ? lhs.min_y : rhs.min_y,
-            lhs.min_z < rhs.min_z ? lhs.min_z : rhs.min_z,
-            lhs.max_x > rhs.max_x ? lhs.max_x : rhs.max_x,
-            lhs.max_y > rhs.max_y ? lhs.max_y : rhs.max_y,
-            lhs.max_z > rhs.max_z ? lhs.max_z : rhs.max_z
-        };
-    }
-};
+            __device__ __forceinline__ double icpPositiveInfinity()
+            {
+                return CUDART_INF;
+            }
 
-struct IcpDirectGridCellLookupShape
-{
-    int min_x = 0;
-    int min_y = 0;
-    int min_z = 0;
-    int range_x = 0;
-    int range_y = 0;
-    int range_z = 0;
-    int entry_count = 0;
-    bool active = false;
-};
+            template <typename Scalar> __device__ __forceinline__ void markSharedTransformMaybeUnused(Scalar* transform)
+            {
+                (void)transform;
+            }
 
-struct IcpTargetSpatialGrid
-{
-    const void* target_points = nullptr;
-    int target_count = 0;
-    const IcpGridCellKey* __restrict__ cell_keys = nullptr;
-    const int* __restrict__ sorted_target_indices = nullptr;
-    const int* __restrict__ sorted_target_offsets = nullptr;
-    const void* __restrict__ sorted_target_x = nullptr;
-    const void* __restrict__ sorted_target_y = nullptr;
-    const void* __restrict__ sorted_target_z = nullptr;
-    const int* __restrict__ cell_starts = nullptr;
-    const int* __restrict__ cell_counts = nullptr;
-    const int* __restrict__ direct_lookup_cell_indices = nullptr;
-    int cell_count = 0;
-    double cell_size = 0.0;
-    int direct_lookup_min_x = 0;
-    int direct_lookup_min_y = 0;
-    int direct_lookup_min_z = 0;
-    int direct_lookup_range_x = 0;
-    int direct_lookup_range_y = 0;
-    int direct_lookup_range_z = 0;
-    int direct_lookup_entry_count = 0;
-    bool finite_cell_bounds = false;
-    bool direct_lookup_active = false;
-    bool active = false;
-};
+            struct RawIcpStats
+            {
+                int active_count;
+                int invalid_source_count;
+                int same_index_correspondence_count;
+                double src_sum[3];
+                double tgt_sum[3];
+                double cross_sum[9];
+                double src_outer_sum[6];
+                double tgt_outer_sum[6];
+                double residual_sq_sum;
+            };
 
-struct IcpStepTransformInput
-{
-    double src_centroid[3];
-    double tgt_centroid[3];
-    double cross_covariance[9];
-};
+            struct RawIcpIdentityStats
+            {
+                int active_count;
+                int invalid_source_count;
+                double src_sum[3];
+                double src_outer_sum[6];
+                double residual_sq_sum;
+            };
 
-struct IcpStepTransformRawResult
-{
-    double delta;
-    int valid;
-};
+            struct RawIcpResidualStats
+            {
+                int active_count;
+                int invalid_source_count;
+                double residual_sq_sum;
+            };
 
-constexpr unsigned int kIcpAlignmentStepSrcNonCollinearFlag = 1u << 0;
-constexpr unsigned int kIcpAlignmentStepTgtNonCollinearFlag = 1u << 1;
-constexpr unsigned int kIcpAlignmentStepValidFlag = 1u << 2;
-constexpr unsigned int kIcpAlignmentStepAllSameIndexFlag = 1u << 3;
-constexpr unsigned int kIcpAlignmentStepExactStepResidualFlag = 1u << 4;
+            struct IcpTargetTileBounds
+            {
+                double min_x;
+                double min_y;
+                double min_z;
+                double max_x;
+                double max_y;
+                double max_z;
+                int has_valid_point;
+            };
 
-template <typename Scalar>
-struct IcpAlignmentStepRawResult
-{
-    double residual_sq_sum;
-    double step_residual_sq_sum;
-    Scalar delta;
-    int active_count;
-    int invalid_source_count;
-    unsigned int flags;
-};
+            using IcpGridCellKey = plamatrix::internal::Int32Key3;
 
-struct IcpStatsAndStepRawResult
-{
-    RawIcpStats stats;
-    IcpStepTransformRawResult step;
-};
+            struct IcpGridCellBounds
+            {
+                int min_x;
+                int min_y;
+                int min_z;
+                int max_x;
+                int max_y;
+                int max_z;
+            };
 
-template <typename Scalar>
-struct IcpTerminalAlignmentAndResidualRawResult
-{
-    IcpAlignmentStepRawResult<Scalar> alignment_step;
-    RawIcpResidualStats residual_stats;
-};
+            struct IcpGridCellBoundsFromKey
+            {
+                __host__ __device__ __forceinline__ IcpGridCellBounds operator()(const IcpGridCellKey& key) const
+                {
+                    if (key.x == INT_MAX && key.y == INT_MAX && key.z == INT_MAX)
+                    {
+                        return {INT_MAX, INT_MAX, INT_MAX, INT_MIN, INT_MIN, INT_MIN};
+                    }
+                    return {key.x, key.y, key.z, key.x, key.y, key.z};
+                }
+            };
 
-static_assert(sizeof(RawIcpStats) >= sizeof(RawIcpResidualStats),
-              "ICP alignment-step partial workspace must cover residual-stats partials");
-static_assert(sizeof(RawIcpStats) >= sizeof(RawIcpIdentityStats),
-              "ICP alignment-step partial workspace must cover identity-stats partials");
-static_assert(sizeof(IcpAlignmentStepRawResult<float>) >= sizeof(RawIcpResidualStats),
-              "ICP alignment-step result workspace must cover residual-stats results");
-static_assert(sizeof(IcpAlignmentStepRawResult<float>) <= 32,
-              "Float ICP alignment-step host result should use a float-sized delta");
-static_assert(sizeof(IcpAlignmentStepRawResult<double>) <= 40,
-              "ICP alignment-step host result should stay compact");
-static_assert(offsetof(IcpStatsAndStepRawResult, stats) == 0,
-              "ICP stats-step result must expose RawIcpStats at the start of the storage");
-static_assert(sizeof(IcpTerminalAlignmentAndResidualRawResult<double>) <= sizeof(IcpStatsAndStepRawResult),
-              "Terminal alignment/residual result must fit stats-step result workspace");
+            struct IcpGridCellBoundsReduce
+            {
+                __host__ __device__ __forceinline__ IcpGridCellBounds operator()(const IcpGridCellBounds& lhs,
+                                                                                 const IcpGridCellBounds& rhs) const
+                {
+                    return {lhs.min_x < rhs.min_x ? lhs.min_x : rhs.min_x,
+                            lhs.min_y < rhs.min_y ? lhs.min_y : rhs.min_y,
+                            lhs.min_z < rhs.min_z ? lhs.min_z : rhs.min_z,
+                            lhs.max_x > rhs.max_x ? lhs.max_x : rhs.max_x,
+                            lhs.max_y > rhs.max_y ? lhs.max_y : rhs.max_y,
+                            lhs.max_z > rhs.max_z ? lhs.max_z : rhs.max_z};
+                }
+            };
 
-constexpr int kIcpStatsBlockSize = 128;
-constexpr int kIcpSpatialGridMinTargetCount = kIcpStatsBlockSize;
-constexpr int kIcpTargetTileBoundsMinTargetCount = kIcpStatsBlockSize + 1;
-constexpr int kIcpTransform3x4ValueCount = 12;
+            struct IcpDirectGridCellLookupShape
+            {
+                int min_x = 0;
+                int min_y = 0;
+                int min_z = 0;
+                int range_x = 0;
+                int range_y = 0;
+                int range_z = 0;
+                int entry_count = 0;
+                bool active = false;
+            };
 
-template <typename Scalar>
-__device__ __forceinline__ void computeStepTransformFromInput(
-    const IcpStepTransformInput& input,
-    Scalar* __restrict__ step_transform,
-    IcpStepTransformRawResult* __restrict__ result);
+            struct IcpTargetSpatialGrid
+            {
+                const void* target_points = nullptr;
+                int target_count = 0;
+                const IcpGridCellKey* __restrict__ cell_keys = nullptr;
+                const int* __restrict__ sorted_target_indices = nullptr;
+                const int* __restrict__ sorted_target_offsets = nullptr;
+                const void* __restrict__ sorted_target_x = nullptr;
+                const void* __restrict__ sorted_target_y = nullptr;
+                const void* __restrict__ sorted_target_z = nullptr;
+                const plamatrix::Index* __restrict__ cell_starts = nullptr;
+                const plamatrix::Index* __restrict__ cell_counts = nullptr;
+                const int* __restrict__ direct_lookup_cell_indices = nullptr;
+                int cell_count = 0;
+                double cell_size = 0.0;
+                int direct_lookup_min_x = 0;
+                int direct_lookup_min_y = 0;
+                int direct_lookup_min_z = 0;
+                int direct_lookup_range_x = 0;
+                int direct_lookup_range_y = 0;
+                int direct_lookup_range_z = 0;
+                int direct_lookup_entry_count = 0;
+                bool finite_cell_bounds = false;
+                bool direct_lookup_active = false;
+                bool active = false;
+            };
 
-template <typename Scalar>
-__device__ __forceinline__ void computeStepTransformFromRawStatsValue(
-    const RawIcpStats& raw,
-    Scalar* __restrict__ step_transform,
-    IcpStepTransformRawResult* __restrict__ result);
+            struct IcpStepTransformInput
+            {
+                double src_centroid[3];
+                double tgt_centroid[3];
+                double cross_covariance[9];
+            };
 
-template <typename Scalar>
-__device__ __forceinline__ void writeAlignmentStepRawResultFromRawStats(
-    const RawIcpStats& raw,
-    Scalar* __restrict__ step_transform,
-    IcpAlignmentStepRawResult<Scalar>* __restrict__ result);
+            struct IcpStepTransformRawResult
+            {
+                double delta;
+                int valid;
+            };
 
-template <typename Scalar>
-__device__ __forceinline__ void writeExactPointwiseStatsAndStepRawResult(
-    const RawIcpStats& raw,
-    IcpStatsAndStepRawResult* __restrict__ result);
+            constexpr unsigned int kIcpAlignmentStepSrcNonCollinearFlag = 1u << 0;
+            constexpr unsigned int kIcpAlignmentStepTgtNonCollinearFlag = 1u << 1;
+            constexpr unsigned int kIcpAlignmentStepValidFlag = 1u << 2;
+            constexpr unsigned int kIcpAlignmentStepAllSameIndexFlag = 1u << 3;
+            constexpr unsigned int kIcpAlignmentStepExactStepResidualFlag = 1u << 4;
 
-template <typename Scalar>
-__device__ __forceinline__ void multiplyTransform4x4SingleThread(
-    const Scalar* __restrict__ A,
-    const Scalar* __restrict__ B,
-    Scalar* __restrict__ C);
+            template <typename Scalar> struct IcpAlignmentStepRawResult
+            {
+                double residual_sq_sum;
+                double step_residual_sq_sum;
+                Scalar delta;
+                int active_count;
+                int invalid_source_count;
+                unsigned int flags;
+            };
 
-__device__ __forceinline__ bool rawStatsCovarianceHasNonCollinearGeometry(
-    const double sum[3],
-    const double outer_sum[6],
-    int active_count);
+            struct IcpStatsAndStepRawResult
+            {
+                RawIcpStats stats;
+                IcpStepTransformRawResult step;
+            };
 
-template <typename Scalar>
-__device__ __forceinline__ bool alignmentStepRawResultIsAcceptableForIcp(
-    const IcpAlignmentStepRawResult<Scalar>& result)
-{
-    constexpr unsigned int required_flags =
-        kIcpAlignmentStepSrcNonCollinearFlag |
-        kIcpAlignmentStepTgtNonCollinearFlag |
-        kIcpAlignmentStepValidFlag;
-    return result.active_count >= 3 &&
-        result.invalid_source_count == 0 &&
-        (result.flags & required_flags) == required_flags;
-}
+            template <typename Scalar> struct IcpTerminalAlignmentAndResidualRawResult
+            {
+                IcpAlignmentStepRawResult<Scalar> alignment_step;
+                RawIcpResidualStats residual_stats;
+            };
+
+            static_assert(sizeof(RawIcpStats) >= sizeof(RawIcpResidualStats),
+                          "ICP alignment-step partial workspace must cover residual-stats partials");
+            static_assert(sizeof(RawIcpStats) >= sizeof(RawIcpIdentityStats),
+                          "ICP alignment-step partial workspace must cover identity-stats partials");
+            static_assert(sizeof(IcpAlignmentStepRawResult<float>) >= sizeof(RawIcpResidualStats),
+                          "ICP alignment-step result workspace must cover residual-stats results");
+            static_assert(sizeof(IcpAlignmentStepRawResult<float>) <= 32,
+                          "Float ICP alignment-step host result should use a float-sized delta");
+            static_assert(sizeof(IcpAlignmentStepRawResult<double>) <= 40,
+                          "ICP alignment-step host result should stay compact");
+            static_assert(offsetof(IcpStatsAndStepRawResult, stats) == 0,
+                          "ICP stats-step result must expose RawIcpStats at the start of the storage");
+            static_assert(sizeof(IcpTerminalAlignmentAndResidualRawResult<double>) <= sizeof(IcpStatsAndStepRawResult),
+                          "Terminal alignment/residual result must fit stats-step result workspace");
+
+            constexpr int kIcpStatsBlockSize = 128;
+            constexpr int kIcpSpatialGridMinTargetCount = kIcpStatsBlockSize;
+            constexpr int kIcpTargetTileBoundsMinTargetCount = kIcpStatsBlockSize + 1;
+            constexpr int kIcpTransform3x4ValueCount = 12;
+
+            template <typename Scalar>
+            __device__ __forceinline__ void
+            computeStepTransformFromInput(const IcpStepTransformInput& input,
+                                          Scalar* __restrict__ step_transform,
+                                          IcpStepTransformRawResult* __restrict__ result);
+
+            template <typename Scalar>
+            __device__ __forceinline__ void
+            computeStepTransformFromRawStatsValue(const RawIcpStats& raw,
+                                                  Scalar* __restrict__ step_transform,
+                                                  IcpStepTransformRawResult* __restrict__ result);
+
+            template <typename Scalar>
+            __device__ __forceinline__ void
+            writeAlignmentStepRawResultFromRawStats(const RawIcpStats& raw,
+                                                    Scalar* __restrict__ step_transform,
+                                                    IcpAlignmentStepRawResult<Scalar>* __restrict__ result);
+
+            template <typename Scalar>
+            __device__ __forceinline__ void
+            writeExactPointwiseStatsAndStepRawResult(const RawIcpStats& raw,
+                                                     IcpStatsAndStepRawResult* __restrict__ result);
+
+            template <typename Scalar>
+            __device__ __forceinline__ void multiplyTransform4x4SingleThread(const Scalar* __restrict__ A,
+                                                                             const Scalar* __restrict__ B,
+                                                                             Scalar* __restrict__ C);
+
+            __device__ __forceinline__ bool
+            rawStatsCovarianceHasNonCollinearGeometry(const double sum[3], const double outer_sum[6], int active_count);
+
+            template <typename Scalar>
+            __device__ __forceinline__ bool
+            alignmentStepRawResultIsAcceptableForIcp(const IcpAlignmentStepRawResult<Scalar>& result)
+            {
+                constexpr unsigned int required_flags = kIcpAlignmentStepSrcNonCollinearFlag |
+                                                        kIcpAlignmentStepTgtNonCollinearFlag |
+                                                        kIcpAlignmentStepValidFlag;
+                return result.active_count >= 3 && result.invalid_source_count == 0 &&
+                       (result.flags & required_flags) == required_flags;
+            }
 
 #ifdef PLAPOINT_ENABLE_TESTING
 #include "icp_gpu_testing_state.cuh"
@@ -901,21 +873,18 @@ __global__ void gatherSortedIcpTargetPointsKernel(
     sorted_target_offsets[target_idx] = idx;
 }
 
-__device__ __forceinline__ int lowerBoundIcpGridCell(
-    const IcpGridCellKey* __restrict__ cell_keys,
-    int cell_count,
-    const IcpGridCellKey& query)
+__device__ __forceinline__ int
+lowerBoundIcpGridCell(const IcpGridCellKey* __restrict__ cell_keys, int cell_count, const IcpGridCellKey& query)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
     atomicAdd(&g_icp_grid_cell_lookup_count, 1ull);
 #endif
     int first = 0;
     int last = cell_count;
-    const IcpGridCellKeyLess less{};
     while (first < last)
     {
         const int mid = first + (last - first) / 2;
-        if (less(loadIcpGridCellKey(cell_keys, mid), query))
+        if (loadIcpGridCellKey(cell_keys, mid) < query)
         {
             first = mid + 1;
         }
@@ -927,9 +896,7 @@ __device__ __forceinline__ int lowerBoundIcpGridCell(
     return first;
 }
 
-__device__ __forceinline__ int loadSortedIcpTargetIndex(
-    const IcpTargetSpatialGrid& target_grid,
-    int sorted_offset)
+__device__ __forceinline__ int loadSortedIcpTargetIndex(const IcpTargetSpatialGrid& target_grid, int sorted_offset)
 {
 #ifdef PLAPOINT_ENABLE_TESTING
     atomicAdd(&g_icp_target_index_load_count, 1ull);
@@ -939,21 +906,17 @@ __device__ __forceinline__ int loadSortedIcpTargetIndex(
 
 __device__ __forceinline__ int loadIcpGridCellStart(const IcpTargetSpatialGrid& target_grid, int cell_idx)
 {
-    return loadReadOnlyIcpValue(target_grid.cell_starts + cell_idx);
+    return static_cast<int>(loadReadOnlyIcpValue(target_grid.cell_starts + cell_idx));
 }
 
 __device__ __forceinline__ int loadIcpGridCellCount(const IcpTargetSpatialGrid& target_grid, int cell_idx)
 {
-    return loadReadOnlyIcpValue(target_grid.cell_counts + cell_idx);
+    return static_cast<int>(loadReadOnlyIcpValue(target_grid.cell_counts + cell_idx));
 }
 
 template <bool CheckActive>
 __device__ __forceinline__ bool directLookupIcpGridCellXyLocal(
-    const IcpTargetSpatialGrid& target_grid,
-    int query_x,
-    int query_y,
-    int& local_x,
-    int& local_y)
+    const IcpTargetSpatialGrid& target_grid, int query_x, int query_y, int& local_x, int& local_y)
 {
     if constexpr (CheckActive)
     {
@@ -7555,103 +7518,73 @@ void buildTargetSpatialGridDirectLookup(
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
     workspace.markTargetSpatialGridDirectLookupCache(
-        shape.min_x,
-        shape.min_y,
-        shape.min_z,
-        shape.range_x,
-        shape.range_y,
-        shape.range_z,
-        shape.entry_count);
+        shape.min_x, shape.min_y, shape.min_z, shape.range_x, shape.range_y, shape.range_z, shape.entry_count);
     populateTargetSpatialGridDirectLookup(grid, workspace);
 }
 
-int buildTargetSpatialGridCellsWithCub(
-    const IcpGridCellKey* d_sorted_keys,
-    int target_count,
-    IcpGridCellKey* d_unique_keys,
-    int* d_cell_counts,
-    int* d_cell_starts,
-    IcpCorrespondenceStatsWorkspace& workspace,
-    cudaStream_t stream)
+int buildTargetSpatialGridCellsWithPlaMatrix(const IcpGridCellKey* d_sorted_keys,
+                                             int target_count,
+                                             IcpGridCellKey* d_unique_keys,
+                                             plamatrix::Index* d_cell_counts,
+                                             plamatrix::Index* d_cell_starts,
+                                             plamatrix::Index* d_cell_count,
+                                             plamatrix::internal::GroupingWorkspace& grouping_workspace,
+                                             cudaStream_t stream)
 {
     if (target_count <= 0)
     {
         return 0;
     }
 
-    workspace.reserveTargetSpatialGridRunCount();
-    auto* d_cell_count = reinterpret_cast<int*>(workspace.targetSpatialGridRunCountStorage());
     if (!d_cell_count)
     {
         throw std::invalid_argument("ICP GPU: target spatial-grid run count storage is not reserved");
     }
 
-    std::size_t temp_storage_bytes = 0;
-    PLAPOINT_CHECK_CUDA(cub::DeviceRunLengthEncode::Encode(
-        nullptr,
-        temp_storage_bytes,
-        d_sorted_keys,
-        d_unique_keys,
-        d_cell_counts,
-        d_cell_count,
-        target_count,
-        stream));
-    workspace.reserveTargetSpatialGridCubTempStorage(temp_storage_bytes);
-    auto* d_temp_storage = workspace.targetSpatialGridCubTempStorage();
-    PLAPOINT_CHECK_CUDA(cub::DeviceRunLengthEncode::Encode(
-        d_temp_storage,
-        temp_storage_bytes,
-        d_sorted_keys,
-        d_unique_keys,
-        d_cell_counts,
-        d_cell_count,
-        target_count,
-        stream));
+    const auto matrix_count = static_cast<plamatrix::Index>(target_count);
+    PLAPOINT_CHECK_CUDA(
+        cudaMemsetAsync(d_cell_counts, 0, static_cast<std::size_t>(target_count) * sizeof(plamatrix::Index), stream));
+    const auto sorted_keys =
+        plamatrix::internal::makeColumnMajorView<IcpGridCellKey, plamatrix::internal::Device::GPU>(d_sorted_keys, matrix_count, 1);
+    auto unique_keys =
+        plamatrix::internal::makeColumnMajorView<IcpGridCellKey, plamatrix::internal::Device::GPU>(d_unique_keys, matrix_count, 1);
+    auto cell_counts =
+        plamatrix::internal::makeColumnMajorView<plamatrix::Index, plamatrix::internal::Device::GPU>(d_cell_counts, matrix_count, 1);
+    auto cell_starts =
+        plamatrix::internal::makeColumnMajorView<plamatrix::Index, plamatrix::internal::Device::GPU>(d_cell_starts, matrix_count, 1);
+    auto run_count = plamatrix::internal::makeColumnMajorView<plamatrix::Index, plamatrix::internal::Device::GPU>(d_cell_count, 1, 1);
+    plamatrix::internal::runLengthEncodeAsync(sorted_keys, unique_keys, cell_counts, run_count, grouping_workspace, stream);
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_target_spatial_grid_run_length_encode_count.fetch_add(1, std::memory_order_relaxed);
 #endif
 
-    int cell_count = 0;
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
-        &cell_count,
-        d_cell_count,
-        sizeof(cell_count),
-        cudaMemcpyDeviceToHost,
-        stream));
-    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
-    if (cell_count <= 0)
-    {
-        return 0;
-    }
+    plamatrix::internal::IndexingWorkspace scan_workspace;
+    plamatrix::internal::exclusiveScanAsync(plamatrix::internal::ConstMatrixView<plamatrix::Index, plamatrix::internal::Device::GPU>(cell_counts),
+                                  cell_starts,
+                                  scan_workspace,
+                                  stream);
 
-    temp_storage_bytes = 0;
-    PLAPOINT_CHECK_CUDA(cub::DeviceScan::ExclusiveSum(
-        nullptr,
-        temp_storage_bytes,
-        d_cell_counts,
-        d_cell_starts,
-        cell_count,
-        stream));
-    workspace.reserveTargetSpatialGridCubTempStorage(temp_storage_bytes);
-    d_temp_storage = workspace.targetSpatialGridCubTempStorage();
-    PLAPOINT_CHECK_CUDA(cub::DeviceScan::ExclusiveSum(
-        d_temp_storage,
-        temp_storage_bytes,
-        d_cell_counts,
-        d_cell_starts,
-        cell_count,
-        stream));
-    return cell_count;
+    plamatrix::Index cell_count = 0;
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(&cell_count, d_cell_count, sizeof(cell_count), cudaMemcpyDeviceToHost, stream));
+    grouping_workspace.closeAsyncAllocation();
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    scan_workspace.checkStatus("ICP target spatial-grid cell offsets");
+    scan_workspace.closeAsyncAllocation();
+    if (cell_count <= 0 || cell_count > matrix_count ||
+        cell_count > static_cast<plamatrix::Index>(std::numeric_limits<int>::max()))
+    {
+        throw std::runtime_error("ICP GPU: PlaMatrix returned an invalid target spatial-grid cell count");
+    }
+    return static_cast<int>(cell_count);
 }
 
 template <typename Scalar>
-IcpTargetSpatialGrid prepareTargetSpatialGrid(
-    const Scalar* d_target_points,
-    int target_count,
-    Scalar max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& workspace,
-    cudaStream_t stream,
-    bool build_direct_lookup)
+IcpTargetSpatialGrid prepareTargetSpatialGrid(const Scalar* d_target_points,
+                                              int target_count,
+                                              Scalar max_correspondence_distance,
+                                              IcpCorrespondenceStatsWorkspace& workspace,
+                                              cudaStream_t stream,
+                                              bool build_direct_lookup)
 {
     IcpTargetSpatialGrid grid{};
     if (!shouldUseTargetSpatialGrid(max_correspondence_distance, target_count))
@@ -7673,27 +7606,27 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
         workspace.reserveTargetSpatialGridForScalar<Scalar>(target_count);
     }
 
-    auto* d_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridKeysStorage());
-    auto* d_unique_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridUniqueKeysStorage());
+    auto* d_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridUniqueKeysStorage());
+    auto* d_sorted_keys = reinterpret_cast<IcpGridCellKey*>(workspace.targetSpatialGridSortedKeysStorage());
     auto* d_indices = reinterpret_cast<int*>(workspace.targetSpatialGridIndicesStorage());
     auto* d_sorted_offsets = reinterpret_cast<int*>(workspace.targetSpatialGridSortedOffsetsStorage());
     auto* d_sorted_x = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedXStorage());
     auto* d_sorted_y = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedYStorage());
     auto* d_sorted_z = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedZStorage());
-    auto* d_cell_starts = reinterpret_cast<int*>(workspace.targetSpatialGridCellStartsStorage());
-    auto* d_cell_counts = reinterpret_cast<int*>(workspace.targetSpatialGridCellCountsStorage());
+    auto* d_cell_starts = reinterpret_cast<plamatrix::Index*>(workspace.targetSpatialGridCellStartsStorage());
+    auto* d_cell_counts = reinterpret_cast<plamatrix::Index*>(workspace.targetSpatialGridCellCountsStorage());
     const int target_grid_size = icpStatsPartialCount(target_count);
     if (build_direct_lookup)
     {
         workspace.reserveTargetSpatialGridBoundsPartials(target_grid_size);
     }
-    auto* d_bounds_partials = build_direct_lookup
-        ? reinterpret_cast<IcpGridCellBounds*>(workspace.targetSpatialGridBoundsPartialsStorage())
-        : nullptr;
+    auto* d_bounds_partials =
+        build_direct_lookup ? reinterpret_cast<IcpGridCellBounds*>(workspace.targetSpatialGridBoundsPartialsStorage())
+                            : nullptr;
 
     grid.target_points = d_target_points;
     grid.target_count = target_count;
-    grid.cell_keys = d_unique_keys;
+    grid.cell_keys = d_keys;
     grid.sorted_target_indices = d_indices;
     grid.sorted_target_offsets = d_sorted_offsets;
     grid.sorted_target_x = d_sorted_x;
@@ -7711,17 +7644,16 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
         {
             if (!workspace.targetSpatialGridDirectLookupEvaluated())
             {
-                buildTargetSpatialGridDirectLookup(
-                    d_target_points,
-                    d_unique_keys,
-                    grid.cell_count,
-                    target_count,
-                    grid.cell_size,
-                    nullptr,
-                    0,
-                    workspace,
-                    stream,
-                    grid);
+                buildTargetSpatialGridDirectLookup(d_target_points,
+                                                   d_keys,
+                                                   grid.cell_count,
+                                                   target_count,
+                                                   grid.cell_size,
+                                                   nullptr,
+                                                   0,
+                                                   workspace,
+                                                   stream,
+                                                   grid);
             }
             populateTargetSpatialGridDirectLookup(grid, workspace);
         }
@@ -7729,18 +7661,8 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
         return grid;
     }
 
-    auto policy = thrust::cuda::par.on(stream);
-    auto keys = thrust::device_pointer_cast(d_keys);
-    auto indices = thrust::device_pointer_cast(d_indices);
-
-    initializeIcpTargetSpatialGridKeysAndIndicesKernel<Scalar>
-        <<<target_grid_size, kIcpStatsBlockSize, 0, stream>>>(
-            d_target_points,
-            target_count,
-            cell_size,
-            d_keys,
-            d_indices,
-            d_bounds_partials);
+    initializeIcpTargetSpatialGridKeysAndIndicesKernel<Scalar><<<target_grid_size, kIcpStatsBlockSize, 0, stream>>>(
+        d_target_points, target_count, cell_size, d_keys, d_sorted_offsets, d_bounds_partials);
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_target_spatial_grid_key_init_kernel_launch_count.fetch_add(1, std::memory_order_relaxed);
     if (d_bounds_partials)
@@ -7749,27 +7671,29 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     }
 #endif
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
-    thrust::sort_by_key(policy, keys, keys + target_count, indices, IcpGridCellKeyLess{});
+    const auto matrix_count = static_cast<plamatrix::Index>(target_count);
+    const auto keys = plamatrix::internal::makeColumnMajorView<IcpGridCellKey, plamatrix::internal::Device::GPU>(
+        static_cast<const IcpGridCellKey*>(d_keys), matrix_count, 1);
+    const auto source_indices = plamatrix::internal::makeColumnMajorView<std::int32_t, plamatrix::internal::Device::GPU>(
+        static_cast<const std::int32_t*>(d_sorted_offsets), matrix_count, 1);
+    auto sorted_keys =
+        plamatrix::internal::makeColumnMajorView<IcpGridCellKey, plamatrix::internal::Device::GPU>(d_sorted_keys, matrix_count, 1);
+    auto sorted_indices =
+        plamatrix::internal::makeColumnMajorView<std::int32_t, plamatrix::internal::Device::GPU>(d_indices, matrix_count, 1);
+    plamatrix::internal::GroupingWorkspace grouping_workspace;
+    plamatrix::internal::sortByKeyAsync(keys, source_indices, sorted_keys, sorted_indices, grouping_workspace, stream);
+    // Once the stable sort consumes the identity indices, reuse that buffer for the inverse
+    // target-index-to-sorted-offset map gathered below.
     const int gather_block_size = kIcpStatsBlockSize;
     const int gather_grid_size = target_grid_size;
     gatherSortedIcpTargetPointsKernel<Scalar><<<gather_grid_size, gather_block_size, 0, stream>>>(
-        d_target_points,
-        target_count,
-        d_indices,
-        d_sorted_offsets,
-        d_sorted_x,
-        d_sorted_y,
-        d_sorted_z);
+        d_target_points, target_count, d_indices, d_sorted_offsets, d_sorted_x, d_sorted_y, d_sorted_z);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    const int cell_count = buildTargetSpatialGridCellsWithCub(
-        d_keys,
-        target_count,
-        d_unique_keys,
-        d_cell_counts,
-        d_cell_starts,
-        workspace,
-        stream);
+    workspace.reserveTargetSpatialGridRunCount();
+    auto* d_cell_count = reinterpret_cast<plamatrix::Index*>(workspace.targetSpatialGridRunCountStorage());
+    const int cell_count = buildTargetSpatialGridCellsWithPlaMatrix(
+        d_sorted_keys, target_count, d_keys, d_cell_counts, d_cell_starts, d_cell_count, grouping_workspace, stream);
 
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_target_spatial_grid_build_count.fetch_add(1, std::memory_order_relaxed);
@@ -7780,27 +7704,25 @@ IcpTargetSpatialGrid prepareTargetSpatialGrid(
     workspace.markTargetSpatialGridCache(d_target_points, target_count, cell_size, cell_count);
     if (build_direct_lookup)
     {
-        buildTargetSpatialGridDirectLookup(
-            d_target_points,
-            d_unique_keys,
-            cell_count,
-            target_count,
-            grid.cell_size,
-            d_bounds_partials,
-            target_grid_size,
-            workspace,
-            stream,
-            grid);
+        buildTargetSpatialGridDirectLookup(d_target_points,
+                                           d_keys,
+                                           cell_count,
+                                           target_count,
+                                           grid.cell_size,
+                                           d_bounds_partials,
+                                           target_grid_size,
+                                           workspace,
+                                           stream,
+                                           grid);
     }
     return grid;
 }
 
 template <typename Scalar>
-IcpTargetSpatialGrid makeCachedTargetSpatialGrid(
-    const Scalar* d_target_points,
-    int target_count,
-    Scalar max_correspondence_distance,
-    IcpCorrespondenceStatsWorkspace& workspace)
+IcpTargetSpatialGrid makeCachedTargetSpatialGrid(const Scalar* d_target_points,
+                                                 int target_count,
+                                                 Scalar max_correspondence_distance,
+                                                 IcpCorrespondenceStatsWorkspace& workspace)
 {
     IcpTargetSpatialGrid grid{};
     if (!shouldUseTargetSpatialGrid(max_correspondence_distance, target_count))
@@ -7825,8 +7747,8 @@ IcpTargetSpatialGrid makeCachedTargetSpatialGrid(
     grid.sorted_target_x = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedXStorage());
     grid.sorted_target_y = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedYStorage());
     grid.sorted_target_z = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedZStorage());
-    grid.cell_starts = reinterpret_cast<int*>(workspace.targetSpatialGridCellStartsStorage());
-    grid.cell_counts = reinterpret_cast<int*>(workspace.targetSpatialGridCellCountsStorage());
+    grid.cell_starts = reinterpret_cast<plamatrix::Index*>(workspace.targetSpatialGridCellStartsStorage());
+    grid.cell_counts = reinterpret_cast<plamatrix::Index*>(workspace.targetSpatialGridCellCountsStorage());
     grid.cell_size = cell_size;
     grid.finite_cell_bounds = icpGridCellBoundsAreFinite(cell_size);
     grid.cell_count = workspace.targetSpatialGridCellCount();
@@ -8521,9 +8443,8 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
     g_icp_residual_stats_call_count.fetch_add(1, std::memory_order_relaxed);
-    g_icp_last_transform_output_pointer.store(
-        reinterpret_cast<std::uintptr_t>(d_output_points),
-        std::memory_order_relaxed);
+    g_icp_last_transform_output_pointer.store(reinterpret_cast<std::uintptr_t>(d_output_points),
+                                              std::memory_order_relaxed);
 #endif
 
     if (source_count <= 0)
@@ -8534,9 +8455,7 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
     {
         throw std::invalid_argument("ICP GPU: device pointers must not be null");
     }
-    if (!shouldUseTargetSpatialGrid(
-            max_correspondence_distance,
-            workspace.targetSpatialGridPointCount()) ||
+    if (!shouldUseTargetSpatialGrid(max_correspondence_distance, workspace.targetSpatialGridPointCount()) ||
         target_spatial_grid_cell_count <= 0)
     {
         throw std::invalid_argument("ICP GPU: cached target spatial grid snapshot is not available");
@@ -8548,8 +8467,8 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
     auto* d_sorted_x = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedXStorage());
     auto* d_sorted_y = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedYStorage());
     auto* d_sorted_z = reinterpret_cast<Scalar*>(workspace.targetSpatialGridSortedZStorage());
-    auto* d_cell_starts = reinterpret_cast<int*>(workspace.targetSpatialGridCellStartsStorage());
-    auto* d_cell_counts = reinterpret_cast<int*>(workspace.targetSpatialGridCellCountsStorage());
+    auto* d_cell_starts = reinterpret_cast<plamatrix::Index*>(workspace.targetSpatialGridCellStartsStorage());
+    auto* d_cell_counts = reinterpret_cast<plamatrix::Index*>(workspace.targetSpatialGridCellCountsStorage());
     if (!d_cell_keys || !d_indices || !d_sorted_offsets || !d_sorted_x || !d_sorted_y || !d_sorted_z ||
         !d_cell_starts || !d_cell_counts)
     {
@@ -8591,28 +8510,23 @@ IcpResidualStats<Scalar> transformPointsAndComputeIcpResidualStatsWithTargetSpat
     {
         throw std::invalid_argument("ICP GPU: residual-stats host result workspace is not reserved");
     }
-    launchTransformAndCollectResidualStatsSpatialGridKernel(
-        grid_size,
-        block_size,
-        stream,
-        d_transform,
-        d_source_points,
-        source_count,
-        max_correspondence_distance,
-        d_output_points,
-        target_grid,
-        true,
-        d_partials);
+    launchTransformAndCollectResidualStatsSpatialGridKernel(grid_size,
+                                                            block_size,
+                                                            stream,
+                                                            d_transform,
+                                                            d_source_points,
+                                                            source_count,
+                                                            max_correspondence_distance,
+                                                            d_output_points,
+                                                            target_grid,
+                                                            true,
+                                                            d_partials);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    reduceRawIcpResidualStatsKernel<<<1, block_size, 0, stream>>>(
-        d_partials,
-        grid_size,
-        d_stats);
+    reduceRawIcpResidualStatsKernel<<<1, block_size, 0, stream>>>(d_partials, grid_size, d_stats);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
-    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_stats, d_stats, sizeof(RawIcpResidualStats),
-                                        cudaMemcpyDeviceToHost, stream));
+    PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(h_stats, d_stats, sizeof(RawIcpResidualStats), cudaMemcpyDeviceToHost, stream));
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_host_synchronization_count.fetch_add(1, std::memory_order_relaxed);
 #endif
@@ -8635,9 +8549,8 @@ bool launchTransformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapsho
 #ifdef PLAPOINT_ENABLE_TESTING
     g_icp_correspondence_stats_call_count.fetch_add(1, std::memory_order_relaxed);
     g_icp_residual_stats_call_count.fetch_add(1, std::memory_order_relaxed);
-    g_icp_last_transform_output_pointer.store(
-        reinterpret_cast<std::uintptr_t>(d_output_points),
-        std::memory_order_relaxed);
+    g_icp_last_transform_output_pointer.store(reinterpret_cast<std::uintptr_t>(d_output_points),
+                                              std::memory_order_relaxed);
 #endif
 
     if (source_count <= 0)
@@ -8648,26 +8561,22 @@ bool launchTransformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapsho
     {
         throw std::invalid_argument("ICP GPU: device pointers must not be null");
     }
-    if (!shouldUseTargetSpatialGrid(
-            max_correspondence_distance,
-            target_grid_workspace.targetSpatialGridPointCount()) ||
+    if (!shouldUseTargetSpatialGrid(max_correspondence_distance, target_grid_workspace.targetSpatialGridPointCount()) ||
         target_spatial_grid_cell_count <= 0)
     {
         throw std::invalid_argument("ICP GPU: cached target spatial grid snapshot is not available");
     }
 
-    auto* d_cell_keys = reinterpret_cast<IcpGridCellKey*>(
-        target_grid_workspace.targetSpatialGridUniqueKeysStorage());
+    auto* d_cell_keys = reinterpret_cast<IcpGridCellKey*>(target_grid_workspace.targetSpatialGridUniqueKeysStorage());
     auto* d_indices = reinterpret_cast<int*>(target_grid_workspace.targetSpatialGridIndicesStorage());
-    auto* d_sorted_offsets = reinterpret_cast<int*>(
-        target_grid_workspace.targetSpatialGridSortedOffsetsStorage());
+    auto* d_sorted_offsets = reinterpret_cast<int*>(target_grid_workspace.targetSpatialGridSortedOffsetsStorage());
     auto* d_sorted_x = reinterpret_cast<Scalar*>(target_grid_workspace.targetSpatialGridSortedXStorage());
     auto* d_sorted_y = reinterpret_cast<Scalar*>(target_grid_workspace.targetSpatialGridSortedYStorage());
     auto* d_sorted_z = reinterpret_cast<Scalar*>(target_grid_workspace.targetSpatialGridSortedZStorage());
-    auto* d_cell_starts = reinterpret_cast<int*>(
-        target_grid_workspace.targetSpatialGridCellStartsStorage());
-    auto* d_cell_counts = reinterpret_cast<int*>(
-        target_grid_workspace.targetSpatialGridCellCountsStorage());
+    auto* d_cell_starts =
+        reinterpret_cast<plamatrix::Index*>(target_grid_workspace.targetSpatialGridCellStartsStorage());
+    auto* d_cell_counts =
+        reinterpret_cast<plamatrix::Index*>(target_grid_workspace.targetSpatialGridCellCountsStorage());
     if (!d_cell_keys || !d_indices || !d_sorted_offsets || !d_sorted_x || !d_sorted_y || !d_sorted_z ||
         !d_cell_starts || !d_cell_counts)
     {
@@ -8678,8 +8587,7 @@ bool launchTransformPointsAndComputeIcpResidualStatsWithTargetSpatialGridSnapsho
 
     IcpTargetSpatialGrid target_grid{};
     target_grid.active = true;
-    target_grid.target_points =
-        reinterpret_cast<const Scalar*>(target_grid_workspace.targetSpatialGridPoints());
+    target_grid.target_points = reinterpret_cast<const Scalar*>(target_grid_workspace.targetSpatialGridPoints());
     target_grid.target_count = target_grid_workspace.targetSpatialGridPointCount();
     if (target_grid.target_points == d_output_points)
     {
@@ -10934,11 +10842,78 @@ copySmallTargetTwoStepTerminalAlignmentAndResidualResultFromReservedWorkspacesIm
     return result;
 }
 
-} // namespace
+        } // namespace
 
 #ifdef PLAPOINT_ENABLE_TESTING
 #include "icp_gpu_testing_accessors.cuh"
 #endif
+
+namespace detail
+{
+
+template <typename Scalar>
+bool prepareIcpTargetSpatialGridColumnMajorImpl(
+    const Scalar* d_target_points,
+    int target_count,
+    Scalar max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+    if (target_count < 0)
+    {
+        throw std::invalid_argument("ICP GPU: target point count must not be negative");
+    }
+    if (target_count > 0 && !d_target_points)
+    {
+        throw std::invalid_argument("ICP GPU: target point pointer must not be null");
+    }
+
+    const auto grid = prepareTargetSpatialGrid(
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        workspace,
+        stream,
+        true);
+    if (!grid.active)
+    {
+        return false;
+    }
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    return true;
+}
+
+bool prepareIcpTargetSpatialGridColumnMajor(
+    const float* d_target_points,
+    int target_count,
+    float max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+    return prepareIcpTargetSpatialGridColumnMajorImpl(
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        workspace,
+        stream);
+}
+
+bool prepareIcpTargetSpatialGridColumnMajor(
+    const double* d_target_points,
+    int target_count,
+    double max_correspondence_distance,
+    IcpCorrespondenceStatsWorkspace& workspace,
+    cudaStream_t stream)
+{
+    return prepareIcpTargetSpatialGridColumnMajorImpl(
+        d_target_points,
+        target_count,
+        max_correspondence_distance,
+        workspace,
+        stream);
+}
+
+} // namespace detail
 
 void IcpCorrespondenceStatsWorkspace::reserve(int source_count)
 {
@@ -11141,32 +11116,29 @@ void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGrid(
         return;
     }
 
-    if (detail::targetSpatialGridCoordinateStorageNeedsReserve(
-            targetSpatialGridCapacity(),
-            _target_spatial_grid_coordinate_value_bytes,
-            target_count,
-            coordinate_value_bytes))
+    if (detail::targetSpatialGridCoordinateStorageNeedsReserve(targetSpatialGridCapacity(),
+                                                               _target_spatial_grid_coordinate_value_bytes,
+                                                               target_count,
+                                                               coordinate_value_bytes))
     {
         invalidateTargetSpatialGridCache();
         const int required_capacity = std::max(targetSpatialGridCapacity(), target_count);
-        _target_spatial_grid_keys_storage.allocate(
-            static_cast<std::size_t>(required_capacity) * sizeof(IcpGridCellKey));
-        _target_spatial_grid_unique_keys_storage.allocate(
-            static_cast<std::size_t>(required_capacity) * sizeof(IcpGridCellKey));
-        _target_spatial_grid_indices_storage.allocate(
-            static_cast<std::size_t>(required_capacity) * sizeof(int));
-        _target_spatial_grid_sorted_offsets_storage.allocate(
-            static_cast<std::size_t>(required_capacity) * sizeof(int));
-        _target_spatial_grid_sorted_x_storage.allocate(
-            static_cast<std::size_t>(required_capacity) * coordinate_value_bytes);
-        _target_spatial_grid_sorted_y_storage.allocate(
-            static_cast<std::size_t>(required_capacity) * coordinate_value_bytes);
-        _target_spatial_grid_sorted_z_storage.allocate(
-            static_cast<std::size_t>(required_capacity) * coordinate_value_bytes);
-        _target_spatial_grid_cell_starts_storage.allocate(
-            static_cast<std::size_t>(required_capacity) * sizeof(int));
-        _target_spatial_grid_cell_counts_storage.allocate(
-            static_cast<std::size_t>(required_capacity) * sizeof(int));
+        _target_spatial_grid_keys_storage.allocate(static_cast<std::size_t>(required_capacity) *
+                                                   sizeof(IcpGridCellKey));
+        _target_spatial_grid_sorted_keys_storage.allocate(static_cast<std::size_t>(required_capacity) *
+                                                          sizeof(IcpGridCellKey));
+        _target_spatial_grid_indices_storage.allocate(static_cast<std::size_t>(required_capacity) * sizeof(int));
+        _target_spatial_grid_sorted_offsets_storage.allocate(static_cast<std::size_t>(required_capacity) * sizeof(int));
+        _target_spatial_grid_sorted_x_storage.allocate(static_cast<std::size_t>(required_capacity) *
+                                                       coordinate_value_bytes);
+        _target_spatial_grid_sorted_y_storage.allocate(static_cast<std::size_t>(required_capacity) *
+                                                       coordinate_value_bytes);
+        _target_spatial_grid_sorted_z_storage.allocate(static_cast<std::size_t>(required_capacity) *
+                                                       coordinate_value_bytes);
+        _target_spatial_grid_cell_starts_storage.allocate(static_cast<std::size_t>(required_capacity) *
+                                                          sizeof(plamatrix::Index));
+        _target_spatial_grid_cell_counts_storage.allocate(static_cast<std::size_t>(required_capacity) *
+                                                          sizeof(plamatrix::Index));
         _target_spatial_grid_capacity = required_capacity;
         _target_spatial_grid_coordinate_value_bytes = coordinate_value_bytes;
     }
@@ -11190,57 +11162,47 @@ void IcpCorrespondenceStatsWorkspace::invalidateTargetSpatialGridCache()
     _target_spatial_grid_direct_lookup_evaluated = false;
 }
 
-bool IcpCorrespondenceStatsWorkspace::targetSpatialGridCacheMatches(
-    const void* target_points,
-    int target_count,
-    double cell_size) const
+bool IcpCorrespondenceStatsWorkspace::targetSpatialGridCacheMatches(const void* target_points,
+                                                                    int target_count,
+                                                                    double cell_size) const
 {
     return targetSpatialGridCacheMatchesForDouble(target_points, target_count, cell_size);
 }
 
-bool IcpCorrespondenceStatsWorkspace::targetSpatialGridCacheMatchesForFloat(
-    const void* target_points,
-    int target_count,
-    double cell_size) const
+bool IcpCorrespondenceStatsWorkspace::targetSpatialGridCacheMatchesForFloat(const void* target_points,
+                                                                            int target_count,
+                                                                            double cell_size) const
 {
     return targetSpatialGridCacheMatches(target_points, target_count, cell_size, sizeof(float));
 }
 
-bool IcpCorrespondenceStatsWorkspace::targetSpatialGridCacheMatchesForDouble(
-    const void* target_points,
-    int target_count,
-    double cell_size) const
+bool IcpCorrespondenceStatsWorkspace::targetSpatialGridCacheMatchesForDouble(const void* target_points,
+                                                                             int target_count,
+                                                                             double cell_size) const
 {
     return targetSpatialGridCacheMatches(target_points, target_count, cell_size, sizeof(double));
 }
 
-bool IcpCorrespondenceStatsWorkspace::targetSpatialGridCacheMatches(
-    const void* target_points,
-    int target_count,
-    double cell_size,
-    std::size_t coordinate_value_bytes) const
+bool IcpCorrespondenceStatsWorkspace::targetSpatialGridCacheMatches(const void* target_points,
+                                                                    int target_count,
+                                                                    double cell_size,
+                                                                    std::size_t coordinate_value_bytes) const
 {
-    return _target_spatial_grid_cache_valid &&
-        _target_spatial_grid_points == target_points &&
-        _target_spatial_grid_point_count == target_count &&
-        _target_spatial_grid_cell_size == cell_size &&
-        _target_spatial_grid_coordinate_value_bytes == coordinate_value_bytes;
+    return _target_spatial_grid_cache_valid && _target_spatial_grid_points == target_points &&
+           _target_spatial_grid_point_count == target_count && _target_spatial_grid_cell_size == cell_size &&
+           _target_spatial_grid_coordinate_value_bytes == coordinate_value_bytes;
 }
 
-bool IcpCorrespondenceStatsWorkspace::targetTileBoundsCacheMatches(
-    const void* target_points,
-    int target_count) const
+bool IcpCorrespondenceStatsWorkspace::targetTileBoundsCacheMatches(const void* target_points, int target_count) const
 {
-    return _target_tile_bounds_cache_valid &&
-        _target_tile_bounds_points == target_points &&
-        _target_tile_bounds_point_count == target_count;
+    return _target_tile_bounds_cache_valid && _target_tile_bounds_points == target_points &&
+           _target_tile_bounds_point_count == target_count;
 }
 
-void IcpCorrespondenceStatsWorkspace::markTargetSpatialGridCache(
-    const void* target_points,
-    int target_count,
-    double cell_size,
-    int cell_count)
+void IcpCorrespondenceStatsWorkspace::markTargetSpatialGridCache(const void* target_points,
+                                                                 int target_count,
+                                                                 double cell_size,
+                                                                 int cell_count)
 {
     _target_spatial_grid_cache_valid = true;
     _target_spatial_grid_points = target_points;
@@ -11287,36 +11249,22 @@ void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGridBoundsPartials(int
     }
     if (targetSpatialGridBoundsPartialCapacity() < partial_count)
     {
-        _target_spatial_grid_bounds_partials_storage.allocate(
-            static_cast<std::size_t>(partial_count) * sizeof(IcpGridCellBounds));
+        _target_spatial_grid_bounds_partials_storage.allocate(static_cast<std::size_t>(partial_count) *
+                                                              sizeof(IcpGridCellBounds));
         _target_spatial_grid_bounds_partial_capacity = partial_count;
-    }
-}
-
-void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGridCubTempStorage(std::size_t byte_count)
-{
-    if (_target_spatial_grid_cub_temp_storage.size() < byte_count)
-    {
-        _target_spatial_grid_cub_temp_storage.allocate(byte_count);
     }
 }
 
 void IcpCorrespondenceStatsWorkspace::reserveTargetSpatialGridRunCount()
 {
-    if (_target_spatial_grid_run_count_storage.size() < sizeof(int))
+    if (_target_spatial_grid_run_count_storage.size() < sizeof(plamatrix::Index))
     {
-        _target_spatial_grid_run_count_storage.allocate(sizeof(int));
+        _target_spatial_grid_run_count_storage.allocate(sizeof(plamatrix::Index));
     }
 }
 
 void IcpCorrespondenceStatsWorkspace::markTargetSpatialGridDirectLookupCache(
-    int min_x,
-    int min_y,
-    int min_z,
-    int range_x,
-    int range_y,
-    int range_z,
-    int entry_count)
+    int min_x, int min_y, int min_z, int range_x, int range_y, int range_z, int entry_count)
 {
     if (entry_count < 0 || entry_count > targetSpatialGridDirectLookupCapacity())
     {
@@ -13208,5 +13156,5 @@ void transformPointsColumnMajorAsync(
     transformPointsColumnMajorImpl(d_transform, d_points, point_count, d_output_points, stream);
 }
 
-} // namespace gpu
+    } // namespace gpu
 } // namespace plapoint

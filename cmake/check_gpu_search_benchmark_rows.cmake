@@ -13,6 +13,7 @@ if(NOT benchmark_result EQUAL 0)
 endif()
 
 set(required_rows
+    gpu_spatial_index_build_adaptive
     gpu_knn_brute_force_k8
     gpu_knn_indexed_k8
     gpu_radius_count

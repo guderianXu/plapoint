@@ -7,6 +7,7 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
+#include <plamatrix/internal/core/device.h>
 
 namespace plapoint
 {
@@ -17,7 +18,7 @@ namespace
 
 template <typename Scalar>
 OpenClKnnResult knnSearchImpl(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& input,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& input,
     int requested_k)
 {
     if (requested_k <= 0 || requested_k > detail::maximumKnn)
@@ -92,14 +93,14 @@ OpenClKnnResult knnSearchImpl(
 } // namespace
 
 OpenClKnnResult knnSearch(
-    const PointCloud<float, plamatrix::Device::CPU>& input,
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>& input,
     int k)
 {
     return knnSearchImpl(input, k);
 }
 
 OpenClKnnResult knnSearch(
-    const PointCloud<double, plamatrix::Device::CPU>& input,
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::CPU>& input,
     int k)
 {
     return knnSearchImpl(input, k);

@@ -6,6 +6,7 @@
 #include <plapoint/io/ply_io.h>
 
 #include <plamatrix/plamatrix.h>
+#include <plamatrix/internal/core/device.h>
 
 #include <atomic>
 #include <cstdint>
@@ -16,36 +17,36 @@
 namespace
 {
 
-using Cloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-using FloatMatrix = plamatrix::DenseMatrix<float, plamatrix::Device::CPU>;
+    using Cloud = plapoint::GeometryCloud<float>;
+    using FloatMatrix = plamatrix::MatrixXf;
 
-void writeStreamFixture(const std::string& path)
-{
-    FloatMatrix points(4, 3);
-    FloatMatrix normals(4, 3);
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(4, 3);
-
-    for (int i = 0; i < 4; ++i)
+    void writeStreamFixture(const std::string& path)
     {
-        points.setValue(i, 0, static_cast<float>(i + 1));
-        points.setValue(i, 1, static_cast<float>(10 + i));
-        points.setValue(i, 2, static_cast<float>(20 + i));
+        FloatMatrix points(4, 3);
+        FloatMatrix normals(4, 3);
+        plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(4, 3);
 
-        normals.setValue(i, 0, 0.0f);
-        normals.setValue(i, 1, 0.0f);
-        normals.setValue(i, 2, 1.0f);
+        for (int i = 0; i < 4; ++i)
+        {
+            points.operator()(i, 0) = static_cast<float>(i + 1);
+            points.operator()(i, 1) = static_cast<float>(10 + i);
+            points.operator()(i, 2) = static_cast<float>(20 + i);
 
-        colors.setValue(i, 0, static_cast<std::uint8_t>(10 + i));
-        colors.setValue(i, 1, static_cast<std::uint8_t>(20 + i));
-        colors.setValue(i, 2, static_cast<std::uint8_t>(30 + i));
+            normals.operator()(i, 0) = 0.0f;
+            normals.operator()(i, 1) = 0.0f;
+            normals.operator()(i, 2) = 1.0f;
+
+            colors.operator()(i, 0) = static_cast<std::uint8_t>(10 + i);
+            colors.operator()(i, 1) = static_cast<std::uint8_t>(20 + i);
+            colors.operator()(i, 2) = static_cast<std::uint8_t>(30 + i);
+        }
+
+        Cloud cloud(std::move(points));
+        cloud.setNormals(std::move(normals));
+        cloud.setColors(std::move(colors));
+
+        plapoint::io::writePly(path, cloud, plapoint::io::PlyFormat::BinaryLE);
     }
-
-    Cloud cloud(std::move(points));
-    cloud.setNormals(std::move(normals));
-    cloud.setColors(std::move(colors));
-
-    plapoint::io::writePly(path, cloud, plapoint::io::PlyFormat::BinaryLE);
-}
 
 } // namespace
 

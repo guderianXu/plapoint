@@ -9,16 +9,24 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <vector>
 
-#include <plamatrix/dense/dense_matrix.h>
-#include <plamatrix/opencl/iterative_solver.h>
-#include <plamatrix/ops/point_cloud.h>
-#include <plamatrix/sparse/iterative_solver.h>
-#include <plamatrix/sparse/sparse_ops.h>
+#include <plamatrix/dense/matrix.h>
+#include <plamatrix/internal/opencl/iterative_solver.h>
+#include <plamatrix/internal/ops/point_cloud.h>
+#include <plamatrix/sparse/conjugate_gradient.h>
+#include <plamatrix/internal/sparse/iterative_solver.h>
+#include <plamatrix/internal/sparse/sparse_ops.h>
+#include <plamatrix/internal/core/backend.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/core/execution_context.h>
+#include <plamatrix/internal/device/device_csr_matrix.h>
+#include <plamatrix/internal/device/device_vector.h>
 
 #include <plapoint/core/processing_policy.h>
 #include <plapoint/core/point_cloud.h>
+#include <plapoint/geometry_cloud.h>
 #include <plapoint/mesh/marching_cubes.h>
 #include <plapoint/mesh/poisson_system.h>
 #include <plapoint/search/kdtree.h>
@@ -37,7 +45,7 @@ struct PoissonProcessingReport
     std::string fallbackReason;
     /// Number of populated leaves assembled into the sparse Poisson system.
     std::size_t leafCount = 0;
-    plamatrix::IterativeSolverReport solver;
+    plamatrix::internal::IterativeSolverReport solver;
     /// Total number of leaves in the complete, balanced octree, including empty leaves.
     std::size_t octreeLeafCount = 0;
     double fieldMinimum = 0.0;
@@ -54,12 +62,12 @@ struct PoissonProcessingReport
 };
 
 /// Reconstruct a triangle mesh from a point cloud with normals using a Poisson-style field solve.
-template <typename Scalar>
-class PoissonReconstruction
+template <typename Scalar> class PoissonReconstruction
 {
 public:
-    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
-    using PointCloudType = PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Matrix = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>;
+    using Vector = plamatrix::Matrix<Scalar, plamatrix::Dynamic, 1>;
+    using PointCloudType = GeometryCloud<Scalar>;
 
     /// Set the CPU point cloud with normals used as reconstruction input.
     void setInputCloud(const std::shared_ptr<const PointCloudType>& cloud) { _cloud = cloud; }
@@ -172,9 +180,9 @@ public:
         for (int i = 0; i < n; ++i)
         {
             Scalar px = _cloud->points()(i, 0), py = _cloud->points()(i, 1), pz = _cloud->points()(i, 2);
-            Scalar nx = _cloud->normals()->getValue(i, 0);
-            Scalar ny = _cloud->normals()->getValue(i, 1);
-            Scalar nz = _cloud->normals()->getValue(i, 2);
+            Scalar nx = _cloud->normals()->operator()(i, 0);
+            Scalar ny = _cloud->normals()->operator()(i, 1);
+            Scalar nz = _cloud->normals()->operator()(i, 2);
             splatNormal(nodes, root, px, py, pz, nx, ny, nz);
         }
 
@@ -261,11 +269,11 @@ private:
                 {
                     throw std::invalid_argument("Poisson: points must be finite");
                 }
-                if (!std::isfinite(normals->getValue(row, c)))
+                if (!std::isfinite(normals->operator()(row, c)))
                 {
                     throw std::invalid_argument("Poisson: normals must be finite");
                 }
-                const Scalar component = normals->getValue(row, c);
+                const Scalar component = normals->operator()(row, c);
                 normal_components[c] = static_cast<long double>(component);
             }
             const long double normal_norm = std::hypot(
@@ -779,7 +787,7 @@ private:
             coo_values.push_back(Scalar(-1));
         }
 
-        Matrix rhs(n_leaves, 1);
+        Vector rhs(n_leaves);
         for (int row = 0; row < n_leaves; ++row)
         {
             const auto& node = nodes[static_cast<std::size_t>(
@@ -788,13 +796,19 @@ private:
             rhs(row, 0) = value;
         }
 
-        auto matrix = plamatrix::cooToCsr(
-            n_leaves, n_leaves, coo_rows, coo_columns, coo_values);
+        plamatrix::SparseMatrix<Scalar, plamatrix::RowMajor, plamatrix::Index> matrix(n_leaves, n_leaves);
+        std::vector<plamatrix::Triplet<Scalar, plamatrix::Index>> triplets;
+        triplets.reserve(coo_values.size());
+        for (std::size_t entry = 0; entry < coo_values.size(); ++entry)
+        {
+            triplets.emplace_back(coo_rows[entry], coo_columns[entry], coo_values[entry]);
+        }
+        matrix.setFromTriplets(triplets.begin(), triplets.end());
         PoissonSystem<Scalar> system{
             std::move(matrix), std::move(rhs), leaf_indices};
-        Matrix solution(n_leaves, 1);
-        solution.fill(Scalar(0));
-        plamatrix::IterativeSolverOptions solver_options;
+        Vector solution(n_leaves);
+        solution.setZero();
+        plamatrix::internal::SolveOptions solver_options;
         solver_options.maxIterations = _solver_iters;
         solver_options.relativeTolerance = _solver_tolerance;
         solver_options.absoluteTolerance = 0.0;
@@ -824,14 +838,14 @@ private:
         {
             try
             {
-                auto matrix_gpu = system.matrix.toGpu();
-                auto rhs_gpu = system.rhs.toGpu();
-                auto solution_gpu = solution.toGpu();
-                plamatrix::IterativeSolverWorkspace<Scalar> workspace;
-                const auto gpu_report = plamatrix::pcg(
-                    matrix_gpu, rhs_gpu, solution_gpu, workspace, solver_options);
+                auto context = plamatrix::internal::ExecutionContext::create({plamatrix::internal::Backend::Cuda, 0});
+                auto matrix_gpu = plamatrix::internal::ResidentCsrMatrix<Scalar>::copyFrom(system.matrix, context);
+                auto rhs_gpu = plamatrix::internal::ResidentVector<Scalar>::copyFrom(system.rhs, context);
+                auto solution_gpu = plamatrix::internal::ResidentVector<Scalar>::copyFrom(solution, context);
+                const auto gpu_report = plamatrix::internal::pcg(
+                    matrix_gpu, rhs_gpu, solution_gpu, solver_options, context);
                 _lastReport.solver = gpu_report;
-                solution = solution_gpu.toCpu();
+                solution = solution_gpu.toHostVector();
                 if (!gpu_report.converged)
                 {
                     const std::string reason =
@@ -883,8 +897,13 @@ private:
         {
             try
             {
-                const auto opencl_report = plamatrix::opencl::pcg(
-                    system.matrix, system.rhs, solution, solver_options);
+                auto context = plamatrix::internal::ExecutionContext::create({plamatrix::internal::Backend::OpenCl, 0});
+                auto matrix_opencl = plamatrix::internal::ResidentCsrMatrix<Scalar>::copyFrom(system.matrix, context);
+                auto rhs_opencl = plamatrix::internal::ResidentVector<Scalar>::copyFrom(system.rhs, context);
+                auto solution_opencl = plamatrix::internal::ResidentVector<Scalar>::copyFrom(solution, context);
+                const auto opencl_report = plamatrix::internal::pcg(
+                    matrix_opencl, rhs_opencl, solution_opencl, solver_options, context);
+                solution = solution_opencl.toHostVector();
                 _lastReport.solver = opencl_report;
                 if (!opencl_report.converged)
                 {
@@ -940,8 +959,22 @@ private:
                     std::numeric_limits<int>::max(),
                     2LL * solver_options.maxIterations));
             }
-            _lastReport.solver = plamatrix::pcg(
-                system.matrix, system.rhs, solution, cpu_solver_options);
+            using SparseMatrix = decltype(system.matrix);
+            plamatrix::ConjugateGradient<SparseMatrix, plamatrix::Lower | plamatrix::Upper> solver;
+            solver.setMaxIterations(cpu_solver_options.maxIterations);
+            const double rhs_norm = static_cast<double>(system.rhs.norm());
+            const double initial_residual = static_cast<double>((system.rhs - system.matrix * solution).norm());
+            const double target_residual = std::max(
+                cpu_solver_options.absoluteTolerance,
+                cpu_solver_options.relativeTolerance * initial_residual);
+            solver.setTolerance(rhs_norm > 0.0 ? static_cast<Scalar>(target_residual / rhs_norm) : Scalar(0));
+            solver.compute(system.matrix);
+            solution = solver.solveWithGuess(system.rhs, solution);
+            _lastReport.solver.converged = solver.info() == plamatrix::Success;
+            _lastReport.solver.iterations = static_cast<int>(solver.iterations());
+            _lastReport.solver.initialResidual = initial_residual;
+            _lastReport.solver.finalResidual =
+                static_cast<double>((system.rhs - system.matrix * solution).norm());
             _lastReport.solverDevice = ProcessingDevice::CPU;
             if (accelerator_solve_nonconverged && !_lastReport.solver.converged)
             {
@@ -1049,9 +1082,16 @@ private:
         const auto* normals = _cloud->normals();
         constexpr double kDegenerateArea = 1e-20;
         constexpr double kOrientationEpsilon = 1e-12;
-        search::KdTree<Scalar, plamatrix::Device::CPU> spatial_index;
-        spatial_index.setInputCloud(_cloud);
-        spatial_index.build();
+        using SearchPoint = std::conditional_t<std::is_same_v<Scalar, double>, PointXYZd, PointXYZ>;
+        auto search_cloud = std::make_shared<PointCloud<SearchPoint>>();
+        search_cloud->reserve(_cloud->size());
+        const auto& source_points = _cloud->points();
+        for (plamatrix::Index row = 0; row < source_points.rows(); ++row)
+        {
+            search_cloud->emplace_back(source_points(row, 0), source_points(row, 1), source_points(row, 2));
+        }
+        search::KdTree<SearchPoint> spatial_index;
+        spatial_index.setInputCloud(search_cloud);
         ++_lastReport.orientationIndexBuildCount;
 
         for (plamatrix::Index f = 0; f < faces.rows(); ++f)
@@ -1060,7 +1100,7 @@ private:
             bool valid_face = true;
             for (int c = 0; c < 3; ++c)
             {
-                const double raw = static_cast<double>(faces.getValue(f, c));
+                const double raw = static_cast<double>(faces.operator()(f, c));
                 const double rounded = std::round(raw);
                 if (!std::isfinite(raw) || std::abs(raw - rounded) > 1e-4)
                 {
@@ -1076,15 +1116,15 @@ private:
             }
             if (!valid_face) continue;
 
-            const double ax = static_cast<double>(vertices.getValue(idx[0], 0));
-            const double ay = static_cast<double>(vertices.getValue(idx[0], 1));
-            const double az = static_cast<double>(vertices.getValue(idx[0], 2));
-            const double bx = static_cast<double>(vertices.getValue(idx[1], 0));
-            const double by = static_cast<double>(vertices.getValue(idx[1], 1));
-            const double bz = static_cast<double>(vertices.getValue(idx[1], 2));
-            const double cx = static_cast<double>(vertices.getValue(idx[2], 0));
-            const double cy = static_cast<double>(vertices.getValue(idx[2], 1));
-            const double cz = static_cast<double>(vertices.getValue(idx[2], 2));
+            const double ax = static_cast<double>(vertices.operator()(idx[0], 0));
+            const double ay = static_cast<double>(vertices.operator()(idx[0], 1));
+            const double az = static_cast<double>(vertices.operator()(idx[0], 2));
+            const double bx = static_cast<double>(vertices.operator()(idx[1], 0));
+            const double by = static_cast<double>(vertices.operator()(idx[1], 1));
+            const double bz = static_cast<double>(vertices.operator()(idx[1], 2));
+            const double cx = static_cast<double>(vertices.operator()(idx[2], 0));
+            const double cy = static_cast<double>(vertices.operator()(idx[2], 1));
+            const double cz = static_cast<double>(vertices.operator()(idx[2], 2));
 
             const double ux = bx - ax;
             const double uy = by - ay;
@@ -1102,11 +1142,13 @@ private:
             const double center_y = (ay + by + cy) / 3.0;
             const double center_z = (az + bz + cz) / 3.0;
 
-            const auto nearest = spatial_index.nearestKSearch(
-                {static_cast<Scalar>(center_x),
-                 static_cast<Scalar>(center_y),
-                 static_cast<Scalar>(center_z)},
-                1);
+            std::vector<int> nearest;
+            std::vector<float> squared_distances;
+            spatial_index.nearestKSearch(
+                SearchPoint(static_cast<Scalar>(center_x),
+                            static_cast<Scalar>(center_y),
+                            static_cast<Scalar>(center_z)),
+                1, nearest, squared_distances);
             ++_lastReport.orientationQueryCount;
             if (nearest.empty())
             {
@@ -1114,15 +1156,15 @@ private:
             }
 
             const auto normal_row = static_cast<plamatrix::Index>(nearest.front());
-            const double nx = static_cast<double>(normals->getValue(normal_row, 0));
-            const double ny = static_cast<double>(normals->getValue(normal_row, 1));
-            const double nz = static_cast<double>(normals->getValue(normal_row, 2));
+            const double nx = static_cast<double>(normals->operator()(normal_row, 0));
+            const double ny = static_cast<double>(normals->operator()(normal_row, 1));
+            const double nz = static_cast<double>(normals->operator()(normal_row, 2));
             const double dot = face_nx * nx + face_ny * ny + face_nz * nz;
             if (dot < -kOrientationEpsilon)
             {
-                const Scalar tmp = faces.getValue(f, 1);
-                faces.setValue(f, 1, faces.getValue(f, 2));
-                faces.setValue(f, 2, tmp);
+                const Scalar tmp = faces.operator()(f, 1);
+                faces.operator()(f, 1) = faces.operator()(f, 2);
+                faces.operator()(f, 2) = tmp;
             }
         }
     }

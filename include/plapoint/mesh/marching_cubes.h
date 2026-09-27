@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -8,9 +9,8 @@
 #include <tuple>
 #include <vector>
 
-#include <plamatrix/core/types.h>
-#include <plamatrix/dense/dense_matrix.h>
-#include <plamatrix/ops/point_cloud.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/dense/matrix.h>
 
 namespace plapoint {
 namespace mesh {
@@ -319,24 +319,23 @@ Scalar interp(Scalar iso, Scalar v0, Scalar v1, Scalar p0, Scalar p1)
 } // namespace detail
 
 /// Extract triangle meshes from implicit scalar fields with Marching Cubes.
-template <typename Scalar>
-class MarchingCubes
+template <typename Scalar> class MarchingCubes
 {
 public:
-    using Matrix = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>;
-    using Vec3 = plamatrix::Vec3<Scalar>;
+    using Matrix = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>;
+    using BoundsPoint = std::array<Scalar, 3>;
     using ScalarFunction = std::function<Scalar(Scalar, Scalar, Scalar)>;
     using SampledField = std::vector<Scalar>;
 
     /// Set the axis-aligned extraction bounds.
-    void setBounds(const Vec3& min_corner, const Vec3& max_corner)
+    void setBounds(const BoundsPoint& min_corner, const BoundsPoint& max_corner)
     {
-        if (!std::isfinite(min_corner.x) || !std::isfinite(min_corner.y) || !std::isfinite(min_corner.z) ||
-            !std::isfinite(max_corner.x) || !std::isfinite(max_corner.y) || !std::isfinite(max_corner.z))
+        if (!std::isfinite(min_corner[0]) || !std::isfinite(min_corner[1]) || !std::isfinite(min_corner[2]) ||
+            !std::isfinite(max_corner[0]) || !std::isfinite(max_corner[1]) || !std::isfinite(max_corner[2]))
         {
             throw std::invalid_argument("MarchingCubes bounds must be finite");
         }
-        if (!(min_corner.x < max_corner.x && min_corner.y < max_corner.y && min_corner.z < max_corner.z))
+        if (!(min_corner[0] < max_corner[0] && min_corner[1] < max_corner[1] && min_corner[2] < max_corner[2]))
         {
             throw std::invalid_argument("MarchingCubes min bounds must be less than max bounds");
         }
@@ -374,9 +373,9 @@ public:
             throw std::invalid_argument("MarchingCubes scalar function must be set");
         }
 
-        Scalar dx = (_max.x - _min.x) / Scalar(_nx);
-        Scalar dy = (_max.y - _min.y) / Scalar(_ny);
-        Scalar dz = (_max.z - _min.z) / Scalar(_nz);
+        Scalar dx = (_max[0] - _min[0]) / Scalar(_nx);
+        Scalar dy = (_max[1] - _min[1]) / Scalar(_ny);
+        Scalar dz = (_max[2] - _min[2]) / Scalar(_nz);
 
         const std::size_t sample_count = checkedSampleCount(_nx, _ny, _nz);
         int vx_r = _nx + 1, vy_r = _ny + 1, vz_r = _nz + 1;
@@ -385,9 +384,9 @@ public:
             for (int iy = 0; iy < vy_r; ++iy)
                 for (int ix = 0; ix < vx_r; ++ix)
                 {
-                    Scalar x = _min.x + Scalar(ix) * dx;
-                    Scalar y = _min.y + Scalar(iy) * dy;
-                    Scalar z = _min.z + Scalar(iz) * dz;
+                    Scalar x = _min[0] + Scalar(ix) * dx;
+                    Scalar y = _min[1] + Scalar(iy) * dy;
+                    Scalar z = _min[2] + Scalar(iz) * dz;
                     const Scalar value = fn(x, y, z);
                     if (!std::isfinite(value))
                     {
@@ -421,9 +420,9 @@ public:
             }
         }
 
-        Scalar dx = (_max.x - _min.x) / Scalar(_nx);
-        Scalar dy = (_max.y - _min.y) / Scalar(_ny);
-        Scalar dz = (_max.z - _min.z) / Scalar(_nz);
+        Scalar dx = (_max[0] - _min[0]) / Scalar(_nx);
+        Scalar dy = (_max[1] - _min[1]) / Scalar(_ny);
+        Scalar dz = (_max[2] - _min[2]) / Scalar(_nz);
         int vx_r = _nx + 1, vy_r = _ny + 1;
 
         std::vector<Scalar> vx, vy, vz;
@@ -438,11 +437,11 @@ public:
                 for (int ix = 0; ix < _nx; ++ix)
                 {
                     Scalar vals[8];
-                    Vec3 pts[8];
+                    BoundsPoint pts[8];
                     for (int c = 0; c < 8; ++c)
                     {
                         int cx = ix + corners[c][0], cy = iy + corners[c][1], cz = iz + corners[c][2];
-                        pts[c] = {_min.x+Scalar(cx)*dx, _min.y+Scalar(cy)*dy, _min.z+Scalar(cz)*dz};
+                        pts[c] = {_min[0]+Scalar(cx)*dx, _min[1]+Scalar(cy)*dy, _min[2]+Scalar(cz)*dz};
                         vals[c] = field[static_cast<std::size_t>(cz*vy_r*vx_r + cy*vx_r + cx)];
                     }
 
@@ -453,16 +452,16 @@ public:
                     int ef = detail::edgeTable(cube_idx);
                     if (ef == 0) continue;
 
-                    Vec3 ev[12] = {};
+                    BoundsPoint ev[12] = {};
                     for (int e = 0; e < 12; ++e)
                     {
                         if (ef & (1 << e))
                         {
                             int i0 = edge_pairs[e][0], i1 = edge_pairs[e][1];
                             Scalar t = detail::interp(_iso, vals[i0], vals[i1], Scalar(0), Scalar(1));
-                            ev[e] = {pts[i0].x+t*(pts[i1].x-pts[i0].x),
-                                     pts[i0].y+t*(pts[i1].y-pts[i0].y),
-                                     pts[i0].z+t*(pts[i1].z-pts[i0].z)};
+                            ev[e] = {pts[i0][0]+t*(pts[i1][0]-pts[i0][0]),
+                                     pts[i0][1]+t*(pts[i1][1]-pts[i0][1]),
+                                     pts[i0][2]+t*(pts[i1][2]-pts[i0][2])};
                         }
                     }
 
@@ -479,13 +478,13 @@ public:
                     for (std::size_t t = 0; t + 2 < tris.size(); t += 3)
                     {
                         int e0 = tris[t], e1 = tris[t+1], e2 = tris[t+2];
-                        Vec3 p0 = ev[e0], p1 = ev[e1], p2 = ev[e2];
-                        const Scalar ux = p1.x - p0.x;
-                        const Scalar uy = p1.y - p0.y;
-                        const Scalar uz = p1.z - p0.z;
-                        const Scalar vx_edge = p2.x - p0.x;
-                        const Scalar vy_edge = p2.y - p0.y;
-                        const Scalar vz_edge = p2.z - p0.z;
+                        BoundsPoint p0 = ev[e0], p1 = ev[e1], p2 = ev[e2];
+                        const Scalar ux = p1[0] - p0[0];
+                        const Scalar uy = p1[1] - p0[1];
+                        const Scalar uz = p1[2] - p0[2];
+                        const Scalar vx_edge = p2[0] - p0[0];
+                        const Scalar vy_edge = p2[1] - p0[1];
+                        const Scalar vz_edge = p2[2] - p0[2];
                         const Scalar nx = uy * vz_edge - uz * vy_edge;
                         const Scalar ny = uz * vx_edge - ux * vz_edge;
                         const Scalar nz = ux * vy_edge - uy * vx_edge;
@@ -494,11 +493,11 @@ public:
                             std::swap(p1, p2);
                         }
 
-                        vx.push_back(p0.x); vy.push_back(p0.y); vz.push_back(p0.z);
+                        vx.push_back(p0[0]); vy.push_back(p0[1]); vz.push_back(p0[2]);
                         tri_idx.push_back(static_cast<int>(vx.size()) - 1);
-                        vx.push_back(p1.x); vy.push_back(p1.y); vz.push_back(p1.z);
+                        vx.push_back(p1[0]); vy.push_back(p1[1]); vz.push_back(p1[2]);
                         tri_idx.push_back(static_cast<int>(vx.size()) - 1);
-                        vx.push_back(p2.x); vy.push_back(p2.y); vz.push_back(p2.z);
+                        vx.push_back(p2[0]); vy.push_back(p2[1]); vz.push_back(p2[2]);
                         tri_idx.push_back(static_cast<int>(vx.size()) - 1);
                     }
                 }
@@ -548,7 +547,7 @@ private:
         return count;
     }
 
-    Vec3 _min{-1,-1,-1}, _max{1,1,1};
+    BoundsPoint _min{-1,-1,-1}, _max{1,1,1};
     int _nx = 10, _ny = 10, _nz = 10;
     Scalar _iso = 0;
 };

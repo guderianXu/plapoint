@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <plapoint/core/point_cloud.h>
+#include <plamatrix/internal/core/device.h>
 
 namespace plapoint
 {
@@ -19,7 +20,7 @@ namespace detail
 {
 
 template <typename Scalar>
-std::vector<Scalar> rowMajorPoints(const PointCloud<Scalar, plamatrix::Device::CPU>& input)
+std::vector<Scalar> rowMajorPoints(const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& input)
 {
     std::vector<Scalar> points(input.size() * 3u);
     const auto& matrix = input.points();

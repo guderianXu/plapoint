@@ -1,0 +1,134 @@
+name: gpu-runtime-validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      cuda_architectures:
+        description: CUDA architecture list for the stable GPU runner
+        required: true
+        default: "89"
+        type: string
+      refresh_baseline:
+        description: Replace the cached performance baseline without comparing this run
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  cuda-runtime-and-performance:
+    runs-on: [self-hosted, linux, x64, gpu]
+    timeout-minutes: 90
+    env:
+      CUDA_ARCHITECTURES: ${{ inputs.cuda_architectures }}
+    steps:
+      - name: Check out PlaPoint
+        uses: actions/checkout@v7
+        with:
+          path: plapoint
+      - name: Check out PlaMatrix
+        uses: actions/checkout@v7
+        with:
+          repository: guderianXu/plamatrix
+          ref: d67dc6cfe2525a7a5053a7a3d0c1eedc82948904
+          path: plamatrix
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgtest-dev ninja-build
+      - name: Identify stable runner baseline scope
+        id: baseline-scope
+        env:
+          RUNNER_DISPLAY_NAME: ${{ runner.name }}
+          SOURCE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          scope_hash=$(printf '%s|%s' "$RUNNER_DISPLAY_NAME" "$SOURCE_REF_NAME" | sha256sum | cut -d' ' -f1)
+          echo "hash=$scope_hash" >> "$GITHUB_OUTPUT"
+      - name: Restore latest runner-specific performance baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: build/performance-baseline
+          key: plapoint-gpu-${{ steps.baseline-scope.outputs.hash }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            plapoint-gpu-${{ steps.baseline-scope.outputs.hash }}-
+      - name: Build and install CUDA PlaMatrix
+        run: |
+          cmake -S plamatrix -B build/plamatrix-cuda -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCHITECTURES" \
+            -DCMAKE_INSTALL_PREFIX="$PWD/build/deps-cuda" \
+            -DPLAMATRIX_WITH_CUDA=ON \
+            -DPLAMATRIX_WITH_OPENCL=OFF \
+            -DPLAMATRIX_BUILD_TESTS=OFF \
+            -DPLAMATRIX_BUILD_BENCHMARKS=OFF
+          cmake --build build/plamatrix-cuda --target install
+      - name: Build PlaPoint with required-device tests
+        run: |
+          cmake -S plapoint -B build/plapoint-cuda -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCHITECTURES" \
+            -DCMAKE_PREFIX_PATH="$PWD/build/deps-cuda" \
+            -DPLAPOINT_WITH_CUDA=ON \
+            -DPLAPOINT_WITH_OPENCL=OFF \
+            -DPLAPOINT_BUILD_TESTS=ON \
+            -DPLAPOINT_BUILD_BENCHMARKS=OFF \
+            -DPLAPOINT_REQUIRE_CUDA_TEST_DEVICE=ON
+          cmake --build build/plapoint-cuda
+          ctest --test-dir build/plapoint-cuda --output-on-failure --no-tests=error
+      - name: Build instrumentation-free CUDA benchmarks
+        run: |
+          cmake -S plapoint -B build/plapoint-cuda-benchmark -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCHITECTURES" \
+            -DCMAKE_PREFIX_PATH="$PWD/build/deps-cuda" \
+            -DPLAPOINT_WITH_CUDA=ON \
+            -DPLAPOINT_WITH_OPENCL=OFF \
+            -DPLAPOINT_BUILD_TESTS=OFF \
+            -DPLAPOINT_BUILD_BENCHMARKS=ON
+          cmake --build build/plapoint-cuda-benchmark --target plapoint_benchmarks
+      - name: Measure current CUDA search and registration baseline
+        run: |
+          python3 plapoint/scripts/run_benchmark_baseline.py \
+            --benchmark-exe build/plapoint-cuda-benchmark/benchmarks/plapoint_benchmarks \
+            --output-dir build/performance-current \
+            --points 10000 \
+            --icp-points 4096 \
+            --icp-max-iterations 3 \
+            --iterations 7 \
+            --skip-cpu-icp \
+            --timeout-seconds 1800
+      - name: Compare with the latest stable-runner baseline
+        env:
+          REFRESH_BASELINE: ${{ inputs.refresh_baseline }}
+        run: |
+          baseline=build/performance-baseline/plapoint_benchmark_baseline.json
+          current=build/performance-current/plapoint_benchmark_baseline.json
+          if [ "$REFRESH_BASELINE" = "true" ] || [ ! -f "$baseline" ]; then
+            echo "No comparison requested or no prior baseline exists; this run seeds the cache."
+            exit 0
+          fi
+          python3 plapoint/scripts/compare_benchmark_baseline.py \
+            "$baseline" "$current" \
+            --config plapoint/scripts/benchmark_gate_config.json \
+            --json-output build/performance-current/comparison.json \
+            --markdown-output build/performance-current/comparison.md \
+            --fail-on-regression \
+            --fail-on-missing
+      - name: Promote passing measurements to the next baseline
+        run: |
+          rm -rf build/performance-baseline
+          mkdir -p build/performance-baseline
+          cp build/performance-current/plapoint_benchmark_baseline.json build/performance-baseline/
+      - name: Save runner-specific performance baseline
+        uses: actions/cache/save@v4
+        with:
+          path: build/performance-baseline
+          key: plapoint-gpu-${{ steps.baseline-scope.outputs.hash }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Upload runtime and performance artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-runtime-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/performance-current
+          if-no-files-found: warn

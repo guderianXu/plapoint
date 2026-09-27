@@ -7,13 +7,17 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
-#include <plamatrix/dense/dense_matrix.h>
-#include <plamatrix/ops/point_cloud.h>
+#include <plamatrix/dense/matrix.h>
+#include <plamatrix/internal/ops/point_cloud.h>
+#include <plamatrix/internal/core/device.h>
 
 #include <plapoint/core/point_cloud.h>
+#include <plapoint/core/point_cloud_bridge.h>
 #include <plapoint/filters/filter.h>
+#include <plapoint/filters/detail/outlier_adapter.h>
 #ifdef PLAPOINT_WITH_CUDA
 #include <plapoint/gpu/filter_indices.h>
 #endif
@@ -23,11 +27,13 @@ namespace plapoint
 {
 
 /// Statistical outlier filter based on each point's mean KNN distance.
-template <typename Scalar, plamatrix::Device Dev>
+template <typename Scalar, plamatrix::internal::Device Dev = plamatrix::internal::Device::CPU,
+          typename Enable = void>
 class StatisticalOutlierRemoval : public Filter<Scalar, Dev>
 {
 public:
-    using PointCloudType = PointCloud<Scalar, Dev>;
+    using PointCloudType = plapoint::internal::DeviceCloud<Scalar, Dev>;
+    using Vector3 = plamatrix::Matrix<Scalar, 3, 1>;
     using Filter<Scalar, Dev>::filter;
 
     /// Set the positive KNN neighborhood size. Must leave room for the self-neighbor.
@@ -52,7 +58,7 @@ public:
     }
 
     /// Set the search structure used to compute each point's neighbor distances.
-    void setSearchMethod(std::shared_ptr<search::KdTree<Scalar, Dev>> tree)
+    void setSearchMethod(std::shared_ptr<search::internal::DeviceKdTree<Scalar, Dev>> tree)
     {
         _tree = tree;
     }
@@ -69,7 +75,7 @@ public:
         {
             throw std::runtime_error("Filter: input cloud not set");
         }
-        if constexpr (Dev == plamatrix::Device::GPU)
+        if constexpr (Dev == plamatrix::internal::Device::GPU)
         {
 #ifdef PLAPOINT_WITH_CUDA
             applyGpuFilter(output, &removed_indices);
@@ -105,7 +111,7 @@ public:
 protected:
     void applyFilter(PointCloudType& output) override
     {
-        if constexpr (Dev == plamatrix::Device::GPU)
+        if constexpr (Dev == plamatrix::internal::Device::GPU)
         {
 #ifdef PLAPOINT_WITH_CUDA
             applyGpuFilter(output, nullptr);
@@ -133,7 +139,7 @@ private:
 
     void applyGpuFilter(PointCloudType& output, std::vector<int>* removed_indices)
     {
-        if constexpr (Dev != plamatrix::Device::GPU)
+        if constexpr (Dev != plamatrix::internal::Device::GPU)
         {
             throw std::logic_error("StatisticalOutlierRemoval: GPU helper used for CPU filter");
         }
@@ -249,17 +255,17 @@ private:
         const auto& cpu_points = this->_input->pointsCpu();
         std::vector<int> finite_indices;
         finite_indices.reserve(n);
-        auto make_point = [&](int idx) -> plamatrix::Vec3<Scalar> {
-            return {
-                cpu_points(idx, 0),
-                cpu_points(idx, 1),
-                cpu_points(idx, 2)
-            };
+        auto make_point = [&](int idx) -> Vector3 {
+            Vector3 point;
+            point(0) = cpu_points(idx, 0);
+            point(1) = cpu_points(idx, 1);
+            point(2) = cpu_points(idx, 2);
+            return point;
         };
         for (std::size_t i = 0; i < n; ++i)
         {
             const auto pt = make_point(static_cast<int>(i));
-            if (std::isfinite(pt.x) && std::isfinite(pt.y) && std::isfinite(pt.z))
+            if (std::isfinite(pt(0)) && std::isfinite(pt(1)) && std::isfinite(pt(2)))
             {
                 finite_indices.push_back(static_cast<int>(i));
             }
@@ -273,7 +279,7 @@ private:
         inliers.reserve(finite_indices.size());
         if (finite_indices.size() < n)
         {
-            plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> finite_points(
+            plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> finite_points(
                 static_cast<plamatrix::Index>(finite_indices.size()), 3);
             for (std::size_t i = 0; i < finite_indices.size(); ++i)
             {
@@ -282,22 +288,24 @@ private:
                 finite_points(static_cast<plamatrix::Index>(i), 1) = cpu_points(src, 1);
                 finite_points(static_cast<plamatrix::Index>(i), 2) = cpu_points(src, 2);
             }
-            auto finite_cloud = std::make_shared<PointCloud<Scalar, plamatrix::Device::CPU>>(
+            auto finite_cloud = std::make_shared<plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>>(
                 std::move(finite_points));
-            search::KdTree<Scalar, plamatrix::Device::CPU> finite_tree;
+            search::internal::DeviceKdTree<Scalar, plamatrix::internal::Device::CPU> finite_tree;
             finite_tree.setInputCloud(finite_cloud);
             finite_tree.build();
 
+            const auto& finite_cloud_points =
+                static_cast<const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>&>(
+                    *finite_cloud).points();
             const auto all_neighbors = finite_tree.batchNearestKSearch(
-                finite_cloud->points(), _mean_k + 1);
+                finite_cloud_points, _mean_k + 1);
             std::vector<long double> finite_mean_dists(finite_indices.size(), 0);
             for (std::size_t i = 0; i < finite_indices.size(); ++i)
             {
-                plamatrix::Vec3<Scalar> pt{
-                    finite_cloud->points()(static_cast<plamatrix::Index>(i), 0),
-                    finite_cloud->points()(static_cast<plamatrix::Index>(i), 1),
-                    finite_cloud->points()(static_cast<plamatrix::Index>(i), 2)
-                };
+                Vector3 pt;
+                pt(0) = finite_cloud_points(static_cast<plamatrix::Index>(i), 0);
+                pt(1) = finite_cloud_points(static_cast<plamatrix::Index>(i), 1);
+                pt(2) = finite_cloud_points(static_cast<plamatrix::Index>(i), 2);
                 const auto& neighbors = all_neighbors[i];
                 long double mean_distance = 0;
                 int count = 0;
@@ -305,11 +313,10 @@ private:
                 {
                     if (nb != static_cast<int>(i))
                     {
-                        auto pt_nb = plamatrix::Vec3<Scalar>{
-                            finite_cloud->points()(nb, 0),
-                            finite_cloud->points()(nb, 1),
-                            finite_cloud->points()(nb, 2)
-                        };
+                        Vector3 pt_nb;
+                        pt_nb(0) = finite_cloud_points(nb, 0);
+                        pt_nb(1) = finite_cloud_points(nb, 1);
+                        pt_nb(2) = finite_cloud_points(nb, 2);
                         ++count;
                         const long double distance = finiteDistance(pt, pt_nb);
                         if (!std::isfinite(distance))
@@ -344,7 +351,7 @@ private:
             const auto all_neighbors = _tree->batchNearestKSearch(cpu_points, _mean_k + 1);
             for (std::size_t i = 0; i < n; ++i)
             {
-                plamatrix::Vec3<Scalar> pt = make_point(static_cast<int>(i));
+                Vector3 pt = make_point(static_cast<int>(i));
                 const auto& neighbors = all_neighbors[i];
                 long double mean_distance = 0;
                 int count = 0;
@@ -387,12 +394,12 @@ private:
     }
 
     static long double finiteDistance(
-        const plamatrix::Vec3<Scalar>& a,
-        const plamatrix::Vec3<Scalar>& b)
+        const Vector3& a,
+        const Vector3& b)
     {
-        const long double dx = static_cast<long double>(a.x) - static_cast<long double>(b.x);
-        const long double dy = static_cast<long double>(a.y) - static_cast<long double>(b.y);
-        const long double dz = static_cast<long double>(a.z) - static_cast<long double>(b.z);
+        const long double dx = static_cast<long double>(a(0)) - static_cast<long double>(b(0));
+        const long double dy = static_cast<long double>(a(1)) - static_cast<long double>(b(1));
+        const long double dz = static_cast<long double>(a(2)) - static_cast<long double>(b(2));
         const long double distance = std::hypot(std::hypot(dx, dy), dz);
         if (distance > static_cast<long double>(std::numeric_limits<double>::max()))
         {
@@ -403,12 +410,151 @@ private:
 
     int _mean_k = 8;
     Scalar _stddev_mul = 1;
-    std::shared_ptr<search::KdTree<Scalar, Dev>> _tree;
+    std::shared_ptr<search::internal::DeviceKdTree<Scalar, Dev>> _tree;
 #ifdef PLAPOINT_WITH_CUDA
     std::shared_ptr<gpu::OutlierRemovalGpuWorkspace<Scalar>> _gpuWorkspace;
     gpu::GpuOutlierRemovalBackend _lastGpuBackend = gpu::GpuOutlierRemovalBackend::None;
     std::string _lastGpuFallbackReason;
 #endif
+};
+
+namespace detail
+{
+
+template <typename PointT, typename FilterT>
+class PointStatisticalOutlierAdapter : public PointOutlierAdapter<PointT, FilterT>
+{
+public:
+    using Base = PointOutlierAdapter<PointT, FilterT>;
+    using Scalar = std::decay_t<decltype(PointT::x)>;
+    using Base::Base;
+
+    void setMeanK(int k)
+    {
+        if (k <= 0 || k == std::numeric_limits<int>::max())
+        {
+            throw std::invalid_argument("StatisticalOutlierRemoval: mean k must be positive");
+        }
+        _mean_k = k;
+    }
+    int getMeanK() const noexcept { return _mean_k; }
+
+    void setStddevMulThresh(double multiplier)
+    {
+        if (!std::isfinite(multiplier) || multiplier < 0.0)
+        {
+            throw std::invalid_argument("StatisticalOutlierRemoval: threshold multiplier must be non-negative");
+        }
+        _stddev_multiplier = multiplier;
+    }
+    double getStddevMulThresh() const noexcept { return _stddev_multiplier; }
+
+    using SearcherPtr = typename search::Search<PointT>::Ptr;
+
+    void setSearchMethod(const SearcherPtr& searcher)
+    {
+        _searcher = searcher;
+    }
+
+    Indices computeRejectedIndices()
+    {
+        const auto cloud = this->inputCloud();
+        const auto selected = this->inputIndices();
+        const std::size_t count = selected ? selected->size() : cloud->size();
+        auto searcher = _searcher;
+        if (!searcher)
+        {
+            searcher = std::make_shared<search::KdTree<PointT>>(false);
+        }
+        if (searcher->getInputCloud() != cloud && !searcher->setInputCloud(cloud))
+        {
+            throw std::runtime_error("StatisticalOutlierRemoval: search input could not be initialized");
+        }
+
+        std::vector<double> distances(count, std::numeric_limits<double>::quiet_NaN());
+        double sum = 0.0;
+        std::size_t valid_count = 0;
+        for (std::size_t row = 0; row < count; ++row)
+        {
+            const int index = selected ? selected->at(row) : static_cast<int>(row);
+            if (index < 0 || static_cast<std::size_t>(index) >= cloud->size())
+            {
+                throw std::out_of_range("StatisticalOutlierRemoval: input index is outside the cloud");
+            }
+            const auto& point = cloud->points[static_cast<std::size_t>(index)];
+            if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z))
+            {
+                continue;
+            }
+
+            Indices neighbors;
+            std::vector<float> squared_distances;
+            searcher->nearestKSearch(point, _mean_k + 1, neighbors, squared_distances);
+            double distance_sum = 0.0;
+            std::size_t neighbor_count = 0;
+            for (std::size_t neighbor = 0; neighbor < neighbors.size(); ++neighbor)
+            {
+                if (neighbors[neighbor] == index)
+                {
+                    continue;
+                }
+                const double distance = std::sqrt(static_cast<double>(squared_distances[neighbor]));
+                if (std::isfinite(distance))
+                {
+                    distance_sum += distance;
+                    ++neighbor_count;
+                }
+            }
+            if (neighbor_count == 0)
+            {
+                continue;
+            }
+            distances[row] = distance_sum / static_cast<double>(neighbor_count);
+            sum += distances[row];
+            ++valid_count;
+        }
+
+        const double mean = valid_count == 0 ? 0.0 : sum / static_cast<double>(valid_count);
+        double squared_deviation_sum = 0.0;
+        for (const double distance : distances)
+        {
+            if (std::isfinite(distance))
+            {
+                const double difference = distance - mean;
+                squared_deviation_sum += difference * difference;
+            }
+        }
+        const double deviation = valid_count < 2
+                                     ? 0.0
+                                     : std::sqrt(squared_deviation_sum / static_cast<double>(valid_count - 1));
+        const double threshold = mean + _stddev_multiplier * deviation;
+        Indices rejected;
+        for (std::size_t row = 0; row < count; ++row)
+        {
+            if (!std::isfinite(distances[row]) || distances[row] > threshold)
+            {
+                rejected.push_back(selected ? selected->at(row) : static_cast<int>(row));
+            }
+        }
+        return rejected;
+    }
+
+private:
+    int _mean_k = 2;
+    double _stddev_multiplier = 0.0;
+    SearcherPtr _searcher;
+};
+
+} // namespace detail
+
+template <typename PointT>
+class StatisticalOutlierRemoval<PointT, plamatrix::internal::Device::CPU,
+                                std::enable_if_t<!std::is_arithmetic_v<PointT>>>
+    : public detail::PointStatisticalOutlierAdapter<PointT, StatisticalOutlierRemoval<PointT>>
+{
+public:
+    using detail::PointStatisticalOutlierAdapter<
+        PointT, StatisticalOutlierRemoval<PointT>>::PointStatisticalOutlierAdapter;
 };
 
 } // namespace plapoint

@@ -2,10 +2,15 @@
 
 #ifdef PLAPOINT_WITH_CUDA
 
+#include <array>
+#include <memory>
+
 #include <cuda_runtime.h>
 
-#include <plamatrix/ops/indexing.h>
-#include <plamatrix/ops/vector.h>
+#include <plamatrix/internal/ops/indexing.h>
+#include <plamatrix/internal/device/device_matrix.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/core/execution_context.h>
 
 #include <plapoint/core/point_cloud.h>
 
@@ -41,10 +46,11 @@ public:
 private:
     friend struct marching_cubes_detail::WorkspaceAccess;
 
-    plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU> _triangleCounts;
-    plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU> _triangleOffsets;
-    plamatrix::DenseMatrix<int, plamatrix::Device::GPU> _status;
-    plamatrix::IndexingWorkspace _scanWorkspace;
+    std::unique_ptr<plamatrix::internal::ResidentMatrix<plamatrix::Index>> _triangleCounts;
+    std::unique_ptr<plamatrix::internal::ResidentMatrix<plamatrix::Index>> _triangleOffsets;
+    std::unique_ptr<plamatrix::internal::ResidentMatrix<int>> _status;
+    std::shared_ptr<plamatrix::internal::ExecutionContext> _context;
+    plamatrix::internal::IndexingWorkspace _scanWorkspace;
     plamatrix::Index _capacityCubes = 0;
     cudaStream_t _stream = nullptr;
     bool _hasStream = false;
@@ -54,13 +60,13 @@ private:
 /// nx, ny, and nz are cube counts; field must be ((nx+1)*(ny+1)*(nz+1)) x 1
 /// in x-fastest, then y, then z sample order. The call synchronizes stream before returning.
 template <typename Scalar>
-PointCloud<Scalar, plamatrix::Device::GPU> marchingCubes(
-    const plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>& field,
+plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU> marchingCubes(
+    const plamatrix::internal::ResidentMatrix<Scalar>& field,
     int nx,
     int ny,
     int nz,
-    const plamatrix::Vec3<Scalar>& min_corner,
-    const plamatrix::Vec3<Scalar>& max_corner,
+    const std::array<Scalar, 3>& min_corner,
+    const std::array<Scalar, 3>& max_corner,
     Scalar iso,
     MarchingCubesGpuWorkspace<Scalar>& workspace,
     cudaStream_t stream = nullptr);

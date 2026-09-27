@@ -4,13 +4,17 @@
 
 #include <cuda_runtime.h>
 
-#include <plamatrix/ops/indexing.h>
+#include <plamatrix/internal/ops/indexing.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/core/execution_context.h>
+#include <plamatrix/internal/dense/matrix_view.h>
+#include <plamatrix/internal/device/device_matrix.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
-#include <string>
+#include <utility>
 #include <vector>
 
 namespace plapoint {
@@ -28,127 +32,37 @@ void validateIndices(const std::vector<int>& indices, std::size_t input_size)
     }
 }
 
-DeviceBuffer<int> uploadIndices(const std::vector<int>& indices)
+plamatrix::internal::ResidentMatrix<plamatrix::Index> uploadIndices(
+    const std::vector<int>& indices, plamatrix::internal::ExecutionContext& context)
 {
-    DeviceBuffer<int> d_indices(indices.size());
-    if (!indices.empty())
+    plamatrix::Matrix<plamatrix::Index, plamatrix::Dynamic, plamatrix::Dynamic> host_indices(static_cast<plamatrix::Index>(indices.size()), 1);
+    for (std::size_t row = 0; row < indices.size(); ++row)
     {
-        const std::size_t bytes = indices.size() * sizeof(int);
-        PLAPOINT_CHECK_CUDA(cudaMemcpy(d_indices.get(), indices.data(), bytes, cudaMemcpyHostToDevice));
+        host_indices(static_cast<plamatrix::Index>(row), 0) =
+            static_cast<plamatrix::Index>(indices[row]);
     }
-    return d_indices;
+    return plamatrix::internal::ResidentMatrix<plamatrix::Index>::copyFrom(host_indices, context);
 }
 
 template <typename T>
-__global__ void gatherColumnMajorKernel(
-    const T* input,
-    const int* indices,
-    int output_count,
-    int input_rows,
-    int cols,
-    T* output)
-{
-    const int linear = static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x)
-        + static_cast<int>(threadIdx.x);
-    const int total = output_count * cols;
-    if (linear >= total)
-    {
-        return;
-    }
-
-    const int row = linear % output_count;
-    const int col = linear / output_count;
-    const int src = indices[row];
-    output[row + col * output_count] = input[src + col * input_rows];
-}
-
-template <typename T>
-__global__ void gatherColumnMajorIndexKernel(
-    const T* input,
-    const plamatrix::Index* indices,
-    int output_count,
-    int input_rows,
-    int cols,
-    T* output)
-{
-    const int linear = static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x)
-        + static_cast<int>(threadIdx.x);
-    const int total = output_count * cols;
-    if (linear >= total)
-    {
-        return;
-    }
-
-    const int row = linear % output_count;
-    const int col = linear / output_count;
-    const auto src = indices[row];
-    output[row + col * output_count] = input[src + col * input_rows];
-}
-
-template <typename T>
-void gatherColumnMajor(
-    const plamatrix::DenseMatrix<T, plamatrix::Device::GPU>& input,
-    const DeviceBuffer<int>& d_indices,
-    int output_count,
-    plamatrix::DenseMatrix<T, plamatrix::Device::GPU>& output)
-{
-    if (output_count == 0 || input.cols() == 0)
-    {
-        return;
-    }
-
-    constexpr int kBlockSize = 256;
-    if (input.cols() > std::numeric_limits<int>::max() / output_count)
-    {
-        throw std::overflow_error("gatherPointCloudByIndices: kernel item count exceeds int range");
-    }
-    const int total = output_count * static_cast<int>(input.cols());
-    const int grid_size = (total + kBlockSize - 1) / kBlockSize;
-    gatherColumnMajorKernel<T><<<grid_size, kBlockSize>>>(
-        input.data(),
-        d_indices.get(),
-        output_count,
-        static_cast<int>(input.rows()),
-        static_cast<int>(input.cols()),
-        output.data());
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
-}
-
-template <typename T>
-void gatherColumnMajor(
-    const plamatrix::DenseMatrix<T, plamatrix::Device::GPU>& input,
-    const plamatrix::DenseMatrix<plamatrix::Index, plamatrix::Device::GPU>& indices,
-    plamatrix::DenseMatrix<T, plamatrix::Device::GPU>& output,
+plamatrix::internal::ResidentMatrix<T> enqueueGatherRows(
+    const plamatrix::internal::ResidentMatrix<T>& input,
+    plamatrix::internal::ConstMatrixView<plamatrix::Index, plamatrix::internal::Device::GPU> indices,
+    plamatrix::internal::IndexingWorkspace& workspace,
     cudaStream_t stream)
 {
-    const auto output_count = static_cast<int>(indices.rows());
-    if (output_count == 0 || input.cols() == 0)
-    {
-        return;
-    }
-    if (input.cols() > std::numeric_limits<int>::max() / output_count)
-    {
-        throw std::overflow_error("compactPointCloudByKeepMask: kernel item count exceeds int range");
-    }
-
-    constexpr int kBlockSize = 256;
-    const int total = output_count * static_cast<int>(input.cols());
-    const int grid_size = (total + kBlockSize - 1) / kBlockSize;
-    gatherColumnMajorIndexKernel<T><<<grid_size, kBlockSize, 0, stream>>>(
-        input.data(),
-        indices.data(),
-        output_count,
-        static_cast<int>(input.rows()),
-        static_cast<int>(input.cols()),
-        output.data());
-    PLAPOINT_CHECK_CUDA(cudaGetLastError());
+    plamatrix::internal::ResidentMatrix<T> output(indices.rows(), input.cols(), input.context());
+    plamatrix::internal::gatherRowsAsync(input.template view<plamatrix::internal::Device::GPU>(), indices,
+                              output.template view<plamatrix::internal::Device::GPU>(), workspace, stream);
+    return output;
 }
 
 template <typename Scalar>
-PointCloud<Scalar, plamatrix::Device::GPU> gatherPointCloudByIndicesImpl(
-    const PointCloud<Scalar, plamatrix::Device::GPU>& input,
+plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU> gatherPointCloudByIndicesImpl(
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& input,
     const std::vector<int>& indices)
 {
+    input.validate();
     validateIndices(indices, input.size());
 
     if (input.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
@@ -160,140 +74,151 @@ PointCloud<Scalar, plamatrix::Device::GPU> gatherPointCloudByIndicesImpl(
         throw std::overflow_error("gatherPointCloudByIndices: output size exceeds int range");
     }
 
-    const int output_count = static_cast<int>(indices.size());
-    auto d_indices = uploadIndices(indices);
+    auto d_indices = uploadIndices(indices, *input.executionContext());
+    plamatrix::internal::IndexingWorkspace indexing_workspace;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> points(
-        static_cast<plamatrix::Index>(indices.size()), 3);
-    gatherColumnMajor(input.points(), d_indices, output_count, points);
+    auto points = enqueueGatherRows(
+        input.points(), d_indices.template view<plamatrix::internal::Device::GPU>(), indexing_workspace, nullptr);
 
-    PointCloud<Scalar, plamatrix::Device::GPU> output(std::move(points));
+    plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU> output(std::move(points), input.executionContext());
     if (input.hasNormals())
     {
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> normals(
-            static_cast<plamatrix::Index>(indices.size()), 3);
-        gatherColumnMajor(*input.normals(), d_indices, output_count, normals);
+        auto normals = enqueueGatherRows(
+            *input.normals(), d_indices.template view<plamatrix::internal::Device::GPU>(), indexing_workspace, nullptr);
         output.setNormals(std::move(normals));
     }
     if (input.hasColors())
     {
-        plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU> colors(
-            static_cast<plamatrix::Index>(indices.size()), 3);
-        gatherColumnMajor(*input.colors(), d_indices, output_count, colors);
+        auto colors = enqueueGatherRows(
+            *input.colors(), d_indices.template view<plamatrix::internal::Device::GPU>(), indexing_workspace, nullptr);
         output.setColors(std::move(colors));
     }
     if (input.hasIntensities())
     {
-        plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::GPU> intensities(
-            static_cast<plamatrix::Index>(indices.size()), 1);
-        gatherColumnMajor(*input.intensities(), d_indices, output_count, intensities);
+        auto intensities = enqueueGatherRows(
+            *input.intensities(), d_indices.template view<plamatrix::internal::Device::GPU>(), indexing_workspace, nullptr);
         output.setIntensities(std::move(intensities));
     }
     if (input.hasScalarFields())
     {
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> scalar_fields(
-            static_cast<plamatrix::Index>(indices.size()),
-            static_cast<plamatrix::Index>(input.scalarFieldNames().size()));
-        gatherColumnMajor(*input.scalarFields(), d_indices, output_count, scalar_fields);
+        auto scalar_fields = enqueueGatherRows(
+            *input.scalarFields(), d_indices.template view<plamatrix::internal::Device::GPU>(), indexing_workspace, nullptr);
         output.setScalarFields(input.scalarFieldNames(), std::move(scalar_fields));
     }
     if (input.hasPointAlignedTextureCoords())
     {
-        plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> texture_coords(
-            static_cast<plamatrix::Index>(indices.size()), 2);
-        gatherColumnMajor(*input.textureCoords(), d_indices, output_count, texture_coords);
+        auto texture_coords = enqueueGatherRows(
+            *input.textureCoords(), d_indices.template view<plamatrix::internal::Device::GPU>(), indexing_workspace, nullptr);
         output.setTextureCoords(std::move(texture_coords));
         output.setMaterialLibraryFile(input.materialLibraryFile());
         output.setTextureImageFile(input.textureImageFile());
     }
 
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(nullptr));
+    indexing_workspace.checkStatus("gatherPointCloudByIndices");
+    indexing_workspace.closeAsyncAllocation();
     return output;
 }
 
 template <typename Scalar>
-PointCloud<Scalar, plamatrix::Device::GPU> compactPointCloudByKeepMaskImpl(
-    const PointCloud<Scalar, plamatrix::Device::GPU>& input,
-    const plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>& keep_mask,
+plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU> compactPointCloudByKeepMaskImpl(
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& input,
+    const plamatrix::internal::ResidentMatrix<std::uint8_t>& keep_mask,
     cudaStream_t stream)
 {
+    input.validate();
     if (keep_mask.rows() != input.points().rows() || keep_mask.cols() != 1)
     {
         throw std::invalid_argument(
             "compactPointCloudByKeepMask: keep mask must have shape point_count x 1");
     }
+    keep_mask.validateContext(*input.executionContext());
 
-    plamatrix::IndexingWorkspace indexing_workspace;
-    auto compacted = plamatrix::compactRows(
-        input.points(), keep_mask, indexing_workspace, stream);
-    const auto output_count = compacted.values.rows();
-    PointCloud<Scalar, plamatrix::Device::GPU> output(std::move(compacted.values));
+    plamatrix::internal::IndexingWorkspace indexing_workspace;
+    const auto point_count = input.points().rows();
+    auto& context = *input.executionContext();
+    plamatrix::internal::ResidentMatrix<Scalar> capacity_points(point_count, 3, context);
+    plamatrix::internal::ResidentMatrix<plamatrix::Index> capacity_indices(point_count, 1, context);
+    plamatrix::internal::ResidentMatrix<plamatrix::Index> selected_count(1, 1, context);
+    plamatrix::internal::compactRowsAsync(
+        input.points().template view<plamatrix::internal::Device::GPU>(), keep_mask.template view<plamatrix::internal::Device::GPU>(),
+        capacity_points.template view<plamatrix::internal::Device::GPU>(), capacity_indices.template view<plamatrix::internal::Device::GPU>(),
+        selected_count.template view<plamatrix::internal::Device::GPU>(), indexing_workspace, stream);
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    indexing_workspace.checkStatus("compactPointCloudByKeepMask");
+    plamatrix::Index count = 0;
+    selected_count.copyToHost(&count, 1);
+    const auto selected_indices = plamatrix::internal::ConstMatrixView<plamatrix::Index, plamatrix::internal::Device::GPU>(
+        capacity_indices.data(), count, 1, 1, count == 0 ? 1 : count);
+    auto points = enqueueGatherRows(input.points(), selected_indices, indexing_workspace, stream);
+    plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU> output(std::move(points), input.executionContext());
 
     if (input.hasNormals())
     {
-        auto normals = plamatrix::gatherRows(
-            *input.normals(), compacted.sourceIndices, indexing_workspace, stream);
+        auto normals = enqueueGatherRows(
+            *input.normals(), selected_indices, indexing_workspace, stream);
         output.setNormals(std::move(normals));
     }
     if (input.hasColors())
     {
-        plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU> colors(output_count, 3);
-        gatherColumnMajor(*input.colors(), compacted.sourceIndices, colors, stream);
+        auto colors = enqueueGatherRows(
+            *input.colors(), selected_indices, indexing_workspace, stream);
         output.setColors(std::move(colors));
     }
     if (input.hasIntensities())
     {
-        plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::GPU> intensities(output_count, 1);
-        gatherColumnMajor(*input.intensities(), compacted.sourceIndices, intensities, stream);
+        auto intensities = enqueueGatherRows(
+            *input.intensities(), selected_indices, indexing_workspace, stream);
         output.setIntensities(std::move(intensities));
     }
     if (input.hasScalarFields())
     {
-        auto scalar_fields = plamatrix::gatherRows(
-            *input.scalarFields(), compacted.sourceIndices, indexing_workspace, stream);
+        auto scalar_fields = enqueueGatherRows(
+            *input.scalarFields(), selected_indices, indexing_workspace, stream);
         output.setScalarFields(input.scalarFieldNames(), std::move(scalar_fields));
     }
     if (input.hasPointAlignedTextureCoords())
     {
-        auto texture_coords = plamatrix::gatherRows(
-            *input.textureCoords(), compacted.sourceIndices, indexing_workspace, stream);
+        auto texture_coords = enqueueGatherRows(
+            *input.textureCoords(), selected_indices, indexing_workspace, stream);
         output.setTextureCoords(std::move(texture_coords));
         output.setMaterialLibraryFile(input.materialLibraryFile());
         output.setTextureImageFile(input.textureImageFile());
     }
 
-    indexing_workspace.closeAsyncAllocation();
     PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    indexing_workspace.checkStatus("compactPointCloudByKeepMask");
+    indexing_workspace.closeAsyncAllocation();
     return output;
 }
 
 } // namespace
 
-PointCloud<float, plamatrix::Device::GPU> gatherPointCloudByIndices(
-    const PointCloud<float, plamatrix::Device::GPU>& input,
+plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU> gatherPointCloudByIndices(
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>& input,
     const std::vector<int>& indices)
 {
     return gatherPointCloudByIndicesImpl(input, indices);
 }
 
-PointCloud<double, plamatrix::Device::GPU> gatherPointCloudByIndices(
-    const PointCloud<double, plamatrix::Device::GPU>& input,
+plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::GPU> gatherPointCloudByIndices(
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::GPU>& input,
     const std::vector<int>& indices)
 {
     return gatherPointCloudByIndicesImpl(input, indices);
 }
 
-PointCloud<float, plamatrix::Device::GPU> compactPointCloudByKeepMask(
-    const PointCloud<float, plamatrix::Device::GPU>& input,
-    const plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>& keep_mask,
+plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU> compactPointCloudByKeepMask(
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>& input,
+    const plamatrix::internal::ResidentMatrix<std::uint8_t>& keep_mask,
     cudaStream_t stream)
 {
     return compactPointCloudByKeepMaskImpl(input, keep_mask, stream);
 }
 
-PointCloud<double, plamatrix::Device::GPU> compactPointCloudByKeepMask(
-    const PointCloud<double, plamatrix::Device::GPU>& input,
-    const plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>& keep_mask,
+plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::GPU> compactPointCloudByKeepMask(
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::GPU>& input,
+    const plamatrix::internal::ResidentMatrix<std::uint8_t>& keep_mask,
     cudaStream_t stream)
 {
     return compactPointCloudByKeepMaskImpl(input, keep_mask, stream);

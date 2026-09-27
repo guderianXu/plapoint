@@ -174,9 +174,9 @@ Options parseOptions(int argc, char** argv)
     return options;
 }
 
-template <typename Scalar> plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeGridPoints(int count)
+template <typename Scalar> plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> makeGridPoints(int count)
 {
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(count, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> points(count, 3);
     for (int i = 0; i < count; ++i)
     {
         const int x = i % 257;
@@ -190,7 +190,7 @@ template <typename Scalar> plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU
 }
 
 template <typename Scalar>
-plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>
+plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>
 makeTranslatedGridPoints(int count, Scalar tx, Scalar ty, Scalar tz)
 {
     auto points = makeGridPoints<Scalar>(count);
@@ -204,7 +204,7 @@ makeTranslatedGridPoints(int count, Scalar tx, Scalar ty, Scalar tz)
 }
 
 template <typename Scalar>
-plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>
+plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>
 makeTranslatedPerturbedGridPoints(int count, Scalar tx, Scalar ty, Scalar tz)
 {
     auto points = makeTranslatedGridPoints<Scalar>(count, tx, ty, tz);
@@ -217,9 +217,10 @@ makeTranslatedPerturbedGridPoints(int count, Scalar tx, Scalar ty, Scalar tz)
     return points;
 }
 
-template <typename Scalar> plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeBinaryGridPoints(int count)
+template <typename Scalar>
+plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> makeBinaryGridPoints(int count)
 {
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(count, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> points(count, 3);
     for (int i = 0; i < count; ++i)
     {
         const int x = i % 257;
@@ -233,9 +234,9 @@ template <typename Scalar> plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU
 }
 
 template <typename Scalar>
-plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeCompactNonCollinearGridPoints(int count)
+plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> makeCompactNonCollinearGridPoints(int count)
 {
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> points(count, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> points(count, 3);
     for (int i = 0; i < count; ++i)
     {
         if (i < 4)
@@ -259,7 +260,7 @@ plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeCompactNonCollinearGr
 }
 
 template <typename Scalar>
-plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>
+plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>
 makeTranslatedCompactNonCollinearGridPoints(int count, Scalar tx, Scalar ty, Scalar tz)
 {
     auto points = makeCompactNonCollinearGridPoints<Scalar>(count);
@@ -273,7 +274,7 @@ makeTranslatedCompactNonCollinearGridPoints(int count, Scalar tx, Scalar ty, Sca
 }
 
 template <typename Scalar>
-plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>
+plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>
 makeTranslatedPerturbedCompactNonCollinearGridPoints(int count, Scalar tx, Scalar ty, Scalar tz)
 {
     auto points = makeTranslatedCompactNonCollinearGridPoints<Scalar>(count, tx, ty, tz);
@@ -287,23 +288,24 @@ makeTranslatedPerturbedCompactNonCollinearGridPoints(int count, Scalar tx, Scala
 }
 
 template <typename Scalar>
-plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeTranslationTransform(Scalar tx, Scalar ty, Scalar tz)
+plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>
+makeTranslationTransform(Scalar tx, Scalar ty, Scalar tz)
 {
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> transform(4, 4);
-    transform.fill(Scalar(0));
-    transform.setValue(0, 0, Scalar(1));
-    transform.setValue(1, 1, Scalar(1));
-    transform.setValue(2, 2, Scalar(1));
-    transform.setValue(3, 3, Scalar(1));
-    transform.setValue(0, 3, tx);
-    transform.setValue(1, 3, ty);
-    transform.setValue(2, 3, tz);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> transform(4, 4);
+    transform.setConstant(Scalar(0));
+    transform(0, 0) = Scalar(1);
+    transform(1, 1) = Scalar(1);
+    transform(2, 2) = Scalar(1);
+    transform(3, 3) = Scalar(1);
+    transform(0, 3) = tx;
+    transform(1, 3) = ty;
+    transform(2, 3) = tz;
     return transform;
 }
 
-template <typename Scalar> plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> makeQueries(int count)
+template <typename Scalar> plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> makeQueries(int count)
 {
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> queries(count, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> queries(count, 3);
     for (int i = 0; i < count; ++i)
     {
         queries(i, 0) = static_cast<Scalar>((i * 37) % 257) * Scalar(0.01);
@@ -311,6 +313,22 @@ template <typename Scalar> plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU
         queries(i, 2) = static_cast<Scalar>((i * 11) % 241) * Scalar(0.01);
     }
     return queries;
+}
+
+template <typename Scalar>
+plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>
+translatedBenchmarkPoints(const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& points,
+                          const plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>& translation)
+{
+    auto result = points;
+    for (plamatrix::Index row = 0; row < result.rows(); ++row)
+    {
+        for (plamatrix::Index axis = 0; axis < 3; ++axis)
+        {
+            result(row, axis) += translation(axis, 3);
+        }
+    }
+    return result;
 }
 
 struct BenchmarkTimingStatistics
@@ -515,4 +533,4 @@ int runBenchmarkGpuSyncSelfTest()
 }
 #endif
 
-template <plamatrix::Device Dev> using Cloud = plapoint::PointCloud<float, Dev>;
+template <plamatrix::internal::Device Dev> using Cloud = plapoint::internal::DeviceCloud<float, Dev>;

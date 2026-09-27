@@ -1,4 +1,8 @@
 #include "icp_gpu_path_test_support.h"
+#include <plamatrix/internal/core/backend.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/core/execution_context.h>
+#include <plamatrix/internal/device/device_matrix.h>
 
 #ifdef PLAPOINT_WITH_CUDA
 
@@ -9,8 +13,8 @@ TEST(ICPGpuPathTest, AlignDoesNotPopulateGpuPointCpuCaches)
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu =
         std::make_shared<CpuCloud>(makeTranslatedPerturbedGridPoints(4096, 0.003f, -0.002f, 0.001f));
@@ -21,7 +25,7 @@ TEST(ICPGpuPathTest, AlignDoesNotPopulateGpuPointCpuCaches)
     ASSERT_EQ(source->_points_cpu_cache.get(), nullptr);
     ASSERT_EQ(target->_points_cpu_cache.get(), nullptr);
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxIterations(3);
@@ -42,8 +46,8 @@ TEST(ICPGpuPathTest, AlignReusesFiniteRadiusSpatialGridAcrossStatsCalls)
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu =
         std::make_shared<CpuCloud>(makeTranslatedBinaryGridPoints(4096, 0.03125f, -0.015625f, 0.0078125f));
@@ -51,7 +55,7 @@ TEST(ICPGpuPathTest, AlignReusesFiniteRadiusSpatialGridAcrossStatsCalls)
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.0625f);
@@ -65,18 +69,52 @@ TEST(ICPGpuPathTest, AlignReusesFiniteRadiusSpatialGridAcrossStatsCalls)
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
 }
 
-TEST(ICPGpuPathTest, CorrespondenceStatsSkipsSpatialGridReserveOnCacheHit)
+TEST(ICPGpuPathTest, PrepareGpuTargetSpatialIndexMovesBuildBeforeAlign)
 {
     if (!plapoint::gpu::hasUsableCudaDevice())
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
+
+    auto source_cpu =
+        std::make_shared<CpuCloud>(makeTranslatedBinaryGridPoints(4096, 0.03125f, -0.015625f, 0.0078125f));
+    auto target_cpu = std::make_shared<CpuCloud>(makeBinaryGridPoints(4096));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.0625f);
+    icp.setMaxIterations(1);
+
+    plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
+    EXPECT_TRUE(icp.prepareGpuTargetSpatialIndex());
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
+
+    GpuCloud output;
+    icp.align(output);
+
+    EXPECT_EQ(output.size(), source->size());
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
+}
+
+TEST(ICPGpuPathTest, CorrespondenceStatsSkipsSpatialGridReserveOnCacheHit)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
+
     auto source_points = makeTranslatedBinaryGridPoints(4096, 0.03125f, -0.015625f, 0.0078125f);
     auto target_points = makeBinaryGridPoints(4096);
 
-    auto source_gpu = source_points.toGpu();
-    auto target_gpu = target_points.toGpu();
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_points, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_points, matrix_context);
     plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
 
     plapoint::gpu::resetIcpTargetSpatialGridPrepareCountForTesting();
@@ -115,8 +153,8 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu =
         std::make_shared<CpuCloud>(makeTranslatedBinaryGridPoints(4096, 0.03125f, -0.015625f, 0.0078125f));
@@ -124,7 +162,7 @@ TEST(ICPGpuPathTest, AlignReusesGpuWorkspacesAcrossRepeatedCalls)
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.0625f);
@@ -206,8 +244,8 @@ TEST(ICPGpuPathTest, AlignReusesCallerGpuOutputStorageWhenShapeMatches)
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_points = makeNonCollinearPoints();
     auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.1f, -0.05f, 0.025f);
@@ -216,7 +254,7 @@ TEST(ICPGpuPathTest, AlignReusesCallerGpuOutputStorageWhenShapeMatches)
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(2.0f);
@@ -245,8 +283,8 @@ TEST(ICPGpuPathTest, AlignWritesTerminalGpuTransformDirectlyToReusableOutput)
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_points = makeNonCollinearPoints();
     auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.1f, -0.05f, 0.025f);
@@ -255,7 +293,7 @@ TEST(ICPGpuPathTest, AlignWritesTerminalGpuTransformDirectlyToReusableOutput)
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(2.0f);
@@ -284,8 +322,8 @@ TEST(ICPGpuPathTest, AlignWritesTerminalTransformDirectlyWhenOutputAliasesSource
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu =
         std::make_shared<CpuCloud>(makeTranslatedBinaryGridPoints(4096, 0.03125f, -0.015625f, 0.0078125f));
@@ -294,7 +332,7 @@ TEST(ICPGpuPathTest, AlignWritesTerminalTransformDirectlyWhenOutputAliasesSource
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
     const auto* source_points = static_cast<const GpuCloud&>(*source).points().data();
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.0625f);
@@ -317,8 +355,8 @@ TEST(ICPGpuPathTest, AlignSmallTargetSingleIterationSourceAliasAvoidsStaleFullCo
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto target_points = makeNonCollinearPoints();
     auto source_points = makeTranslatedNonCollinearPoints(target_points, 0.1f, -0.05f, 0.025f);
@@ -327,7 +365,7 @@ TEST(ICPGpuPathTest, AlignSmallTargetSingleIterationSourceAliasAvoidsStaleFullCo
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(2.0f);
@@ -350,7 +388,7 @@ TEST(ICPGpuPathTest, AlignSmallTargetSingleIterationSourceAliasAvoidsStaleFullCo
     {
         for (plamatrix::Index col = 0; col < output_points.cols(); ++col)
         {
-            EXPECT_NEAR(output_points.getValue(row, col), target_cpu->points().getValue(row, col), 1.0e-5f);
+            EXPECT_NEAR(output_points.operator()(row, col), target_cpu->points().operator()(row, col), 1.0e-5f);
         }
     }
 
@@ -363,7 +401,7 @@ TEST(ICPGpuPathTest, AlignSmallTargetSingleIterationSourceAliasAvoidsStaleFullCo
         for (int col = 0; col < 4; ++col)
         {
             const float expected = row == col ? 1.0f : 0.0f;
-            EXPECT_NEAR(second_transform.getValue(row, col), expected, 1.0e-5f);
+            EXPECT_NEAR(second_transform.operator()(row, col), expected, 1.0e-5f);
         }
     }
 }
@@ -375,8 +413,8 @@ TEST(ICPGpuPathTest, AlignUsesScratchForTerminalTransformWhenOutputAliasesTarget
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu =
         std::make_shared<CpuCloud>(makeTranslatedBinaryGridPoints(4096, 0.03125f, -0.015625f, 0.0078125f));
@@ -385,7 +423,7 @@ TEST(ICPGpuPathTest, AlignUsesScratchForTerminalTransformWhenOutputAliasesTarget
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
     const auto* target_points_ptr = static_cast<const GpuCloud&>(*target).points().data();
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxIterations(1);
@@ -407,8 +445,8 @@ TEST(ICPGpuPathTest, AlignWritesTerminalTransformDirectlyWhenOutputAliasesTarget
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu =
         std::make_shared<CpuCloud>(makeTranslatedBinaryGridPoints(4096, 0.03125f, -0.015625f, 0.0078125f));
@@ -417,7 +455,7 @@ TEST(ICPGpuPathTest, AlignWritesTerminalTransformDirectlyWhenOutputAliasesTarget
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
     const auto* target_points_ptr = static_cast<const GpuCloud&>(*target).points().data();
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.0625f);
@@ -442,8 +480,8 @@ TEST(ICPGpuPathTest, AlignWritesTerminalOrderedTransformDirectlyWhenOutputAliase
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto target_points = makeNonCollinearPoints();
     auto source_points = makeTranslatedNonCollinearPoints(target_points, 0.1f, -0.05f, 0.025f);
@@ -453,7 +491,7 @@ TEST(ICPGpuPathTest, AlignWritesTerminalOrderedTransformDirectlyWhenOutputAliase
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
     const auto* target_points_ptr = static_cast<const GpuCloud&>(*target).points().data();
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(2.0f);
@@ -478,8 +516,8 @@ TEST(ICPGpuPathTest, AlignUsesScratchForTerminalOrderedTransformWhenAttributedOu
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto target_points = makeNonCollinearPoints();
     auto source_points = makeTranslatedNonCollinearPoints(target_points, 0.1f, -0.05f, 0.025f);
@@ -488,11 +526,11 @@ TEST(ICPGpuPathTest, AlignUsesScratchForTerminalOrderedTransformWhenAttributedOu
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
     const auto* stale_target_points = static_cast<const GpuCloud&>(*target).points().data();
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> stale_normals(target->size(), 3);
+    plamatrix::internal::ResidentMatrix<float> stale_normals(target->size(), 3, target->executionContext());
     target->setNormals(std::move(stale_normals));
     target->setMaterialLibraryFile("stale.mtl");
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(2.0f);
@@ -519,8 +557,8 @@ TEST(ICPGpuPathTest, AlignWritesTerminalTransformDirectlyWhenOutputAliasesTarget
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_points_cpu = makeNonCollinearPoints();
     auto target_points = makeTranslatedNonCollinearPoints(source_points_cpu, 0.1f, -0.05f, 0.025f);
@@ -530,7 +568,7 @@ TEST(ICPGpuPathTest, AlignWritesTerminalTransformDirectlyWhenOutputAliasesTarget
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
     const auto* target_points_ptr = static_cast<const GpuCloud&>(*target).points().data();
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(2.0f);
@@ -554,22 +592,22 @@ TEST(ICPGpuPathTest, AlignReplacesAttributedGpuOutputInsteadOfKeepingStaleMetada
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
     auto target_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(2.0f);
     icp.setMaxIterations(1);
 
     GpuCloud output(source->size());
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> stale_normals(source->size(), 3);
+    plamatrix::internal::ResidentMatrix<float> stale_normals(source->size(), 3, output.executionContext());
     output.setNormals(std::move(stale_normals));
     output.setMaterialLibraryFile("stale.mtl");
     const auto* stale_output_points = static_cast<const GpuCloud&>(output).points().data();
@@ -589,23 +627,23 @@ TEST(ICPGpuPathTest, AlignReplacesIntensityAndScalarFieldOutputInsteadOfKeepingS
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
     auto target_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(2.0f);
     icp.setMaxIterations(1);
 
     GpuCloud output(source->size());
-    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::GPU> stale_intensities(source->size(), 1);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> stale_scalar_fields(source->size(), 1);
+    plamatrix::internal::ResidentMatrix<std::uint16_t> stale_intensities(source->size(), 1, output.executionContext());
+    plamatrix::internal::ResidentMatrix<float> stale_scalar_fields(source->size(), 1, output.executionContext());
     output.setIntensities(std::move(stale_intensities));
     output.setScalarFields({"error"}, std::move(stale_scalar_fields));
     const auto* stale_output_points = static_cast<const GpuCloud&>(output).points().data();
@@ -625,15 +663,21 @@ TEST(ICPGpuPathTest, RobustTrimmedOverlapMatchesCpuMetrics)
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
-    auto source_points = plamatrix::DenseMatrix<float, plamatrix::Device::CPU>(5, 3);
-    source_points.setValue(0, 0, 0.0f);   source_points.setValue(0, 1, 0.0f);   source_points.setValue(0, 2, 0.0f);
-    source_points.setValue(1, 0, 1.0f);   source_points.setValue(1, 1, 0.0f);   source_points.setValue(1, 2, 0.0f);
-    source_points.setValue(2, 0, 0.0f);   source_points.setValue(2, 1, 1.0f);   source_points.setValue(2, 2, 0.0f);
-    source_points.setValue(3, 0, 0.0f);   source_points.setValue(3, 1, 0.0f);   source_points.setValue(3, 2, 1.0f);
-    source_points.setValue(4, 0, 100.0f); source_points.setValue(4, 1, 100.0f); source_points.setValue(4, 2, 100.0f);
+    auto source_points = plamatrix::MatrixXf(5, 3);
+    source_points.operator()(0, 0) = 0.0f;
+    source_points.operator()(0, 1) = 0.0f;
+    source_points.operator()(0, 2) = 0.0f;
+    source_points.operator()(1, 0) = 1.0f;
+    source_points.operator()(1, 1) = 0.0f;
+    source_points.operator()(1, 2) = 0.0f;
+    source_points.operator()(2, 0) = 0.0f;
+    source_points.operator()(2, 1) = 1.0f;
+    source_points.operator()(2, 2) = 0.0f;
+    source_points.operator()(3, 0) = 0.0f;   source_points.operator()(3, 1) = 0.0f;   source_points.operator()(3, 2) = 1.0f;
+    source_points.operator()(4, 0) = 100.0f; source_points.operator()(4, 1) = 100.0f; source_points.operator()(4, 2) = 100.0f;
 
     auto target_points = makeNonCollinearPoints();
     CpuCloud source_cpu(std::move(source_points));
@@ -641,7 +685,7 @@ TEST(ICPGpuPathTest, RobustTrimmedOverlapMatchesCpuMetrics)
     auto source = std::make_shared<GpuCloud>(source_cpu.toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu.toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaximumIterations(1);
@@ -664,8 +708,8 @@ TEST(ICPGpuPathTest, SetInputTargetKeepsPersistentGpuTargetSpatialGridCacheForSa
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu =
         std::make_shared<CpuCloud>(makeTranslatedPerturbedGridPoints(4096, 0.003f, -0.002f, 0.001f));
@@ -673,7 +717,7 @@ TEST(ICPGpuPathTest, SetInputTargetKeepsPersistentGpuTargetSpatialGridCacheForSa
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -699,8 +743,8 @@ TEST(ICPGpuPathTest, AlignInvalidatesTargetSpatialGridCacheWhenCorrespondenceRad
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu =
         std::make_shared<CpuCloud>(makeTranslatedBinaryGridPoints(4096, 0.03125f, -0.015625f, 0.0078125f));
@@ -708,7 +752,7 @@ TEST(ICPGpuPathTest, AlignInvalidatesTargetSpatialGridCacheWhenCorrespondenceRad
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.0625f);
@@ -742,8 +786,8 @@ TEST(ICPGpuPathTest, AlignInvalidatesPersistentGpuTargetSpatialGridCacheAfterTar
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu =
         std::make_shared<CpuCloud>(makeTranslatedPerturbedGridPoints(4096, 0.003f, -0.002f, 0.001f));
@@ -751,7 +795,7 @@ TEST(ICPGpuPathTest, AlignInvalidatesPersistentGpuTargetSpatialGridCacheAfterTar
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -775,15 +819,15 @@ TEST(ICPGpuPathTest, AlignInvalidatesPersistentGpuTargetSpatialGridCacheAfterMut
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
     auto target_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -794,12 +838,93 @@ TEST(ICPGpuPathTest, AlignInvalidatesPersistentGpuTargetSpatialGridCacheAfterMut
     icp.align(first_output);
 
     auto& mutable_target_points = target->points();
-    mutable_target_points.setValue(0, 0, mutable_target_points.getValue(0, 0) + 0.01f);
+    auto edited_points = mutable_target_points.toHostMatrix();
+    edited_points(0, 0) += 0.01f;
+    mutable_target_points.copyFromHost(edited_points.data(), static_cast<std::size_t>(edited_points.size()));
     GpuCloud second_output;
     icp.align(second_output);
 
     EXPECT_EQ(first_output.size(), source->size());
     EXPECT_EQ(second_output.size(), source->size());
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 2);
+}
+
+TEST(ICPGpuPathTest, RetainedMutableTargetAliasDisablesSpatialGridReuse)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
+
+    auto source_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
+    auto target_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+    auto& retained_target_alias = target->points();
+
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.02f);
+    icp.setMaxIterations(1);
+
+    plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
+    GpuCloud first_output;
+    icp.align(first_output);
+
+    auto edited_points = retained_target_alias.toHostMatrix();
+    edited_points(0, 0) += 0.01f;
+    retained_target_alias.copyFromHost(edited_points.data(), static_cast<std::size_t>(edited_points.size()));
+    GpuCloud second_output;
+    icp.align(second_output);
+
+    EXPECT_EQ(first_output.size(), source->size());
+    EXPECT_EQ(second_output.size(), source->size());
+    EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 2);
+}
+
+TEST(ICPGpuPathTest, ScopedTargetEditRebuildsSpatialGridOnceThenRestoresReuse)
+{
+    if (!plapoint::gpu::hasUsableCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
+    }
+
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
+
+    auto source_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
+    auto target_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
+    auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
+    auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
+
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    icp.setMaxCorrespondenceDistance(0.02f);
+    icp.setMaxIterations(1);
+
+    plapoint::gpu::resetIcpTargetSpatialGridBuildCountForTesting();
+    GpuCloud first_output;
+    icp.align(first_output);
+
+    {
+        auto edit = target->editPoints();
+        auto edited_points = edit->toHostMatrix();
+        edited_points(0, 0) += 0.01f;
+        edit->copyFromHost(edited_points.data(), static_cast<std::size_t>(edited_points.size()));
+    }
+    GpuCloud second_output;
+    icp.align(second_output);
+    GpuCloud third_output;
+    icp.align(third_output);
+
+    EXPECT_EQ(first_output.size(), source->size());
+    EXPECT_EQ(second_output.size(), source->size());
+    EXPECT_EQ(third_output.size(), source->size());
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 2);
 }
 
@@ -810,14 +935,14 @@ TEST(ICPGpuPathTest, AlignDoesNotIncrementTargetPointsVersionForSameBufferNoWrit
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto cpu_cloud = std::make_shared<CpuCloud>(makeNonCollinearPoints());
     auto cloud = std::make_shared<GpuCloud>(cpu_cloud->toGpu());
     const auto initial_version = cloud->pointsVersion();
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(cloud);
     icp.setInputTarget(cloud);
     icp.setMaxCorrespondenceDistance(2.0f);
@@ -835,8 +960,8 @@ TEST(ICPGpuPathTest, SetInputTargetInvalidatesPersistentGpuTargetSpatialGridCach
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
     auto first_target_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
@@ -846,7 +971,7 @@ TEST(ICPGpuPathTest, SetInputTargetInvalidatesPersistentGpuTargetSpatialGridCach
     auto first_target = std::make_shared<GpuCloud>(first_target_cpu->toGpu());
     auto second_target = std::make_shared<GpuCloud>(second_target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(first_target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -872,8 +997,8 @@ TEST(ICPGpuPathTest, AlignReadsInitialGpuSourceBufferDirectly)
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu = std::make_shared<CpuCloud>(makeBinaryGridPoints(4096));
     auto target_cpu = std::make_shared<CpuCloud>(makeBinaryGridPoints(4096));
@@ -882,7 +1007,7 @@ TEST(ICPGpuPathTest, AlignReadsInitialGpuSourceBufferDirectly)
 
     const void* source_points = source->points().data();
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxIterations(3);
@@ -902,15 +1027,15 @@ TEST(ICPGpuPathTest, FinalTransformationDeviceIsAvailableAfterGpuAlign)
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu = std::make_shared<CpuCloud>(makeBinaryGridPoints(4096));
     auto target_cpu = std::make_shared<CpuCloud>(makeBinaryGridPoints(4096));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxIterations(3);
@@ -919,17 +1044,17 @@ TEST(ICPGpuPathTest, FinalTransformationDeviceIsAvailableAfterGpuAlign)
     icp.align(output);
 
     const auto& transform_gpu = icp.getFinalTransformationDevice();
-    auto transform_cpu = transform_gpu.toCpu();
+    auto transform_cpu = transform_gpu.toHostMatrix();
 
     ASSERT_EQ(transform_cpu.rows(), 4);
     ASSERT_EQ(transform_cpu.cols(), 4);
-    EXPECT_NEAR(transform_cpu.getValue(0, 0), 1.0f, 1.0e-5f);
-    EXPECT_NEAR(transform_cpu.getValue(1, 1), 1.0f, 1.0e-5f);
-    EXPECT_NEAR(transform_cpu.getValue(2, 2), 1.0f, 1.0e-5f);
-    EXPECT_NEAR(transform_cpu.getValue(3, 3), 1.0f, 1.0e-5f);
-    EXPECT_NEAR(transform_cpu.getValue(0, 3), 0.0f, 1.0e-5f);
-    EXPECT_NEAR(transform_cpu.getValue(1, 3), 0.0f, 1.0e-5f);
-    EXPECT_NEAR(transform_cpu.getValue(2, 3), 0.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.operator()(0, 0), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.operator()(1, 1), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.operator()(2, 2), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.operator()(3, 3), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.operator()(0, 3), 0.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.operator()(1, 3), 0.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.operator()(2, 3), 0.0f, 1.0e-5f);
 }
 
 TEST(ICPGpuPathTest, GpuAlignMaterializesCpuFinalTransformLazily)
@@ -939,15 +1064,15 @@ TEST(ICPGpuPathTest, GpuAlignMaterializesCpuFinalTransformLazily)
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
     auto target_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxIterations(3);
@@ -963,10 +1088,10 @@ TEST(ICPGpuPathTest, GpuAlignMaterializesCpuFinalTransformLazily)
     EXPECT_TRUE(icp._final_T_cpu_valid);
     ASSERT_EQ(transform_cpu.rows(), 4);
     ASSERT_EQ(transform_cpu.cols(), 4);
-    EXPECT_NEAR(transform_cpu.getValue(0, 0), 1.0f, 1.0e-5f);
-    EXPECT_NEAR(transform_cpu.getValue(1, 1), 1.0f, 1.0e-5f);
-    EXPECT_NEAR(transform_cpu.getValue(2, 2), 1.0f, 1.0e-5f);
-    EXPECT_NEAR(transform_cpu.getValue(3, 3), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.operator()(0, 0), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.operator()(1, 1), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.operator()(2, 2), 1.0f, 1.0e-5f);
+    EXPECT_NEAR(transform_cpu.operator()(3, 3), 1.0f, 1.0e-5f);
 }
 
 TEST(ICPGpuPathTest, AlignSkipsFinalStatsForNonTerminalGpuIterations)
@@ -976,27 +1101,27 @@ TEST(ICPGpuPathTest, AlignSkipsFinalStatsForNonTerminalGpuIterations)
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_points = makeNonCollinearPoints();
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> transform(4, 4);
-    transform.fill(0.0f);
-    transform.setValue(0, 0, 1.0f);
-    transform.setValue(1, 1, 1.0f);
-    transform.setValue(2, 2, 1.0f);
-    transform.setValue(3, 3, 1.0f);
-    transform.setValue(0, 3, 0.2f);
-    transform.setValue(1, 3, -0.1f);
-    transform.setValue(2, 3, 0.05f);
-    auto target_points = plamatrix::transformPoints(transform, source_points);
+    plamatrix::MatrixXf transform(4, 4);
+    transform.setConstant(0.0f);
+    transform.operator()(0, 0) = 1.0f;
+    transform.operator()(1, 1) = 1.0f;
+    transform.operator()(2, 2) = 1.0f;
+    transform.operator()(3, 3) = 1.0f;
+    transform.operator()(0, 3) = 0.2f;
+    transform.operator()(1, 3) = -0.1f;
+    transform.operator()(2, 3) = 0.05f;
+    auto target_points = transformedPoints(transform, source_points);
 
     auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points));
     auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxIterations(2);
@@ -1017,8 +1142,8 @@ TEST(ICPGpuPathTest, AlignSkipsMetricUpdateForNonTerminalGpuIterations)
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_points = makeNonCollinearPoints();
     auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.2f, -0.1f, 0.05f);
@@ -1028,7 +1153,7 @@ TEST(ICPGpuPathTest, AlignSkipsMetricUpdateForNonTerminalGpuIterations)
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(2.0f);
@@ -1049,8 +1174,8 @@ TEST(ICPGpuPathTest, AlignSkipsNonTerminalPointTransformMaterialization)
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_points = makeNonCollinearPoints();
     auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.2f, -0.1f, 0.05f);
@@ -1060,7 +1185,7 @@ TEST(ICPGpuPathTest, AlignSkipsNonTerminalPointTransformMaterialization)
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(2.0f);
@@ -1086,8 +1211,8 @@ TEST(ICPGpuPathTest, AlignFusesTransformedAlignmentStepWithAccumulatedTransformU
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_points = makeNonCollinearPoints();
     auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.2f, -0.1f, 0.05f);
@@ -1097,7 +1222,7 @@ TEST(ICPGpuPathTest, AlignFusesTransformedAlignmentStepWithAccumulatedTransformU
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(2.0f);
@@ -1124,8 +1249,8 @@ TEST(ICPGpuPathTest, AlignAutoProbesTransformedExactPointwiseAfterAllSameIndexSt
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu =
         std::make_shared<CpuCloud>(makeTranslatedBinaryGridPoints(4096, 0.03125f, -0.015625f, 0.0078125f));
@@ -1133,7 +1258,7 @@ TEST(ICPGpuPathTest, AlignAutoProbesTransformedExactPointwiseAfterAllSameIndexSt
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.0625f);
@@ -1164,8 +1289,8 @@ TEST(ICPGpuPathTest, AlignDoesNotAutoProbeTransformedExactPointwiseWhenSameIndex
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu =
         std::make_shared<CpuCloud>(makeTranslatedPerturbedGridPoints(4096, 0.003f, -0.002f, 0.001f));
@@ -1173,7 +1298,7 @@ TEST(ICPGpuPathTest, AlignDoesNotAutoProbeTransformedExactPointwiseWhenSameIndex
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.0625f);
@@ -1203,15 +1328,16 @@ TEST(ICPGpuPathTest, TransformedAlignmentStepSkipsSpatialGridSearchForExactPoint
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_points = makeBinaryGridPoints(4096);
     auto source_points = makeTranslatedBinaryGridPoints(4096, 0.5f, -0.25f, 0.125f);
     auto transform = makeTranslationTransform(-0.5f, 0.25f, -0.125f);
 
-    auto source_gpu = source_points.toGpu();
-    auto target_gpu = target_points.toGpu();
-    auto transform_gpu = transform.toGpu();
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_points, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_points, matrix_context);
+    auto transform_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(transform, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, matrix_context);
     plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
     workspace.reserveFloatAlignmentStep(static_cast<int>(source_gpu.rows()));
 
@@ -1249,13 +1375,13 @@ TEST(ICPGpuPathTest, TransformedAlignmentStepSkipsSpatialGridSearchForExactPoint
         plapoint::gpu::icpExactPointwiseTargetLoadCountForTesting(),
         static_cast<unsigned long long>(source_gpu.rows()) * 3ull);
 
-    const auto step_cpu = step_transform.toCpu();
+    const auto step_cpu = step_transform.toHostMatrix();
     for (int row = 0; row < 4; ++row)
     {
         for (int col = 0; col < 4; ++col)
         {
             const float expected = row == col ? 1.0f : 0.0f;
-            EXPECT_NEAR(step_cpu.getValue(row, col), expected, 1.0e-6f);
+            EXPECT_NEAR(step_cpu.operator()(row, col), expected, 1.0e-6f);
         }
     }
 }
@@ -1266,16 +1392,17 @@ TEST(ICPGpuPathTest, TransformedAccumulatedAlignmentStepSkipsSpatialGridPrepareF
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_points = makeBinaryGridPoints(4096);
     auto source_points = makeTranslatedBinaryGridPoints(4096, 0.5f, -0.25f, 0.125f);
     auto transform = makeTranslationTransform(-0.5f, 0.25f, -0.125f);
 
-    auto source_gpu = source_points.toGpu();
-    auto target_gpu = target_points.toGpu();
-    auto transform_gpu = transform.toGpu();
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> accumulated_transform(4, 4);
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_points, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_points, matrix_context);
+    auto transform_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(transform, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> accumulated_transform(4, 4, matrix_context);
     plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
     workspace.reserveFloatAlignmentStep(static_cast<int>(source_gpu.rows()));
 
@@ -1305,12 +1432,12 @@ TEST(ICPGpuPathTest, TransformedAccumulatedAlignmentStepSkipsSpatialGridPrepareF
     EXPECT_EQ(plapoint::gpu::icpTransformedExactPointwiseAlignmentStepCallCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTransformedIdentityAlignmentStepCountForTesting(), 1);
 
-    const auto accumulated_cpu = accumulated_transform.toCpu();
+    const auto accumulated_cpu = accumulated_transform.toHostMatrix();
     for (int row = 0; row < 4; ++row)
     {
         for (int col = 0; col < 4; ++col)
         {
-            EXPECT_NEAR(accumulated_cpu.getValue(row, col), transform.getValue(row, col), 1.0e-6f);
+            EXPECT_NEAR(accumulated_cpu.operator()(row, col), transform.operator()(row, col), 1.0e-6f);
         }
     }
 }
@@ -1321,15 +1448,16 @@ TEST(ICPGpuPathTest, TransformedExactPointwiseAlignmentStepFallsBackToSpatialGri
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_points = makeBinaryGridPoints(4096);
     auto source_points = makeTranslatedBinaryGridPoints(4096, 0.5f, -0.25f, 0.125f);
     auto transform = makeTranslationTransform(-0.25f, 0.125f, -0.0625f);
 
-    auto source_gpu = source_points.toGpu();
-    auto target_gpu = target_points.toGpu();
-    auto transform_gpu = transform.toGpu();
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_points, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_points, matrix_context);
+    auto transform_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(transform, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, matrix_context);
     plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
     workspace.reserveFloatAlignmentStep(static_cast<int>(source_gpu.rows()));
 
@@ -1366,17 +1494,18 @@ TEST(ICPGpuPathTest, TransformedAlignmentStepUsesCachedSpatialGridWithoutExactPo
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_points = makeBinaryGridPoints(4096);
     auto source_points = makeTranslatedBinaryGridPoints(4096, 0.5f, -0.25f, 0.125f);
     auto cache_build_transform = makeTranslationTransform(-0.25f, 0.125f, -0.0625f);
     auto exact_transform = makeTranslationTransform(-0.5f, 0.25f, -0.125f);
 
-    auto source_gpu = source_points.toGpu();
-    auto target_gpu = target_points.toGpu();
-    auto cache_build_transform_gpu = cache_build_transform.toGpu();
-    auto exact_transform_gpu = exact_transform.toGpu();
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_points, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_points, matrix_context);
+    auto cache_build_transform_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(cache_build_transform, matrix_context);
+    auto exact_transform_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(exact_transform, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, matrix_context);
     plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
     workspace.reserveFloatAlignmentStep(static_cast<int>(source_gpu.rows()));
 
@@ -1427,17 +1556,18 @@ TEST(ICPGpuPathTest, TransformedAlignmentStepCanProbeExactPointwiseOnCacheHitWhe
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_points = makeBinaryGridPoints(4096);
     auto source_points = makeTranslatedBinaryGridPoints(4096, 0.5f, -0.25f, 0.125f);
     auto cache_build_transform = makeTranslationTransform(-0.25f, 0.125f, -0.0625f);
     auto exact_transform = makeTranslationTransform(-0.5f, 0.25f, -0.125f);
 
-    auto source_gpu = source_points.toGpu();
-    auto target_gpu = target_points.toGpu();
-    auto cache_build_transform_gpu = cache_build_transform.toGpu();
-    auto exact_transform_gpu = exact_transform.toGpu();
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_points, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_points, matrix_context);
+    auto cache_build_transform_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(cache_build_transform, matrix_context);
+    auto exact_transform_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(exact_transform, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, matrix_context);
     plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
     workspace.reserveFloatAlignmentStep(static_cast<int>(source_gpu.rows()));
 
@@ -1490,19 +1620,20 @@ TEST(ICPGpuPathTest, TransformedExactPointwiseAccumulatedFallbackDoesNotWriteInv
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
     auto target_points = makeBinaryGridPoints(4096);
     auto source_points = makeTranslatedBinaryGridPoints(4096, 0.5f, -0.25f, 0.125f);
     auto transform = makeTranslationTransform(10.0f, -10.0f, 5.0f);
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> accumulated_sentinel(4, 4);
-    accumulated_sentinel.fill(7.0f);
+    plamatrix::MatrixXf accumulated_sentinel(4, 4);
+    accumulated_sentinel.setConstant(7.0f);
 
-    auto source_gpu = source_points.toGpu();
-    auto target_gpu = target_points.toGpu();
-    auto transform_gpu = transform.toGpu();
-    auto accumulated_transform = accumulated_sentinel.toGpu();
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    auto source_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(source_points, matrix_context);
+    auto target_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(target_points, matrix_context);
+    auto transform_gpu = plamatrix::internal::ResidentMatrix<float>::copyFrom(transform, matrix_context);
+    auto accumulated_transform = plamatrix::internal::ResidentMatrix<float>::copyFrom(accumulated_sentinel, matrix_context);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, matrix_context);
     plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
     workspace.reserveFloatAlignmentStep(static_cast<int>(source_gpu.rows()));
 
@@ -1529,14 +1660,14 @@ TEST(ICPGpuPathTest, TransformedExactPointwiseAccumulatedFallbackDoesNotWriteInv
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridPrepareCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 1);
 
-    const auto accumulated_cpu = accumulated_transform.toCpu();
+    const auto accumulated_cpu = accumulated_transform.toHostMatrix();
     for (int row = 0; row < 4; ++row)
     {
         for (int col = 0; col < 4; ++col)
         {
             EXPECT_NEAR(
-                accumulated_cpu.getValue(row, col),
-                accumulated_sentinel.getValue(row, col),
+                accumulated_cpu.operator()(row, col),
+                accumulated_sentinel.operator()(row, col),
                 1.0e-6f);
         }
     }
@@ -1549,15 +1680,15 @@ TEST(ICPGpuPathTest, AlignUsesExactPointwiseStatsForEqualInfiniteRadiusInputs)
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
     auto target_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxIterations(1);
@@ -1587,15 +1718,15 @@ TEST(ICPGpuPathTest, AlignDoesNotProbeExactPointwiseForEqualFiniteRadiusInputsBy
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
     auto target_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -1621,15 +1752,15 @@ TEST(ICPGpuPathTest, AlignCanProbeExactPointwiseForEqualFiniteRadiusInputsWhenEn
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
     auto target_cpu = std::make_shared<CpuCloud>(makeGridPoints(4096));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.02f);
@@ -1665,8 +1796,8 @@ TEST(ICPGpuPathTest, AlignCanUseOrderedPointwiseCorrespondencesForFiniteRadiusTr
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto target_points = makeNonCollinearPoints();
     auto source_points = makeTranslatedNonCollinearPoints(target_points, 0.1f, -0.05f, 0.025f);
@@ -1675,7 +1806,7 @@ TEST(ICPGpuPathTest, AlignCanUseOrderedPointwiseCorrespondencesForFiniteRadiusTr
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(2.0f);
@@ -1701,9 +1832,9 @@ TEST(ICPGpuPathTest, AlignCanUseOrderedPointwiseCorrespondencesForFiniteRadiusTr
     EXPECT_EQ(plapoint::gpu::icpTargetSpatialGridBuildCountForTesting(), 0);
     EXPECT_EQ(plapoint::gpu::icpHostSynchronizationCountForTesting(), 1);
     const auto& final_transform = icp.getFinalTransformation();
-    EXPECT_NEAR(final_transform.getValue(0, 3), -0.1f, 1.0e-5f);
-    EXPECT_NEAR(final_transform.getValue(1, 3), 0.05f, 1.0e-5f);
-    EXPECT_NEAR(final_transform.getValue(2, 3), -0.025f, 1.0e-5f);
+    EXPECT_NEAR(final_transform.operator()(0, 3), -0.1f, 1.0e-5f);
+    EXPECT_NEAR(final_transform.operator()(1, 3), 0.05f, 1.0e-5f);
+    EXPECT_NEAR(final_transform.operator()(2, 3), -0.025f, 1.0e-5f);
     EXPECT_EQ(output.size(), source->size());
 }
 
@@ -1713,9 +1844,10 @@ TEST(ICPGpuPathTest, AlignmentStepPrefersSameBufferExactIdentityWhenOrdered)
     {
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
+    auto matrix_context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
 
-    auto points = makeNonCollinearPoints().toGpu();
-    plamatrix::DenseMatrix<float, plamatrix::Device::GPU> step_transform(4, 4);
+    auto points = plamatrix::internal::ResidentMatrix<float>::copyFrom(makeNonCollinearPoints(), matrix_context);
+    plamatrix::internal::ResidentMatrix<float> step_transform(4, 4, matrix_context);
     plapoint::gpu::IcpCorrespondenceStatsWorkspace workspace;
     workspace.reserveFloatAlignmentStep(static_cast<int>(points.rows()));
 
@@ -1740,13 +1872,13 @@ TEST(ICPGpuPathTest, AlignmentStepPrefersSameBufferExactIdentityWhenOrdered)
     EXPECT_EQ(plapoint::gpu::icpExactPointwiseIdentityStepKernelLaunchCountForTesting(), 1);
     EXPECT_EQ(plapoint::gpu::icpSameBufferIdentityAlignmentStepCountForTesting(), 1);
 
-    const auto step_cpu = step_transform.toCpu();
+    const auto step_cpu = step_transform.toHostMatrix();
     for (int row = 0; row < 4; ++row)
     {
         for (int col = 0; col < 4; ++col)
         {
             const float expected = row == col ? 1.0f : 0.0f;
-            EXPECT_NEAR(step_cpu.getValue(row, col), expected, 1.0e-6f);
+            EXPECT_NEAR(step_cpu.operator()(row, col), expected, 1.0e-6f);
         }
     }
 }
@@ -1758,20 +1890,20 @@ TEST(ICPGpuPathTest, AlignPropagatesOrderedCorrespondencesToTransformedIteration
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_points = makeNonCollinearPoints();
     auto target_points = makeTranslatedNonCollinearPoints(source_points, 0.1f, -0.05f, 0.025f);
-    target_points.setValue(1, 0, target_points.getValue(1, 0) + 0.025f);
-    target_points.setValue(2, 1, target_points.getValue(2, 1) - 0.015f);
-    target_points.setValue(3, 2, target_points.getValue(3, 2) + 0.01f);
+    target_points.operator()(1, 0) = target_points.operator()(1, 0) + 0.025f;
+    target_points.operator()(2, 1) = target_points.operator()(2, 1) - 0.015f;
+    target_points.operator()(3, 2) = target_points.operator()(3, 2) + 0.01f;
     auto source_cpu = std::make_shared<CpuCloud>(std::move(source_points));
     auto target_cpu = std::make_shared<CpuCloud>(std::move(target_points));
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(2.0f);
@@ -1803,8 +1935,8 @@ TEST(ICPGpuPathTest, AlignCanProbeTransformedExactPointwiseOnCacheHitWhenRequest
         GTEST_SKIP() << "No CUDA-capable device detected, skipping GPU ICP path test";
     }
 
-    using CpuCloud = plapoint::PointCloud<float, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<float, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>;
 
     auto source_cpu =
         std::make_shared<CpuCloud>(makeTranslatedBinaryGridPoints(4096, 0.03125f, -0.015625f, 0.0078125f));
@@ -1812,7 +1944,7 @@ TEST(ICPGpuPathTest, AlignCanProbeTransformedExactPointwiseOnCacheHitWhenRequest
     auto source = std::make_shared<GpuCloud>(source_cpu->toGpu());
     auto target = std::make_shared<GpuCloud>(target_cpu->toGpu());
 
-    plapoint::IterativeClosestPoint<float, plamatrix::Device::GPU> icp;
+    plapoint::MatrixIterativeClosestPoint<float, plamatrix::internal::Device::GPU> icp;
     icp.setInputSource(source);
     icp.setInputTarget(target);
     icp.setMaxCorrespondenceDistance(0.0625f);

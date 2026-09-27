@@ -26,6 +26,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <system_error>

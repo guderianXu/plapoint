@@ -1,13 +1,14 @@
 #include <gtest/gtest.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
+#include <plamatrix/internal/core/device.h>
 
 TEST(PointViewTest, AccessXYZ)
 {
-    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
-    cloud.points().setValue(0, 0, 1.0f);
-    cloud.points().setValue(0, 1, 2.0f);
-    cloud.points().setValue(0, 2, 3.0f);
+    plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU> cloud(3);
+    cloud.points().operator()(0, 0) = 1.0f;
+    cloud.points().operator()(0, 1) = 2.0f;
+    cloud.points().operator()(0, 2) = 3.0f;
 
     auto pt = cloud[0];
     EXPECT_FLOAT_EQ(pt.x(), 1.0f);
@@ -17,9 +18,11 @@ TEST(PointViewTest, AccessXYZ)
 
 TEST(PointViewTest, AccessColors)
 {
-    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
-    plamatrix::DenseMatrix<uint8_t, plamatrix::Device::CPU> colors(3, 3);
-    colors.setValue(0, 0, 10); colors.setValue(0, 1, 20); colors.setValue(0, 2, 30);
+    plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU> cloud(3);
+    plamatrix::Matrix<uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(3, 3);
+    colors.operator()(0, 0) = 10;
+    colors.operator()(0, 1) = 20;
+    colors.operator()(0, 2) = 30;
     cloud.setColors(std::move(colors));
 
     auto pt = cloud[0];
@@ -30,9 +33,9 @@ TEST(PointViewTest, AccessColors)
 
 TEST(PointViewTest, AccessIntensity)
 {
-    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
-    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(3, 1);
-    intensities.setValue(0, 0, 42);
+    plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU> cloud(3);
+    plamatrix::Matrix<std::uint16_t, plamatrix::Dynamic, plamatrix::Dynamic> intensities(3, 1);
+    intensities.operator()(0, 0) = 42;
     cloud.setIntensities(std::move(intensities));
 
     auto pt = cloud[0];
@@ -41,9 +44,11 @@ TEST(PointViewTest, AccessIntensity)
 
 TEST(PointViewTest, AccessNormals)
 {
-    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> normals(3, 3);
-    normals.setValue(0, 0, 0.0f); normals.setValue(0, 1, 0.0f); normals.setValue(0, 2, 1.0f);
+    plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU> cloud(3);
+    plamatrix::MatrixXf normals(3, 3);
+    normals.operator()(0, 0) = 0.0f;
+    normals.operator()(0, 1) = 0.0f;
+    normals.operator()(0, 2) = 1.0f;
     cloud.setNormals(std::move(normals));
 
     auto pt = cloud[0];
@@ -54,9 +59,10 @@ TEST(PointViewTest, AccessNormals)
 
 TEST(PointViewTest, AccessTextureCoords)
 {
-    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> tex(3, 2);
-    tex.setValue(0, 0, 0.25f); tex.setValue(0, 1, 0.75f);
+    plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU> cloud(3);
+    plamatrix::MatrixXf tex(3, 2);
+    tex.operator()(0, 0) = 0.25f;
+    tex.operator()(0, 1) = 0.75f;
     cloud.setTextureCoords(std::move(tex));
 
     auto pt = cloud[0];
@@ -66,10 +72,10 @@ TEST(PointViewTest, AccessTextureCoords)
 
 TEST(PointViewTest, AccessNamedScalarFields)
 {
-    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(2);
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> fields(2, 1);
-    fields.setValue(0, 0, 0.25f);
-    fields.setValue(1, 0, 0.75f);
+    plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU> cloud(2);
+    plamatrix::MatrixXf fields(2, 1);
+    fields.operator()(0, 0) = 0.25f;
+    fields.operator()(1, 0) = 0.75f;
     cloud.setScalarFields({"error"}, std::move(fields));
 
     EXPECT_FLOAT_EQ(cloud[1].scalar("error"), 0.75f);
@@ -78,25 +84,29 @@ TEST(PointViewTest, AccessNamedScalarFields)
 
 TEST(PointViewTest, RejectsFaceIndexedTextureCoords)
 {
-    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
+    plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU> cloud(3);
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> tex(4, 2);
-    tex.setValue(0, 0, 0.0f); tex.setValue(0, 1, 0.0f);
-    tex.setValue(1, 0, 1.0f); tex.setValue(1, 1, 0.0f);
-    tex.setValue(2, 0, 0.0f); tex.setValue(2, 1, 1.0f);
-    tex.setValue(3, 0, 1.0f); tex.setValue(3, 1, 1.0f);
+    plamatrix::MatrixXf tex(4, 2);
+    tex.operator()(0, 0) = 0.0f;
+    tex.operator()(0, 1) = 0.0f;
+    tex.operator()(1, 0) = 1.0f;
+    tex.operator()(1, 1) = 0.0f;
+    tex.operator()(2, 0) = 0.0f;
+    tex.operator()(2, 1) = 1.0f;
+    tex.operator()(3, 0) = 1.0f;
+    tex.operator()(3, 1) = 1.0f;
     cloud.setTextureCoords(std::move(tex));
 
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
-    faces.setValue(0, 0, 0);
-    faces.setValue(0, 1, 1);
-    faces.setValue(0, 2, 2);
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> faces(1, 3);
+    faces.operator()(0, 0) = 0;
+    faces.operator()(0, 1) = 1;
+    faces.operator()(0, 2) = 2;
     cloud.setFaces(std::move(faces));
 
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(1, 3);
-    face_texture_indices.setValue(0, 0, 0);
-    face_texture_indices.setValue(0, 1, 1);
-    face_texture_indices.setValue(0, 2, 3);
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> face_texture_indices(1, 3);
+    face_texture_indices.operator()(0, 0) = 0;
+    face_texture_indices.operator()(0, 1) = 1;
+    face_texture_indices.operator()(0, 2) = 3;
     cloud.setFaceTextureIndices(std::move(face_texture_indices));
 
     auto pt = cloud[2];
@@ -106,24 +116,27 @@ TEST(PointViewTest, RejectsFaceIndexedTextureCoords)
 
 TEST(PointViewTest, AccessPointTextureCoordsWhenFaceTextureIndicesAreIdentity)
 {
-    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(3);
+    plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU> cloud(3);
 
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> tex(3, 2);
-    tex.setValue(0, 0, 0.0f); tex.setValue(0, 1, 0.0f);
-    tex.setValue(1, 0, 0.25f); tex.setValue(1, 1, 0.75f);
-    tex.setValue(2, 0, 1.0f); tex.setValue(2, 1, 1.0f);
+    plamatrix::MatrixXf tex(3, 2);
+    tex.operator()(0, 0) = 0.0f;
+    tex.operator()(0, 1) = 0.0f;
+    tex.operator()(1, 0) = 0.25f;
+    tex.operator()(1, 1) = 0.75f;
+    tex.operator()(2, 0) = 1.0f;
+    tex.operator()(2, 1) = 1.0f;
     cloud.setTextureCoords(std::move(tex));
 
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(1, 3);
-    faces.setValue(0, 0, 0);
-    faces.setValue(0, 1, 1);
-    faces.setValue(0, 2, 2);
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> faces(1, 3);
+    faces.operator()(0, 0) = 0;
+    faces.operator()(0, 1) = 1;
+    faces.operator()(0, 2) = 2;
     cloud.setFaces(std::move(faces));
 
-    plamatrix::DenseMatrix<int, plamatrix::Device::CPU> face_texture_indices(1, 3);
-    face_texture_indices.setValue(0, 0, 0);
-    face_texture_indices.setValue(0, 1, 1);
-    face_texture_indices.setValue(0, 2, 2);
+    plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> face_texture_indices(1, 3);
+    face_texture_indices.operator()(0, 0) = 0;
+    face_texture_indices.operator()(0, 1) = 1;
+    face_texture_indices.operator()(0, 2) = 2;
     cloud.setFaceTextureIndices(std::move(face_texture_indices));
 
     auto pt = cloud[1];
@@ -133,13 +146,13 @@ TEST(PointViewTest, AccessPointTextureCoordsWhenFaceTextureIndicesAreIdentity)
 
 TEST(PointViewTest, RejectsOutOfRangeIndex)
 {
-    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(1);
+    plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU> cloud(1);
     EXPECT_THROW((void)cloud[1], std::out_of_range);
 }
 
 TEST(PointViewTest, RejectsMissingOptionalAttributes)
 {
-    plapoint::PointCloud<float, plamatrix::Device::CPU> cloud(1);
+    plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::CPU> cloud(1);
     auto pt = cloud[0];
 
     EXPECT_THROW((void)pt.r(), std::runtime_error);

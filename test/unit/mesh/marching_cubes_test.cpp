@@ -47,11 +47,11 @@ std::vector<QuantizedTriangle> normalizedSingleCubeGeometry(int cube_case)
         QuantizedTriangle tri{};
         for (plamatrix::Index col = 0; col < 3; ++col)
         {
-            const auto vertex = static_cast<plamatrix::Index>(faces.getValue(face, col));
+            const auto vertex = static_cast<plamatrix::Index>(faces.operator()(face, col));
             tri[static_cast<std::size_t>(col)] = {
-                static_cast<int>(std::lround(verts.getValue(vertex, 0) * 2.0f)),
-                static_cast<int>(std::lround(verts.getValue(vertex, 1) * 2.0f)),
-                static_cast<int>(std::lround(verts.getValue(vertex, 2) * 2.0f))
+                static_cast<int>(std::lround(verts.operator()(vertex, 0) * 2.0f)),
+                static_cast<int>(std::lround(verts.operator()(vertex, 1) * 2.0f)),
+                static_cast<int>(std::lround(verts.operator()(vertex, 2) * 2.0f))
             };
         }
         std::sort(tri.begin(), tri.end());
@@ -61,24 +61,21 @@ std::vector<QuantizedTriangle> normalizedSingleCubeGeometry(int cube_case)
     return triangles;
 }
 
-double triangleArea(
-    const plamatrix::DenseMatrix<float, plamatrix::Device::CPU>& verts,
-    plamatrix::Index face_row,
-    const plamatrix::DenseMatrix<float, plamatrix::Device::CPU>& faces)
+double triangleArea(const plamatrix::MatrixXf& verts, plamatrix::Index face_row, const plamatrix::MatrixXf& faces)
 {
-    const auto ia = static_cast<plamatrix::Index>(faces.getValue(face_row, 0));
-    const auto ib = static_cast<plamatrix::Index>(faces.getValue(face_row, 1));
-    const auto ic = static_cast<plamatrix::Index>(faces.getValue(face_row, 2));
+    const auto ia = static_cast<plamatrix::Index>(faces.operator()(face_row, 0));
+    const auto ib = static_cast<plamatrix::Index>(faces.operator()(face_row, 1));
+    const auto ic = static_cast<plamatrix::Index>(faces.operator()(face_row, 2));
 
-    const double ax = verts.getValue(ia, 0);
-    const double ay = verts.getValue(ia, 1);
-    const double az = verts.getValue(ia, 2);
-    const double bx = verts.getValue(ib, 0);
-    const double by = verts.getValue(ib, 1);
-    const double bz = verts.getValue(ib, 2);
-    const double cx = verts.getValue(ic, 0);
-    const double cy = verts.getValue(ic, 1);
-    const double cz = verts.getValue(ic, 2);
+    const double ax = verts.operator()(ia, 0);
+    const double ay = verts.operator()(ia, 1);
+    const double az = verts.operator()(ia, 2);
+    const double bx = verts.operator()(ib, 0);
+    const double by = verts.operator()(ib, 1);
+    const double bz = verts.operator()(ib, 2);
+    const double cx = verts.operator()(ic, 0);
+    const double cy = verts.operator()(ic, 1);
+    const double cz = verts.operator()(ic, 2);
 
     const double ux = bx - ax;
     const double uy = by - ay;
@@ -349,15 +346,15 @@ TEST(MarchingCubesTest, AllSingleCubeCasesUseValidNonDegenerateTriangles)
         ASSERT_EQ(faces.cols(), 3);
         for (plamatrix::Index r = 0; r < verts.rows(); ++r)
         {
-            EXPECT_TRUE(std::isfinite(verts.getValue(r, 0)));
-            EXPECT_TRUE(std::isfinite(verts.getValue(r, 1)));
-            EXPECT_TRUE(std::isfinite(verts.getValue(r, 2)));
+            EXPECT_TRUE(std::isfinite(verts.operator()(r, 0)));
+            EXPECT_TRUE(std::isfinite(verts.operator()(r, 1)));
+            EXPECT_TRUE(std::isfinite(verts.operator()(r, 2)));
         }
         for (plamatrix::Index f = 0; f < faces.rows(); ++f)
         {
             for (plamatrix::Index c = 0; c < faces.cols(); ++c)
             {
-                const int index = faces.getValue(f, c);
+                const int index = faces.operator()(f, c);
                 ASSERT_GE(index, 0);
                 ASSERT_LT(index, verts.rows());
             }
@@ -384,6 +381,6 @@ TEST(MarchingCubesTest, InterpolatesLowAmplitudeCrossings)
     ASSERT_GT(faces.rows(), 0);
     for (plamatrix::Index r = 0; r < verts.rows(); ++r)
     {
-        EXPECT_NEAR(verts.getValue(r, 0), 0.25, 1e-12);
+        EXPECT_NEAR(verts.operator()(r, 0), 0.25, 1e-12);
     }
 }

@@ -1,6 +1,7 @@
 # CPU sources (always compiled)
 target_sources(plapoint PRIVATE
     plapoint.cpp
+    height_grid_dispatch.cpp
 )
 
 if(PLAPOINT_WITH_OPENCL)

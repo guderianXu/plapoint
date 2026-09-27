@@ -2,6 +2,10 @@
 #include <plapoint/filters/voxel_grid.h>
 #include <plapoint/core/point_cloud.h>
 #include <plamatrix/plamatrix.h>
+#include <plamatrix/internal/core/backend.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/core/execution_context.h>
+#include <plamatrix/internal/device/device_matrix.h>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -20,39 +24,49 @@ static bool hasCudaDeviceForVoxelGrid()
 namespace
 {
 
-plamatrix::DenseMatrix<float, plamatrix::Device::CPU> makeSignedVoxelPoints()
-{
-    plamatrix::DenseMatrix<float, plamatrix::Device::CPU> points(5, 3);
-    points.setValue(0, 0, 1.2f); points.setValue(0, 1, 0.0f); points.setValue(0, 2, 0.0f);
-    points.setValue(1, 0, -0.8f); points.setValue(1, 1, 0.0f); points.setValue(1, 2, 0.0f);
-    points.setValue(2, 0, 0.2f); points.setValue(2, 1, 0.0f); points.setValue(2, 2, 0.0f);
-    points.setValue(3, 0, -1.2f); points.setValue(3, 1, 0.0f); points.setValue(3, 2, 0.0f);
-    points.setValue(4, 0, 1.8f); points.setValue(4, 1, 0.0f); points.setValue(4, 2, 0.0f);
-    return points;
-}
+    plamatrix::MatrixXf makeSignedVoxelPoints()
+    {
+        plamatrix::MatrixXf points(5, 3);
+        points.operator()(0, 0) = 1.2f;
+        points.operator()(0, 1) = 0.0f;
+        points.operator()(0, 2) = 0.0f;
+        points.operator()(1, 0) = -0.8f;
+        points.operator()(1, 1) = 0.0f;
+        points.operator()(1, 2) = 0.0f;
+        points.operator()(2, 0) = 0.2f;
+        points.operator()(2, 1) = 0.0f;
+        points.operator()(2, 2) = 0.0f;
+        points.operator()(3, 0) = -1.2f;
+        points.operator()(3, 1) = 0.0f;
+        points.operator()(3, 2) = 0.0f;
+        points.operator()(4, 0) = 1.8f;
+        points.operator()(4, 1) = 0.0f;
+        points.operator()(4, 2) = 0.0f;
+        return points;
+    }
 
 } // namespace
 
 TEST(VoxelGridTest, DownsamplesUniformGrid)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
     // 8 points forming a 2x2x2 cube
-    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(8, 3);
+    auto mat = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(8, 3);
     int idx = 0;
     for (int x = 0; x < 2; ++x)
         for (int y = 0; y < 2; ++y)
             for (int z = 0; z < 2; ++z)
             {
-                mat.setValue(idx, 0, Scalar(x));
-                mat.setValue(idx, 1, Scalar(y));
-                mat.setValue(idx, 2, Scalar(z));
+                mat.operator()(idx, 0) = Scalar(x);
+                mat.operator()(idx, 1) = Scalar(y);
+                mat.operator()(idx, 2) = Scalar(z);
                 ++idx;
             }
     auto cloud = std::make_shared<Cloud>(std::move(mat));
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::CPU> vg;
     vg.setInputCloud(cloud);
     vg.setLeafSize(Scalar(2.0), Scalar(2.0), Scalar(2.0));
 
@@ -65,15 +79,15 @@ TEST(VoxelGridTest, DownsamplesUniformGrid)
 TEST(VoxelGridTest, PreservesSinglePoint)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
-    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(1, 3);
-    mat.setValue(0, 0, 1.0f);
-    mat.setValue(0, 1, 2.0f);
-    mat.setValue(0, 2, 3.0f);
+    auto mat = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(1, 3);
+    mat.operator()(0, 0) = 1.0f;
+    mat.operator()(0, 1) = 2.0f;
+    mat.operator()(0, 2) = 3.0f;
     auto cloud = std::make_shared<Cloud>(std::move(mat));
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::CPU> vg;
     vg.setInputCloud(cloud);
     vg.setLeafSize(Scalar(0.1), Scalar(0.1), Scalar(0.1));
 
@@ -85,11 +99,11 @@ TEST(VoxelGridTest, PreservesSinglePoint)
 TEST(VoxelGridTest, EmptyInputReturnsEmptyOutput)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
     auto cloud = std::make_shared<Cloud>(0);
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::CPU> vg;
     vg.setInputCloud(cloud);
     vg.setLeafSize(Scalar(0.5), Scalar(0.5), Scalar(0.5));
 
@@ -104,15 +118,21 @@ TEST(VoxelGridTest, EmptyInputReturnsEmptyOutput)
 TEST(VoxelGridTest, AveragesRepeatedPointsIntoSingleCentroid)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
-    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(3, 3);
-    mat.setValue(0, 0, 0.0f); mat.setValue(0, 1, 0.0f); mat.setValue(0, 2, 0.0f);
-    mat.setValue(1, 0, 0.0f); mat.setValue(1, 1, 0.0f); mat.setValue(1, 2, 0.0f);
-    mat.setValue(2, 0, 0.3f); mat.setValue(2, 1, 0.6f); mat.setValue(2, 2, 0.9f);
+    auto mat = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(3, 3);
+    mat.operator()(0, 0) = 0.0f;
+    mat.operator()(0, 1) = 0.0f;
+    mat.operator()(0, 2) = 0.0f;
+    mat.operator()(1, 0) = 0.0f;
+    mat.operator()(1, 1) = 0.0f;
+    mat.operator()(1, 2) = 0.0f;
+    mat.operator()(2, 0) = 0.3f;
+    mat.operator()(2, 1) = 0.6f;
+    mat.operator()(2, 2) = 0.9f;
     auto cloud = std::make_shared<Cloud>(std::move(mat));
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::CPU> vg;
     vg.setInputCloud(cloud);
     vg.setLeafSize(1.0f, 1.0f, 1.0f);
 
@@ -120,20 +140,20 @@ TEST(VoxelGridTest, AveragesRepeatedPointsIntoSingleCentroid)
     vg.filter(output);
 
     ASSERT_EQ(output.size(), 1u);
-    EXPECT_NEAR(output.points().getValue(0, 0), 0.1f, 1e-6f);
-    EXPECT_NEAR(output.points().getValue(0, 1), 0.2f, 1e-6f);
-    EXPECT_NEAR(output.points().getValue(0, 2), 0.3f, 1e-6f);
+    EXPECT_NEAR(output.points().operator()(0, 0), 0.1f, 1e-6f);
+    EXPECT_NEAR(output.points().operator()(0, 1), 0.2f, 1e-6f);
+    EXPECT_NEAR(output.points().operator()(0, 2), 0.3f, 1e-6f);
 }
 
 TEST(VoxelGridTest, OutputsCentroidsInDeterministicVoxelKeyOrder)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
     auto mat = makeSignedVoxelPoints();
     auto cloud = std::make_shared<Cloud>(std::move(mat));
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::CPU> vg;
     vg.setInputCloud(cloud);
     vg.setLeafSize(1.0f, 1.0f, 1.0f);
 
@@ -141,21 +161,34 @@ TEST(VoxelGridTest, OutputsCentroidsInDeterministicVoxelKeyOrder)
     vg.filter(output);
 
     ASSERT_EQ(output.size(), 4u);
-    EXPECT_FLOAT_EQ(output.points().getValue(0, 0), -1.2f);
-    EXPECT_FLOAT_EQ(output.points().getValue(1, 0), -0.8f);
-    EXPECT_FLOAT_EQ(output.points().getValue(2, 0), 0.2f);
-    EXPECT_FLOAT_EQ(output.points().getValue(3, 0), 1.5f);
+    EXPECT_FLOAT_EQ(output.points().operator()(0, 0), -1.2f);
+    EXPECT_FLOAT_EQ(output.points().operator()(1, 0), -0.8f);
+    EXPECT_FLOAT_EQ(output.points().operator()(2, 0), 0.2f);
+    EXPECT_FLOAT_EQ(output.points().operator()(3, 0), 1.5f);
 }
 
 TEST(VoxelGridTest, ThrowsOnZeroLeafSize)
 {
-    plapoint::VoxelGrid<float, plamatrix::Device::CPU> vg;
+    plapoint::VoxelGrid<float, plamatrix::internal::Device::CPU> vg;
     EXPECT_THROW(vg.setLeafSize(0, 1, 1), std::invalid_argument);
+}
+
+TEST(VoxelGridTest, PclContractLeafSizeUsesPlaMatrixVectors)
+{
+    plapoint::VoxelGrid<float, plamatrix::internal::Device::CPU> vg;
+    vg.setLeafSize(plamatrix::Vector4f(0.25f, 0.5f, 1.0f, 1.0f));
+
+    const plamatrix::Vector3f leaf_size = vg.getLeafSize();
+    EXPECT_FLOAT_EQ(leaf_size(0), 0.25f);
+    EXPECT_FLOAT_EQ(leaf_size(1), 0.5f);
+    EXPECT_FLOAT_EQ(leaf_size(2), 1.0f);
+    EXPECT_THROW(vg.setLeafSize(plamatrix::Vector4f(0.0f, 0.5f, 1.0f, 1.0f)),
+                 std::invalid_argument);
 }
 
 TEST(VoxelGridTest, RejectsNegativeNaNAndInfiniteLeafSizes)
 {
-    plapoint::VoxelGrid<float, plamatrix::Device::CPU> vg;
+    plapoint::VoxelGrid<float, plamatrix::internal::Device::CPU> vg;
 
     EXPECT_THROW(vg.setLeafSize(-1.0f, 1.0f, 1.0f), std::invalid_argument);
     EXPECT_THROW(vg.setLeafSize(1.0f, -1.0f, 1.0f), std::invalid_argument);
@@ -167,16 +200,18 @@ TEST(VoxelGridTest, RejectsNegativeNaNAndInfiniteLeafSizes)
 TEST(VoxelGridTest, RejectsNonFiniteInputCoordinates)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
-    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
-    mat.setValue(0, 0, 0.0f); mat.setValue(0, 1, 0.0f); mat.setValue(0, 2, 0.0f);
-    mat.setValue(1, 0, std::numeric_limits<float>::quiet_NaN());
-    mat.setValue(1, 1, 1.0f);
-    mat.setValue(1, 2, 2.0f);
+    auto mat = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(2, 3);
+    mat.operator()(0, 0) = 0.0f;
+    mat.operator()(0, 1) = 0.0f;
+    mat.operator()(0, 2) = 0.0f;
+    mat.operator()(1, 0) = std::numeric_limits<float>::quiet_NaN();
+    mat.operator()(1, 1) = 1.0f;
+    mat.operator()(1, 2) = 2.0f;
     auto cloud = std::make_shared<Cloud>(std::move(mat));
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::CPU> vg;
     vg.setInputCloud(cloud);
     vg.setLeafSize(1.0f, 1.0f, 1.0f);
 
@@ -187,15 +222,15 @@ TEST(VoxelGridTest, RejectsNonFiniteInputCoordinates)
 TEST(VoxelGridTest, RejectsVoxelKeysOutsideIntRange)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
-    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(1, 3);
-    mat.setValue(0, 0, 1.0e20f);
-    mat.setValue(0, 1, 0.0f);
-    mat.setValue(0, 2, 0.0f);
+    auto mat = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(1, 3);
+    mat.operator()(0, 0) = 1.0e20f;
+    mat.operator()(0, 1) = 0.0f;
+    mat.operator()(0, 2) = 0.0f;
     auto cloud = std::make_shared<Cloud>(std::move(mat));
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::CPU> vg;
     vg.setInputCloud(cloud);
     vg.setLeafSize(1.0f, 1.0f, 1.0f);
 
@@ -206,14 +241,18 @@ TEST(VoxelGridTest, RejectsVoxelKeysOutsideIntRange)
 TEST(VoxelGridTest, KeepsCentroidFiniteWhenFloatSumsWouldOverflow)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
-    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
-    mat.setValue(0, 0, 3.0e38f); mat.setValue(0, 1, 0.0f); mat.setValue(0, 2, 0.0f);
-    mat.setValue(1, 0, 3.0e38f); mat.setValue(1, 1, 0.0f); mat.setValue(1, 2, 0.0f);
+    auto mat = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(2, 3);
+    mat.operator()(0, 0) = 3.0e38f;
+    mat.operator()(0, 1) = 0.0f;
+    mat.operator()(0, 2) = 0.0f;
+    mat.operator()(1, 0) = 3.0e38f;
+    mat.operator()(1, 1) = 0.0f;
+    mat.operator()(1, 2) = 0.0f;
     auto cloud = std::make_shared<Cloud>(std::move(mat));
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::CPU> vg;
     vg.setInputCloud(cloud);
     vg.setLeafSize(1.0e38f, 1.0f, 1.0f);
 
@@ -221,21 +260,25 @@ TEST(VoxelGridTest, KeepsCentroidFiniteWhenFloatSumsWouldOverflow)
     vg.filter(output);
 
     ASSERT_EQ(output.size(), 1u);
-    EXPECT_TRUE(std::isfinite(output.points().getValue(0, 0)));
-    EXPECT_FLOAT_EQ(output.points().getValue(0, 0), 3.0e38f);
+    EXPECT_TRUE(std::isfinite(output.points().operator()(0, 0)));
+    EXPECT_FLOAT_EQ(output.points().operator()(0, 0), 3.0e38f);
 }
 
 TEST(VoxelGridTest, KeepsDoubleCentroidFiniteWhenDoubleSumsWouldOverflow)
 {
     using Scalar = double;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
-    auto mat = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
-    mat.setValue(0, 0, 1.0e308); mat.setValue(0, 1, 0.0); mat.setValue(0, 2, 0.0);
-    mat.setValue(1, 0, 1.0e308); mat.setValue(1, 1, 0.0); mat.setValue(1, 2, 0.0);
+    auto mat = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(2, 3);
+    mat.operator()(0, 0) = 1.0e308;
+    mat.operator()(0, 1) = 0.0;
+    mat.operator()(0, 2) = 0.0;
+    mat.operator()(1, 0) = 1.0e308;
+    mat.operator()(1, 1) = 0.0;
+    mat.operator()(1, 2) = 0.0;
     auto cloud = std::make_shared<Cloud>(std::move(mat));
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::CPU> vg;
     vg.setInputCloud(cloud);
     vg.setLeafSize(1.0e308, 1.0, 1.0);
 
@@ -243,38 +286,56 @@ TEST(VoxelGridTest, KeepsDoubleCentroidFiniteWhenDoubleSumsWouldOverflow)
     vg.filter(output);
 
     ASSERT_EQ(output.size(), 1u);
-    EXPECT_TRUE(std::isfinite(output.points().getValue(0, 0)));
-    EXPECT_DOUBLE_EQ(output.points().getValue(0, 0), 1.0e308);
+    EXPECT_TRUE(std::isfinite(output.points().operator()(0, 0)));
+    EXPECT_DOUBLE_EQ(output.points().operator()(0, 0), 1.0e308);
 }
 
 TEST(VoxelGridTest, AveragesNormalsColorsAndIntensitiesPerVoxel)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
-    auto pts = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(3, 3);
-    pts.setValue(0, 0, 0.0f); pts.setValue(0, 1, 0.0f); pts.setValue(0, 2, 0.0f);
-    pts.setValue(1, 0, 0.2f); pts.setValue(1, 1, 0.0f); pts.setValue(1, 2, 0.0f);
-    pts.setValue(2, 0, 2.0f); pts.setValue(2, 1, 0.0f); pts.setValue(2, 2, 0.0f);
-    auto normals = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(3, 3);
-    normals.setValue(0, 0, 1.0f); normals.setValue(0, 1, 0.0f); normals.setValue(0, 2, 0.0f);
-    normals.setValue(1, 0, 0.0f); normals.setValue(1, 1, 1.0f); normals.setValue(1, 2, 0.0f);
-    normals.setValue(2, 0, 0.0f); normals.setValue(2, 1, 0.0f); normals.setValue(2, 2, 1.0f);
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(3, 3);
-    colors.setValue(0, 0, 10); colors.setValue(0, 1, 20); colors.setValue(0, 2, 30);
-    colors.setValue(1, 0, 14); colors.setValue(1, 1, 24); colors.setValue(1, 2, 34);
-    colors.setValue(2, 0, 100); colors.setValue(2, 1, 110); colors.setValue(2, 2, 120);
-    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(3, 1);
-    intensities.setValue(0, 0, 1000);
-    intensities.setValue(1, 0, 1004);
-    intensities.setValue(2, 0, 3000);
+    auto pts = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(3, 3);
+    pts.operator()(0, 0) = 0.0f;
+    pts.operator()(0, 1) = 0.0f;
+    pts.operator()(0, 2) = 0.0f;
+    pts.operator()(1, 0) = 0.2f;
+    pts.operator()(1, 1) = 0.0f;
+    pts.operator()(1, 2) = 0.0f;
+    pts.operator()(2, 0) = 2.0f;
+    pts.operator()(2, 1) = 0.0f;
+    pts.operator()(2, 2) = 0.0f;
+    auto normals = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(3, 3);
+    normals.operator()(0, 0) = 1.0f;
+    normals.operator()(0, 1) = 0.0f;
+    normals.operator()(0, 2) = 0.0f;
+    normals.operator()(1, 0) = 0.0f;
+    normals.operator()(1, 1) = 1.0f;
+    normals.operator()(1, 2) = 0.0f;
+    normals.operator()(2, 0) = 0.0f;
+    normals.operator()(2, 1) = 0.0f;
+    normals.operator()(2, 2) = 1.0f;
+    plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(3, 3);
+    colors.operator()(0, 0) = 10;
+    colors.operator()(0, 1) = 20;
+    colors.operator()(0, 2) = 30;
+    colors.operator()(1, 0) = 14;
+    colors.operator()(1, 1) = 24;
+    colors.operator()(1, 2) = 34;
+    colors.operator()(2, 0) = 100;
+    colors.operator()(2, 1) = 110;
+    colors.operator()(2, 2) = 120;
+    plamatrix::Matrix<std::uint16_t, plamatrix::Dynamic, plamatrix::Dynamic> intensities(3, 1);
+    intensities.operator()(0, 0) = 1000;
+    intensities.operator()(1, 0) = 1004;
+    intensities.operator()(2, 0) = 3000;
 
     auto cloud = std::make_shared<Cloud>(std::move(pts));
     cloud->setNormals(std::move(normals));
     cloud->setColors(std::move(colors));
     cloud->setIntensities(std::move(intensities));
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::CPU> vg;
     vg.setInputCloud(cloud);
     vg.setLeafSize(1.0f, 1.0f, 1.0f);
 
@@ -285,35 +346,44 @@ TEST(VoxelGridTest, AveragesNormalsColorsAndIntensitiesPerVoxel)
     ASSERT_TRUE(output.hasNormals());
     ASSERT_TRUE(output.hasColors());
     ASSERT_TRUE(output.hasIntensities());
-    EXPECT_FLOAT_EQ(output.normals()->getValue(0, 0), 0.5f);
-    EXPECT_FLOAT_EQ(output.normals()->getValue(0, 1), 0.5f);
-    EXPECT_EQ(output.colors()->getValue(0, 0), 12);
-    EXPECT_EQ(output.colors()->getValue(0, 1), 22);
-    EXPECT_EQ(output.colors()->getValue(0, 2), 32);
-    EXPECT_EQ(output.intensities()->getValue(0, 0), 1002);
-    EXPECT_FLOAT_EQ(output.normals()->getValue(1, 2), 1.0f);
-    EXPECT_EQ(output.colors()->getValue(1, 0), 100);
-    EXPECT_EQ(output.intensities()->getValue(1, 0), 3000);
+    EXPECT_FLOAT_EQ(output.normals()->operator()(0, 0), 0.5f);
+    EXPECT_FLOAT_EQ(output.normals()->operator()(0, 1), 0.5f);
+    EXPECT_EQ(output.colors()->operator()(0, 0), 12);
+    EXPECT_EQ(output.colors()->operator()(0, 1), 22);
+    EXPECT_EQ(output.colors()->operator()(0, 2), 32);
+    EXPECT_EQ(output.intensities()->operator()(0, 0), 1002);
+    EXPECT_FLOAT_EQ(output.normals()->operator()(1, 2), 1.0f);
+    EXPECT_EQ(output.colors()->operator()(1, 0), 100);
+    EXPECT_EQ(output.intensities()->operator()(1, 0), 3000);
 }
 
 TEST(VoxelGridTest, AveragesScalarFieldsPerVoxel)
 {
     using Scalar = float;
-    using Cloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
+    using Cloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
 
-    auto pts = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(3, 3);
-    pts.setValue(0, 0, 0.0f); pts.setValue(0, 1, 0.0f); pts.setValue(0, 2, 0.0f);
-    pts.setValue(1, 0, 0.2f); pts.setValue(1, 1, 0.0f); pts.setValue(1, 2, 0.0f);
-    pts.setValue(2, 0, 2.0f); pts.setValue(2, 1, 0.0f); pts.setValue(2, 2, 0.0f);
-    auto scalar_fields = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(3, 2);
-    scalar_fields.setValue(0, 0, 1.0f);  scalar_fields.setValue(0, 1, 10.0f);
-    scalar_fields.setValue(1, 0, 3.0f);  scalar_fields.setValue(1, 1, 14.0f);
-    scalar_fields.setValue(2, 0, 20.0f); scalar_fields.setValue(2, 1, 100.0f);
+    auto pts = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(3, 3);
+    pts.operator()(0, 0) = 0.0f;
+    pts.operator()(0, 1) = 0.0f;
+    pts.operator()(0, 2) = 0.0f;
+    pts.operator()(1, 0) = 0.2f;
+    pts.operator()(1, 1) = 0.0f;
+    pts.operator()(1, 2) = 0.0f;
+    pts.operator()(2, 0) = 2.0f;
+    pts.operator()(2, 1) = 0.0f;
+    pts.operator()(2, 2) = 0.0f;
+    auto scalar_fields = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(3, 2);
+    scalar_fields.operator()(0, 0) = 1.0f;
+    scalar_fields.operator()(0, 1) = 10.0f;
+    scalar_fields.operator()(1, 0) = 3.0f;
+    scalar_fields.operator()(1, 1) = 14.0f;
+    scalar_fields.operator()(2, 0) = 20.0f;
+    scalar_fields.operator()(2, 1) = 100.0f;
 
     auto cloud = std::make_shared<Cloud>(std::move(pts));
     cloud->setScalarFields({"error", "confidence"}, std::move(scalar_fields));
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::CPU> vg;
     vg.setInputCloud(cloud);
     vg.setLeafSize(1.0f, 1.0f, 1.0f);
 
@@ -323,10 +393,10 @@ TEST(VoxelGridTest, AveragesScalarFieldsPerVoxel)
     ASSERT_EQ(output.size(), 2u);
     ASSERT_TRUE(output.hasScalarFields());
     EXPECT_EQ(output.scalarFieldNames(), (std::vector<std::string>{"error", "confidence"}));
-    EXPECT_FLOAT_EQ(output.scalarFields()->getValue(0, 0), 2.0f);
-    EXPECT_FLOAT_EQ(output.scalarFields()->getValue(0, 1), 12.0f);
-    EXPECT_FLOAT_EQ(output.scalarFields()->getValue(1, 0), 20.0f);
-    EXPECT_FLOAT_EQ(output.scalarFields()->getValue(1, 1), 100.0f);
+    EXPECT_FLOAT_EQ(output.scalarFields()->operator()(0, 0), 2.0f);
+    EXPECT_FLOAT_EQ(output.scalarFields()->operator()(0, 1), 12.0f);
+    EXPECT_FLOAT_EQ(output.scalarFields()->operator()(1, 0), 20.0f);
+    EXPECT_FLOAT_EQ(output.scalarFields()->operator()(1, 1), 100.0f);
 }
 
 #ifdef PLAPOINT_WITH_CUDA
@@ -338,18 +408,24 @@ TEST(VoxelGridTest, GpuInputProducesGpuOutput)
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(3, 3);
-    pts.setValue(0, 0, 0.0f); pts.setValue(0, 1, 0.0f); pts.setValue(0, 2, 0.0f);
-    pts.setValue(1, 0, 0.2f); pts.setValue(1, 1, 0.0f); pts.setValue(1, 2, 0.0f);
-    pts.setValue(2, 0, 2.0f); pts.setValue(2, 1, 0.0f); pts.setValue(2, 2, 0.0f);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> pts(3, 3);
+    pts.operator()(0, 0) = 0.0f;
+    pts.operator()(0, 1) = 0.0f;
+    pts.operator()(0, 2) = 0.0f;
+    pts.operator()(1, 0) = 0.2f;
+    pts.operator()(1, 1) = 0.0f;
+    pts.operator()(1, 2) = 0.0f;
+    pts.operator()(2, 0) = 2.0f;
+    pts.operator()(2, 1) = 0.0f;
+    pts.operator()(2, 2) = 0.0f;
 
     CpuCloud cpu_cloud(std::move(pts));
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::GPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::GPU> vg;
     vg.setInputCloud(gpu_cloud);
     vg.setLeafSize(1.0f, 1.0f, 1.0f);
 
@@ -358,8 +434,8 @@ TEST(VoxelGridTest, GpuInputProducesGpuOutput)
     auto cpu_output = output.toCpu();
 
     ASSERT_EQ(cpu_output.size(), 2u);
-    EXPECT_FLOAT_EQ(cpu_output.points().getValue(0, 0), 0.1f);
-    EXPECT_FLOAT_EQ(cpu_output.points().getValue(1, 0), 2.0f);
+    EXPECT_FLOAT_EQ(cpu_output.points().operator()(0, 0), 0.1f);
+    EXPECT_FLOAT_EQ(cpu_output.points().operator()(1, 0), 2.0f);
 }
 
 TEST(VoxelGridTest, GpuVoxelGridHelperWritesPlaMatrixOutput)
@@ -371,20 +447,27 @@ TEST(VoxelGridTest, GpuVoxelGridHelperWritesPlaMatrixOutput)
 
     using Scalar = float;
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> input_cpu(3, 3);
-    input_cpu.setValue(0, 0, 0.0f); input_cpu.setValue(0, 1, 0.0f); input_cpu.setValue(0, 2, 0.0f);
-    input_cpu.setValue(1, 0, 0.2f); input_cpu.setValue(1, 1, 0.0f); input_cpu.setValue(1, 2, 0.0f);
-    input_cpu.setValue(2, 0, 2.0f); input_cpu.setValue(2, 1, 0.0f); input_cpu.setValue(2, 2, 0.0f);
-    auto input_gpu = input_cpu.toGpu();
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU> output_gpu(3, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> input_cpu(3, 3);
+    input_cpu.operator()(0, 0) = 0.0f;
+    input_cpu.operator()(0, 1) = 0.0f;
+    input_cpu.operator()(0, 2) = 0.0f;
+    input_cpu.operator()(1, 0) = 0.2f;
+    input_cpu.operator()(1, 1) = 0.0f;
+    input_cpu.operator()(1, 2) = 0.0f;
+    input_cpu.operator()(2, 0) = 2.0f;
+    input_cpu.operator()(2, 1) = 0.0f;
+    input_cpu.operator()(2, 2) = 0.0f;
+    auto context = plamatrix::internal::ExecutionContext::createShared({plamatrix::internal::Backend::Cuda, 0});
+    auto input_gpu = plamatrix::internal::ResidentMatrix<Scalar>::copyFrom(input_cpu, context);
+    plamatrix::internal::ResidentMatrix<Scalar> output_gpu(3, 3, context);
 
     const int centroid_count = plapoint::gpu::voxelGridDownsampleColumnMajor(
         input_gpu, 1.0f, 1.0f, 1.0f, output_gpu);
 
-    const auto output_cpu = output_gpu.toCpu();
+    const auto output_cpu = output_gpu.toHostMatrix();
     ASSERT_EQ(centroid_count, 2);
-    EXPECT_FLOAT_EQ(output_cpu.getValue(0, 0), 0.1f);
-    EXPECT_FLOAT_EQ(output_cpu.getValue(1, 0), 2.0f);
+    EXPECT_FLOAT_EQ(output_cpu.operator()(0, 0), 0.1f);
+    EXPECT_FLOAT_EQ(output_cpu.operator()(1, 0), 2.0f);
 }
 
 TEST(VoxelGridTest, GpuMatchesCpuForNegativeCoordinatesAndSortedOutput)
@@ -395,19 +478,19 @@ TEST(VoxelGridTest, GpuMatchesCpuForNegativeCoordinatesAndSortedOutput)
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
     auto cpu_cloud = std::make_shared<CpuCloud>(makeSignedVoxelPoints());
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud->toGpu());
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> cpu_vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::CPU> cpu_vg;
     cpu_vg.setInputCloud(cpu_cloud);
     cpu_vg.setLeafSize(1.0f, 1.0f, 1.0f);
     CpuCloud cpu_output;
     cpu_vg.filter(cpu_output);
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::GPU> gpu_vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::GPU> gpu_vg;
     gpu_vg.setInputCloud(gpu_cloud);
     gpu_vg.setLeafSize(1.0f, 1.0f, 1.0f);
     GpuCloud gpu_output;
@@ -417,12 +500,12 @@ TEST(VoxelGridTest, GpuMatchesCpuForNegativeCoordinatesAndSortedOutput)
     ASSERT_EQ(gpu_output_cpu.size(), cpu_output.size());
     for (std::size_t i = 0; i < cpu_output.size(); ++i)
     {
-        EXPECT_FLOAT_EQ(gpu_output_cpu.points().getValue(static_cast<plamatrix::Index>(i), 0),
-                        cpu_output.points().getValue(static_cast<plamatrix::Index>(i), 0));
-        EXPECT_FLOAT_EQ(gpu_output_cpu.points().getValue(static_cast<plamatrix::Index>(i), 1),
-                        cpu_output.points().getValue(static_cast<plamatrix::Index>(i), 1));
-        EXPECT_FLOAT_EQ(gpu_output_cpu.points().getValue(static_cast<plamatrix::Index>(i), 2),
-                        cpu_output.points().getValue(static_cast<plamatrix::Index>(i), 2));
+        EXPECT_FLOAT_EQ(gpu_output_cpu.points().operator()(static_cast<plamatrix::Index>(i), 0),
+                        cpu_output.points().operator()(static_cast<plamatrix::Index>(i), 0));
+        EXPECT_FLOAT_EQ(gpu_output_cpu.points().operator()(static_cast<plamatrix::Index>(i), 1),
+                        cpu_output.points().operator()(static_cast<plamatrix::Index>(i), 1));
+        EXPECT_FLOAT_EQ(gpu_output_cpu.points().operator()(static_cast<plamatrix::Index>(i), 2),
+                        cpu_output.points().operator()(static_cast<plamatrix::Index>(i), 2));
     }
 }
 
@@ -434,19 +517,19 @@ TEST(VoxelGridTest, GpuEmptyInputMatchesCpu)
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
     auto cpu_cloud = std::make_shared<CpuCloud>(0);
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud->toGpu());
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> cpu_vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::CPU> cpu_vg;
     cpu_vg.setInputCloud(cpu_cloud);
     cpu_vg.setLeafSize(0.5f, 0.5f, 0.5f);
     CpuCloud cpu_output;
     cpu_vg.filter(cpu_output);
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::GPU> gpu_vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::GPU> gpu_vg;
     gpu_vg.setInputCloud(gpu_cloud);
     gpu_vg.setLeafSize(0.5f, 0.5f, 0.5f);
     GpuCloud gpu_output;
@@ -466,18 +549,20 @@ TEST(VoxelGridTest, GpuRejectsNonFiniteInputCoordinates)
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
-    auto pts = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
-    pts.setValue(0, 0, 0.0f); pts.setValue(0, 1, 0.0f); pts.setValue(0, 2, 0.0f);
-    pts.setValue(1, 0, std::numeric_limits<float>::infinity());
-    pts.setValue(1, 1, 1.0f);
-    pts.setValue(1, 2, 2.0f);
+    auto pts = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(2, 3);
+    pts.operator()(0, 0) = 0.0f;
+    pts.operator()(0, 1) = 0.0f;
+    pts.operator()(0, 2) = 0.0f;
+    pts.operator()(1, 0) = std::numeric_limits<float>::infinity();
+    pts.operator()(1, 1) = 1.0f;
+    pts.operator()(1, 2) = 2.0f;
     CpuCloud cpu_cloud(std::move(pts));
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::GPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::GPU> vg;
     vg.setInputCloud(gpu_cloud);
     vg.setLeafSize(1.0f, 1.0f, 1.0f);
 
@@ -493,17 +578,17 @@ TEST(VoxelGridTest, GpuRejectsVoxelKeysOutsideIntRange)
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
-    auto pts = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(1, 3);
-    pts.setValue(0, 0, 1.0e20f);
-    pts.setValue(0, 1, 0.0f);
-    pts.setValue(0, 2, 0.0f);
+    auto pts = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(1, 3);
+    pts.operator()(0, 0) = 1.0e20f;
+    pts.operator()(0, 1) = 0.0f;
+    pts.operator()(0, 2) = 0.0f;
     CpuCloud cpu_cloud(std::move(pts));
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::GPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::GPU> vg;
     vg.setInputCloud(gpu_cloud);
     vg.setLeafSize(1.0f, 1.0f, 1.0f);
 
@@ -519,16 +604,20 @@ TEST(VoxelGridTest, GpuKeepsCentroidFiniteWhenFloatSumsWouldOverflow)
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
-    auto pts = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
-    pts.setValue(0, 0, 3.0e38f); pts.setValue(0, 1, 0.0f); pts.setValue(0, 2, 0.0f);
-    pts.setValue(1, 0, 3.0e38f); pts.setValue(1, 1, 0.0f); pts.setValue(1, 2, 0.0f);
+    auto pts = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(2, 3);
+    pts.operator()(0, 0) = 3.0e38f;
+    pts.operator()(0, 1) = 0.0f;
+    pts.operator()(0, 2) = 0.0f;
+    pts.operator()(1, 0) = 3.0e38f;
+    pts.operator()(1, 1) = 0.0f;
+    pts.operator()(1, 2) = 0.0f;
     CpuCloud cpu_cloud(std::move(pts));
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::GPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::GPU> vg;
     vg.setInputCloud(gpu_cloud);
     vg.setLeafSize(1.0e38f, 1.0f, 1.0f);
 
@@ -537,8 +626,8 @@ TEST(VoxelGridTest, GpuKeepsCentroidFiniteWhenFloatSumsWouldOverflow)
     auto cpu_output = output.toCpu();
 
     ASSERT_EQ(cpu_output.size(), 1u);
-    EXPECT_TRUE(std::isfinite(cpu_output.points().getValue(0, 0)));
-    EXPECT_FLOAT_EQ(cpu_output.points().getValue(0, 0), 3.0e38f);
+    EXPECT_TRUE(std::isfinite(cpu_output.points().operator()(0, 0)));
+    EXPECT_FLOAT_EQ(cpu_output.points().operator()(0, 0), 3.0e38f);
 }
 
 TEST(VoxelGridTest, GpuKeepsDoubleCentroidFiniteWhenDoubleSumsWouldOverflow)
@@ -549,16 +638,20 @@ TEST(VoxelGridTest, GpuKeepsDoubleCentroidFiniteWhenDoubleSumsWouldOverflow)
     }
 
     using Scalar = double;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
-    auto pts = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
-    pts.setValue(0, 0, 1.0e308); pts.setValue(0, 1, 0.0); pts.setValue(0, 2, 0.0);
-    pts.setValue(1, 0, 1.0e308); pts.setValue(1, 1, 0.0); pts.setValue(1, 2, 0.0);
+    auto pts = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(2, 3);
+    pts.operator()(0, 0) = 1.0e308;
+    pts.operator()(0, 1) = 0.0;
+    pts.operator()(0, 2) = 0.0;
+    pts.operator()(1, 0) = 1.0e308;
+    pts.operator()(1, 1) = 0.0;
+    pts.operator()(1, 2) = 0.0;
     CpuCloud cpu_cloud(std::move(pts));
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::GPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::GPU> vg;
     vg.setInputCloud(gpu_cloud);
     vg.setLeafSize(1.0e308, 1.0, 1.0);
 
@@ -567,8 +660,8 @@ TEST(VoxelGridTest, GpuKeepsDoubleCentroidFiniteWhenDoubleSumsWouldOverflow)
     auto cpu_output = output.toCpu();
 
     ASSERT_EQ(cpu_output.size(), 1u);
-    EXPECT_TRUE(std::isfinite(cpu_output.points().getValue(0, 0)));
-    EXPECT_DOUBLE_EQ(cpu_output.points().getValue(0, 0), 1.0e308);
+    EXPECT_TRUE(std::isfinite(cpu_output.points().operator()(0, 0)));
+    EXPECT_DOUBLE_EQ(cpu_output.points().operator()(0, 0), 1.0e308);
 }
 
 TEST(VoxelGridTest, GpuMatchesCpuForDoubleMixedMagnitudeCentroid)
@@ -579,19 +672,26 @@ TEST(VoxelGridTest, GpuMatchesCpuForDoubleMixedMagnitudeCentroid)
     }
 
     using Scalar = double;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
-    const auto makePoints = [] {
-        auto pts = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(3, 3);
-        pts.setValue(0, 0, 1.0e16); pts.setValue(0, 1, 0.0); pts.setValue(0, 2, 0.0);
-        pts.setValue(1, 0, 1.0);    pts.setValue(1, 1, 0.0); pts.setValue(1, 2, 0.0);
-        pts.setValue(2, 0, 1.0);    pts.setValue(2, 1, 0.0); pts.setValue(2, 2, 0.0);
+    const auto makePoints = []
+    {
+        auto pts = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(3, 3);
+        pts.operator()(0, 0) = 1.0e16;
+        pts.operator()(0, 1) = 0.0;
+        pts.operator()(0, 2) = 0.0;
+        pts.operator()(1, 0) = 1.0;
+        pts.operator()(1, 1) = 0.0;
+        pts.operator()(1, 2) = 0.0;
+        pts.operator()(2, 0) = 1.0;
+        pts.operator()(2, 1) = 0.0;
+        pts.operator()(2, 2) = 0.0;
         return pts;
     };
 
     auto cpu_cloud = std::make_shared<CpuCloud>(makePoints());
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> cpu_vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::CPU> cpu_vg;
     cpu_vg.setInputCloud(cpu_cloud);
     cpu_vg.setLeafSize(1.0e17, 1.0, 1.0);
     CpuCloud cpu_output;
@@ -599,7 +699,7 @@ TEST(VoxelGridTest, GpuMatchesCpuForDoubleMixedMagnitudeCentroid)
 
     CpuCloud source_cpu(makePoints());
     auto gpu_cloud = std::make_shared<GpuCloud>(source_cpu.toGpu());
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::GPU> gpu_vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::GPU> gpu_vg;
     gpu_vg.setInputCloud(gpu_cloud);
     gpu_vg.setLeafSize(1.0e17, 1.0, 1.0);
     GpuCloud gpu_output;
@@ -608,8 +708,8 @@ TEST(VoxelGridTest, GpuMatchesCpuForDoubleMixedMagnitudeCentroid)
 
     ASSERT_EQ(cpu_output.size(), 1u);
     ASSERT_EQ(gpu_output_cpu.size(), cpu_output.size());
-    EXPECT_DOUBLE_EQ(gpu_output_cpu.points().getValue(0, 0),
-                     cpu_output.points().getValue(0, 0));
+    EXPECT_DOUBLE_EQ(gpu_output_cpu.points().operator()(0, 0),
+                     cpu_output.points().operator()(0, 0));
 }
 
 TEST(VoxelGridTest, GpuUsesCpuConsistentDoublePrecisionVoxelBoundary)
@@ -620,19 +720,24 @@ TEST(VoxelGridTest, GpuUsesCpuConsistentDoublePrecisionVoxelBoundary)
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
-    const auto makePoints = [] {
-        auto pts = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
+    const auto makePoints = []
+    {
+        auto pts = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(2, 3);
         const Scalar boundary_below = std::nextafter(0.05f, 0.0f);
-        pts.setValue(0, 0, boundary_below); pts.setValue(0, 1, 0.0f); pts.setValue(0, 2, 0.0f);
-        pts.setValue(1, 0, 0.041f); pts.setValue(1, 1, 0.0f); pts.setValue(1, 2, 0.0f);
+        pts.operator()(0, 0) = boundary_below;
+        pts.operator()(0, 1) = 0.0f;
+        pts.operator()(0, 2) = 0.0f;
+        pts.operator()(1, 0) = 0.041f;
+        pts.operator()(1, 1) = 0.0f;
+        pts.operator()(1, 2) = 0.0f;
         return pts;
     };
 
     auto cpu_cloud = std::make_shared<CpuCloud>(makePoints());
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::CPU> cpu_vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::CPU> cpu_vg;
     cpu_vg.setInputCloud(cpu_cloud);
     cpu_vg.setLeafSize(0.01f, 1.0f, 1.0f);
     CpuCloud cpu_output;
@@ -640,7 +745,7 @@ TEST(VoxelGridTest, GpuUsesCpuConsistentDoublePrecisionVoxelBoundary)
 
     CpuCloud source_cpu(makePoints());
     auto gpu_cloud = std::make_shared<GpuCloud>(source_cpu.toGpu());
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::GPU> gpu_vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::GPU> gpu_vg;
     gpu_vg.setInputCloud(gpu_cloud);
     gpu_vg.setLeafSize(0.01f, 1.0f, 1.0f);
     GpuCloud gpu_output;
@@ -649,7 +754,7 @@ TEST(VoxelGridTest, GpuUsesCpuConsistentDoublePrecisionVoxelBoundary)
 
     ASSERT_EQ(cpu_output.size(), 1u);
     ASSERT_EQ(gpu_output_cpu.size(), cpu_output.size());
-    EXPECT_FLOAT_EQ(gpu_output_cpu.points().getValue(0, 0), cpu_output.points().getValue(0, 0));
+    EXPECT_FLOAT_EQ(gpu_output_cpu.points().operator()(0, 0), cpu_output.points().operator()(0, 0));
 }
 
 TEST(VoxelGridTest, GpuPreservesAveragedAttributesWhenInputHasPointAttributes)
@@ -660,21 +765,33 @@ TEST(VoxelGridTest, GpuPreservesAveragedAttributesWhenInputHasPointAttributes)
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
-    auto pts = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
-    pts.setValue(0, 0, 0.0f); pts.setValue(0, 1, 0.0f); pts.setValue(0, 2, 0.0f);
-    pts.setValue(1, 0, 0.2f); pts.setValue(1, 1, 0.0f); pts.setValue(1, 2, 0.0f);
-    auto normals = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
-    normals.setValue(0, 0, 1.0f); normals.setValue(0, 1, 0.0f); normals.setValue(0, 2, 0.0f);
-    normals.setValue(1, 0, 0.0f); normals.setValue(1, 1, 1.0f); normals.setValue(1, 2, 0.0f);
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(2, 3);
-    colors.setValue(0, 0, 40); colors.setValue(0, 1, 50); colors.setValue(0, 2, 60);
-    colors.setValue(1, 0, 44); colors.setValue(1, 1, 54); colors.setValue(1, 2, 64);
-    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(2, 1);
-    intensities.setValue(0, 0, 2000);
-    intensities.setValue(1, 0, 2004);
+    auto pts = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(2, 3);
+    pts.operator()(0, 0) = 0.0f;
+    pts.operator()(0, 1) = 0.0f;
+    pts.operator()(0, 2) = 0.0f;
+    pts.operator()(1, 0) = 0.2f;
+    pts.operator()(1, 1) = 0.0f;
+    pts.operator()(1, 2) = 0.0f;
+    auto normals = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(2, 3);
+    normals.operator()(0, 0) = 1.0f;
+    normals.operator()(0, 1) = 0.0f;
+    normals.operator()(0, 2) = 0.0f;
+    normals.operator()(1, 0) = 0.0f;
+    normals.operator()(1, 1) = 1.0f;
+    normals.operator()(1, 2) = 0.0f;
+    plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(2, 3);
+    colors.operator()(0, 0) = 40;
+    colors.operator()(0, 1) = 50;
+    colors.operator()(0, 2) = 60;
+    colors.operator()(1, 0) = 44;
+    colors.operator()(1, 1) = 54;
+    colors.operator()(1, 2) = 64;
+    plamatrix::Matrix<std::uint16_t, plamatrix::Dynamic, plamatrix::Dynamic> intensities(2, 1);
+    intensities.operator()(0, 0) = 2000;
+    intensities.operator()(1, 0) = 2004;
 
     auto cpu_cloud = std::make_shared<CpuCloud>(std::move(pts));
     cpu_cloud->setNormals(std::move(normals));
@@ -682,7 +799,7 @@ TEST(VoxelGridTest, GpuPreservesAveragedAttributesWhenInputHasPointAttributes)
     cpu_cloud->setIntensities(std::move(intensities));
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud->toGpu());
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::GPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::GPU> vg;
     vg.setInputCloud(gpu_cloud);
     vg.setLeafSize(1.0f, 1.0f, 1.0f);
 
@@ -694,11 +811,11 @@ TEST(VoxelGridTest, GpuPreservesAveragedAttributesWhenInputHasPointAttributes)
     ASSERT_TRUE(cpu_output.hasNormals());
     ASSERT_TRUE(cpu_output.hasColors());
     ASSERT_TRUE(cpu_output.hasIntensities());
-    EXPECT_FLOAT_EQ(cpu_output.normals()->getValue(0, 0), 0.5f);
-    EXPECT_FLOAT_EQ(cpu_output.normals()->getValue(0, 1), 0.5f);
-    EXPECT_EQ(cpu_output.colors()->getValue(0, 0), 42);
-    EXPECT_EQ(cpu_output.colors()->getValue(0, 2), 62);
-    EXPECT_EQ(cpu_output.intensities()->getValue(0, 0), 2002);
+    EXPECT_FLOAT_EQ(cpu_output.normals()->operator()(0, 0), 0.5f);
+    EXPECT_FLOAT_EQ(cpu_output.normals()->operator()(0, 1), 0.5f);
+    EXPECT_EQ(cpu_output.colors()->operator()(0, 0), 42);
+    EXPECT_EQ(cpu_output.colors()->operator()(0, 2), 62);
+    EXPECT_EQ(cpu_output.intensities()->operator()(0, 0), 2002);
 }
 
 TEST(VoxelGridTest, GpuPreservesAveragedScalarFieldsWhenInputHasOnlyScalarFields)
@@ -709,21 +826,25 @@ TEST(VoxelGridTest, GpuPreservesAveragedScalarFieldsWhenInputHasOnlyScalarFields
     }
 
     using Scalar = float;
-    using CpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::CPU>;
-    using GpuCloud = plapoint::PointCloud<Scalar, plamatrix::Device::GPU>;
+    using CpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>;
+    using GpuCloud = plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>;
 
-    auto pts = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 3);
-    pts.setValue(0, 0, 0.0f); pts.setValue(0, 1, 0.0f); pts.setValue(0, 2, 0.0f);
-    pts.setValue(1, 0, 0.2f); pts.setValue(1, 1, 0.0f); pts.setValue(1, 2, 0.0f);
-    auto scalar_fields = plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU>(2, 1);
-    scalar_fields.setValue(0, 0, 1.0f);
-    scalar_fields.setValue(1, 0, 3.0f);
+    auto pts = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(2, 3);
+    pts.operator()(0, 0) = 0.0f;
+    pts.operator()(0, 1) = 0.0f;
+    pts.operator()(0, 2) = 0.0f;
+    pts.operator()(1, 0) = 0.2f;
+    pts.operator()(1, 1) = 0.0f;
+    pts.operator()(1, 2) = 0.0f;
+    auto scalar_fields = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>(2, 1);
+    scalar_fields.operator()(0, 0) = 1.0f;
+    scalar_fields.operator()(1, 0) = 3.0f;
 
     CpuCloud cpu_cloud(std::move(pts));
     cpu_cloud.setScalarFields({"error"}, std::move(scalar_fields));
     auto gpu_cloud = std::make_shared<GpuCloud>(cpu_cloud.toGpu());
 
-    plapoint::VoxelGrid<Scalar, plamatrix::Device::GPU> vg;
+    plapoint::VoxelGrid<Scalar, plamatrix::internal::Device::GPU> vg;
     vg.setInputCloud(gpu_cloud);
     vg.setLeafSize(1.0f, 1.0f, 1.0f);
 
@@ -733,6 +854,6 @@ TEST(VoxelGridTest, GpuPreservesAveragedScalarFieldsWhenInputHasOnlyScalarFields
 
     ASSERT_EQ(cpu_output.size(), 1u);
     ASSERT_TRUE(cpu_output.hasScalarField("error"));
-    EXPECT_FLOAT_EQ(cpu_output.scalarFields()->getValue(0, 0), 2.0f);
+    EXPECT_FLOAT_EQ(cpu_output.scalarFields()->operator()(0, 0), 2.0f);
 }
 #endif

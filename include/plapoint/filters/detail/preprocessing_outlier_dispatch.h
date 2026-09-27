@@ -1,12 +1,12 @@
 #pragma once
 
-namespace plapoint
+namespace plapoint::detail
 {
 
 /// Remove statistical outliers from a CPU-owned point cloud using the requested device.
 template <typename Scalar>
-PointCloud<Scalar, plamatrix::Device::CPU> statisticalOutlierRemoval(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& input,
+plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU> statisticalOutlierRemoval(
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& input,
     int mean_k,
     Scalar stddev_mul,
     ProcessingDevice device,
@@ -138,8 +138,8 @@ PointCloud<Scalar, plamatrix::Device::CPU> statisticalOutlierRemoval(
 
 /// Remove radius outliers from a CPU-owned point cloud using the requested device.
 template <typename Scalar>
-PointCloud<Scalar, plamatrix::Device::CPU> radiusOutlierRemoval(
-    const PointCloud<Scalar, plamatrix::Device::CPU>& input,
+plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU> radiusOutlierRemoval(
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::CPU>& input,
     Scalar radius,
     int min_neighbors,
     ProcessingDevice device,
@@ -254,4 +254,4 @@ PointCloud<Scalar, plamatrix::Device::CPU> radiusOutlierRemoval(
     return output;
 }
 
-} // namespace plapoint
+} // namespace plapoint::detail

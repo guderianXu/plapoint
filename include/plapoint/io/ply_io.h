@@ -21,9 +21,11 @@
 #include <type_traits>
 #include <vector>
 
-#include <plamatrix/dense/dense_matrix.h>
+#include <plamatrix/dense/matrix.h>
+#include <plamatrix/internal/core/device.h>
 
 #include <plapoint/core/point_cloud.h>
+#include <plapoint/geometry_cloud.h>
 
 namespace plapoint {
 namespace io {
@@ -597,7 +599,7 @@ constexpr const char* plyFloatingPointTypeName()
 }
 
 template <typename Scalar>
-std::shared_ptr<PointCloud<Scalar, plamatrix::Device::CPU>>
+std::shared_ptr<GeometryCloud<Scalar>>
 readPlyImpl(const std::string& path,
             bool applyPointOffset,
             std::array<double, 3>* pointOffsetOut,
@@ -752,11 +754,11 @@ readPlyImpl(const std::string& path,
         *hasPointOffsetOut = hasPointOffset;
     }
 
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> pts(n_verts, 3);
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> nrm(n_verts, 3);
-    plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::CPU> colors(n_verts, 3);
-    plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::CPU> intensities(n_verts, 1);
-    plamatrix::DenseMatrix<Scalar, plamatrix::Device::CPU> extra_scalars(
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> pts(n_verts, 3);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> nrm(n_verts, 3);
+    plamatrix::Matrix<std::uint8_t, plamatrix::Dynamic, plamatrix::Dynamic> colors(n_verts, 3);
+    plamatrix::Matrix<std::uint16_t, plamatrix::Dynamic, plamatrix::Dynamic> intensities(n_verts, 1);
+    plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic> extra_scalars(
         n_verts, static_cast<plamatrix::Index>(extra_scalar_names.size()));
     std::vector<int> face_indices;
     bool have_normals = has_nx && has_ny && has_nz;
@@ -985,7 +987,7 @@ readPlyImpl(const std::string& path,
         }
     }
 
-    auto cloud = std::make_shared<PointCloud<Scalar, plamatrix::Device::CPU>>(std::move(pts));
+    auto cloud = std::make_shared<GeometryCloud<Scalar>>(std::move(pts));
     if (have_normals) cloud->setNormals(std::move(nrm));
     if (have_colors) cloud->setColors(std::move(colors));
     if (has_intensity) cloud->setIntensities(std::move(intensities));
@@ -993,7 +995,7 @@ readPlyImpl(const std::string& path,
     if (!face_indices.empty())
     {
         const auto face_count = static_cast<plamatrix::Index>(face_indices.size() / 3);
-        plamatrix::DenseMatrix<int, plamatrix::Device::CPU> faces(face_count, 3);
+        plamatrix::Matrix<int, plamatrix::Dynamic, plamatrix::Dynamic> faces(face_count, 3);
         for (plamatrix::Index i = 0; i < face_count; ++i)
         {
             faces(i, 0) = face_indices[static_cast<std::size_t>(i * 3)];
@@ -1008,7 +1010,7 @@ readPlyImpl(const std::string& path,
 } // namespace detail
 
 template <typename Scalar>
-std::shared_ptr<PointCloud<Scalar, plamatrix::Device::CPU>>
+std::shared_ptr<GeometryCloud<Scalar>>
 readPly(const std::string& path)
 {
     return detail::readPlyImpl<Scalar>(path, true, nullptr, nullptr);
@@ -1017,7 +1019,7 @@ readPly(const std::string& path)
 // Reads vertex coordinates as stored in the PLY payload without applying
 // `comment POINT_OFFSET`; returns that offset separately when requested.
 template <typename Scalar>
-std::shared_ptr<PointCloud<Scalar, plamatrix::Device::CPU>>
+std::shared_ptr<GeometryCloud<Scalar>>
 readPlyLocal(const std::string& path,
              std::array<double, 3>* pointOffsetOut = nullptr,
              bool* hasPointOffsetOut = nullptr)
@@ -1572,9 +1574,10 @@ inline std::vector<PlyVertexPoint> sampleBinaryPlyVertices(const std::string& pa
 
 template <typename Scalar>
 void writePly(const std::string& path,
-              const PointCloud<Scalar, plamatrix::Device::CPU>& cloud,
+              const GeometryCloud<Scalar>& cloud,
               PlyFormat fmt = PlyFormat::ASCII)
 {
+    cloud.validate();
     std::ios::openmode mode = std::ios::out;
     if (fmt != PlyFormat::ASCII) mode |= std::ios::binary;
     std::ofstream f(path, mode);
@@ -1624,34 +1627,34 @@ void writePly(const std::string& path,
         f << std::setprecision(std::numeric_limits<Scalar>::max_digits10);
         for (std::size_t i = 0; i < cloud.size(); ++i)
         {
-            f << cloud.points().getValue(static_cast<plamatrix::Index>(i), 0) << " "
-              << cloud.points().getValue(static_cast<plamatrix::Index>(i), 1) << " "
-              << cloud.points().getValue(static_cast<plamatrix::Index>(i), 2);
+            f << cloud.points().operator()(static_cast<plamatrix::Index>(i), 0) << " "
+              << cloud.points().operator()(static_cast<plamatrix::Index>(i), 1) << " "
+              << cloud.points().operator()(static_cast<plamatrix::Index>(i), 2);
             if (with_colors)
             {
                 auto* c = cloud.colors();
-                f << " " << static_cast<int>(c->getValue(static_cast<plamatrix::Index>(i), 0))
-                  << " " << static_cast<int>(c->getValue(static_cast<plamatrix::Index>(i), 1))
-                  << " " << static_cast<int>(c->getValue(static_cast<plamatrix::Index>(i), 2));
+                f << " " << static_cast<int>(c->operator()(static_cast<plamatrix::Index>(i), 0))
+                  << " " << static_cast<int>(c->operator()(static_cast<plamatrix::Index>(i), 1))
+                  << " " << static_cast<int>(c->operator()(static_cast<plamatrix::Index>(i), 2));
             }
             if (with_intensities)
             {
                 auto* intensities = cloud.intensities();
-                f << " " << intensities->getValue(static_cast<plamatrix::Index>(i), 0);
+                f << " " << intensities->operator()(static_cast<plamatrix::Index>(i), 0);
             }
             if (with_normals)
             {
                 auto* n = cloud.normals();
-                f << " " << n->getValue(static_cast<plamatrix::Index>(i), 0)
-                  << " " << n->getValue(static_cast<plamatrix::Index>(i), 1)
-                  << " " << n->getValue(static_cast<plamatrix::Index>(i), 2);
+                f << " " << n->operator()(static_cast<plamatrix::Index>(i), 0)
+                  << " " << n->operator()(static_cast<plamatrix::Index>(i), 1)
+                  << " " << n->operator()(static_cast<plamatrix::Index>(i), 2);
             }
             if (with_scalar_fields)
             {
                 auto* fields = cloud.scalarFields();
                 for (plamatrix::Index col = 0; col < fields->cols(); ++col)
                 {
-                    f << " " << fields->getValue(static_cast<plamatrix::Index>(i), col);
+                    f << " " << fields->operator()(static_cast<plamatrix::Index>(i), col);
                 }
             }
             f << "\n";
@@ -1662,9 +1665,9 @@ void writePly(const std::string& path,
             for (plamatrix::Index i = 0; i < faces->rows(); ++i)
             {
                 f << "3 "
-                  << faces->getValue(i, 0) << " "
-                  << faces->getValue(i, 1) << " "
-                  << faces->getValue(i, 2) << "\n";
+                  << faces->operator()(i, 0) << " "
+                  << faces->operator()(i, 1) << " "
+                  << faces->operator()(i, 2) << "\n";
             }
         }
     }
@@ -1685,37 +1688,37 @@ void writePly(const std::string& path,
         };
         for (std::size_t i = 0; i < cloud.size(); ++i)
         {
-            write_scalar(cloud.points().getValue(static_cast<plamatrix::Index>(i), 0));
-            write_scalar(cloud.points().getValue(static_cast<plamatrix::Index>(i), 1));
-            write_scalar(cloud.points().getValue(static_cast<plamatrix::Index>(i), 2));
+            write_scalar(cloud.points().operator()(static_cast<plamatrix::Index>(i), 0));
+            write_scalar(cloud.points().operator()(static_cast<plamatrix::Index>(i), 1));
+            write_scalar(cloud.points().operator()(static_cast<plamatrix::Index>(i), 2));
             if (with_colors)
             {
                 auto* c = cloud.colors();
                 const std::uint8_t color[3] = {
-                    c->getValue(static_cast<plamatrix::Index>(i), 0),
-                    c->getValue(static_cast<plamatrix::Index>(i), 1),
-                    c->getValue(static_cast<plamatrix::Index>(i), 2),
+                    c->operator()(static_cast<plamatrix::Index>(i), 0),
+                    c->operator()(static_cast<plamatrix::Index>(i), 1),
+                    c->operator()(static_cast<plamatrix::Index>(i), 2),
                 };
                 f.write(reinterpret_cast<const char*>(color), sizeof(color));
             }
             if (with_intensities)
             {
                 auto* intensities = cloud.intensities();
-                write_uint16(intensities->getValue(static_cast<plamatrix::Index>(i), 0));
+                write_uint16(intensities->operator()(static_cast<plamatrix::Index>(i), 0));
             }
             if (with_normals)
             {
                 auto* n = cloud.normals();
-                write_scalar(n->getValue(static_cast<plamatrix::Index>(i), 0));
-                write_scalar(n->getValue(static_cast<plamatrix::Index>(i), 1));
-                write_scalar(n->getValue(static_cast<plamatrix::Index>(i), 2));
+                write_scalar(n->operator()(static_cast<plamatrix::Index>(i), 0));
+                write_scalar(n->operator()(static_cast<plamatrix::Index>(i), 1));
+                write_scalar(n->operator()(static_cast<plamatrix::Index>(i), 2));
             }
             if (with_scalar_fields)
             {
                 auto* fields = cloud.scalarFields();
                 for (plamatrix::Index col = 0; col < fields->cols(); ++col)
                 {
-                    write_scalar(fields->getValue(static_cast<plamatrix::Index>(i), col));
+                    write_scalar(fields->operator()(static_cast<plamatrix::Index>(i), col));
                 }
             }
         }
@@ -1726,13 +1729,20 @@ void writePly(const std::string& path,
             {
                 const std::uint8_t count = 3;
                 f.write(reinterpret_cast<const char*>(&count), sizeof(count));
-                write_int32(static_cast<std::int32_t>(faces->getValue(i, 0)));
-                write_int32(static_cast<std::int32_t>(faces->getValue(i, 1)));
-                write_int32(static_cast<std::int32_t>(faces->getValue(i, 2)));
+                write_int32(static_cast<std::int32_t>(faces->operator()(i, 0)));
+                write_int32(static_cast<std::int32_t>(faces->operator()(i, 1)));
+                write_int32(static_cast<std::int32_t>(faces->operator()(i, 2)));
             }
         }
+    }
+    f.close();
+    if (!f)
+    {
+        throw std::runtime_error("Failed to write PLY file: " + path);
     }
 }
 
 } // namespace io
 } // namespace plapoint
+
+#include <plapoint/io/point_cloud_ply_io.h>

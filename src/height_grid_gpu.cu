@@ -8,12 +8,15 @@
 #include <vector>
 
 #include <cuda_runtime.h>
-#include <thrust/execution_policy.h>
-#include <thrust/iterator/counting_iterator.h>
-#include <thrust/transform_reduce.h>
+
+#include <plamatrix/internal/ops/statistics.h>
+#include <plamatrix/internal/core/device.h>
+#include <plamatrix/internal/device/device_matrix.h>
+#include <plamatrix/internal/ops/reduction.h>
 
 #include <plapoint/gpu/cuda_check.h>
 #include <plapoint/gpu/height_grid.h>
+#include <plapoint/filters/detail/geometry_bridge.h>
 
 namespace plapoint
 {
@@ -95,19 +98,19 @@ struct GpuHeightGridAccess
     template <typename Scalar>
     static int* status(GpuHeightGrid<Scalar>& grid) noexcept
     {
-        return grid._status.data();
+        return grid._status ? grid._status->data() : nullptr;
     }
 
     template <typename Scalar>
     static const int* status(const GpuHeightGrid<Scalar>& grid) noexcept
     {
-        return grid._status.data();
+        return grid._status ? grid._status->data() : nullptr;
     }
 
     template <typename Scalar>
     static void allocateStatus(GpuHeightGrid<Scalar>& grid)
     {
-        grid._status = plamatrix::DenseMatrix<int, plamatrix::Device::GPU>::uninitialized(1, 1);
+        grid._status.emplace(1, 1, grid.heights->contextOwner());
     }
 };
 
@@ -117,6 +120,16 @@ namespace
 #include "height_grid_gpu_kernels.cuh"
 
 constexpr int kBlockSize = 256;
+
+template <typename Scalar>
+struct HeightGridBounds
+{
+    Scalar minX;
+    Scalar maxX;
+    Scalar minY;
+    Scalar maxY;
+    int finiteCount;
+};
 
 int checkedBlockCount(int count)
 {
@@ -157,22 +170,37 @@ std::size_t checkedCellCount(int width, int height)
 
 template <typename Scalar>
 HeightGridBounds<Scalar> computeFiniteBounds(
-    const Scalar* points,
-    int point_count,
+    const plamatrix::internal::ResidentMatrix<Scalar>& points,
     cudaStream_t stream)
 {
-    const Scalar extreme = std::numeric_limits<Scalar>::max();
-    const HeightGridBounds<Scalar> initial = {
-        extreme, -extreme, extreme, -extreme, 0};
-    auto policy = thrust::cuda::par.on(stream);
-    const auto first = thrust::make_counting_iterator(0);
-    return thrust::transform_reduce(
-        policy,
-        first,
-        first + point_count,
-        HeightGridBoundsTransform<Scalar>{points, point_count, extreme},
-        initial,
-        HeightGridBoundsReduce<Scalar>{});
+    plamatrix::internal::ResidentMatrix<Scalar> minimum(1, points.cols(), points.context());
+    plamatrix::internal::ResidentMatrix<Scalar> maximum(1, points.cols(), points.context());
+    plamatrix::internal::ResidentMatrix<plamatrix::Index> valid_count(1, 1, points.context());
+    plamatrix::internal::ReductionWorkspace workspace;
+    plamatrix::internal::finiteColumnBoundsAsync(
+        points.template view<plamatrix::internal::Device::GPU>(),
+        minimum.template view<plamatrix::internal::Device::GPU>(),
+        maximum.template view<plamatrix::internal::Device::GPU>(),
+        valid_count.template view<plamatrix::internal::Device::GPU>(), workspace, stream);
+
+    PLAPOINT_CHECK_CUDA(cudaStreamSynchronize(stream));
+    workspace.closeAsyncAllocation();
+    const auto host_minimum = minimum.toHostMatrix();
+    const auto host_maximum = maximum.toHostMatrix();
+    const auto host_valid_count = valid_count.toHostMatrix();
+
+    const auto finite_count = host_valid_count(0, 0);
+    if (finite_count < 0 || finite_count > points.rows())
+    {
+        throw std::runtime_error(
+            "buildHeightGrid GPU: PlaMatrix returned an invalid finite point count");
+    }
+    return {
+        host_minimum(0, 0),
+        host_maximum(0, 0),
+        host_minimum(0, 1),
+        host_maximum(0, 1),
+        static_cast<int>(finite_count)};
 }
 
 template <typename Scalar>
@@ -180,8 +208,7 @@ void validateDeviceGridShape(const GpuHeightGrid<Scalar>& grid, const char* oper
 {
     if (grid.width == 0 && grid.height == 0)
     {
-        if (grid.heights.size() != 0 || grid.weights.size() != 0 ||
-            grid.valid.size() != 0 || grid.colors.size() != 0 || grid.fillPass.size() != 0 ||
+        if (grid.heights || grid.weights || grid.valid || grid.colors || grid.fillPass ||
             GpuHeightGridAccess::status(grid) != nullptr)
         {
             throw std::invalid_argument(std::string(operation) +
@@ -197,7 +224,7 @@ void validateDeviceGridShape(const GpuHeightGrid<Scalar>& grid, const char* oper
     const std::size_t count = checkedCellCount(grid.width, grid.height);
     const auto rows = static_cast<plamatrix::Index>(count);
     const auto is_column = [rows](const auto& matrix) {
-        return matrix.rows() == rows && matrix.cols() == 1;
+        return matrix && matrix->rows() == rows && matrix->cols() == 1;
     };
     if (!is_column(grid.heights) || !is_column(grid.weights) ||
         !is_column(grid.valid) || !is_column(grid.fillPass))
@@ -210,7 +237,7 @@ void validateDeviceGridShape(const GpuHeightGrid<Scalar>& grid, const char* oper
         throw std::invalid_argument(std::string(operation) +
                                     ": device status storage is missing");
     }
-    if (grid.colors.size() != 0 && !grid.hasColors())
+    if (grid.colors && !grid.hasColors())
     {
         throw std::invalid_argument(std::string(operation) +
                                     ": colors must have cell_count rows and three columns");
@@ -233,7 +260,7 @@ void copyDeviceToHostAsync(
 
 template <typename Scalar>
 GpuHeightGrid<Scalar> buildHeightGridDeviceImpl(
-    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
     const mesh::HeightGridOptions<Scalar>& options,
     HeightGridGpuWorkspace<Scalar>& workspace,
     cudaStream_t stream)
@@ -289,19 +316,14 @@ GpuHeightGrid<Scalar> buildHeightGridDeviceImpl(
     grid.minY = min_y;
     grid.stepX = span_x / Scalar(width - 1);
     grid.stepY = span_y / Scalar(height - 1);
-    grid.heights = plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>::uninitialized(
-        cell_rows, 1);
-    grid.weights = plamatrix::DenseMatrix<Scalar, plamatrix::Device::GPU>::uninitialized(
-        cell_rows, 1);
-    grid.valid = plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>::uninitialized(
-        cell_rows, 1);
-    grid.fillPass = plamatrix::DenseMatrix<std::uint16_t, plamatrix::Device::GPU>::uninitialized(
-        cell_rows, 1);
+    grid.heights.emplace(cell_rows, 1, cloud.executionContext());
+    grid.weights.emplace(cell_rows, 1, cloud.executionContext());
+    grid.valid.emplace(cell_rows, 1, cloud.executionContext());
+    grid.fillPass.emplace(cell_rows, 1, cloud.executionContext());
     GpuHeightGridAccess::allocateStatus(grid);
     if (has_colors)
     {
-        grid.colors = plamatrix::DenseMatrix<std::uint8_t, plamatrix::Device::GPU>::uninitialized(
-            cell_rows, 3);
+        grid.colors.emplace(cell_rows, 3, cloud.executionContext());
     }
 
     const int cell_count_int = static_cast<int>(cell_count);
@@ -309,6 +331,7 @@ GpuHeightGrid<Scalar> buildHeightGridDeviceImpl(
     const int point_blocks = checkedBlockCount(point_count);
     PLAPOINT_CHECK_CUDA(cudaMemsetAsync(
         GpuHeightGridAccess::status(grid), 0, sizeof(int), stream));
+    GpuHeightGridAccess::markPending(grid, stream);
     if (!options.skipNonFinite)
     {
         validateHeightGridPointsKernel<<<point_blocks, kBlockSize, 0, stream>>>(
@@ -321,13 +344,13 @@ GpuHeightGrid<Scalar> buildHeightGridDeviceImpl(
         aggregation,
         has_colors,
         extreme,
-        grid.heights.data(),
-        grid.weights.data(),
-        grid.valid.data(),
-        grid.fillPass.data(),
+        grid.heights->data(),
+        grid.weights->data(),
+        grid.valid->data(),
+        grid.fillPass->data(),
         HeightGridGpuWorkspaceAccess::colorSums(workspace),
         HeightGridGpuWorkspaceAccess::colorWeights(workspace),
-        has_colors ? grid.colors.data() : nullptr);
+        has_colors ? grid.colors->data() : nullptr);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
 
     splatHeightGridKernel<<<point_blocks, kBlockSize, 0, stream>>>(
@@ -344,8 +367,8 @@ GpuHeightGrid<Scalar> buildHeightGridDeviceImpl(
         grid.minY,
         grid.stepX,
         grid.stepY,
-        grid.heights.data(),
-        grid.weights.data(),
+        grid.heights->data(),
+        grid.weights->data(),
         HeightGridGpuWorkspaceAccess::colorSums(workspace),
         HeightGridGpuWorkspaceAccess::colorWeights(workspace));
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
@@ -354,12 +377,12 @@ GpuHeightGrid<Scalar> buildHeightGridDeviceImpl(
         cell_count_int,
         aggregation,
         has_colors,
-        grid.heights.data(),
-        grid.weights.data(),
+        grid.heights->data(),
+        grid.weights->data(),
         HeightGridGpuWorkspaceAccess::colorSums(workspace),
         HeightGridGpuWorkspaceAccess::colorWeights(workspace),
-        grid.valid.data(),
-        has_colors ? grid.colors.data() : nullptr);
+        grid.valid->data(),
+        has_colors ? grid.colors->data() : nullptr);
     PLAPOINT_CHECK_CUDA(cudaGetLastError());
     GpuHeightGridAccess::markPending(grid, stream);
     return grid;
@@ -394,26 +417,26 @@ void fillHolesDeviceImpl(
     const bool has_colors = grid.hasColors();
     HeightGridGpuWorkspaceAccess::prepare(workspace, cell_count, stream);
 
-    const Scalar* input_heights = grid.heights.data();
-    const std::uint8_t* input_valid = grid.valid.data();
-    const std::uint8_t* input_colors = has_colors ? grid.colors.data() : nullptr;
-    const std::uint16_t* input_fill_pass = grid.fillPass.data();
+    const Scalar* input_heights = grid.heights->data();
+    const std::uint8_t* input_valid = grid.valid->data();
+    const std::uint8_t* input_colors = has_colors ? grid.colors->data() : nullptr;
+    const std::uint16_t* input_fill_pass = grid.fillPass->data();
     for (int pass = 0; pass < max_passes; ++pass)
     {
         const bool write_workspace = (pass % 2) == 0;
         Scalar* output_heights = write_workspace
             ? HeightGridGpuWorkspaceAccess::nextHeights(workspace)
-            : grid.heights.data();
+            : grid.heights->data();
         std::uint8_t* output_valid = write_workspace
             ? HeightGridGpuWorkspaceAccess::nextValid(workspace)
-            : grid.valid.data();
+            : grid.valid->data();
         std::uint8_t* output_colors = has_colors
             ? (write_workspace ? HeightGridGpuWorkspaceAccess::nextColors(workspace)
-                               : grid.colors.data())
+                               : grid.colors->data())
             : nullptr;
         std::uint16_t* output_fill_pass = write_workspace
             ? HeightGridGpuWorkspaceAccess::nextFillPass(workspace)
-            : grid.fillPass.data();
+            : grid.fillPass->data();
         fillHeightGridHolesKernel<<<blocks, kBlockSize, 0, stream>>>(
             grid.width,
             grid.height,
@@ -439,18 +462,18 @@ void fillHolesDeviceImpl(
     if ((max_passes % 2) != 0)
     {
         PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
-            grid.heights.data(), HeightGridGpuWorkspaceAccess::nextHeights(workspace),
+            grid.heights->data(), HeightGridGpuWorkspaceAccess::nextHeights(workspace),
             cell_count * sizeof(Scalar), cudaMemcpyDeviceToDevice, stream));
         PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
-            grid.valid.data(), HeightGridGpuWorkspaceAccess::nextValid(workspace),
+            grid.valid->data(), HeightGridGpuWorkspaceAccess::nextValid(workspace),
             cell_count * sizeof(std::uint8_t), cudaMemcpyDeviceToDevice, stream));
         PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
-            grid.fillPass.data(), HeightGridGpuWorkspaceAccess::nextFillPass(workspace),
+            grid.fillPass->data(), HeightGridGpuWorkspaceAccess::nextFillPass(workspace),
             cell_count * sizeof(std::uint16_t), cudaMemcpyDeviceToDevice, stream));
         if (has_colors)
         {
             PLAPOINT_CHECK_CUDA(cudaMemcpyAsync(
-                grid.colors.data(), HeightGridGpuWorkspaceAccess::nextColors(workspace),
+                grid.colors->data(), HeightGridGpuWorkspaceAccess::nextColors(workspace),
                 cell_count * 3 * sizeof(std::uint8_t), cudaMemcpyDeviceToDevice, stream));
         }
     }
@@ -480,10 +503,10 @@ mesh::HeightGrid<Scalar> downloadHeightGridImpl(
     host.weights.resize(cell_count);
     host.valid.resize(cell_count);
     host.fillPass.resize(cell_count);
-    copyDeviceToHostAsync(host.heights.data(), grid.heights.data(), cell_count, stream);
-    copyDeviceToHostAsync(host.weights.data(), grid.weights.data(), cell_count, stream);
-    copyDeviceToHostAsync(host.valid.data(), grid.valid.data(), cell_count, stream);
-    copyDeviceToHostAsync(host.fillPass.data(), grid.fillPass.data(), cell_count, stream);
+    copyDeviceToHostAsync(host.heights.data(), grid.heights->data(), cell_count, stream);
+    copyDeviceToHostAsync(host.weights.data(), grid.weights->data(), cell_count, stream);
+    copyDeviceToHostAsync(host.valid.data(), grid.valid->data(), cell_count, stream);
+    copyDeviceToHostAsync(host.fillPass.data(), grid.fillPass->data(), cell_count, stream);
     int input_status = 0;
     copyDeviceToHostAsync(
         &input_status, GpuHeightGridAccess::status(grid), std::size_t{1}, stream);
@@ -493,7 +516,7 @@ mesh::HeightGrid<Scalar> downloadHeightGridImpl(
     {
         planar_colors.resize(cell_count * 3);
         copyDeviceToHostAsync(
-            planar_colors.data(), grid.colors.data(), planar_colors.size(), stream);
+            planar_colors.data(), grid.colors->data(), planar_colors.size(), stream);
     }
     grid.synchronize(stream);
     if (input_status != 0)
@@ -519,11 +542,12 @@ mesh::HeightGrid<Scalar> downloadHeightGridImpl(
 
 template <typename Scalar>
 GpuHeightGrid<Scalar> buildHeightGridDeviceAsync(
-    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
     const mesh::HeightGridOptions<Scalar>& options,
     HeightGridGpuWorkspace<Scalar>& workspace,
     cudaStream_t stream)
 {
+    cloud.validate();
     return buildHeightGridDeviceImpl(cloud, options, workspace, stream);
 }
 
@@ -550,11 +574,12 @@ mesh::HeightGrid<Scalar> downloadHeightGrid(
 
 template <typename Scalar>
 GpuHeightGrid<Scalar> buildHeightGridDeviceResolved(
-    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
     const mesh::HeightGridOptions<Scalar>& options,
     HeightGridGpuWorkspace<Scalar>& workspace,
     cudaStream_t stream)
 {
+    cloud.validate();
     if (cloud.size() == 0)
     {
         return {};
@@ -568,7 +593,7 @@ GpuHeightGrid<Scalar> buildHeightGridDeviceResolved(
         throw std::invalid_argument("buildHeightGrid GPU: padding must be finite and non-negative");
     }
     const int point_count = static_cast<int>(cloud.size());
-    const auto bounds = computeFiniteBounds(cloud.points().data(), point_count, stream);
+    const auto bounds = computeFiniteBounds(cloud.points(), stream);
     if (!options.skipNonFinite && bounds.finiteCount != point_count)
     {
         throw std::invalid_argument("buildHeightGrid GPU: points must be finite");
@@ -590,12 +615,12 @@ GpuHeightGrid<Scalar> buildHeightGridDeviceResolved(
         resolved.useExplicitBounds = true;
         resolved.padding = Scalar(0);
     }
-    return buildHeightGridDeviceAsync(cloud, resolved, workspace, stream);
+    return buildHeightGridDeviceImpl(cloud, resolved, workspace, stream);
 }
 
 template <typename Scalar>
 mesh::HeightGrid<Scalar> buildHeightGridCompat(
-    const PointCloud<Scalar, plamatrix::Device::GPU>& cloud,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& cloud,
     const mesh::HeightGridOptions<Scalar>& options,
     cudaStream_t stream)
 {
@@ -605,7 +630,7 @@ mesh::HeightGrid<Scalar> buildHeightGridCompat(
 }
 
 mesh::HeightGrid<float> buildHeightGrid(
-    const PointCloud<float, plamatrix::Device::GPU>& cloud,
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>& cloud,
     const mesh::HeightGridOptions<float>& options,
     cudaStream_t stream)
 {
@@ -613,7 +638,7 @@ mesh::HeightGrid<float> buildHeightGrid(
 }
 
 mesh::HeightGrid<double> buildHeightGrid(
-    const PointCloud<double, plamatrix::Device::GPU>& cloud,
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::GPU>& cloud,
     const mesh::HeightGridOptions<double>& options,
     cudaStream_t stream)
 {
@@ -631,33 +656,33 @@ void fillHoles(mesh::HeightGrid<double>& grid, int max_passes)
 }
 
 template <typename Scalar>
-PointCloud<Scalar, plamatrix::Device::CPU> heightGridToMeshImpl(
+GeometryCloud<Scalar> heightGridToMeshImpl(
     const mesh::HeightGrid<Scalar>& grid,
-    const PointCloud<Scalar, plamatrix::Device::GPU>& source_cloud,
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& source_cloud,
     const mesh::HeightGridOptions<Scalar>& options)
 {
-    return mesh::heightGridToMesh(grid, source_cloud.toCpu(), options);
+    return mesh::heightGridToMesh(grid, plapoint::detail::fromDeviceCloud(source_cloud.toCpu()), options);
 }
 
-PointCloud<float, plamatrix::Device::CPU> heightGridToMesh(
+GeometryCloud<float> heightGridToMesh(
     const mesh::HeightGrid<float>& grid,
-    const PointCloud<float, plamatrix::Device::GPU>& source_cloud,
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>& source_cloud,
     const mesh::HeightGridOptions<float>& options)
 {
     return heightGridToMeshImpl(grid, source_cloud, options);
 }
 
-PointCloud<double, plamatrix::Device::CPU> heightGridToMesh(
+GeometryCloud<double> heightGridToMesh(
     const mesh::HeightGrid<double>& grid,
-    const PointCloud<double, plamatrix::Device::GPU>& source_cloud,
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::GPU>& source_cloud,
     const mesh::HeightGridOptions<double>& options)
 {
     return heightGridToMeshImpl(grid, source_cloud, options);
 }
 
 template <typename Scalar>
-PointCloud<Scalar, plamatrix::Device::CPU> heightGridToMeshPipeline(
-    const PointCloud<Scalar, plamatrix::Device::GPU>& source_cloud,
+GeometryCloud<Scalar> heightGridToMeshPipeline(
+    const plapoint::internal::DeviceCloud<Scalar, plamatrix::internal::Device::GPU>& source_cloud,
     const mesh::HeightGridOptions<Scalar>& options,
     int fill_passes,
     cudaStream_t stream)
@@ -675,8 +700,8 @@ PointCloud<Scalar, plamatrix::Device::CPU> heightGridToMeshPipeline(
     return heightGridToMeshImpl(grid, source_cloud, options);
 }
 
-PointCloud<float, plamatrix::Device::CPU> heightGridToMesh(
-    const PointCloud<float, plamatrix::Device::GPU>& source_cloud,
+GeometryCloud<float> heightGridToMesh(
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>& source_cloud,
     const mesh::HeightGridOptions<float>& options,
     int fill_passes,
     cudaStream_t stream)
@@ -684,8 +709,8 @@ PointCloud<float, plamatrix::Device::CPU> heightGridToMesh(
     return heightGridToMeshPipeline(source_cloud, options, fill_passes, stream);
 }
 
-PointCloud<double, plamatrix::Device::CPU> heightGridToMesh(
-    const PointCloud<double, plamatrix::Device::GPU>& source_cloud,
+GeometryCloud<double> heightGridToMesh(
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::GPU>& source_cloud,
     const mesh::HeightGridOptions<double>& options,
     int fill_passes,
     cudaStream_t stream)
@@ -694,12 +719,12 @@ PointCloud<double, plamatrix::Device::CPU> heightGridToMesh(
 }
 
 template GpuHeightGrid<float> buildHeightGridDeviceAsync<float>(
-    const PointCloud<float, plamatrix::Device::GPU>&,
+    const plapoint::internal::DeviceCloud<float, plamatrix::internal::Device::GPU>&,
     const mesh::HeightGridOptions<float>&,
     HeightGridGpuWorkspace<float>&,
     cudaStream_t);
 template GpuHeightGrid<double> buildHeightGridDeviceAsync<double>(
-    const PointCloud<double, plamatrix::Device::GPU>&,
+    const plapoint::internal::DeviceCloud<double, plamatrix::internal::Device::GPU>&,
     const mesh::HeightGridOptions<double>&,
     HeightGridGpuWorkspace<double>&,
     cudaStream_t);
