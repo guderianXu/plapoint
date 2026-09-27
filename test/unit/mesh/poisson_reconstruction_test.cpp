@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 #include <plapoint/mesh/poisson_reconstruction.h>
 #include <plapoint/core/point_cloud.h>
+#ifdef PLAPOINT_WITH_CUDA
+#include <plapoint/gpu/cuda_check.h>
+#endif
 #include <plapoint/opencl/opencl_runtime.h>
 #include <plamatrix/plamatrix.h>
 #include <plamatrix/internal/core/device.h>
@@ -373,8 +376,18 @@ TEST(PoissonReconstructionTest, ExplicitOpenClRejectsDisabledBackendWithoutFallb
 #endif
 
 #ifdef PLAPOINT_WITH_CUDA
+#define SKIP_IF_NO_CUDA_DEVICE()                                                                                       \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if (!plapoint::gpu::hasUsableCudaDevice())                                                                     \
+        {                                                                                                              \
+            GTEST_SKIP() << "No CUDA-capable device detected";                                                         \
+        }                                                                                                              \
+    } while (false)
+
 TEST(PoissonReconstructionTest, ExplicitGpuUsesPlaMatrixPcg)
 {
+    SKIP_IF_NO_CUDA_DEVICE();
     using Scalar = float;
     using Cloud = plapoint::GeometryCloud<Scalar>;
     using Matrix = plamatrix::Matrix<Scalar, plamatrix::Dynamic, plamatrix::Dynamic>;
@@ -413,6 +426,7 @@ TEST(PoissonReconstructionTest, ExplicitGpuUsesPlaMatrixPcg)
 
 TEST(PoissonReconstructionTest, ExplicitGpuReportsNonConvergence)
 {
+    SKIP_IF_NO_CUDA_DEVICE();
     plapoint::mesh::PoissonReconstruction<float> reconstruction;
     reconstruction.setInputCloud(makeSphereCloud(96));
     reconstruction.setDepth(4);
@@ -433,6 +447,7 @@ TEST(PoissonReconstructionTest, ExplicitGpuReportsNonConvergence)
 
 TEST(PoissonReconstructionTest, AutoReportsWhenGpuAndCpuDoNotConverge)
 {
+    SKIP_IF_NO_CUDA_DEVICE();
     plapoint::mesh::PoissonReconstruction<float> reconstruction;
     reconstruction.setInputCloud(makeSphereCloud(4096));
     reconstruction.setDepth(3);
@@ -462,6 +477,7 @@ TEST(PoissonReconstructionTest, AutoReportsWhenGpuAndCpuDoNotConverge)
 
 TEST(PoissonReconstructionTest, AutoContinuesCpuFromCudaApproximation)
 {
+    SKIP_IF_NO_CUDA_DEVICE();
     plapoint::mesh::PoissonReconstruction<float> reconstruction;
     reconstruction.setInputCloud(makeRegularSphereCloud(16, 16));
     reconstruction.setDepth(4);
@@ -482,6 +498,7 @@ TEST(PoissonReconstructionTest, AutoContinuesCpuFromCudaApproximation)
 
 TEST(PoissonReconstructionTest, CpuAndGpuProduceComparableSphereGeometry)
 {
+    SKIP_IF_NO_CUDA_DEVICE();
     auto cloud = makeSphereCloud(256);
     auto reconstruct = [&](plapoint::ProcessingDevice device)
     {
@@ -523,6 +540,8 @@ TEST(PoissonReconstructionTest, CpuAndGpuProduceComparableSphereGeometry)
     EXPECT_LT(std::abs(cpu_vertices.rows() - gpu_vertices.rows()), cpu_vertices.rows() / 5 + 1);
     EXPECT_LT(std::abs(cpu_faces.rows() - gpu_faces.rows()), cpu_faces.rows() / 5 + 1);
 }
+
+#undef SKIP_IF_NO_CUDA_DEVICE
 #endif
 
 TEST(PoissonReconstructionTest, RejectsUnsetInputCloud)

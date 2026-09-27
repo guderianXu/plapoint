@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: guderianXu/plamatrix
-          ref: 22be5099d599396d2f7f78652c6875534fd0afba
+          ref: 68b6a558d423d077918ef776a7273dbb072a09d9
           path: plamatrix
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y libboost-dev libeigen3-dev libgtest-dev ninja-build
@@ -70,7 +70,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: guderianXu/plamatrix
-          ref: 22be5099d599396d2f7f78652c6875534fd0afba
+          ref: 68b6a558d423d077918ef776a7273dbb072a09d9
           path: plamatrix
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y libboost-dev libeigen3-dev libgtest-dev ninja-build
@@ -114,7 +114,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: guderianXu/plamatrix
-          ref: 22be5099d599396d2f7f78652c6875534fd0afba
+          ref: 68b6a558d423d077918ef776a7273dbb072a09d9
           path: plamatrix
       - name: Install OpenCL build and runtime dependencies
         run: |
@@ -162,7 +162,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: guderianXu/plamatrix
-          ref: 22be5099d599396d2f7f78652c6875534fd0afba
+          ref: 68b6a558d423d077918ef776a7273dbb072a09d9
           path: plamatrix
       - name: Build and install CUDA PlaMatrix
         run: |
@@ -200,7 +200,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: guderianXu/plamatrix
-          ref: 22be5099d599396d2f7f78652c6875534fd0afba
+          ref: 68b6a558d423d077918ef776a7273dbb072a09d9
           path: plamatrix
       - name: Check out GoogleTest
         uses: actions/checkout@v7
@@ -238,7 +238,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           cmake -S plamatrix -B build/plamatrix -A x64 `
             -DCMAKE_INSTALL_PREFIX="$pwd/build/deps" `
-            -DOpenMP_CXX_FLAGS="/openmp:llvm" `
+            -DOpenMP_CXX_FLAGS="/openmp:experimental" `
             -DPLAMATRIX_WITH_CUDA=OFF `
             -DPLAMATRIX_WITH_OPENCL=OFF `
             -DPLAMATRIX_BUILD_TESTS=OFF `
