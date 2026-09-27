@@ -425,7 +425,7 @@ namespace plapoint
         {
         public:
             using Scalar = std::decay_t<decltype(PointT::x)>;
-            using PointCloudType = PointCloud<PointT>;
+            using PointCloudType = plapoint::PointCloud<PointT>;
             using PointCloudConstPtr = typename PointCloudType::ConstPtr;
             using Ptr = std::shared_ptr<FilterT>;
             using ConstPtr = std::shared_ptr<const FilterT>;

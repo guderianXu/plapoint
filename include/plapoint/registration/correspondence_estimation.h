@@ -20,9 +20,9 @@ namespace plapoint::registration
     public:
         using Ptr = std::shared_ptr<CorrespondenceEstimationBase<PointSource, PointTarget, Scalar>>;
         using ConstPtr = std::shared_ptr<const CorrespondenceEstimationBase<PointSource, PointTarget, Scalar>>;
-        using PointCloudSource = PointCloud<PointSource>;
+        using PointCloudSource = plapoint::PointCloud<PointSource>;
         using PointCloudSourceConstPtr = typename PointCloudSource::ConstPtr;
-        using PointCloudTarget = PointCloud<PointTarget>;
+        using PointCloudTarget = plapoint::PointCloud<PointTarget>;
         using PointCloudTargetPtr = typename PointCloudTarget::Ptr;
         using PointCloudTargetConstPtr = typename PointCloudTarget::ConstPtr;
         using KdTree = search::KdTree<PointTarget>;

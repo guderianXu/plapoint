@@ -32,10 +32,10 @@ namespace plapoint
         using KdTreePtr = typename KdTree::Ptr;
         using KdTreeReciprocal = search::KdTree<PointSource>;
         using KdTreeReciprocalPtr = typename KdTreeReciprocal::Ptr;
-        using PointCloudSource = PointCloud<PointSource>;
+        using PointCloudSource = plapoint::PointCloud<PointSource>;
         using PointCloudSourcePtr = typename PointCloudSource::Ptr;
         using PointCloudSourceConstPtr = typename PointCloudSource::ConstPtr;
-        using PointCloudTarget = PointCloud<PointTarget>;
+        using PointCloudTarget = plapoint::PointCloud<PointTarget>;
         using PointCloudTargetPtr = typename PointCloudTarget::Ptr;
         using PointCloudTargetConstPtr = typename PointCloudTarget::ConstPtr;
         using PointRepresentationConstPtr = typename KdTree::PointRepresentationConstPtr;

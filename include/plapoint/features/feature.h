@@ -22,10 +22,10 @@ public:
     using ConstPtr = std::shared_ptr<const Feature<PointInT, PointOutT>>;
     using KdTree = search::Search<PointInT>;
     using KdTreePtr = typename KdTree::Ptr;
-    using PointCloudIn = PointCloud<PointInT>;
+    using PointCloudIn = plapoint::PointCloud<PointInT>;
     using PointCloudInPtr = typename PointCloudIn::Ptr;
     using PointCloudInConstPtr = typename PointCloudIn::ConstPtr;
-    using PointCloudOut = PointCloud<PointOutT>;
+    using PointCloudOut = plapoint::PointCloud<PointOutT>;
     using SearchMethod = std::function<int(std::size_t, double, Indices&, std::vector<float>&)>;
     using SearchMethodSurface = std::function<int(const PointCloudIn&, std::size_t, double,
                                                   Indices&, std::vector<float>&)>;
