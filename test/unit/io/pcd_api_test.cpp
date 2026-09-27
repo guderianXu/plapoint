@@ -97,6 +97,7 @@ TEST(PcdApiTest, StreamHeaderAndBodyOverloadsMatchFileOffsets)
     std::ifstream file(plain_path, std::ios::binary);
     ASSERT_TRUE(file);
     const std::string payload((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    file.close();
     std::istringstream stream(payload);
 
     plapoint::PCDReader reader;
@@ -153,6 +154,7 @@ TEST(PcdApiTest, BinaryBodyOverloadReadsCompressedMemory)
     std::ifstream file(path, std::ios::binary);
     ASSERT_TRUE(file);
     const std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    file.close();
 
     plapoint::PCDReader reader;
     plapoint::PCLPointCloud2 cloud;
