@@ -252,6 +252,7 @@ jobs:
           cmake -S plapoint -B build/plapoint -A x64 `
             -DCMAKE_PREFIX_PATH="$pwd/build/deps;$pwd/build/vcpkg_installed/x64-windows" `
             -DCMAKE_INSTALL_PREFIX="$pwd/build/install" `
+            -DOpenMP_CXX_FLAGS="/openmp:llvm /openmp:experimental" `
             -DBUILD_SHARED_LIBS=ON `
             -DPLAPOINT_WITH_CUDA=OFF `
             -DPLAPOINT_WITH_OPENCL=OFF `
@@ -266,7 +267,8 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           cmake -S plapoint/cmake/consumer_smoke -B build/consumer -A x64 `
-            -DCMAKE_PREFIX_PATH="$pwd/build/install;$pwd/build/deps;$pwd/build/vcpkg_installed/x64-windows"
+            -DCMAKE_PREFIX_PATH="$pwd/build/install;$pwd/build/deps;$pwd/build/vcpkg_installed/x64-windows" `
+            -DOpenMP_CXX_FLAGS="/openmp:llvm /openmp:experimental"
           cmake --build build/consumer --config Release
           $env:PATH = "$pwd\build\install\bin;$env:PATH"
           & build/consumer/Release/plapoint_consumer_smoke.exe
